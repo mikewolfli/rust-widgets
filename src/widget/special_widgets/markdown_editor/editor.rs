@@ -4,12 +4,12 @@
 //! `MarkdownEditor` state, document editing, caret and scroll handling.
 
 use super::*;
-use crate::core::{Font, Rect};
+use crate::core::Rect;
 use crate::signal::Signal1;
 use crate::style::animation::CursorBlink;
 use crate::undo::UndoStack;
 use crate::widget::metrics::{effective_font, estimate_text_width};
-use crate::widget::special_widgets::code_editor::{
+use crate::widget::special_widgets::editor::syntax::{
     BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter,
 };
 use crate::widget::{BaseWidget, Widget, WidgetKind};
@@ -118,8 +118,6 @@ pub struct MarkdownEditor {
     pub(crate) table_header: Vec<bool>,
     /// The revision `blocks` was built for.
     pub(crate) blocks_revision: u64,
-    /// Measured glyph advances for the caret's line prefix, keyed by font size.
-    pub(crate) char_widths: Vec<(char, f32, i32)>,
     /// Line offset tables for [`Self::revision`], rebuilt at most once per revision.
     pub(crate) line_index: RefCell<Option<(u64, LineIndex)>>,
     /// Fenced blocks whose info token named a registered [`MarkdownBlockRenderer`].
@@ -207,7 +205,6 @@ impl MarkdownEditor {
             blocks: Vec::new(),
             table_header: Vec::new(),
             blocks_revision: u64::MAX,
-            char_widths: Vec::new(),
             line_index: RefCell::new(None),
             fenced_blocks: Vec::new(),
             preview_rows: Vec::new(),
@@ -453,6 +450,7 @@ impl MarkdownEditor {
         // keystroke replaced text the reader could no longer see (most of it off screen).
         self.selection_anchor = None;
         self.apply_selection(None);
+        self.clear_find_hit();
         self.reveal_line(entry.line);
         self.base.request_redraw();
         true
@@ -497,6 +495,7 @@ impl MarkdownEditor {
         self.apply_selection(if length == 0 { None } else { Some((0, length)) });
         self.cursor_line = self.edit_line_count().saturating_sub(1);
         self.cursor_col = self.current_line_char_len();
+        self.clear_find_hit();
         self.base.request_redraw();
     }
 
@@ -541,6 +540,7 @@ impl MarkdownEditor {
         self.cursor_col = 0;
         self.selection_anchor = None;
         self.apply_selection(None);
+        self.clear_find_hit();
         self.reveal_caret();
         self.base.request_redraw();
         true
@@ -551,16 +551,21 @@ impl MarkdownEditor {
     /// The match becomes the selection and the caret moves to its end, which is what makes
     /// repeated calls step through the document instead of finding the same match again.
     ///
-    /// The ranges come from the mounted [`FindBar`]'s matcher ([`literal_matches`]), the same
-    /// engine that paints the bar's counter. The editor used to run `str::find` here, so a case
-    /// or whole-word policy set on the bar and the match this command selected were two
-    /// different answers to the same question.
+    /// The ranges come from the mounted [`FindBar`]'s matcher ([`literal_matches`]) under the
+    /// bar's own case and whole-word policy, the same engine that paints the bar's counter. The
+    /// editor used to run `str::find` here, so a case or whole-word policy set on the bar and the
+    /// match this command selected were two different answers to the same question.
     pub fn find_next(&mut self, needle: &str) -> bool {
         if needle.is_empty() {
             return false;
         }
         let from = self.find_search_origin(true);
-        let matches = literal_matches(&self.text, needle, true, false);
+        let matches = literal_matches(
+            &self.text,
+            needle,
+            self.find_bar.case_sensitive(),
+            self.find_bar.whole_word(),
+        );
         let found = matches
             .iter()
             .copied()
@@ -581,7 +586,12 @@ impl MarkdownEditor {
             return false;
         }
         let from = self.find_search_origin(false);
-        let matches = literal_matches(&self.text, needle, true, false);
+        let matches = literal_matches(
+            &self.text,
+            needle,
+            self.find_bar.case_sensitive(),
+            self.find_bar.whole_word(),
+        );
         let found = matches
             .iter()
             .rev()
@@ -774,7 +784,9 @@ impl MarkdownEditor {
         let caret_byte = byte_offset_of_char(line, self.cursor_col);
         let x = rect.x + 12 + estimate_text_width(&line[..caret_byte], font, 1.0) as i32;
         let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
-        if y + 14 > rect.y + rect.height as i32 || x > rect.x + rect.width as i32 - 12 {
+        if y + TEXT_ROW_HEIGHT > rect.y + rect.height as i32 - TEXT_BOTTOM_INSET
+            || x > rect.x + rect.width as i32 - 12
+        {
             return None;
         }
         // The composition is drawn at the caret, so a frame painting it owns that width too.
@@ -972,6 +984,7 @@ impl MarkdownEditor {
         self.cursor_col = if start { 0 } else { self.current_line_char_len() };
         self.selection_anchor = None;
         self.apply_selection(None);
+        self.clear_find_hit();
         self.base.request_redraw();
     }
 
@@ -998,10 +1011,14 @@ impl MarkdownEditor {
     }
 
     /// Selects the document characters spanned by the byte range `[start, end)`.
+    ///
+    /// Byte offsets may come from a [`FindBar`] snapshot the host has since rewritten, so neither
+    /// end is assumed to be a character boundary: each is snapped back to one before slicing.
     pub(crate) fn select_byte_range(&mut self, start: usize, end: usize) {
-        let start_char = self.text[..start.min(self.text.len())].chars().count();
-        let end_char = start_char
-            + self.text[start.min(self.text.len())..end.min(self.text.len())].chars().count();
+        let start = char_boundary_at(&self.text, start);
+        let end = char_boundary_at(&self.text, end).max(start);
+        let start_char = self.text[..start].chars().count();
+        let end_char = start_char + self.text[start..end].chars().count();
         self.selection_anchor = Some(self.line_col_of(start_char));
         self.apply_selection(Some((start_char, end_char)));
         let (line, col) = self.line_col_of(end_char);
@@ -1009,6 +1026,15 @@ impl MarkdownEditor {
         self.cursor_col = col;
         self.reveal_caret();
         self.base.request_redraw();
+    }
+
+    /// Forgets the current search hit.
+    ///
+    /// [`Self::find`]'s `current` names the last match a search selected, and is only meaningful
+    /// while the caret is still in it. Any caret move or edit the user makes invalidates that, so
+    /// the next search starts from the caret again instead of from a stale byte offset.
+    pub(crate) fn clear_find_hit(&mut self) {
+        self.find.current = None;
     }
 
     /// Where the next forward/backward search starts.
@@ -1151,6 +1177,7 @@ impl MarkdownEditor {
         self.clamp_cursor();
         self.selection_anchor = None;
         self.apply_selection(None);
+        self.clear_find_hit();
         self.emit_text_changed(&before);
         self.base.request_layout();
         self.base.request_redraw();
@@ -1184,14 +1211,16 @@ impl MarkdownEditor {
 
     /// How many text rows fit below the header band.
     ///
-    /// At least one, so a short editor still paints the line it is on instead of dividing to
-    /// zero or scrolling everything away.
+    /// Only rows that fit **fully** are counted: the paint clip ends at
+    /// `height - TEXT_BOTTOM_INSET`, so a row that would be cut off there is not a row the viewport
+    /// can show. At least one, so a short editor still paints the line it is on instead of
+    /// dividing to zero or scrolling everything away.
     pub(crate) fn visible_line_count(&self) -> usize {
         let usable = self.geometry().height as i32 - TEXT_TOP - TEXT_BOTTOM_INSET;
-        if usable < 0 {
+        if usable < TEXT_ROW_HEIGHT {
             return 1;
         }
-        (usable / TEXT_ROW_HEIGHT + 1) as usize
+        (usable / TEXT_ROW_HEIGHT) as usize
     }
 
     /// The largest `first_visible_line` that still lets the document be traversed.
@@ -1239,11 +1268,18 @@ impl MarkdownEditor {
             let (line, top, height) = *self.preview_rows.get(index.checked_sub(1)?)?;
             return (y < top.saturating_add(height as i32)).then_some(line);
         }
-        let row = (y - rect.y - TEXT_TOP) / TEXT_ROW_HEIGHT;
-        if row < 0 {
+        let top = rect.y + TEXT_TOP;
+        let bottom = rect.y + rect.height as i32 - TEXT_BOTTOM_INSET;
+        if y < top || y >= bottom {
             return None;
         }
-        let line = self.visible_start() + row as usize;
+        let row = ((y - top) / TEXT_ROW_HEIGHT) as usize;
+        // The header strip above the rows and the bottom inset below them map to no line at all,
+        // and a partial row at the bottom is not one the paint path draws.
+        if row >= self.visible_line_count() {
+            return None;
+        }
+        let line = self.visible_start() + row;
         (line < self.edit_line_count()).then_some(line)
     }
 
@@ -1256,13 +1292,14 @@ impl MarkdownEditor {
             return false;
         }
         let max_first = self.max_first_line();
-        let next =
-            (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
-        if next == self.first_visible_line {
-            return false;
-        }
+        let current = self.visible_start();
+        let next = (current as i64 + lines as i64).clamp(0, max_first as i64) as usize;
+        // Compare against the position the paint path actually uses. A stored offset past the end
+        // (for example after the document shrank) is clamped here and cannot report movement the
+        // viewport did not make.
+        let moved = next != current;
         self.first_visible_line = next;
-        true
+        moved
     }
 
     /// Byte span of the caret's line in `text`.
@@ -1326,9 +1363,13 @@ impl MarkdownEditor {
             )));
         }
         self.clamp_cursor();
+        self.clear_find_hit();
         self.emit_text_changed(&before);
         self.base.request_layout();
         self.base.request_redraw();
+        // An edit can leave the caret on a row the viewport no longer paints (Enter at the last
+        // visible row, a multi-line paste), so the commit owns revealing it.
+        self.reveal_caret();
     }
 
     /// Rebuilds the per-line block classification when the document changed.
@@ -1536,6 +1577,9 @@ impl MarkdownEditor {
     /// Adds `prefix` to (or removes it from) every selected line, as one undo step.
     pub(crate) fn apply_line_prefix(&mut self, prefix: &str, remove: bool) -> bool {
         let had_selection = self.selection.is_some();
+        let caret_line = self.cursor_line;
+        let caret_col = self.cursor_col;
+        let old_caret_len = self.current_line_char_len();
         let lines = self.selected_line_range();
         if lines.is_empty() {
             return false;
@@ -1562,24 +1606,36 @@ impl MarkdownEditor {
             cursor = end_byte;
         }
         next.push_str(&self.text[cursor..]);
+        // A toggle that matches every selected line already rewrites the document unchanged; that
+        // is not an edit and must not report one.
+        if next == self.text {
+            return false;
+        }
         self.commit_text(next);
         // The selection follows the edited lines rather than being dropped: Tab then Shift+Tab is
         // one gesture on one block, and a reader would not expect the second key to apply to a
         // single line.
         let first = lines.first().copied().unwrap_or(0);
-        let last = lines.last().copied().unwrap_or(first).min(self.edit_line_count() - 1);
-        self.cursor_line = last;
-        self.cursor_col = self.current_line_char_len();
-        let start_char = self.doc_char_offset(first, 0);
-        let end_char = self.doc_char_offset(last, self.current_line_char_len());
+        let last =
+            lines.last().copied().unwrap_or(first).min(self.edit_line_count().saturating_sub(1));
         self.selection_anchor = None;
-        self.apply_selection(if had_selection {
-            (start_char != end_char).then_some((start_char, end_char))
+        if had_selection {
+            self.cursor_line = last;
+            self.cursor_col = self.current_line_char_len();
+            let start_char = self.doc_char_offset(first, 0);
+            let end_char = self.doc_char_offset(last, self.current_line_char_len());
+            self.apply_selection((start_char != end_char).then_some((start_char, end_char)));
         } else {
             // A caret with no selection keeps a caret: indenting the line it is on must not
-            // silently select the line.
-            None
-        });
+            // silently select the line. The prefix was inserted or removed before the caret, so
+            // the column moves by the line's length change and not to the end of the line.
+            let new_len = self.line_slice(caret_line).chars().count();
+            let delta = new_len as isize - old_caret_len as isize;
+            self.cursor_line = caret_line.min(self.edit_line_count().saturating_sub(1));
+            self.cursor_col = (caret_col as isize + delta).clamp(0, new_len as isize) as usize;
+            self.apply_selection(None);
+        }
+        self.reveal_caret();
         self.base.request_redraw();
         true
     }
@@ -1612,8 +1668,11 @@ impl MarkdownEditor {
     ///
     /// The line comes from the cached offset tables rather than from a fresh scan for its `nth`
     /// `\n`, which was one pass over every line above the hit row per press and per drag move.
-    /// The width cache is borrowed as its own field so it can be mutated beside the line borrow.
-    pub(crate) fn hit_column(&mut self, line: usize, x: i32) -> (usize, usize) {
+    /// Candidate columns are measured from the line's shaped prefix — the same call the caret and
+    /// the selection edges are drawn from — so kerning, `letter_spacing` and word spacing cannot
+    /// make the hit test resolve a different column than the one under the pointer. A binary
+    /// search over the monotonic prefix widths keeps that to O(log line) measurements.
+    pub(crate) fn hit_column(&self, line: usize, x: i32) -> (usize, usize) {
         let font = effective_font(self.base.style());
         self.ensure_line_index();
         let index = self.line_index.borrow();
@@ -1623,17 +1682,32 @@ impl MarkdownEditor {
         let Some((start, end)) = table.line_span(line, self.text.len()) else {
             return (0, 0);
         };
-        let mut offset = 0i32;
-        let mut column = 0usize;
-        for ch in self.text[start..end].chars() {
-            let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
-            if x < offset + width / 2 {
-                break;
+        let text = &self.text[start..end];
+        let total = table.char_lens.get(line).copied().unwrap_or(0);
+        let width_at = |column: usize| -> i32 {
+            let byte = byte_offset_of_char(text, column.min(total));
+            estimate_text_width(&text[..byte], font, 1.0) as i32
+        };
+        // The largest column whose prefix still ends at or before the pointer.
+        let mut low = 0usize;
+        let mut high = total;
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            if width_at(mid) <= x {
+                low = mid;
+            } else {
+                high = mid - 1;
             }
-            offset += width;
-            column += 1;
         }
-        (column, table.char_lens.get(line).copied().unwrap_or(column))
+        if low >= total {
+            return (total, total);
+        }
+        // The pointer lies inside the glyph that starts at `low`; its midpoint decides which
+        // side of the boundary the column belongs to, exactly as the caret is drawn.
+        let glyph_start = width_at(low);
+        let glyph_end = width_at(low + 1);
+        let column = if x < glyph_start + (glyph_end - glyph_start) / 2 { low } else { low + 1 };
+        (column, total)
     }
 
     /// Indents (`indent == true`) or outdents the selected lines by one level.
@@ -1739,6 +1813,7 @@ impl MarkdownEditor {
     /// Moves the caret one character left, wrapping to the previous line's end.
     pub(crate) fn move_cursor_left(&mut self) {
         self.clamp_cursor();
+        self.clear_find_hit();
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
             self.base.request_redraw();
@@ -1752,6 +1827,7 @@ impl MarkdownEditor {
     /// Moves the caret one character right, wrapping to the next line's start.
     pub(crate) fn move_cursor_right(&mut self) {
         self.clamp_cursor();
+        self.clear_find_hit();
         if self.cursor_col < self.current_line_char_len() {
             self.cursor_col += 1;
             self.base.request_redraw();
@@ -1771,27 +1847,8 @@ impl MarkdownEditor {
             // A column past the new line's end would put the caret outside the text, so
             // vertical movement keeps the column but clamps it to the line it landed on.
             self.clamp_cursor_col();
+            self.clear_find_hit();
             self.base.request_redraw();
         }
     }
-}
-
-/// A glyph advance, measured at most once per font size.
-///
-/// Free rather than a method because the callers hold a borrow of the widget's style (and thus of
-/// `self.base`) while they need the cache mutably; taking the cache as its own parameter keeps
-/// those two borrows disjoint.
-fn cached_char_width(cache: &mut Vec<(char, f32, i32)>, ch: char, font: &Font, scale: f32) -> i32 {
-    let size = font.size();
-    if let Some((_, _, width)) = cache
-        .iter()
-        .find(|(candidate, cached, _)| *candidate == ch && (*cached - size).abs() < f32::EPSILON)
-    {
-        return *width;
-    }
-    let mut buffer = [0u8; 4];
-    let glyph = ch.encode_utf8(&mut buffer);
-    let width = estimate_text_width(glyph, font, scale) as i32;
-    cache.push((ch, size, width));
-    width
 }

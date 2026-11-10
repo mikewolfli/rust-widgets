@@ -6,7 +6,7 @@
 use super::*;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
-use crate::widget::special_widgets::code_editor::{
+use crate::widget::special_widgets::editor::syntax::{
     BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter, TokenKind,
 };
 
@@ -89,7 +89,7 @@ pub(crate) fn text_hash(text: &str) -> u64 {
 ///
 /// A key is the row's text plus every input the parse reads: its block context (a fenced-code
 /// line is tokenised differently from prose), the GFM and highlighting flags, whether a table
-/// divider follows, and the font size and DPI scale its runs were measured at. The row's
+/// divider follows, and the **whole font** plus DPI scale its runs were measured at. The row's
 /// position is not an input to the parse, so it is not part of the key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PreviewKey {
@@ -99,8 +99,12 @@ pub(crate) struct PreviewKey {
     block: u64,
     /// `gfm | highlight << 1 | table_follows << 2`.
     flags: u8,
-    /// The measurement font size, as raw bits.
-    font_size_bits: u32,
+    /// Hash of the measurement font: family, size, weight, italic and spacing.
+    ///
+    /// `parse_preview_line` measures with the whole [`Font`], so nearly every field changes the
+    /// run widths. Recording only the size reused a row's old advances after a theme switch to
+    /// another family at the same size, leaving gaps and overlaps inside the drawn row.
+    font: u64,
     /// The backend DPI scale, as raw bits.
     ///
     /// `measure_text` returns device-scaled widths, so the same row measured on a 1x and a 2x
@@ -124,10 +128,24 @@ impl PreviewKey {
             text: text_hash(line),
             block: block_cache_key(block),
             flags: u8::from(gfm) | (u8::from(highlight) << 1) | (u8::from(table_follows) << 2),
-            font_size_bits: font.size().to_bits(),
+            font: font_cache_key(font),
             dpi_scale_bits: dpi_scale.to_bits(),
         }
     }
+}
+
+/// A stable hash of every [`Font`] field that changes a run's measured width.
+fn font_cache_key(font: &Font) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    font.family().hash(&mut hasher);
+    font.size().to_bits().hash(&mut hasher);
+    font.weight().hash(&mut hasher);
+    font.is_italic().hash(&mut hasher);
+    font.letter_spacing().to_bits().hash(&mut hasher);
+    font.word_spacing().to_bits().hash(&mut hasher);
+    font.line_height().to_bits().hash(&mut hasher);
+    hasher.finish()
 }
 
 /// A stable hash of the block context a preview row is parsed in.

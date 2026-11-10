@@ -408,6 +408,7 @@ pub fn create_panel(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(GroupBox::new(geometry)))
 }
 
+#[cfg(feature = "code-editor")]
 #[cfg(full_widgets)]
 /// Creates a code editor with no document loaded. `text` becomes the editor's
 /// initial contents.
@@ -506,12 +507,14 @@ pub fn create_notification_center(geometry: Rect, text: &str) -> Box<dyn Widget>
     label(geometry, text, Box::new(NotificationCenter::new(geometry)))
 }
 
+#[cfg(feature = "markdown-editor")]
 #[cfg(full_widgets)]
 /// Creates an empty markdown editor. `text` is applied as the control's label.
 pub fn create_markdown_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(MarkdownEditor::new(geometry)))
 }
 
+#[cfg(feature = "markdown-editor")]
 #[cfg(full_widgets)]
 /// Creates a markdown formatting strip with the default action set (SP-022). `text` is applied
 /// as the control's label.
@@ -1885,16 +1888,18 @@ pub fn create_toast_host(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::companions::ToastHost::new(geometry))
 }
 
+#[cfg(feature = "markdown-editor")]
 #[cfg(full_widgets)]
 /// Creates an empty markdown outline panel (`COMP-16`).
 pub fn create_markdown_outline_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::special_widgets::markdown_editor::MarkdownOutlinePanel::new(geometry))
 }
 
+#[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
 #[cfg(full_widgets)]
 /// Creates a closed find bar (`COMP-16`).
 pub fn create_find_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
-    Box::new(crate::widget::special_widgets::markdown_editor::FindBar::new(geometry))
+    Box::new(crate::widget::special_widgets::editor::companions::FindBar::new(geometry))
 }
 
 /// Creates the web view's find strip (`COMP-L03`).

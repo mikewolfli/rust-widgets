@@ -565,13 +565,22 @@ pub use view_widgets::{
 // Re-export special widgets
 #[cfg(full_widgets)]
 pub use special_widgets::{
-    Breadcrumb, BreadcrumbSegment, Canvas, Chip, ChipItem, CodeEditor, ColorPicker, CommandEntry,
-    CommandPalette, DiagnosticMarker, FindBar, FreeformShapeWidget, GridWidget, MarkdownEditor,
-    MarkdownOutlinePanel, MarkerSeverity, NotificationCenter, NotificationItem, NotificationLevel,
-    SegmentItem, SegmentedControl, ShapeCanvas, SignaturePad, SignatureStroke, Snackbar,
-    SplitAction, SplitButton, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel,
+    Breadcrumb, BreadcrumbSegment, Canvas, Chip, ChipItem, ColorPicker, CommandEntry,
+    CommandPalette, FreeformShapeWidget, GridWidget, NotificationCenter, NotificationItem,
+    NotificationLevel, SegmentItem, SegmentedControl, ShapeCanvas, SignaturePad, SignatureStroke,
+    Snackbar, SplitAction, SplitButton, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel,
     ToastStack,
 };
+// The two editor controls are separate features, so their re-exports cannot ride
+// in the unconditional list above: a build without `code-editor` has no
+// `CodeEditor`, and a name in that list would make the whole module fail
+// (BLUE31 §1.5).
+#[cfg(all(full_widgets, any(feature = "code-editor", feature = "markdown-editor")))]
+pub use special_widgets::FindBar;
+#[cfg(all(full_widgets, feature = "code-editor"))]
+pub use special_widgets::{CodeEditor, DiagnosticMarker, MarkerSeverity};
+#[cfg(all(full_widgets, feature = "markdown-editor"))]
+pub use special_widgets::{MarkdownEditor, MarkdownOutlinePanel};
 /// Alias for [`ProgressBar`], naming an indicator use case.
 /// This is a plain progress bar: it does not animate on its own.
 #[cfg(full_widgets)]

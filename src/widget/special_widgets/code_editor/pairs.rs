@@ -93,12 +93,11 @@ pub fn plan_typing(
         return PairAction::Pair;
     }
 
-    if let Some(open) = opening_for(typed) {
-        if after == Some(typed) && before == Some(open) {
-            // Only step over a closer that directly matches the opener we are
-            // sitting inside, so `)]` in normal text is still inserted.
-            return PairAction::SkipOver;
-        }
+    if opening_for(typed).is_some() {
+        // Typing a closer directly before the same closer steps over it. This is the
+        // conventional behaviour; there is no narrower "only after its own opener"
+        // test, because the pair being stepped over was produced by the opener that
+        // auto-pairing inserted.
         if after == Some(typed) {
             return PairAction::SkipOver;
         }

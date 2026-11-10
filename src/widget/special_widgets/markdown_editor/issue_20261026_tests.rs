@@ -36,13 +36,9 @@ fn pointer_hit_testing_resolves_columns_through_the_line_index() {
 
     let row = 59 - editor.visible_start();
     let font = effective_font(editor.base().style());
-    // The press is measured the way the hit test measures glyphs, so the column is the
-    // boundary it is meant to be rather than a string-level shaping result.
-    let mut after_two = 12i32;
-    for ch in "中文".chars() {
-        let mut buffer = [0u8; 4];
-        after_two += estimate_text_width(ch.encode_utf8(&mut buffer), font, 1.0) as i32;
-    }
+    // The press is measured the way the paint path measures the caret: from the shaped prefix,
+    // not by summing per-glyph advances.
+    let after_two = 12 + estimate_text_width("中文", font, 1.0) as i32;
     editor.handle_event(&Event::mouse_press_with(
         after_two,
         TEXT_TOP + row as i32 * TEXT_ROW_HEIGHT,
@@ -81,6 +77,40 @@ fn the_selection_is_taken_from_its_own_offsets() {
     assert_eq!(editor.selected_text().as_deref(), Some("añb\n世界"));
 }
 
+/// A byte range from a stale find snapshot is snapped to character boundaries before slicing.
+#[test]
+fn a_stale_byte_range_cannot_split_a_character() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("é");
+
+    // A bar snapshot of `"ab"` held the match `(0, 1)`, but the document is now one 2-byte
+    // character. Slicing at byte 1 used to panic.
+    editor.select_byte_range(1, 2);
+    assert_eq!(editor.selected_text().as_deref(), Some("é"), "the range snaps to the whole char");
+
+    editor.select_byte_range(0, 1);
+    assert_eq!(editor.selection(), Some((0, 0)), "half a character selects nothing");
+}
+
+/// SP-010: the hit test measures the same shaped prefix the caret is drawn from, so tracking and
+/// kerning cannot shift the resolved column.
+#[test]
+fn hit_testing_uses_the_same_prefix_measurement_as_the_caret() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+    let line = "abcdefghij".repeat(8);
+    editor.set_text(line.as_str());
+    let mut font = effective_font(editor.base().style()).clone();
+    font.set_letter_spacing(1.0);
+    editor.set_font(Some(font));
+    let font = effective_font(editor.base().style());
+
+    let byte = byte_offset_of_char(&line, 40);
+    let caret_x = estimate_text_width(&line[..byte], font, 1.0) as i32;
+    let (column, length) = editor.hit_column(0, caret_x);
+    assert_eq!(length, 80);
+    assert_eq!(column, 40, "a press on the drawn caret resolves to its column");
+}
+
 /// SP-004: the preview cache is keyed by what a row parses to, so identical rows share an
 /// entry and inserting a line above does not evict the rows below it.
 #[test]
@@ -98,6 +128,21 @@ fn the_preview_cache_is_keyed_by_content_not_position() {
         2,
         "the shifted rows keep their entries instead of re-parsing"
     );
+}
+
+/// SP-011: a same-size change of face is a different measurement, so the row is re-parsed.
+#[test]
+fn a_same_size_face_change_reparses_preview_rows() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+    editor.set_preview_mode(true);
+    editor.set_text("alpha");
+    draw_once(&mut editor);
+    assert_eq!(editor.preview_cache.len(), 1);
+
+    let font = effective_font(editor.base().style()).clone().with_family("MarkdownEditorTestFace");
+    editor.set_font(Some(font));
+    draw_once(&mut editor);
+    assert_eq!(editor.preview_cache.len(), 2, "the new face is a separate parse");
 }
 
 /// SP-005: the header is formatted into the editor's own buffer, so a still frame does not

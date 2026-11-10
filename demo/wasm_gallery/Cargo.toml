@@ -13,7 +13,17 @@ crate-type = ["cdylib", "rlib"]
 # The browser feature set the cookbook names for a wasm web app: `mobile` is the
 # device profile (it brings `touch`, the vector text faces and the full widget
 # set), `wasm` selects the browser backend.
-rust_widgets = { path = "../..", default-features = false, features = ["mobile", "wasm"] }
+#
+# BLUE31 turned the two editor controls and their lexer into independent features, so a
+# profile-only build no longer carries them. The gallery enumerates the registry and must
+# keep showing every card it showed before, so it asks for them explicitly.
+rust_widgets = { path = "../..", default-features = false, features = [
+    "mobile",
+    "wasm",
+    "code-editor",
+    "markdown-editor",
+    "builtin-languages",
+] }
 
 # Browser-only: the demo owns the paint loop, so it needs the 2D context and
 # `ImageData` the library's own backend does not use. Declared per target so a

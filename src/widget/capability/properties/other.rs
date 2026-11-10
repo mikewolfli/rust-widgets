@@ -47,6 +47,7 @@ pub(crate) fn lcd_number_capability() -> WidgetCapability {
     }
 }
 
+#[cfg(feature = "code-editor")]
 #[cfg(not(alloc_frugal))]
 pub(crate) fn code_editor_capability() -> WidgetCapability {
     WidgetCapability {
@@ -246,6 +247,7 @@ pub(crate) fn notification_center_capability() -> WidgetCapability {
 /// type is what distinguishes the three.
 ///
 /// [`MarkdownToolbar::execute`]: crate::widget::special_widgets::markdown_editor::MarkdownToolbar::execute
+#[cfg(feature = "markdown-editor")]
 #[cfg(not(alloc_frugal))]
 pub(crate) fn markdown_toolbar_capability() -> WidgetCapability {
     WidgetCapability {

@@ -45,7 +45,7 @@ impl Widget for CodeEditor {
         let text_bottom = rect.y + rect.height as i32 - self.status_bar_height();
         let minimap_left = rect.x + rect.width as i32 - self.minimap_width();
         // The minimap is a navigation control: an arrow (and it has its own click
-        // target, see `hit_minimap`).
+        // target, see `minimap_fraction_at`).
         if point.x >= minimap_left && point.y >= text_top && point.y < text_bottom {
             return CursorIcon::Default;
         }

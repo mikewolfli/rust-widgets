@@ -534,6 +534,7 @@ fn a_matched_bracket_is_marked_with_a_filled_rounded_box() {
 /// that brace as if it paired with the block's closing brace — the demo's
 /// `println!("fib({i}) = {}", …)` showed exactly that. The lexer already knows which spans are
 /// strings and comments; matching now steps over them.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn a_bracket_inside_a_string_does_not_match() {
     let mut editor = editor();
@@ -554,6 +555,7 @@ fn a_bracket_inside_a_string_does_not_match() {
 /// for a top-level brace that is the whole file, with a line allocation per step. The
 /// cache must not go stale: moving the caret to a non-bracket position has to answer
 /// `None` immediately, and an edit has to re-resolve against the new text.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn the_bracket_pair_cache_follows_the_caret_and_the_revision() {
     let mut editor = editor();
@@ -816,4 +818,73 @@ fn a_font_size_change_invalidates_the_cached_row_layout() {
     let _ = crate::widget::svg::render_to_svg(&mut editor);
     let large = editor.cached_x(0, 4).expect("the repainted row has a boundary");
     assert!(large > small, "the doubled font must re-measure: {large} vs {small}");
+}
+
+/// With wrapping on, the paint window starts at the scroll row **as a row**.
+///
+/// The fill used to treat `scroll_visual_row` as a line whenever no fold was
+/// present. Six visible rows scrolled to row 40 then started the walk at line 33
+/// (row 132), which is past the window's end, so nothing was painted at all.
+#[test]
+fn the_wrapped_viewport_window_follows_the_scroll_row() {
+    let mut editor = CodeEditor::with_config(Rect::new(0, 0, 200, 300), CodeEditorConfig::new())
+        .expect("valid configuration");
+    editor.set_text("012345678901234567890123456789\n".repeat(60));
+    editor.base_mut().set_geometry(Rect::new(0, 0, 200, 300));
+    editor.set_word_wrap(true);
+    let segments = editor.wrap_segments(0);
+    assert!(segments > 1, "the fixture must wrap: {segments} rows per line");
+    editor.scroll_by((segments * 10) as isize);
+    assert_eq!(editor.scroll_line(), 10, "the scroll offset is a visual row");
+
+    editor.fill_viewport_document_lines();
+    let window = editor.viewport_lines_scratch.borrow().to_vec();
+    assert!(!window.is_empty(), "a wrapped viewport must have lines to paint");
+    assert!(window.contains(&10), "the scrolled line must be in the window: {window:?}");
+}
+
+/// The gutter hit-test is the inverse of the painted row transform.
+///
+/// `floor(local / h)` disagrees with the painter's `round(k * h)` at fractional
+/// row heights, so the top pixel of line 2's number selected line 1 while the
+/// same y in the text selected line 2.
+#[test]
+fn the_gutter_hit_test_is_the_inverse_of_the_painted_rows() {
+    let mut editor = CodeEditor::with_config(
+        Rect::new(0, 0, 800, 600),
+        CodeEditorConfig::new().line_advance(19.2),
+    )
+    .expect("valid configuration");
+    editor.set_text("alpha\nbeta\ngamma\n");
+    editor.refresh_visible_rows();
+    let map = editor.coordinate_map();
+    let y = map.row_y(1);
+    assert_eq!(y - editor.text_origin_y(), 19, "the second row's painted top is 19 px");
+    assert_eq!(
+        editor.hit_gutter_line(Point::new(2, y)),
+        Some(1),
+        "the top pixel of line 2's number must select line 2"
+    );
+}
+
+/// A minimap click is converted through the same scale the bars are painted with.
+///
+/// The strip compacts a short document at the top (`pitch` capped at 3 px), so
+/// dividing the click by the full strip height named a line far above the bar
+/// under the pointer.
+#[test]
+fn a_minimap_click_lands_on_the_line_it_points_at() {
+    let mut editor = editor();
+    editor.set_show_minimap(true);
+    editor.set_text(plain(50));
+    editor.base_mut().set_geometry(Rect::new(0, 0, 800, 500));
+    editor.refresh_visible_rows();
+    editor.prepare_minimap();
+    let scale = editor.minimap_row_scale();
+    let target = 10;
+    let y = editor.text_origin_y() + (target as f32 * scale).round() as i32;
+    let rect = editor.geometry();
+    let x = rect.x + rect.width as i32 - editor.minimap_width() / 2;
+    editor.pointer_press(Point::new(x, y));
+    assert_eq!(editor.scroll_line(), target, "the bar for line {target} is under the pointer");
 }

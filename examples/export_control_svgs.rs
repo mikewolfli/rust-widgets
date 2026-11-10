@@ -41,7 +41,9 @@
 //! # Regenerating
 //!
 //! ```text
-//! cargo run --no-default-features --features desktop --example export_control_svgs
+//! cargo run --no-default-features \
+//!     --features "desktop,code-editor,markdown-editor,builtin-languages" \
+//!     --example export_control_svgs
 //! ```
 //!
 //! `tools/check_svg_snapshots.sh` runs exactly that and requires the result to match the
@@ -1099,7 +1101,9 @@ fn index(names: &[&'static str]) -> String {
     out.push_str(
         "## Regenerating\n\n\
          ```bash\n\
-         cargo run --no-default-features --features desktop --example export_control_svgs\n\
+         cargo run --no-default-features \
+         --features \"desktop,code-editor,markdown-editor,builtin-languages\" \
+         --example export_control_svgs\n\
          ```\n\n\
          `tools/check_svg_snapshots.sh` regenerates the set and requires it to match the\n\
          committed files byte for byte, so **any** change to a control's drawing shows up as\n\

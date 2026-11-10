@@ -175,7 +175,6 @@ impl CodeEditor {
                     }
                 }
                 drop(cached);
-                let columns = self.text_columns().max(1);
                 let mut lines: Vec<usize> = self.markers.iter().map(|marker| marker.line).collect();
                 lines.sort_unstable();
                 lines.dedup();
@@ -184,7 +183,11 @@ impl CodeEditor {
                 let mut previous = 0usize;
                 for &line in &lines {
                     for skipped in previous..line {
-                        row += self.line_len(skipped).max(1).div_ceil(columns);
+                        // Row counts come from the same grid-column segmentation the
+                        // painter uses. Counting characters said a line of 20 CJK cells
+                        // was one row wide when the painter wrapped it into two, so a
+                        // marker's underline landed above the line it belonged to.
+                        row += self.wrap_segments(skipped);
                     }
                     previous = line;
                     rows_by_line.push((line, row));

@@ -135,6 +135,12 @@ TOO_LONG_PENDING = {
     # Measured 2026-11-09 (issue-20261106 §11.4 round): `sample_fill.rs` (helpers + tests) and
     # `code_editor/editor.rs` (free helpers) were split so no debt entry is needed. The old rows
     # must stay absent; re-adding one means the split regressed.
+    # Measured 2026-11-10 (BLUE31 round): these three crossed the limit in the working tree the
+    # round inherited and none is touched by the editor/CLI work. Recording the seam is the debt
+    # entry the gate asks for; each row must disappear with its split.
+    "src/widget/advanced_widgets/date_edit.rs": "date value model vs field segments vs paint → `date_edit/{model,segments,paint}.rs`",
+    "src/widget/input_widgets/text_entry/lineedit/model.rs": "value/caret model vs selection/composition → `lineedit/model/{value,selection}.rs`",
+    "src/widget/view_widgets/query_builder.rs": "condition tree vs builder rows vs paint → `query_builder/{model,rows,paint}.rs`",
 }
 
 

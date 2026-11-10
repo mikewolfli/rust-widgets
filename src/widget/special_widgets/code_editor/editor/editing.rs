@@ -117,25 +117,44 @@ impl CodeEditor {
         let primary =
             positions.get(primary_index).copied().flatten().unwrap_or(original[primary_index]);
         positions.pop();
-        let new_carets: Vec<Cursor> = positions
+        self.cursor =
+            Cursor { head: self.clamp_position(primary), anchor: self.clamp_position(primary) };
+        self.extra_cursors = positions
             .iter()
             .enumerate()
             .map(|(index, position)| position.unwrap_or(original[index]))
-            .map(|head| Cursor {
-                head: self.clamp_position(head),
-                anchor: self.clamp_position(head),
-            })
+            .map(|head| Cursor { head, anchor: head })
             .collect();
-        self.cursor =
-            Cursor { head: self.clamp_position(primary), anchor: self.clamp_position(primary) };
-        self.extra_cursors = new_carets;
+        // Two carets can project onto the same position: Backspace with carets at
+        // adjacent columns deletes both characters and leaves both carets at the join.
+        // Keeping both made the *next* keystroke insert twice at one spot, and it
+        // contradicted the deduplicated set `caret_count` documents.
+        self.normalize_extra_cursors();
         self.goal.active = false;
+        // A batch rewrites several disjoint regions, but the span between the outermost
+        // carets describes their combined effect as one contiguous replacement. The
+        // per-edit bookkeeping `record_and_settle_inner` performs for a single splice —
+        // shifting locked spans and anchored marks by the net line delta — is therefore
+        // repeated here: a multi-caret Enter used to leave locks and bookmarks on the
+        // pre-edit lines.
+        let after_span = self.model.borrow().extract(span_start, span_end);
+        let dirty = Some((
+            span_start.line,
+            after_span.matches('\n').count() + 1,
+            before_span.matches('\n').count() + 1,
+        ));
+        if let Some((first, lines_now, lines_before)) = dirty {
+            self.shift_read_only_spans_for_edit(first, lines_now, lines_before);
+        }
+        // A batch has no single `(start, old_end, new_end)` to translate snippet stops
+        // through, so the session ends rather than being moved on a guess.
+        self.migrate_document_anchors(dirty, None);
+        self.structural_selection_history.clear();
         // One checkpoint over the region the batch touched, rather than a whole-document
         // snapshot: the text above and below the outermost carets is unchanged, so it
         // cannot be part of the edit. `set_text` is deliberately not used here, since it
         // would push a second history entry of its own.
         if !self.restoring_history {
-            let after_span = self.model.borrow().extract(span_start, span_end);
             let target = self.model.borrow().text.clone();
             self.undo_stack.borrow_mut().push(Box::new(TextRangeCommand::new(
                 target,
@@ -276,6 +295,30 @@ impl CodeEditor {
     /// Returns the number of secondary carets.
     pub fn extra_cursor_count(&self) -> usize {
         self.extra_cursors.len()
+    }
+
+    /// Clamps every secondary caret into the document and drops duplicates.
+    ///
+    /// The documented invariant of [`Self::caret_count`] is that extras are
+    /// deduplicated and never repeat the primary caret. `apply_caret_edits` and
+    /// `restore_history_text` are the two paths that rewrite the caret set without
+    /// going through [`Self::add_cursor_at`], so they restore the invariant here.
+    fn normalize_extra_cursors(&mut self) {
+        let primary = self.cursor;
+        let mut carets: Vec<Cursor> = self
+            .extra_cursors
+            .iter()
+            .map(|caret| Cursor {
+                head: self.clamp_position(caret.head),
+                anchor: self.clamp_position(caret.anchor),
+            })
+            .filter(|caret| *caret != primary)
+            .collect();
+        carets.sort_by_key(|caret| {
+            (caret.head.line, caret.head.column, caret.anchor.line, caret.anchor.column)
+        });
+        carets.dedup();
+        self.extra_cursors = carets;
     }
 
     /// Collapses every secondary caret, keeping the primary one.
@@ -734,21 +777,33 @@ impl CodeEditor {
             };
             *line = rebuilt;
         } else {
-            // Wrap the selected span in place: an opener at the start of the first
-            // selected line and a closer at the end of the last one.
+            // Wrap the selected span in place: an opener at the selection's start and a
+            // closer at its end.
             let first = start.line.min(lines.len().saturating_sub(1));
             let head_line = last;
-            if let Some(line) = lines.get_mut(first) {
-                let column = start.column.min(line.chars().count());
-                let byte =
-                    line.char_indices().nth(column).map(|(byte, _)| byte).unwrap_or(line.len());
-                line.insert_str(byte, "/* ");
-            }
-            if let Some(line) = lines.get_mut(head_line) {
-                let column = end.column.min(line.chars().count());
-                let byte =
-                    line.char_indices().nth(column).map(|(byte, _)| byte).unwrap_or(line.len());
-                line.insert_str(byte, " */");
+            // Both insertion offsets are taken from the **original** lines. A single-line
+            // selection inserts into the same `String` twice, so translating `end.column`
+            // after the opener had already widened the line put the closer past the
+            // selection.
+            let opener = lines.get(first).map(|line| insertion_byte(line, start.column));
+            let closer = lines.get(head_line).map(|line| insertion_byte(line, end.column));
+            if first == head_line {
+                if let (Some(opener), Some(closer), Some(line)) =
+                    (opener, closer, lines.get_mut(first))
+                {
+                    // Insert the closer first: the opener's insertion then shifts the
+                    // closer (and everything after it) along with the selected text, so
+                    // no offset needs adjusting ahead of time.
+                    line.insert_str(closer, " */");
+                    line.insert_str(opener, "/* ");
+                }
+            } else {
+                if let (Some(opener), Some(line)) = (opener, lines.get_mut(first)) {
+                    line.insert_str(opener, "/* ");
+                }
+                if let (Some(closer), Some(line)) = (closer, lines.get_mut(head_line)) {
+                    line.insert_str(closer, " */");
+                }
             }
         }
         let after = join_lines(&lines);
@@ -1304,21 +1359,30 @@ impl CodeEditor {
         self.completion_index = None;
         self.scale = DocumentScale::for_lines(self.line_count());
         self.clamp_cursor_to_document();
+        // Secondary carets are positions in the document the undo just restored. A caret
+        // past the restored end has to be clamped or dropped here, exactly as `set_text`
+        // drops the caret set it can no longer place.
+        self.normalize_extra_cursors();
         self.refresh_derived_state();
         // An undo may restore a much shorter document than the one that was on
         // screen. `set_text` clamps both scroll fields after a wholesale replacement;
         // this path writes the buffer directly, so it repeats the same clamp or the
         // viewport is left scrolled past the restored end and paints nothing.
-        let rows = self.visible_rows().max(1);
-        let max_first = self.total_visual_rows().saturating_sub(rows);
-        self.scroll_visual_row = self.scroll_visual_row.min(max_first);
-        self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
+        self.clamp_scroll_to_document();
         self.text_changed.emit(restored);
         self.emit_text_change(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();
     }
+}
+
+/// Byte offset of character `column` in `line`.
+///
+/// `column` is a character index, not a byte index; a column past the end maps to
+/// the line's length, which is where a selection ending outside the line inserts.
+fn insertion_byte(line: &str, column: usize) -> usize {
+    line.char_indices().nth(column).map(|(byte, _)| byte).unwrap_or(line.len())
 }
 
 /// Returns the caret position after writing `insert` at `start`.

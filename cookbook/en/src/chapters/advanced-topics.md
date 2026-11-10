@@ -850,7 +850,7 @@ fn mini_main() {
 // $ cargo fmt --all
 
 // Check with clippy
-// $ cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
+// $ cargo clippy --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -- -D warnings
 ```
 
 ### Project Rules
@@ -889,8 +889,8 @@ mod tests {
 
 ### Pull Request Process
 
-1. Run `cargo test --no-default-features --features desktop -q` for the main desktop suite.
-2. Run `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`.
+1. Run `cargo test --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -q` for the main desktop suite.
+2. Run `cargo clippy --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -- -D warnings`.
 3. Run `cargo fmt --all -- --check`.
 4. Run the `desktop,icons`, `tablet`, `mobile`, and `embedded` test configurations when applicable.
 

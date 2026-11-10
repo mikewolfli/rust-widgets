@@ -67,6 +67,17 @@ impl CodeEditor {
         if line >= target {
             return;
         }
+        // A highlighter that resets on every line cannot carry state across a line
+        // boundary, so every entry state is `Clean` by definition. That is the hook's
+        // whole purpose: declaring the chain proven here saves re-lexing a region after
+        // an edit, while the visible lines are still tokenised on demand.
+        if self.highlighter_resets_each_line() {
+            for state in &mut self.line_states[..=target] {
+                *state = LineState::Clean;
+            }
+            self.walked_lines = target;
+            return;
+        }
         let mut state = self.line_states[line];
         while line < target {
             let Some(text) = self.line_text(line) else { return };
@@ -107,6 +118,23 @@ impl CodeEditor {
         // touching the revision, so a pair that was “code” can become “inside a string”. The
         // lexer state being thrown away is exactly the event that invalidates the cache.
         *self.bracket_cache.borrow_mut() = None;
+    }
+
+    /// Whether the highlighter in force resets state on every line.
+    ///
+    /// Resolution mirrors [`Self::highlight_with_state`]: a per-language registration
+    /// wins, then the editor-wide override, then the built-in lexer.
+    fn highlighter_resets_each_line(&self) -> bool {
+        let language = self.active_language();
+        if let Some((_, highlighter)) =
+            self.language_highlighters.iter().find(|(registered, _)| *registered == language)
+        {
+            return highlighter.resets_each_line();
+        }
+        match &self.highlighter {
+            Some(highlighter) => highlighter.resets_each_line(),
+            None => BuiltinHighlighter::new(language).resets_each_line(),
+        }
     }
 
     /// Returns the token spans of a single line.

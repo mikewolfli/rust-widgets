@@ -747,3 +747,174 @@ fn render_labels_are_reused_until_their_inputs_change() {
         );
     }
 }
+
+/// A single-line block-comment selection inserts both delimiters around the selection.
+///
+/// The closer's byte offset was read **after** the opener had already widened the
+/// same line, so `abcdef` with columns 2..4 selected became `ab/* */ cdef`.
+#[test]
+fn a_single_line_block_comment_wraps_inside_the_selection() {
+    let mut editor = make_with(CodeEditorConfig::new().language(LanguageId::Rust));
+    editor.set_text("abcdef");
+    editor.set_caret(TextPosition::new(0, 2), false);
+    editor.set_caret(TextPosition::new(0, 4), true);
+    editor.toggle_block_comment();
+    assert_eq!(editor.text(), "ab/* cd */ef");
+}
+
+/// A multi-caret batch moves locks and bookmarks by the line delta it produced.
+///
+/// `apply_caret_edits` bypassed the bookkeeping every single-caret splice gets, so
+/// three inserted lines left the lock naming ordinary code and the bookmark on the
+/// pre-edit line.
+#[test]
+fn a_multi_caret_batch_keeps_locks_and_bookmarks_in_step() {
+    let mut editor = make();
+    editor.set_text(numbered(20));
+    editor.add_read_only_span(super::types::ReadOnlySpan::lines(10, 12));
+    editor.toggle_bookmark(15);
+    editor.set_cursor(1, 0, false);
+    assert!(editor.add_cursor_at(TextPosition::new(2, 0)));
+    assert!(editor.add_cursor_at(TextPosition::new(3, 0)));
+
+    editor.insert_newline();
+
+    assert_eq!(editor.line_count(), 24, "three carets add three lines");
+    let spans = editor.read_only_spans();
+    assert_eq!(
+        (spans[0].start_line, spans[0].end_line),
+        (13, 15),
+        "the lock moved with the lines it protects"
+    );
+    assert_eq!(editor.bookmarks(), &[18], "the bookmark below moved by the same delta");
+}
+
+/// Folding ignores brackets the lexer classified as string or comment text.
+///
+/// The fold index scanned raw text, so `let s = "{";` opened a region that the
+/// following `}` closed — a "block" that is not a block.
+#[test]
+fn folding_ignores_brackets_inside_strings_and_comments() {
+    let mut editor = make_with(CodeEditorConfig::new().language(LanguageId::Rust));
+    editor.set_text("let s = \"{\";\n}\n");
+    assert_eq!(editor.fold_all(), 0, "a brace inside a string is not a block");
+    assert!(!editor.fold_block_at(0), "no real block encloses the line");
+    assert!(editor.fold_regions().is_empty());
+}
+
+/// Enlarging the viewport re-clamps a scroll offset that was at the old bottom.
+///
+/// The maximum first row falls when more rows become visible; without the clamp
+/// the painter leaves dead rows below the last line until the next scroll command.
+#[test]
+fn enlarging_the_viewport_reclamps_the_scroll_offset() {
+    let mut editor = make();
+    editor.set_text(numbered(1000));
+    let height_for = |editor: &CodeEditor, rows: usize| {
+        (editor.text_origin_y() + editor.status_bar_height()) as u32
+            + (rows as f32 * editor.line_height()).round() as u32
+    };
+    let small = height_for(&editor, 40);
+    editor.base_mut().set_geometry(Rect::new(0, 0, 800, small));
+    editor.refresh_visible_rows();
+    editor.scroll_by(100_000);
+    assert_eq!(
+        editor.first_visual_row(),
+        editor.line_count() - editor.visible_rows(),
+        "the small viewport is scrolled to the bottom"
+    );
+
+    let large = height_for(&editor, 100);
+    editor.base_mut().set_geometry(Rect::new(0, 0, 800, large));
+    editor.handle_event(&Event::Resize { size: crate::core::Size::new(800, large) });
+    assert_eq!(
+        editor.first_visual_row(),
+        editor.line_count() - editor.visible_rows(),
+        "the offset must be re-clamped for the larger viewport"
+    );
+}
+
+/// Text that differs only in line terminators updates metadata, not the document.
+///
+/// Treating it as a replacement pushed a no-op undo entry, fired `text_changed`,
+/// advanced the revision and dropped the locks, bookmarks and carets.
+#[test]
+fn a_line_ending_only_set_text_is_not_an_edit() {
+    use std::sync::{Arc, Mutex};
+
+    let mut editor = make();
+    editor.set_text("a\nb");
+    editor.clear_history();
+    editor.toggle_bookmark(1);
+    editor.set_caret(TextPosition::new(0, 1), false);
+    let revision = editor.revision();
+    let emitted = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&emitted);
+    editor.text_changed.connect(move |_| *sink.lock().unwrap() += 1);
+
+    editor.set_text("a\r\nb");
+
+    assert_eq!(editor.text(), "a\nb");
+    assert_eq!(editor.line_ending(), LineEnding::Crlf, "the terminator is still recorded");
+    assert_eq!(editor.revision(), revision, "the document text did not change");
+    assert_eq!(*emitted.lock().unwrap(), 0, "no text_changed for an unchanged document");
+    assert_eq!(editor.bookmarks(), &[1], "bookmarks survive");
+    assert_eq!(editor.caret(), TextPosition::new(0, 1), "the caret survives");
+    assert!(!editor.can_undo(), "no no-op undo entry was pushed");
+}
+
+/// Wrapped diagnostic rows are counted in grid columns, like the painter's rows.
+///
+/// Counting characters said a line of 20 CJK cells was one row wide while the
+/// painter wrapped it into two, so a marker on line 5 underlined row 5 instead
+/// of row 10.
+#[test]
+fn wrapped_diagnostic_rows_count_grid_columns() {
+    let mut editor = make_with(CodeEditorConfig::new().word_wrap(true));
+    let mut text = String::new();
+    for _ in 0..8 {
+        text.push_str(&"世界".repeat(10));
+        text.push('\n');
+    }
+    editor.set_text(text);
+    let cell = editor.cell_width();
+    let width = editor.text_origin_x() + editor.minimap_width() + (25.0 * cell).round() as i32 + 1;
+    editor.base_mut().set_geometry(Rect::new(0, 0, width as u32, 600));
+    editor.handle_event(&Event::Resize { size: crate::core::Size::new(width as u32, 600) });
+    assert_eq!(editor.text_columns(), 25, "the fixture pins a 25-column viewport");
+    assert_eq!(editor.wrap_segments(0), 2, "20 CJK characters need two grid rows");
+
+    editor.set_markers(vec![super::types::DiagnosticMarker::new(
+        5,
+        "wide",
+        MarkerSeverity::Warning,
+    )]);
+    let found = editor.inline_diagnostics();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0, 10, "five two-row lines put the marker on row ten");
+}
+
+/// A resize that narrows the columns invalidates the cached line→row table.
+///
+/// The key was `layout_generation`, which a resize does not move, so the underline
+/// stayed on the old row until the next edit.
+#[test]
+fn resizing_invalidates_the_wrapped_diagnostic_row_table() {
+    let mut editor = make_with(CodeEditorConfig::new().word_wrap(true));
+    let mut text = String::new();
+    for _ in 0..12 {
+        text.push_str(&"abcdefghij".repeat(6));
+        text.push('\n');
+    }
+    editor.set_text(text);
+    editor.set_markers(vec![super::types::DiagnosticMarker::new(9, "nine", MarkerSeverity::Error)]);
+    let wide_row = editor.inline_diagnostics()[0].0;
+    assert_eq!(editor.diagnostic_cache_builds.get(), 1);
+
+    editor.base_mut().set_geometry(Rect::new(0, 0, 220, 600));
+    editor.handle_event(&Event::Resize { size: crate::core::Size::new(220, 600) });
+    let narrow_row = editor.inline_diagnostics()[0].0;
+
+    assert_eq!(editor.diagnostic_cache_builds.get(), 2, "a resize invalidates the table");
+    assert!(narrow_row > wide_row, "narrower columns wrap earlier: {narrow_row} vs {wide_row}");
+}

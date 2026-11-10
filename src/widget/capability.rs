@@ -109,11 +109,12 @@ use crate::widget::menu_toolbar::status_bar::StatusBar;
 use crate::widget::menu_toolbar::tool_button::ToolButton;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::canvas::Canvas;
+#[cfg(feature = "code-editor")]
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::code_editor::CodeEditor;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::command_palette::CommandPalette;
-#[cfg(full_widgets)]
+#[cfg(all(full_widgets, feature = "markdown-editor"))]
 #[cfg(full_widgets)]
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::markdown_editor::MarkdownEditor;
@@ -2250,7 +2251,9 @@ impl WidgetFactory {
             }
             // `WidgetKind::RichEdit`
             "rich_edit" => self::coercion::widget_as::<RichEdit>(widget).is_some(),
+            #[cfg(feature = "code-editor")]
             "code_editor" => self::coercion::widget_as::<CodeEditor>(widget).is_some(),
+            #[cfg(feature = "markdown-editor")]
             "markdown_editor" => self::coercion::widget_as::<MarkdownEditor>(widget).is_some(),
             // `WidgetKind::StatusBar`
             "status_bar" => self::coercion::widget_as::<StatusBar>(widget).is_some(),
@@ -2324,6 +2327,7 @@ impl WidgetFactory {
             // and the macOS strip. Without this row it inherits another control's schema (or an
             // empty one), so its own `action_triggered` capability cannot be addressed from a
             // live instance.
+            #[cfg(feature = "markdown-editor")]
             "markdown_toolbar" | "md_toolbar" => self::coercion::widget_as::<
                 crate::widget::special_widgets::markdown_editor::MarkdownToolbar,
             >(widget)

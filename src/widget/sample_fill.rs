@@ -139,11 +139,12 @@ use crate::widget::special_widgets::breadcrumb::{Breadcrumb, BreadcrumbSegment};
 use crate::widget::special_widgets::canvas::Canvas;
 use crate::widget::special_widgets::chip::{Chip, ChipInput, ChipItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
+#[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
+use crate::widget::special_widgets::editor::companions::FindBar;
 use crate::widget::special_widgets::freeform_shape::{FreeformShapeWidget, ShapeCanvas, ShapePath};
 use crate::widget::special_widgets::grid::GridWidget;
-use crate::widget::special_widgets::markdown_editor::{
-    FindBar, MarkdownOutlineEntry, MarkdownOutlinePanel,
-};
+#[cfg(feature = "markdown-editor")]
+use crate::widget::special_widgets::markdown_editor::{MarkdownOutlineEntry, MarkdownOutlinePanel};
 use crate::widget::special_widgets::notification_center::{
     NotificationCenter, NotificationItem, NotificationLevel,
 };
@@ -1846,6 +1847,7 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             }
             None => false,
         },
+        #[cfg(feature = "markdown-editor")]
         "markdown_outline_panel" => match widget_as_mut::<MarkdownOutlinePanel>(widget) {
             Some(panel) => {
                 panel.set_entries(Vec::from([
@@ -1858,6 +1860,7 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             }
             None => false,
         },
+        #[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
         "find_bar" => match widget_as_mut::<FindBar>(widget) {
             Some(bar) => {
                 bar.set_query("widget");

@@ -352,6 +352,7 @@ pub(crate) fn email_input_capability() -> WidgetCapability {
     }
 }
 
+#[cfg(feature = "markdown-editor")]
 #[cfg(not(alloc_frugal))]
 pub(crate) fn markdown_editor_capability() -> WidgetCapability {
     WidgetCapability {

@@ -569,13 +569,10 @@ impl CodeEditor {
             return;
         }
         if self.minimap_dragging {
-            // A minimap drag keeps following the pointer after it leaves the strip,
-            // clamped by `scroll_to_fraction`.
-            let rect = self.geometry();
-            let top = rect.y + self.text_origin_y();
-            let bottom = rect.y + rect.height as i32 - self.status_bar_height();
-            let height = (bottom - top).max(1) as f32;
-            let fraction = ((pos.y - top) as f32 / height).clamp(0.0, 1.0);
+            // A minimap drag keeps following the pointer after it leaves the strip.
+            // The point is converted through the strip's own row scale so it means the
+            // same row the bars do; `scroll_to_fraction` clamps the ends.
+            let fraction = self.minimap_fraction_for_y(pos.y);
             self.scroll_to_fraction(fraction);
             return;
         }
@@ -810,11 +807,12 @@ impl CodeEditor {
         Some(self.completion.scroll + row)
     }
 
-    /// Where in the minimap strip `pos` is, as a fraction of the document.
+    /// Where in the minimap strip `pos` is, as a fraction of the scrollable range.
     ///
-    /// `None` outside the strip, or when the minimap is disabled. The returned value
-    /// is the fraction the **click point** represents, not a row index: the strip shows
-    /// the whole document compressed, so the mapping is proportional.
+    /// `None` outside the strip, or when the minimap is disabled. The strip paints the
+    /// document compacted at the top (`minimap_row_scale`), so the point is converted
+    /// through that same scale: dividing by the full strip height put a click on the
+    /// bar for line 33 at line 6.
     fn minimap_fraction_at(&self, pos: Point) -> Option<f32> {
         let width = self.minimap_width();
         if width == 0 {
@@ -827,8 +825,25 @@ impl CodeEditor {
         if pos.x < left || pos.x >= rect.x + rect.width as i32 || pos.y < top || pos.y >= bottom {
             return None;
         }
-        let height = (bottom - top).max(1) as f32;
-        Some(((pos.y - top) as f32 / height).clamp(0.0, 1.0))
+        Some(self.minimap_fraction_for_y(pos.y))
+    }
+
+    /// The fraction of the scrollable range the minimap row under `y` names.
+    ///
+    /// A drag keeps following the pointer after it leaves the strip, so this takes a raw
+    /// `y` and clamps, while [`Self::minimap_fraction_at`] rejects points outside it.
+    fn minimap_fraction_for_y(&self, y: i32) -> f32 {
+        let rect = self.geometry();
+        let top = rect.y + self.text_origin_y();
+        let row = ((y - top) as f32 / self.minimap_row_scale()).max(0.0);
+        let rows = self.visible_rows().max(1);
+        let max_first = self.total_visual_rows().saturating_sub(rows);
+        if max_first == 0 {
+            return 0.0;
+        }
+        // `scroll_to_fraction` multiplies by `max_first`, so normalising by it as well
+        // puts the clicked row exactly at the top of the viewport.
+        (row / max_first as f32).clamp(0.0, 1.0)
     }
 
     fn hit_fold_marker(&self, pos: Point) -> Option<usize> {
@@ -844,7 +859,10 @@ impl CodeEditor {
         if local_y < 0 {
             return None;
         }
-        let row = self.scroll_visual_row + (local_y as f32 / self.line_height()).floor() as usize;
+        // The same inverse the text hit-test uses: `floor(local / h)` disagreed with the
+        // painter's `round(k * h)` at fractional row heights, so the top pixel of a line
+        // selected the line above it.
+        let row = self.coordinate_map().row_at_y(pos.y);
         let line = self.visual_row_to_line(row);
         if self.line_to_visual_row(line) != row {
             return None;
@@ -891,8 +909,7 @@ impl CodeEditor {
         if pos.y < top || pos.y >= bottom {
             return None;
         }
-        let row =
-            self.scroll_visual_row + ((pos.y - top) as f32 / self.line_height()).floor() as usize;
+        let row = self.coordinate_map().row_at_y(pos.y);
         let line = self.visual_row_to_line(row);
         if self.line_to_visual_row(line) != row {
             return None;

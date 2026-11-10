@@ -378,30 +378,38 @@ pub use api::{
     AnimatedFrame, AnimatedImage, AnimatedImageFormat, AppBar, Avatar, Banner, BarChart, BarEntry,
     BarcodeFormat, BarcodeResult, BarcodeScanner, BezierCurveEditor, BottomNavigationBar,
     BottomSheet, Breadcrumb, BreadcrumbSegment, Calendar, Canvas, Cascader, CascaderOption, Chart,
-    ChartWidget, CheckListBox, Chip, ChipItem, CodeEditor, ColorDialog, ColorPicker, ColumnFilter,
-    ColumnView, CommandEntry, CommandPalette, CompletedMention, ContextMenu, CupertinoAlertDialog,
+    ChartWidget, CheckListBox, Chip, ChipItem, ColorDialog, ColorPicker, ColumnFilter, ColumnView,
+    CommandEntry, CommandPalette, CompletedMention, ContextMenu, CupertinoAlertDialog,
     CupertinoDatePicker, CupertinoNavigationBar, CupertinoSegmentedControl, CupertinoSlider,
     CupertinoSwitch, DataGrid, DataView, DateEdit, DatePicker, DateRangePicker, DateTimeEdit,
-    DateTimePicker, DiagnosticMarker, Dial, Dialog, DirectoryDialog, DoubleSpinBox, DropZone,
-    DropdownItem, DropdownMenu, EmojiGlyph, EmojiPicker, FileDialog, FilterCondition,
-    FilterConjunction, FilterExpr, FilterField, FilterOperator, FindBar, FindReplaceDialog,
-    FontDialog, FreeformShape, FreeformShapeWidget, GalleryImage, Grid, GridTable, GridTableWidget,
-    GridViewHeader, GridWidget, Heatmap, HeatmapCell, HeroAnimation, ImageGallery, InputDialog,
-    KeySequenceEdit, LineChart, ListModel, ListView, MarkdownEditor, MarkdownOutlinePanel,
-    MarkerSeverity, MaterialNavigationRail, MaterialSnackbar, Mention, MentionCandidate, Menu,
-    MenuBar, MenuButton, MenuItem, MessageBox, MobileDatePicker, ModalBottomSheet, NavItem,
-    NavigationDrawer, NavigationEvent, NavigationStack, NotificationCenter, NotificationItem,
-    NotificationLevel, Pagination, PieChart, PieMenu, PieMenuItem, PieSlice, Popover, PopupWindow,
-    ProgressDialog, PropertiesPanel, PropertyEntry, PropertyGrid, PropertyItem, PropertyValue,
-    PullToRefresh, QRCode, QueryBuilder, QueryBuilderRow, RadarChart, RailItem, RangePresetBar,
-    RefreshControl, RibbonBar, RibbonGroup, RibbonItem, Segment, SegmentItem, SegmentedButton,
-    SegmentedControl, ShapeCanvas, SignaturePad, SignatureStroke, Snackbar, SortSpec, Sparkline,
-    SplashScreen, SplitAction, SplitButton, StatusBar, SwipeToDismiss, TabBar, TabBarTab, TabPage,
-    TabView, Table, TableModel, TableWidget, TimeEdit, TimePicker, TimelineItem, TimelineWidget,
-    Toast, ToastItem, ToastLevel, ToastStack, ToolBar, ToolButton, Tooltip, TreeModel, TreeTable,
-    TreeTableModel, TreeView, UndoView, VecListModel, VirtualList, VirtualTable, Wizard,
-    WizardDialog, WizardStep, FAB,
+    DateTimePicker, Dial, Dialog, DirectoryDialog, DoubleSpinBox, DropZone, DropdownItem,
+    DropdownMenu, EmojiGlyph, EmojiPicker, FileDialog, FilterCondition, FilterConjunction,
+    FilterExpr, FilterField, FilterOperator, FindReplaceDialog, FontDialog, FreeformShape,
+    FreeformShapeWidget, GalleryImage, Grid, GridTable, GridTableWidget, GridViewHeader,
+    GridWidget, Heatmap, HeatmapCell, HeroAnimation, ImageGallery, InputDialog, KeySequenceEdit,
+    LineChart, ListModel, ListView, MaterialNavigationRail, MaterialSnackbar, Mention,
+    MentionCandidate, Menu, MenuBar, MenuButton, MenuItem, MessageBox, MobileDatePicker,
+    ModalBottomSheet, NavItem, NavigationDrawer, NavigationEvent, NavigationStack,
+    NotificationCenter, NotificationItem, NotificationLevel, Pagination, PieChart, PieMenu,
+    PieMenuItem, PieSlice, Popover, PopupWindow, ProgressDialog, PropertiesPanel, PropertyEntry,
+    PropertyGrid, PropertyItem, PropertyValue, PullToRefresh, QRCode, QueryBuilder,
+    QueryBuilderRow, RadarChart, RailItem, RangePresetBar, RefreshControl, RibbonBar, RibbonGroup,
+    RibbonItem, Segment, SegmentItem, SegmentedButton, SegmentedControl, ShapeCanvas, SignaturePad,
+    SignatureStroke, Snackbar, SortSpec, Sparkline, SplashScreen, SplitAction, SplitButton,
+    StatusBar, SwipeToDismiss, TabBar, TabBarTab, TabPage, TabView, Table, TableModel, TableWidget,
+    TimeEdit, TimePicker, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
+    ToolBar, ToolButton, Tooltip, TreeModel, TreeTable, TreeTableModel, TreeView, UndoView,
+    VecListModel, VirtualList, VirtualTable, Wizard, WizardDialog, WizardStep, FAB,
 };
+
+// The editor controls are independent features, so their root re-exports are
+// gated one by one (BLUE31 §1.5).
+#[cfg(all(full_widgets, any(feature = "code-editor", feature = "markdown-editor")))]
+pub use api::FindBar;
+#[cfg(all(full_widgets, feature = "code-editor"))]
+pub use api::{CodeEditor, DiagnosticMarker, MarkerSeverity};
+#[cfg(all(full_widgets, feature = "markdown-editor"))]
+pub use api::{MarkdownEditor, MarkdownOutlinePanel};
 
 #[cfg(widgets_unstripped)]
 pub use api::{

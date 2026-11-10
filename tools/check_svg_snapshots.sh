@@ -140,7 +140,7 @@ if ! diff -q "$BEFORE" "$AFTER" > /dev/null; then
     echo "  FAIL  the committed snapshots differ from a fresh export (byte-for-byte):"
     diff "$BEFORE" "$AFTER" | sed -n '1,40p'
     echo "  Regenerate with:"
-    echo "    cargo run --no-default-features --features desktop --example export_control_svgs"
+    echo "    cargo run --no-default-features --features \"desktop,code-editor,markdown-editor,builtin-languages\" --example export_control_svgs"
     exit 1
 fi
 echo "  PASS  regeneration reproduces every committed byte"

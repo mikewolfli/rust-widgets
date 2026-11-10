@@ -5,6 +5,7 @@ use super::*;
 
 use crate::core::{Color, Point};
 use crate::platform::accessibility::AccessibilityBridge as _;
+#[cfg(feature = "code-editor")]
 use crate::widget::special_widgets::code_editor::CodeEditor;
 use crate::widget::{BaseWidget, Draw, WidgetKind};
 
@@ -1111,11 +1112,12 @@ fn widget_travel(widget: &mut dyn Widget) -> f32 {
 }
 
 /// Downcasts a mounted widget to the concrete editor type.
+#[cfg(feature = "code-editor")]
 fn editor_of(widget: &mut dyn Widget) -> Option<&mut CodeEditor> {
     (widget as &mut dyn std::any::Any).downcast_mut::<CodeEditor>()
 }
 
-/// The auto-decision refuses a control too small for the bookkeeping to pay off.
+#[cfg(feature = "code-editor")]
 #[test]
 fn the_auto_decision_refuses_a_small_surface() {
     let small = register(Box::new(CodeEditor::new(Rect::new(0, 0, 100, 100)))).expect("r");
@@ -1139,6 +1141,7 @@ fn the_auto_decision_refuses_a_small_surface() {
 }
 
 /// A childless control is one rect, so regioning cannot narrow anything.
+#[cfg(feature = "code-editor")]
 #[test]
 fn the_auto_decision_refuses_a_control_with_no_children() {
     let lone = register(Box::new(CodeEditor::new(Rect::new(0, 0, 800, 600)))).expect("r");
@@ -1154,6 +1157,7 @@ fn the_auto_decision_refuses_a_control_with_no_children() {
 }
 
 /// The one-call form does both halves, and reports honestly.
+#[cfg(feature = "code-editor")]
 #[test]
 fn enable_if_useful_is_a_no_op_where_it_would_not_help() {
     let small = register(Box::new(CodeEditor::new(Rect::new(0, 0, 80, 60)))).expect("r");
@@ -1301,9 +1305,21 @@ fn auto_accepted_surface() -> Box<dyn Widget> {
 }
 
 fn sample_editor(text: &str) -> Box<dyn Widget> {
-    let mut editor = CodeEditor::new(Rect::new(0, 0, 320, 200));
-    editor.set_text(text);
-    Box::new(editor)
+    // The runtime suite samples *a* variable-height text control. It is the code
+    // editor when that feature is compiled, and a plain text edit otherwise, so
+    // the runtime assertions still run in a Markdown-only build (BLUE31 §1.5).
+    #[cfg(feature = "code-editor")]
+    {
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 320, 200));
+        editor.set_text(text);
+        Box::new(editor)
+    }
+    #[cfg(not(feature = "code-editor"))]
+    {
+        let mut edit = crate::widget::input_widgets::TextEdit::new(Rect::new(0, 0, 320, 200));
+        edit.set_text(text);
+        Box::new(edit)
+    }
 }
 
 // ── Damage producers: `request_redraw` must record damage ────────────────
@@ -1344,6 +1360,7 @@ fn request_redraw_records_nothing_in_full_mode() {
 
 /// The producer is a no-op for an unregistered widget, so the transient controls
 /// tests build (never registered) cannot panic or leak state.
+#[cfg(feature = "code-editor")]
 #[test]
 fn request_redraw_on_an_unregistered_widget_is_a_no_op() {
     let editor = CodeEditor::new(Rect::new(0, 0, 40, 20));
@@ -1421,6 +1438,7 @@ fn a_rect_submission_in_full_mode_falls_back_to_a_whole_control_repaint() {
 
 /// A control nobody mounted has no surface to invalidate, so both entry points are
 /// silent even when a recording backend is installed.
+#[cfg(feature = "code-editor")]
 #[test]
 fn a_rect_submission_on_an_unregistered_widget_is_a_no_op() {
     use crate::platform::RecordingInvalidations;
@@ -2233,6 +2251,7 @@ fn mounted_ids_do_not_collide_with_platform_ids() {
     unregister(id);
 }
 
+#[cfg(feature = "code-editor")]
 #[test]
 fn with_widget_mut_exposes_the_real_widget() {
     let id = register(sample_editor("fn main() {}")).expect("registry");
@@ -2402,6 +2421,7 @@ fn custom_widgets_report_the_draw_bridge() {
         );
     }
 
+    #[cfg(feature = "code-editor")]
     assert_mountable("CodeEditor", &mut CodeEditor::new(Rect::new(0, 0, 80, 60)));
     assert_mountable("Chip", &mut Chip::new(Rect::new(0, 0, 80, 24)));
     assert_mountable("ColorPicker", &mut ColorPicker::new(Rect::new(0, 0, 200, 150)));
@@ -2434,6 +2454,7 @@ fn built_in_controls_claim_the_draw_bridge() {
     assert!(label.as_draw_mut().is_some(), "Label must be paintable");
 }
 
+#[cfg(feature = "code-editor")]
 #[test]
 fn dispatch_event_reaches_the_widget() {
     use crate::event::Event;

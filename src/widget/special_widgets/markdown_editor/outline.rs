@@ -240,6 +240,44 @@ impl Widget for MarkdownOutlinePanel {
     }
 }
 
+/// Escapes the title field of an outline entry.
+///
+/// The published `entries` token is `level|title|line`. A heading title is free text and may
+/// contain the separator, so `\` and `|` are backslash-escaped on the way out and unescaped on
+/// the way back in; the numeric `level` and `line` fields are never escaped.
+fn escape_outline_title(title: &str) -> String {
+    let mut escaped = String::with_capacity(title.len());
+    for ch in title.chars() {
+        if ch == '\\' || ch == '|' {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// Undoes [`escape_outline_title`], leaving unknown escape sequences intact.
+fn unescape_outline_title(title: &str) -> String {
+    let mut unescaped = String::with_capacity(title.len());
+    let mut chars = title.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            unescaped.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('|') => unescaped.push('|'),
+            Some('\\') => unescaped.push('\\'),
+            Some(other) => {
+                unescaped.push('\\');
+                unescaped.push(other);
+            }
+            None => unescaped.push('\\'),
+        }
+    }
+    unescaped
+}
+
 impl WidgetProperties for MarkdownOutlinePanel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
@@ -249,7 +287,9 @@ impl WidgetProperties for MarkdownOutlinePanel {
                     .map(|entry| {
                         CapabilityValue::String(format!(
                             "{}|{}|{}",
-                            entry.level, entry.title, entry.line
+                            entry.level,
+                            escape_outline_title(&entry.title),
+                            entry.line
                         ))
                     })
                     .collect(),
@@ -270,17 +310,25 @@ impl WidgetProperties for MarkdownOutlinePanel {
                 let items = expect_string_list(value)?;
                 let mut entries = Vec::with_capacity(items.len());
                 for item in items {
-                    let mut parts = item.splitn(3, '|');
-                    let level = parts
-                        .next()
-                        .and_then(|text| text.trim().parse::<u8>().ok())
-                        .ok_or(CapabilityAccessError::TypeMismatch)?;
-                    let title = parts.next().unwrap_or_default().to_string();
-                    let line = parts
-                        .next()
-                        .and_then(|text| text.trim().parse::<usize>().ok())
-                        .ok_or(CapabilityAccessError::TypeMismatch)?;
-                    entries.push(MarkdownOutlineEntry { line, level: level.clamp(1, 6), title });
+                    // `level` is the first field and `line` is numeric, so only the title may
+                    // contain a separator; it is the middle field and is unescaped below.
+                    let (level, rest) =
+                        item.split_once('|').ok_or(CapabilityAccessError::TypeMismatch)?;
+                    let level = level
+                        .trim()
+                        .parse::<u8>()
+                        .map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                    let (title, line) =
+                        rest.rsplit_once('|').ok_or(CapabilityAccessError::TypeMismatch)?;
+                    let line = line
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                    entries.push(MarkdownOutlineEntry {
+                        line,
+                        level: level.clamp(1, 6),
+                        title: unescape_outline_title(title),
+                    });
                 }
                 self.set_entries(entries);
                 Ok(())

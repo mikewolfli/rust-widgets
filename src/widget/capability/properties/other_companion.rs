@@ -270,6 +270,7 @@ pub(crate) fn toast_host_capability() -> WidgetCapability {
     }
 }
 
+#[cfg(feature = "markdown-editor")]
 #[cfg(not(alloc_frugal))]
 /// `markdown_outline_panel` — the markdown editor's heading outline (`COMP-16`).
 pub(crate) fn markdown_outline_panel_capability() -> WidgetCapability {
@@ -283,6 +284,7 @@ pub(crate) fn markdown_outline_panel_capability() -> WidgetCapability {
     }
 }
 
+#[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
 #[cfg(not(alloc_frugal))]
 /// `find_bar` — the editor's find/replace strip (`COMP-16`).
 ///

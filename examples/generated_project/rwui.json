@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "document": "project.json",
+  "targets": ["default", "stripped"]
+}

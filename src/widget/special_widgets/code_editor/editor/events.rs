@@ -107,6 +107,14 @@ impl EventHandler for CodeEditor {
             }
             Event::Resize { .. } => {
                 self.refresh_visible_rows();
+                // A narrower or wider surface changes `text_columns`, which re-wraps
+                // every row and moves the wrapped line→row table under diagnostics.
+                self.rebuild_visual_row_prefix();
+                self.bump_layout_generation();
+                // An enlarged viewport moves the maximum first row, so the stored
+                // offset is re-clamped or the painter leaves dead rows below the last
+                // line until the next scroll command.
+                self.clamp_scroll_to_document();
                 self.base.request_layout();
             }
             Event::FocusGained { .. } => {

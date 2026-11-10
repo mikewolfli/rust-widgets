@@ -1231,3 +1231,45 @@ fn sorting_a_selected_range_leaves_only_that_range_selected() {
     assert_eq!(editor.cursor.anchor.line, 0);
     assert_eq!(editor.cursor.head.line, 1);
 }
+
+/// Carets that project onto one position are merged, so the next keystroke edits once.
+///
+/// Backspace with carets at adjacent columns deletes both characters and leaves both
+/// carets at the join; without the merge, typing inserted twice at that spot and the
+/// set contradicted the deduplication `caret_count` documents.
+#[test]
+fn carets_projected_onto_one_position_are_merged() {
+    let mut editor = editor();
+    editor.set_text("abcde");
+    editor.set_cursor(0, 3, false);
+    assert!(editor.add_cursor_at(TextPosition::new(0, 4)));
+
+    editor.backspace();
+
+    assert_eq!(editor.caret_count(), 1, "both carets now name the same position");
+    editor.insert("x");
+    assert_eq!(editor.text(), "abxe", "one keystroke must insert once");
+}
+
+/// An undo that shortens the document drops carets it can no longer place.
+///
+/// `restore_history_text` clamped only the primary caret, unlike `set_text`, which
+/// clears the whole caret set for a wholesale replacement.
+#[test]
+fn an_undo_that_shortens_the_document_moves_its_secondary_carets() {
+    let mut editor = editor();
+    editor.set_text("start");
+    editor.set_caret(TextPosition::new(0, 0), false);
+    editor.insert(&"\nline".repeat(200));
+    editor.set_caret(TextPosition::new(1, 0), false);
+    assert!(editor.add_cursor_at(TextPosition::new(150, 0)));
+
+    assert!(editor.undo());
+
+    assert_eq!(editor.line_count(), 1, "the undo restored the one-line document");
+    let last = editor.line_count() - 1;
+    assert!(
+        editor.cursors().carets().iter().all(|caret| caret.head.line <= last),
+        "every caret must point into the restored document"
+    );
+}

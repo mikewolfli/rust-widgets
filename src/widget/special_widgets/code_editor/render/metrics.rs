@@ -118,6 +118,10 @@ impl CodeEditor {
         // The measured cell changes how many segments a line wraps into, so the
         // row-prefix table — built from `text_columns()` — is now stale.
         self.rebuild_visual_row_prefix();
+        // The same change moves the wrapped line→row table diagnostics cache under
+        // `layout_generation`; without the bump an underline stayed on the old row
+        // after a zoom or a resize until the next edit.
+        self.bump_layout_generation();
     }
 
     pub(crate) fn text_columns(&self) -> usize {

@@ -22,7 +22,7 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::effective_font;
-use rust_widgets::widget::special_widgets::code_editor::{
+use rust_widgets::widget::special_widgets::editor::syntax::{
     BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter, TokenKind, TokenSpan,
 };
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};

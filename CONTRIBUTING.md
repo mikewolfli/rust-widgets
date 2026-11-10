@@ -12,10 +12,10 @@ Thank you for your interest in contributing.
 # The device profiles are mutually exclusive, so name one explicitly.
 # Do NOT use `--all-features`: it enables `desktop` and `mini` together, and
 # `mini` switches the crate to `no_std`, so that combination cannot compile.
-cargo check --all-targets --no-default-features --features desktop
+cargo check --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages"
 cargo fmt --all -- --check
-cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
-cargo test --no-default-features --features desktop -q
+cargo clippy --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -- -D warnings
+cargo test --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -q
 cargo test --no-default-features --features "desktop,icons" -q
 
 # Remaining CI test profiles:
@@ -32,7 +32,7 @@ done
 bash tools/run_all_gates.sh
 ```
 
-`cargo test --no-default-features --features desktop` is the main desktop test
+`cargo test --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages"` is the main desktop test
 suite, not a test of every possible feature combination. CI additionally tests
 the opt-in icon data, `tablet` and `mobile`, plus `full`, `embedded`, and `mini`
 in the feature matrix. The desktop/default test configuration is run once.
@@ -50,9 +50,9 @@ does not replace the Cargo test matrix, and host-limited gates may report a skip
 
 ## Pull request checklist
 
-- [ ] Code compiles with `cargo check --all-targets --no-default-features --features desktop`.
-- [ ] Passes `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`.
-- [ ] Tests pass with `cargo test --no-default-features --features desktop -q`.
+- [ ] Code compiles with `cargo check --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages"`.
+- [ ] Passes `cargo clippy --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -- -D warnings`.
+- [ ] Tests pass with `cargo test --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -q`.
 - [ ] Icon-data tests pass with `cargo test --no-default-features --features "desktop,icons" -q`.
 - [ ] Tests pass for the applicable `tablet`, `mobile`, and `embedded` profiles.
 - [ ] All five device profiles still build (`desktop`, `tablet`, `mobile`, `mini`, `embedded`).

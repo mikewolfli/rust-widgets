@@ -92,7 +92,6 @@ mod pairs;
 mod palette;
 mod range_command;
 mod render;
-mod syntax;
 mod types;
 
 #[cfg(test)]
@@ -122,11 +121,19 @@ mod tests_batch9;
 #[cfg(test)]
 mod tests_batch10;
 
+// The shared tokenizer seam and language vocabulary (BLUE31 §1.4).
+//
+// Re-exported as a module so every historical `code_editor::syntax::*` path — including the one
+// `crates/rust-widgets-suites` and `markdown_editor` used — keeps resolving to the single
+// definition in the shared `editor` layer.
+pub use crate::widget::special_widgets::editor::syntax;
+pub use crate::widget::special_widgets::editor::syntax::{
+    BuiltinHighlighter, LanguageId, LineState, StructuralKind, SyntaxHighlighter,
+};
 pub use editor::{CodeEditor, CodeEditorDocument, MiniTone, MinimapBucket, MAX_NAVIGATION_HISTORY};
 pub use multicursor::MultiCursor;
 pub use overlays::{CodeLens, InlayHint, InlayHintKind, SnippetSession, SnippetStop};
 pub use palette::{CommandPalette, PaletteEntry};
-pub use syntax::{BuiltinHighlighter, LanguageId, LineState, StructuralKind, SyntaxHighlighter};
 pub use types::{
     CaretStyle, CodeEditorConfig, CompletionItem, CompletionSource, CompletionState,
     ContextMenuState, Cursor, DiagnosticMarker, DocumentCompletions, DocumentScale,

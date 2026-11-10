@@ -42,7 +42,7 @@
 //! Nothing in this module is a dynamic plugin system. Renderers are ordinary trait objects held by
 //! [`super::MarkdownEditor`], which keeps the seam ABI-stable and testable without loading code.
 //! The pattern is the same one
-//! [`crate::widget::special_widgets::code_editor::SyntaxHighlighter`] uses.
+//! [`crate::widget::special_widgets::editor::syntax::SyntaxHighlighter`] uses.
 //!
 //! # Source text
 //!

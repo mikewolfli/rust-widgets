@@ -701,10 +701,13 @@ pub struct CodeEditor {
 
     /// Emitted when text changes.
     ///
-    /// This carries the whole document and is therefore emitted only for changes that
-    /// already materialised it: a wholesale replacement (`set_text`, a tab switch, an undo
-    /// of a document-wide command). Per-keystroke edits emit [`Self::text_change`] instead
-    /// (see [`TextChange`]); a host that needs the full text after every edit can subscribe
+    /// This carries the whole document and is therefore emitted only by the paths that
+    /// already materialise it: a wholesale replacement ([`Self::set_text`], including
+    /// [`Self::load_document`]) and **every** undo or redo, whose restore path rebuilds
+    /// the text from the model. A tab switch emits [`Self::text_change`] only, because
+    /// the incoming buffer is already stored and cloning it into the signal would
+    /// duplicate the load. Per-keystroke edits emit [`Self::text_change`] instead (see
+    /// [`TextChange`]); a host that needs the full text after every edit can subscribe
     /// to `text_change` and call [`Self::text`] when its own contract requires it.
     pub text_changed: Signal1<String>,
     /// Emitted for **every** committed text change, as a line-range description.
@@ -1402,6 +1405,9 @@ impl CodeEditor {
         self.config.line_advance = 0.0;
         self.measured_geometry = None;
         self.refresh_visible_rows();
+        // A different cell width changes `text_columns`, so the wrapped line→row table
+        // diagnostics cache is stale even though the text did not move.
+        self.bump_layout_generation();
         self.base.request_layout();
         self.base.request_redraw();
         self.zoom_changed.emit(size);

@@ -8,8 +8,8 @@
 //! case-sensitivity toggle and close/next/previous actions, each as a request signal the host
 //! wires to the view.
 //!
-//! This is the web family's own find bar, distinct from the markdown editor's
-//! `special_widgets::markdown_editor::FindBar` (which searches an editor buffer, not a page).
+//! This is the web family's own find bar, distinct from the editor family's
+//! `special_widgets::editor::companions::FindBar` (which searches an editor buffer, not a page).
 //! Each is its own `WidgetKind`, so a host can address either one by name.
 //!
 //! Registration surface: canonical name `web_find_bar` (alias `page_find_bar`), kind

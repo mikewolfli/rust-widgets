@@ -199,9 +199,9 @@ SVG 才能作为评审材料，而不是一个会悄悄给出不同结果的第�
 
 ```bash
 cargo fmt --all -- --check
-cargo check --all-targets --no-default-features --features desktop
-cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
-cargo test  --no-default-features --features desktop -q
+cargo check --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages"
+cargo clippy --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -- -D warnings
+cargo test  --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -q
 
 for profile in embedded mini tablet mobile; do
   cargo test --no-default-features --features "$profile" -q

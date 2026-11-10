@@ -19,10 +19,16 @@
 #![cfg(test)]
 
 use super::editor::CodeEditor;
-use super::syntax::{LanguageId, LineState, SyntaxHighlighter};
-use super::types::{ReadOnlySpan, TextPosition, TokenKind, TokenSpan};
+use super::syntax::LanguageId;
+#[cfg(feature = "builtin-languages")]
+use super::syntax::{LineState, SyntaxHighlighter};
+use super::types::{ReadOnlySpan, TextPosition};
+#[cfg(feature = "builtin-languages")]
+use super::types::{TokenKind, TokenSpan};
 use crate::core::Rect;
+#[cfg(feature = "builtin-languages")]
 use alloc::vec;
+#[cfg(feature = "builtin-languages")]
 use alloc::vec::Vec;
 
 fn editor() -> CodeEditor {
@@ -175,6 +181,7 @@ fn set_text_drops_positional_locks() {
 // ── A5 / D1: language per buffer and the registry ───────────────────────────
 
 /// A buffer's language override must actually select the lexer for that buffer.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn a_buffers_language_override_selects_the_lexer() {
     let mut editor = editor();
@@ -197,6 +204,7 @@ fn a_buffers_language_override_selects_the_lexer() {
 
 /// Switching back to a Rust buffer must restore Rust highlighting, which is the
 /// whole point of a per-buffer language.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn switching_buffers_switches_the_active_language() {
     let mut editor = editor();
@@ -216,6 +224,7 @@ fn switching_buffers_switches_the_active_language() {
 
 /// A registered per-language highlighter must be the one that lexes a buffer of
 /// that language, and the built-in lexer must keep serving the others.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn a_registered_language_highlighter_wins_for_that_language_only() {
     /// A highlighter that calls the whole line a comment, so its effect is
@@ -260,6 +269,7 @@ fn a_registered_language_highlighter_wins_for_that_language_only() {
 }
 
 /// Removing a registration must fall back to the built-in lexer immediately.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn unregistering_a_language_highlighter_restores_the_builtin() {
     struct AllComments;

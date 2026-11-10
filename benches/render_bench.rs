@@ -299,7 +299,7 @@ fn bench_render_frame_full(c: &mut Criterion) {
 /// motion and a repaint per drag tick, with wrapping and occurrence highlighting on a
 /// 200-line source. The benchmark reports frame time, so a regression in the drag path
 /// (line cloning, per-row measurement, match rescanning) is observable.
-#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "mini"), feature = "code-editor"))]
 #[cfg(not(target_arch = "wasm32"))]
 fn bench_code_editor_pointer_drag(c: &mut Criterion) {
     use rust_widgets::core::Point;
@@ -351,8 +351,10 @@ fn bench_code_editor_pointer_drag(c: &mut Criterion) {
 
 // The two runtime benchmarks are compiled only where `widget::runtime` exists: the
 // alloc-frugal profile (`mini`) compiles the widget runtime out, and a benchmark cannot
-// measure a path that is not there. Grouping them separately keeps the pixel-level
-// benchmarks running in every profile, including `mini`.
+// measure a path that is not there. The editor bench additionally needs `code-editor`,
+// because the control it measures is compiled only with that feature (BLUE31 §1.5).
+// Grouping them separately keeps the pixel-level benchmarks running in every profile,
+// including `mini`.
 #[cfg(not(target_arch = "wasm32"))]
 criterion_group!(pixel_benches, bench_fill_pixels, bench_blend_pixel);
 
@@ -364,11 +366,17 @@ criterion_group!(
     bench_render_frame_tree,
     bench_render_frame_dirty,
     bench_render_frame_full,
-    bench_dispatch_pointer_event,
-    bench_code_editor_pointer_drag
+    bench_dispatch_pointer_event
 );
 
-#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "mini"), feature = "code-editor"))]
+#[cfg(not(target_arch = "wasm32"))]
+criterion_group!(editor_benches, bench_code_editor_pointer_drag);
+
+#[cfg(all(not(feature = "mini"), feature = "code-editor"))]
+#[cfg(not(target_arch = "wasm32"))]
+criterion_main!(pixel_benches, runtime_benches, editor_benches);
+#[cfg(all(not(feature = "mini"), not(feature = "code-editor")))]
 #[cfg(not(target_arch = "wasm32"))]
 criterion_main!(pixel_benches, runtime_benches);
 #[cfg(feature = "mini")]

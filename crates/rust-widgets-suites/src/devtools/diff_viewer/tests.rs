@@ -11,7 +11,7 @@ use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::render::RenderContext;
 use rust_widgets::widget::capability::types::CapabilityValue;
 use rust_widgets::widget::capability::WidgetProperties;
-use rust_widgets::widget::special_widgets::code_editor::{LanguageId, TokenKind};
+use rust_widgets::widget::special_widgets::editor::syntax::{LanguageId, TokenKind};
 use rust_widgets::widget::Draw;
 use std::sync::{Arc, Mutex};
 

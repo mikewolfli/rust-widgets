@@ -104,6 +104,7 @@ impl WidgetFactory {
             self.register(ribbon_bar_capability(), create_ribbon_bar);
             self.register(color_picker_capability(), create_color_picker);
             self.register(color_dialog_capability(), create_color_dialog);
+            #[cfg(feature = "code-editor")]
             self.register(code_editor_capability(), create_code_editor);
             self.register(snackbar_capability(), create_snackbar);
             self.register(breadcrumb_capability(), create_breadcrumb);
@@ -130,7 +131,9 @@ impl WidgetFactory {
             self.register(timeline_widget_capability(), create_timeline_widget);
             self.register(command_palette_capability(), create_command_palette);
             self.register(notification_center_capability(), create_notification_center);
+            #[cfg(feature = "markdown-editor")]
             self.register(markdown_editor_capability(), create_markdown_editor);
+            #[cfg(feature = "markdown-editor")]
             self.register(markdown_toolbar_capability(), create_markdown_toolbar);
             self.register(toast_stack_capability(), create_toast_stack);
             // `grid_table` was found by the registration-fidelity gate rather than by
@@ -295,7 +298,9 @@ impl WidgetFactory {
             self.register(tooltip_manager_capability(), create_tooltip_manager);
             self.register(zoom_pan_controller_capability(), create_zoom_pan_controller);
             self.register(toast_host_capability(), create_toast_host);
+            #[cfg(feature = "markdown-editor")]
             self.register(markdown_outline_panel_capability(), create_markdown_outline_panel);
+            #[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
             self.register(find_bar_capability(), create_find_bar);
             self.register(menu_panel_capability(), create_menu_panel);
             self.register(speed_dial_capability(), create_speed_dial);

@@ -503,7 +503,9 @@ impl CodeEditor {
     /// Replaces the whole document, pushing one undo checkpoint.
     ///
     /// A `\r\n` document is stored with `\n` line endings; the original
-    /// terminator is reported by [`CodeEditor::line_ending`].
+    /// terminator is reported by [`CodeEditor::line_ending`]. Text whose normalised form
+    /// is already the current document therefore changes only that reported terminator:
+    /// it is not an edit, so it does not enter the undo history or clear host state.
     ///
     /// # Loading a document is not an edit
     ///
@@ -514,7 +516,15 @@ impl CodeEditor {
     pub fn set_text(&mut self, text: impl Into<String>) {
         let raw = text.into();
         let next = normalize_line_endings(raw.clone());
-        if self.text() == next && !raw.contains('\r') {
+        if self.text() == next {
+            // Only the terminators can differ. That is metadata, not an edit: recording
+            // `\r\n` is what lets a host save the document in its original form, while
+            // the text, the undo stack, the locks, the bookmarks and the caret set all
+            // stay as they were. Treating it as a replacement pushed a no-op undo entry
+            // and cleared host state for a document whose text did not change.
+            if raw.contains('\r') {
+                self.model.borrow_mut().set_line_ending(LineEnding::Crlf);
+            }
             return;
         }
         // RW-114: every saved structural selection addresses text that is about to disappear.
@@ -562,10 +572,7 @@ impl CodeEditor {
         // The new document can be much shorter than the old one. Both scroll fields are
         // otherwise written only by scroll/caret paths, so a replacement while scrolled
         // left a first row past the end and the viewport painted nothing.
-        let rows = self.visible_rows().max(1);
-        let max_first = self.total_visual_rows().saturating_sub(rows);
-        self.scroll_visual_row = self.scroll_visual_row.min(max_first);
-        self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
+        self.clamp_scroll_to_document();
         // A wholesale replacement is a committed change like any other, so it advances the revision.
         // `set_text` does not route through `record_and_settle_inner` (it writes the model directly
         // and clears caches), so the bump is repeated here rather than inherited — otherwise a host

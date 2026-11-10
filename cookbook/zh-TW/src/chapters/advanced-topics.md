@@ -841,7 +841,7 @@ fn mini_main() {
 // $ cargo fmt --all
 
 // 使用 clippy 進行檢查
-// $ cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
+// $ cargo clippy --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -- -D warnings
 ```
 
 ### 專案規則
@@ -880,8 +880,8 @@ mod tests {
 
 ### 拉取請求流程
 
-1. 執行 `cargo test --no-default-features --features desktop -q`，驗證主要桌面測試套件。
-2. 執行 `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`。
+1. 執行 `cargo test --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -q`，驗證主要桌面測試套件。
+2. 執行 `cargo clippy --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -- -D warnings`。
 3. 執行 `cargo fmt --all -- --check`。
 4. 依變更範圍補跑 `desktop,icons`、`tablet`、`mobile` 與 `embedded` 測試組合。
 

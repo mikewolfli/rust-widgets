@@ -132,7 +132,29 @@ crate-type = ["lib", "cdylib"]
 # `tools/check_icon_data_is_opt_in.sh` and `tools/check_font_data_is_opt_in.sh` assert both halves
 # of the new split: the data is present in `desktop`/`tablet`/`mobile`, absent from
 # `default`/`mini`/`embedded`.
-default = ["desktop"]
+default = ["desktop", "code-editor", "markdown-editor", "builtin-languages"]
+
+# ── Editor controls (BLUE31 §1.5) ──
+#
+# The two editor controls and the lexer they both use are independent switches.
+# `code-editor` off removes `code_editor` entirely (module, capability entries,
+# constructors, events); `markdown-editor` off does the same for
+# `markdown_editor`. `builtin-languages` controls only the real lexer behind
+# `BuiltinHighlighter`; with it off that type is a stub that reports its language
+# and produces no tokens, and Markdown fenced code renders as plain text.
+#
+# The shared layer (`editor::syntax`, `editor::caret`) always compiles under
+# `full_widgets`, because `crates/rust-widgets-suites` uses the vocabulary
+# without either control.
+
+## Core control 1: `CodeEditor`.
+code-editor = []
+
+## Core control 2: `MarkdownEditor`.
+markdown-editor = []
+
+## The built-in language lexer, shared by both controls.
+builtin-languages = []
 
 # ── Axis 1: DEVICE PROFILES (mutually exclusive) ──
 
@@ -807,6 +829,9 @@ full = [
 ## (icons, image, designer, serde, the text faces, …) comes in through that one name.
 all-desktop-features = [
     "desktop",
+    "code-editor",
+    "markdown-editor",
+    "builtin-languages",
     "3d",
     "gpu-wgpu",
     "projection",
@@ -1177,10 +1202,14 @@ required-features = ["desktop"]
 # Declaring the requirement excludes the target from those builds outright, which is the
 # accurate statement — this probe has nothing to measure in a stripped profile — instead of
 # asking it to compile into a `main` that cannot use the widget registry it needs.
+# BLUE31: these two registry-driven tools must see the **whole** control set. The editor
+# controls are independent features, so `desktop` alone now compiles neither and the tools
+# would silently emit a 240-card gallery instead of 242. Naming the features makes that
+# omission a Cargo-level exclusion (`required-features` unmet) rather than a partial artifact.
 [[example]]
 name = "control_rendering_census"
 path = "examples/control_rendering_census.rs"
-required-features = ["desktop"]
+required-features = ["desktop", "code-editor", "markdown-editor", "builtin-languages"]
 
 # BLUE20 layer 3 — writes `snapshots/svg/<name>.svg` for every published control.
 # `required-features` for the same reason as the census probe above, and because the
@@ -1188,7 +1217,7 @@ required-features = ["desktop"]
 [[example]]
 name = "export_control_svgs"
 path = "examples/export_control_svgs.rs"
-required-features = ["desktop"]
+required-features = ["desktop", "code-editor", "markdown-editor", "builtin-languages"]
 
 # BLUE25 ICON-6 — renders every `IconName` and prints its contour count, ink and a
 # digest of the picture, so `tools/icon_census.txt` has a reproducible producer and
@@ -1219,7 +1248,7 @@ required-features = ["desktop", "icons"]
 [[example]]
 name = "probe_draw_only"
 path = "examples/probe_draw_only.rs"
-required-features = ["desktop"]
+required-features = ["desktop", "code-editor"]
 
 # BLUE28 B28.01 platform diagnostic probe.
 #
@@ -1242,7 +1271,7 @@ required-features = ["desktop"]
 [[example]]
 name = "verify_batch3"
 path = "examples/verify_batch3.rs"
-required-features = ["desktop"]
+required-features = ["desktop", "code-editor"]
 
 # Compile-time probe for the declarative-layer platform gate.
 #

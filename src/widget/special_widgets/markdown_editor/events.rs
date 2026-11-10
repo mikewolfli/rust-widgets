@@ -301,7 +301,13 @@ impl EventHandler for MarkdownEditor {
                     .contains(crate::shortcut::Modifiers::SHIFT);
                 self.cursor_line = line;
                 self.cursor_col = column.min(line_chars);
-                if !shift {
+                self.clear_find_hit();
+                if shift {
+                    // A shift-click moves the caret, so the selection has to be rebuilt from the
+                    // anchor here just as a drag does; leaving the old range selected until the
+                    // next pointer move made the next keystroke replace text the user had left.
+                    self.sync_selection_from_anchor();
+                } else {
                     self.selection_anchor = Some((self.cursor_line, self.cursor_col));
                     self.apply_selection(None);
                 }
@@ -330,6 +336,7 @@ impl EventHandler for MarkdownEditor {
                         let (column, line_chars) = self.hit_column(line, pos.x - rect.x - 12);
                         self.cursor_line = line;
                         self.cursor_col = column.min(line_chars);
+                        self.clear_find_hit();
                         self.sync_selection_from_anchor();
                         self.base.request_redraw();
                     }

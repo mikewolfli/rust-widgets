@@ -463,8 +463,11 @@ fn c_abi_get_property_with_null_string_output_reports_the_kind() {
 fn render_surface_frame_without_a_pixel_output_does_not_leak() {
     use crate::core::Rect;
 
+    #[cfg(feature = "code-editor")]
     let mut editor =
         crate::widget::special_widgets::code_editor::CodeEditor::new(Rect::new(0, 0, 64, 48));
+    #[cfg(not(feature = "code-editor"))]
+    let mut editor = crate::widget::input_widgets::TextEdit::new(Rect::new(0, 0, 64, 48));
     editor.set_text("fn main() {}");
     let id = crate::widget::runtime::register(Box::new(editor)).expect("the registry");
 

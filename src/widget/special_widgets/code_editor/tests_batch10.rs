@@ -12,8 +12,11 @@
 #![cfg(test)]
 
 use super::editor::CodeEditor;
+#[cfg(feature = "builtin-languages")]
 use super::syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
-use super::types::{CodeEditorConfig, ReadOnlySpan, SearchOptions, TextPosition, TokenKind};
+#[cfg(feature = "builtin-languages")]
+use super::types::TokenKind;
+use super::types::{CodeEditorConfig, ReadOnlySpan, SearchOptions, TextPosition};
 use crate::core::{Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::widget::Widget;
@@ -161,6 +164,7 @@ fn a_multi_row_range_starts_at_the_text_origin() {
 
 // ── Lexer ───────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn a_nested_rust_block_comment_needs_two_closers() {
     let highlighter = BuiltinHighlighter::new(LanguageId::Rust);
@@ -175,6 +179,7 @@ fn a_nested_rust_block_comment_needs_two_closers() {
     assert_eq!(state, LineState::Clean, "the second closer ends the comment");
 }
 
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn a_python_triple_quote_ignores_an_escaped_delimiter() {
     let highlighter = BuiltinHighlighter::new(LanguageId::Python);
@@ -184,4 +189,22 @@ fn a_python_triple_quote_ignores_an_escaped_delimiter() {
     assert_eq!(state, LineState::Clean, "the escaped delimiter does not close the string");
     assert_eq!(spans.last().map(|span| span.kind), Some(TokenKind::String));
     assert_eq!(spans.last().map(|span| span.end), Some(source.len()));
+}
+
+/// Replace reveals the hit that followed the replaced one, without skipping it.
+///
+/// The splice already rebuilds the match cache around the edit and clamps `current`
+/// to the next surviving hit; calling `find_next` afterwards advanced a second time.
+#[test]
+fn replace_current_reveals_the_next_hit_without_skipping_one() {
+    let mut editor = make();
+    editor.set_text("x\nx\nx\n");
+    editor.set_search_query("x");
+    editor.set_search_replacement("y");
+
+    assert!(editor.replace_current());
+
+    assert_eq!(editor.text(), "y\nx\nx\n");
+    assert_eq!(editor.search_matches().len(), 2, "the replaced hit left the list");
+    assert_eq!(editor.cursor(), (1, 1), "the next hit is line 1, not line 2");
 }

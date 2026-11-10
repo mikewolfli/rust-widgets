@@ -237,9 +237,9 @@ The same bundle is listed in a format-1 index for **Plugins → Discover**:
 
 ```bash
 cargo fmt --all -- --check
-cargo check --all-targets --no-default-features --features desktop
-cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
-cargo test  --no-default-features --features desktop -q
+cargo check --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages"
+cargo clippy --all-targets --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -- -D warnings
+cargo test  --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" -q
 
 for profile in embedded mini tablet mobile; do
   cargo test --no-default-features --features "$profile" -q

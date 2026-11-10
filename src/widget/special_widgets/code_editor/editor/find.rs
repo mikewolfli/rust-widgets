@@ -458,7 +458,12 @@ impl CodeEditor {
         }
         let head = TextPosition::new(hit.line, hit.start_column + replacement.chars().count());
         self.splice_range(start, end, &replacement, head);
-        self.find_next(false)
+        // The splice's `refresh_derived_state_after` rebuilds the hit list around the
+        // edit and clamps `current` to what is now the next hit. Advancing with
+        // `find_next` here counted that move a second time and skipped a hit.
+        self.reveal_current_match();
+        self.emit_search_result();
+        true
     }
 
     /// Replaces every hit in one undoable step; returns how many were replaced.

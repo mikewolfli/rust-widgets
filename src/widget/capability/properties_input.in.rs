@@ -453,6 +453,7 @@ macro_rules! impl_properties_input {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        #[cfg(feature = "markdown-editor")]
         // `MarkdownEditor`'s own names are the document state and its derived
         // statistics. `preview_mode` is writable because `set_preview_mode` is a
         // reversible assignment; `cursor_line` is not, because the editor owns

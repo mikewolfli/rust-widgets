@@ -19,6 +19,8 @@ use std::collections::HashMap;
 
 /// The find bar's state.
 #[derive(Debug, Clone, Default)]
+/// The markdown editor's own find state, kept beside the bar that edits it.
+#[cfg(feature = "markdown-editor")]
 pub(crate) struct FindState {
     pub(crate) visible: bool,
     pub(crate) query: String,
@@ -498,6 +500,7 @@ fn find_matches(
 /// counter and a host's own search cannot disagree about what a match is. The bar precomputes
 /// the character index because it searches on every keystroke; this one-shot entry builds it
 /// for a caller that searches once.
+#[cfg(feature = "markdown-editor")]
 pub(crate) fn literal_matches(
     hay: &str,
     needle: &str,

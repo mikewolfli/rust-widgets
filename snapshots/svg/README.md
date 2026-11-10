@@ -14,7 +14,7 @@ visible to a person, not only to the `P3` assertion in
 ## Regenerating
 
 ```bash
-cargo run --no-default-features --features desktop --example export_control_svgs
+cargo run --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" --example export_control_svgs
 ```
 
 `tools/check_svg_snapshots.sh` regenerates the set and requires it to match the

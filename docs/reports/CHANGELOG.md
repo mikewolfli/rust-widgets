@@ -476,6 +476,33 @@ ships the DSH skill plugin, which touches no crate code.
     `filter_row.conditions` claimed `string-list` but carried mixed tuples (now `records` with real
     schemas). Range controls reported `Ok` for a value they clamped — property writes now compare the
     read-back and return `OutOfRange`. `write_property` now enforces the declared `kind`.
+- **The two editors got their second full read: 31 defects closed** in `code_editor` and
+  `markdown_editor` (10116 → 10144 tests; no snapshot moved).
+  - **`CodeEditor`.** `toggle_block_comment` computed the closer's offset after inserting the opener,
+    so a single-line selection was commented *outside* itself; `fill_viewport_document_lines` treated
+    the scroll offset as a line index whenever no fold was active, which blanked the whole viewport
+    after about two screens with word-wrap on; `replace_current` advanced twice, skipping a hit;
+    the wrapped diagnostic row table counted characters instead of grid columns (wrong rows on CJK)
+    and its cache key ignored `text_columns` (wrong after a resize or zoom); the gutter and fold-marker
+    hit tests did not use the painter's inverse row mapping; projected multi-carets were not merged
+    (one keystroke inserted twice); a multi-caret batch bypassed the read-only-span, anchor and
+    structural-selection bookkeeping (a lock kept naming the old lines after an Enter added lines);
+    the minimap compressed its bars but mapped clicks over the full strip; bracket folding matched
+    brackets inside strings and comments; a resize never re-clamped the scroll offset; undo left
+    secondary carets past a shortened document; and `set_text` treated a line-ending-only change as
+    an edit (undo entry, `text_changed`, lost bookmarks).
+  - **`MarkdownEditor`.** The row budget counted one row that the paint clip rejects, so the last line
+    was invisible at every scroll position on the default 500×300 editor; `select_byte_range` sliced
+    a stale byte range without char-boundary checks (a panic reachable from the public API); the find
+    bar was painted before the rows, so its Replace row was overprinted while staying clickable;
+    edits did not reveal the caret; `line_at_viewport_y` divided before bounds-checking (the header
+    strip mapped to line 0); `find_next`/`find_previous` hard-coded case-sensitive matching while the
+    doc promised the bar's policy; the find origin preferred a never-cleared previous hit; line-prefix
+    edits jumped the caret to the line end and reported no-ops as changes; the preview tinted a band
+    measured from the *source* line; click columns and the caret used two different measurements; the
+    preview cache key ignored the font family; outline entries could not round-trip a title containing
+    `|`; Shift-click did not rebuild the selection; and scrolling a shrunk document reported a change
+    that did not happen.
 
 ### Added
 

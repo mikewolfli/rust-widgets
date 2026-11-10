@@ -108,10 +108,9 @@ impl Draw for MarkdownEditor {
         }
         // The mounted find bar replaces the plain header text while it is open: it paints the
         // query, the match counter and its policy toggles, and a second header underneath would
-        // be an unreadable overprint.
-        if self.find.visible {
-            self.find_bar.draw(context);
-        } else {
+        // be an unreadable overprint. It is drawn after the document rows (below), so a row can
+        // never overprint its replacement fields.
+        if !self.find.visible {
             // Fitted to the control's width: the header is a long line of counts, and a narrow
             // editor previously drew it straight past its own right edge.
             let header_band = Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14);
@@ -149,6 +148,9 @@ impl Draw for MarkdownEditor {
         // table, a heading at an ever-larger size). Clip to the text column so it cannot paint
         // over the outline panel or past the control's own edge.
         let clip_height = (rect.height as i32 - TEXT_TOP - TEXT_BOTTOM_INSET).max(0) as u32;
+        // Resolved before the row loop borrows the editor's caches: it is the same budget the
+        // pointer mapping and the caret use.
+        let visible_rows = self.visible_line_count();
         context.push_clip(
             rect.x,
             rect.y + TEXT_TOP,
@@ -177,13 +179,14 @@ impl Draw for MarkdownEditor {
                 accent: cursor_ink,
             };
             let bottom = rect.y + rect.height as i32 - TEXT_BOTTOM_INSET;
+            let last_row = start.saturating_add(visible_rows);
             let mut lines = text.split('\n').skip(start);
             let mut idx = start;
             let mut y = rect.y + TEXT_TOP;
             while let Some(line) = lines.next() {
                 // Rows below the control are not painted, which keeps a short editor from drawing
                 // past its own bottom edge.
-                if y > bottom {
+                if idx >= last_row || y > bottom {
                     break;
                 }
                 // A rendered block owns every source row in its fence. The image is placed at the
@@ -223,22 +226,28 @@ impl Draw for MarkdownEditor {
                 let band = Rect::new(rect.x + 12, y, row_width, TEXT_ROW_HEIGHT as u32);
 
                 // The selection band is drawn behind the text, trimmed to the exact characters
-                // on the first and last rows.
-                if let Some(((first_line, first_col), (last_line, last_col))) = selection {
-                    if idx >= first_line && idx <= last_line {
-                        let line_chars = line.chars().count();
-                        let from = if idx == first_line { first_col } else { 0 };
-                        let to = if idx == last_line { last_col } else { line_chars };
-                        // Both edges are measured straight off the borrowed line: a prefix
-                        // `String` per visible row was an allocation per row per frame.
-                        let from_byte = byte_offset_of_char(line, from);
-                        let to_byte = byte_offset_of_char(line, to).max(from_byte);
-                        let x = band.x + estimate_text_width(&line[..from_byte], font, 1.0) as i32;
-                        let width = estimate_text_width(&line[from_byte..to_byte], font, 1.0);
-                        context.fill_rect(
-                            Rect::new(x, y, width.max(1), TEXT_ROW_HEIGHT as u32),
-                            cursor_ink.with_alpha(60),
-                        );
+                // on the first and last rows. It is measured from the **source** line, so it is
+                // edit-mode furniture only: a preview row is laid out from parsed runs, where
+                // markers are dropped and headings are enlarged, and a source-metric band would
+                // highlight the wrong glyphs.
+                if !preview {
+                    if let Some(((first_line, first_col), (last_line, last_col))) = selection {
+                        if idx >= first_line && idx <= last_line {
+                            let line_chars = line.chars().count();
+                            let from = if idx == first_line { first_col } else { 0 };
+                            let to = if idx == last_line { last_col } else { line_chars };
+                            // Both edges are measured straight off the borrowed line: a prefix
+                            // `String` per visible row was an allocation per row per frame.
+                            let from_byte = byte_offset_of_char(line, from);
+                            let to_byte = byte_offset_of_char(line, to).max(from_byte);
+                            let x =
+                                band.x + estimate_text_width(&line[..from_byte], font, 1.0) as i32;
+                            let width = estimate_text_width(&line[from_byte..to_byte], font, 1.0);
+                            context.fill_rect(
+                                Rect::new(x, y, width.max(1), TEXT_ROW_HEIGHT as u32),
+                                cursor_ink.with_alpha(60),
+                            );
+                        }
                     }
                 }
 
@@ -341,7 +350,9 @@ impl Draw for MarkdownEditor {
                 let x =
                     rect.x + 12 + estimate_text_width(&caret_line[..caret_byte], font, 1.0) as i32;
                 let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
-                if y + 14 <= rect.y + rect.height as i32 && x <= rect.x + rect.width as i32 - 12 {
+                if y + TEXT_ROW_HEIGHT <= rect.y + rect.height as i32 - TEXT_BOTTOM_INSET
+                    && x <= rect.x + rect.width as i32 - 12
+                {
                     if let Some(preedit) = &self.preedit {
                         // The composition is drawn where the caret is and semi-transparent, so a
                         // user can see what has not been committed yet — the previous build drew
@@ -359,6 +370,13 @@ impl Draw for MarkdownEditor {
                     }
                 }
             }
+        }
+
+        // The mounted find bar is painted after the document rows so they cannot overprint its
+        // query and replacement fields; the outline still follows it because the outline owns its
+        // reserved column and is hit-tested first.
+        if self.find.visible {
+            self.find_bar.draw(context);
         }
 
         // The mounted outline is painted last, over the text column it reserved space for, so a

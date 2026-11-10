@@ -39,6 +39,7 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        #[cfg(feature = "code-editor")]
         #[cfg(not(alloc_frugal))]
         pub(crate) const CODE_EDITOR_PROPERTIES: &[PropertySchema] = &[
             // The diagnostic markers as records (BLUE26 B26.09): `set_markers` takes a list the
@@ -1625,6 +1626,7 @@ macro_rules! impl_properties_other {
         /// Heading outline beside a markdown editor (`COMP-16`).
         ///
         /// Each `entries` row is the `level|title|line` token the control reads.
+        #[cfg(feature = "markdown-editor")]
         #[cfg(not(alloc_frugal))]
         pub(crate) const MARKDOWN_OUTLINE_PANEL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("entries", PropertyValueKind::StringList, true, true),
@@ -1643,6 +1645,7 @@ macro_rules! impl_properties_other {
         /// property contract: the enabled action tokens, which side the icon is drawn on and whether
         /// labels are shown. The action list is writable because the control validates every token in
         /// `set_actions` and refuses an unknown one rather than painting a dead cell.
+        #[cfg(feature = "markdown-editor")]
         #[cfg(not(alloc_frugal))]
         pub(crate) const MARKDOWN_TOOLBAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("actions", PropertyValueKind::StringList, true, true),
@@ -1747,6 +1750,7 @@ macro_rules! impl_properties_other {
         /// reports that connection rather than being a setting.
         #[cfg(not(alloc_frugal))]
         /// Find/replace strip beside an editor (`COMP-16`).
+        #[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
         #[cfg(not(alloc_frugal))]
         pub(crate) const FIND_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("query", PropertyValueKind::String, true, true),

@@ -303,6 +303,8 @@ impl CodeEditor {
     ///
     /// Pairs are matched with a stack over the whole document once per revision;
     /// every fold query afterwards is a binary search or a short backwards scan.
+    /// Brackets the lexer placed in a string or a comment are skipped, so a fold
+    /// region is always a real block.
     fn bracket_pairs(&mut self) -> &[(TextPosition, TextPosition)] {
         let revision = self.revision.get();
         let stale = self.bracket_index.as_ref().is_none_or(|(cached, _)| *cached != revision);
@@ -311,7 +313,14 @@ impl CodeEditor {
             let mut matched: Vec<(TextPosition, TextPosition)> = Vec::new();
             for line in 0..self.line_count() {
                 let text = self.line_text(line).unwrap_or_default();
-                for (column, ch) in text.chars().enumerate() {
+                // A bracket inside a string or a comment is text, not structure. The
+                // lexer already classified those spans, so the fold index skips them
+                // exactly as bracket matching and structural selection do.
+                let skip = self.skipped_spans(line);
+                for (column, (byte, ch)) in text.char_indices().enumerate() {
+                    if is_skipped(byte, &skip) {
+                        continue;
+                    }
                     if !matches!(ch, '(' | '[' | '{' | ')' | ']' | '}') {
                         continue;
                     }

@@ -195,6 +195,22 @@ impl CodeEditor {
         };
     }
 
+    /// Re-clamps the scroll offset into the document for the current row budget.
+    ///
+    /// A resize or a zoom changes both the row height and the number of visible rows,
+    /// so a first row that was at the old bottom can sit past the last scrollable row.
+    /// The painter then leaves dead space below the last line until the next scroll
+    /// command. Every path that changes the row budget ends here.
+    pub(super) fn clamp_scroll_to_document(&mut self) {
+        let rows = self.visible_rows().max(1);
+        let max_first = self.total_visual_rows().saturating_sub(rows);
+        if self.scroll_visual_row > max_first {
+            self.scroll_visual_row = max_first;
+            self.base.request_redraw();
+        }
+        self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
+    }
+
     pub(crate) fn clamp_position(&self, position: TextPosition) -> TextPosition {
         self.model.borrow().clamp_position(position)
     }

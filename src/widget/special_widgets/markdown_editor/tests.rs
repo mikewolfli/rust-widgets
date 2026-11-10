@@ -13,8 +13,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::shortcut_editor::{
     non_primary_modifier_event_bits, primary_modifier_event_bits,
 };
-use crate::widget::metrics::effective_font;
-use crate::widget::special_widgets::code_editor::{LanguageId, LineState, TokenKind};
+use crate::widget::metrics::{effective_font, estimate_text_width};
+use crate::widget::special_widgets::editor::syntax::{LanguageId, LineState, TokenKind};
 use crate::widget::{Draw, Widget};
 use std::sync::{Arc, Mutex};
 
@@ -248,6 +248,19 @@ fn with_context<T>(f: impl FnOnce(&RenderContext) -> T) -> T {
     result
 }
 
+/// Paints one frame of `editor` and returns its RGBA bytes.
+fn draw_frame(editor: &mut MarkdownEditor, width: u32, height: u32) -> Vec<u8> {
+    use crate::render::{PaintBackend, SoftwarePaintBackend};
+    let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(width, height), 1.0);
+    backend.begin_frame(Color::WHITE);
+    {
+        let mut context = RenderContext::new(&mut backend);
+        editor.draw(&mut context);
+    }
+    backend.end_frame();
+    backend.frame_rgba().to_vec()
+}
+
 /// The counts are cached against the revision, so a still frame walks no document.
 ///
 /// `line_count`/`word_count`/`heading_count` each scanned the whole document, and the paint
@@ -353,6 +366,11 @@ fn preview_recognises_gfm_constructs() {
 }
 
 /// Fenced code is tokenized with the shared lexer, so keywords are not body text.
+///
+/// The assertion is about the *real* lexer, so it carries the same feature the
+/// lexer does; with `builtin-languages` off the honest result is plain body text
+/// (BLUE31 §1.8).
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn fenced_code_is_highlighted_with_the_shared_lexer() {
     with_context(|context| {
@@ -799,4 +817,229 @@ fn an_unclosed_backtick_does_not_style_the_rest_of_the_row_as_code() {
         parsed.runs.iter().all(|run| run.style != PreviewStyle::Code),
         "an unmatched backtick must not paint the rest of the line as code"
     );
+}
+
+/// Only rows that fit fully are counted, painted and pointer-mapped.
+#[test]
+fn only_rows_that_fully_fit_are_counted_and_mapped() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 500, 300));
+    // The text area is 300 - 36 - 8 = 256 px, which holds exactly 16 rows of 16 px.
+    assert_eq!(editor.visible_line_count(), 16);
+
+    let text: Vec<String> = (0..100).map(|index| format!("line {index}")).collect();
+    editor.set_text(text.join("\n"));
+    assert!(editor.scroll_lines(1000));
+    let last = editor.edit_line_count() - 1;
+    assert_eq!(
+        editor.visible_start() + editor.visible_line_count() - 1,
+        last,
+        "the final line is on screen at the last scroll position"
+    );
+    assert_eq!(
+        editor.line_at_viewport_y(TEXT_TOP + 16 * TEXT_ROW_HEIGHT),
+        None,
+        "the row past the clip maps to no line"
+    );
+}
+
+/// A click in the header strip or the bottom inset does not resolve to a text row.
+#[test]
+fn pointer_rows_reject_the_header_strip_and_the_bottom_inset() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+    let text: Vec<String> = (0..20).map(|index| format!("line {index}")).collect();
+    editor.set_text(text.join("\n"));
+
+    assert_eq!(editor.line_at_viewport_y(TEXT_TOP - 1), None, "the header strip is not text");
+    assert_eq!(editor.line_at_viewport_y(TEXT_TOP), Some(0));
+    assert_eq!(
+        editor.line_at_viewport_y(300 - TEXT_BOTTOM_INSET),
+        None,
+        "the bottom inset is not a row"
+    );
+    assert_eq!(
+        editor.line_at_viewport_y(300 - TEXT_BOTTOM_INSET - 1),
+        Some(15),
+        "the last full row still maps"
+    );
+}
+
+/// An edit that moves the caret off the painted rows scrolls the new row into view.
+#[test]
+fn a_commit_reveals_the_caret_it_moves() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+    let text: Vec<String> = (0..20).map(|index| format!("line {index}")).collect();
+    editor.set_text(text.join("\n"));
+    assert!(editor.goto_line(15));
+    assert_eq!(editor.visible_start(), 0);
+
+    editor.handle_event(&Event::key_press(13, 0));
+    assert_eq!(editor.cursor_line(), 16);
+    assert!(
+        editor.cursor_line() < editor.visible_start() + editor.visible_line_count(),
+        "the committed new line is on screen"
+    );
+    assert_eq!(editor.visible_start(), 1);
+}
+
+/// The mounted bar's policy, not a hardcoded one, decides what a keyboard find matches.
+#[test]
+fn find_next_honours_the_mounted_bar_policy() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("Alpha alpha");
+    assert!(editor.find_next("alpha"));
+    assert_eq!(
+        editor.selected_text().as_deref(),
+        Some("Alpha"),
+        "the bar is case-insensitive by default"
+    );
+
+    let mut strict = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    strict.set_text("Alpha alpha");
+    strict.find_bar_mut().set_case_sensitive(true);
+    assert!(strict.find_next("alpha"));
+    assert_eq!(
+        strict.selected_text().as_deref(),
+        Some("alpha"),
+        "the bar's case-sensitive policy is honoured"
+    );
+}
+
+/// A user caret move invalidates the previous hit, so the next search starts there.
+#[test]
+fn a_caret_move_restarts_the_search_from_the_caret() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("alpha alpha alpha");
+    assert!(editor.find_next("alpha"));
+    assert!(editor.find_next("alpha"));
+    assert_eq!(editor.selection(), Some((6, 11)));
+
+    assert!(editor.goto_line(0));
+    editor.move_to_line_edge(true);
+    assert!(editor.find_next("alpha"));
+    assert_eq!(
+        editor.selection(),
+        Some((0, 5)),
+        "the moved caret is the origin, not the stale hit"
+    );
+}
+
+/// A line-prefix toggle keeps a caret where it was in the text and reports real edits only.
+#[test]
+fn line_prefix_edits_keep_the_caret_and_report_only_real_changes() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    editor.set_text("  item");
+    editor.cursor_line = 0;
+    editor.cursor_col = 2;
+
+    assert!(editor.toggle_line_prefix("  "));
+    assert_eq!(editor.text(), "item");
+    assert_eq!(editor.cursor_col(), 0, "the caret keeps its place in the text");
+    assert!(editor.selection().is_none());
+
+    editor.set_text("item");
+    editor.cursor_line = 0;
+    editor.cursor_col = 2;
+    assert!(editor.toggle_line_prefix("- "));
+    assert_eq!(editor.text(), "- item");
+    assert_eq!(editor.cursor_col(), 4, "the caret follows the inserted prefix");
+
+    editor.set_text("\n\n");
+    editor.select_all();
+    assert!(!editor.toggle_line_prefix("- "), "an unchanged document reports no change");
+    assert_eq!(editor.text(), "\n\n");
+}
+
+/// The open find bar is painted over the document rows, so its fields stay readable.
+#[test]
+fn document_rows_do_not_overprint_the_open_find_bar() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+    editor.set_text("M".repeat(200));
+    editor.show_find_bar();
+    editor.find_bar_mut().set_replace_visible(true);
+    let with_text = draw_frame(&mut editor, 420, 300);
+    let bar = editor.find_bar_rect();
+
+    let mut empty = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+    empty.show_find_bar();
+    empty.find_bar_mut().set_replace_visible(true);
+    let without_text = draw_frame(&mut empty, 420, 300);
+
+    for y in bar.y..bar.y + bar.height as i32 {
+        for x in bar.x..bar.x + bar.width as i32 {
+            let index = ((y as u32 * 420 + x as u32) * 4) as usize;
+            assert_eq!(
+                &with_text[index..index + 4],
+                &without_text[index..index + 4],
+                "a document row overprints the find bar at ({x}, {y})"
+            );
+        }
+    }
+}
+
+/// Preview lays rows out from parsed runs, so it does not paint the source-metric band.
+#[test]
+fn preview_does_not_paint_the_source_metric_selection_band() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+    editor.set_preview_mode(true);
+    editor.set_text("**bold** text");
+    let plain = draw_frame(&mut editor, 420, 300);
+
+    let length = editor.text().len();
+    editor.select_byte_range(0, length);
+    let selected = draw_frame(&mut editor, 420, 300);
+
+    let font = effective_font(editor.base().style());
+    let source_width = estimate_text_width("**bold** text", font, 1.0) as i32;
+    let x = (12 + source_width - 4) as usize;
+    let y = (TEXT_TOP + TEXT_ROW_HEIGHT - 1) as usize;
+    let index = (y * 420 + x) * 4;
+    assert_eq!(
+        &selected[index..index + 4],
+        &plain[index..index + 4],
+        "the preview row paints no band measured from the source line"
+    );
+}
+
+/// An outline entry title may contain the wire separator and still round-trip.
+#[test]
+fn outline_entries_round_trip_a_title_containing_the_separator() {
+    let mut panel = MarkdownOutlinePanel::new(Rect::new(0, 0, 180, 200));
+    panel.set_entries(vec![MarkdownOutlineEntry { line: 3, level: 2, title: "a | b".to_string() }]);
+
+    let encoded = panel.get("entries").expect("entries readable");
+    let CapabilityValue::Tuple(rows) = encoded else { panic!("entries is a string list") };
+    assert_eq!(rows.len(), 1);
+    let CapabilityValue::String(token) = &rows[0] else { panic!("entry is a string") };
+    assert_eq!(token, "2|a \\| b|3");
+
+    let mut restored = MarkdownOutlinePanel::new(Rect::new(0, 0, 180, 200));
+    restored.set("entries", CapabilityValue::Tuple(rows)).expect("entries writable");
+    assert_eq!(restored.entries(), panel.entries());
+}
+
+/// A shift-press moves the caret and rebuilds the selection in the same event.
+#[test]
+fn a_shift_press_rebuilds_the_selection_from_the_anchor() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+    let line = "abcdefghij".repeat(4);
+    editor.set_text(line.as_str());
+    editor.select_byte_range(0, 5);
+
+    let font = effective_font(editor.base().style());
+    let x = 12 + estimate_text_width(&line[..40], font, 1.0) as i32;
+    editor.handle_event(&Event::mouse_press_with(x, TEXT_TOP + 2, 1, 0b0001));
+    assert_eq!(editor.cursor_col(), 40);
+    assert_eq!(editor.selection(), Some((0, 40)), "the shift-press rebuilds the selection");
+}
+
+/// A stale scroll offset beyond the end reports no movement and is healed.
+#[test]
+fn scrolling_a_shrunk_document_reports_the_clamped_position() {
+    let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+    editor.set_text("a\nb\nc\nd");
+    editor.first_visible_line = 84;
+    assert_eq!(editor.visible_start(), 0);
+
+    assert!(!editor.scroll_lines(-3), "the viewport was already at the clamped start");
+    assert_eq!(editor.first_visible_line, 0, "the clamped offset is stored");
 }

@@ -30,7 +30,7 @@
 | 画布 | 240 x 120（与渲染普查的 `CENSUS_RECT` 相同，因此控件之间可横向对比） |
 | 深色 | `snapshots/svg/<name>.svg` |
 | 浅色 | `snapshots/svg/<name>.light.svg` |
-| 重新生成 | `cargo run --no-default-features --features desktop --example export_control_svgs` |
+| 重新生成 | `cargo run --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" --example export_control_svgs` |
 | 分组依据 | 控件实现所在的模块目录（`src/widget/<family>/`），由本脚本自动推导 |
 
 每个分组下面是一张**多列表格**，每行一个控件，深色与浅色并排，便于横向对比；控件名即快照文件名（去掉 `.svg` / `.light.svg`）。

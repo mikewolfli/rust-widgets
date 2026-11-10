@@ -290,12 +290,17 @@ jobs:
       # unrunnable. The device profiles are mutually exclusive, so the honest
       # coverage is one build per profile, with the desktop profile carrying the
       # full test and lint run.
+      # The editor controls are separate features (BLUE31 §1.5), so the profile name alone does
+      # not compile them. This is the job that must run their tests, so it names them.
       - name: Cargo test (desktop profile)
-        run: cargo test --no-default-features --features desktop -q
+        run: >-
+          cargo test --no-default-features
+          --features "desktop,code-editor,markdown-editor,builtin-languages" -q
 
       - name: Cargo clippy (deny warnings)
         run: >-
-          cargo clippy --all-targets --no-default-features --features desktop
+          cargo clippy --all-targets --no-default-features
+          --features "desktop,code-editor,markdown-editor,builtin-languages"
           -- -D warnings
 
       # The optional suites crate is not a workspace member, so nothing above compiles it. Its
@@ -352,11 +357,14 @@ jobs:
       # the census renders through would be absent. `tools/check_icon_data_is_opt_in.sh`
       # asserts the same build compiles; this job is what runs the *tests* in it.
       - name: Cargo test (icons data)
-        run: cargo test --no-default-features --features "desktop,icons" -q
+        run: >-
+          cargo test --no-default-features
+          --features "desktop,icons,code-editor,markdown-editor,builtin-languages" -q
 
       - name: Cargo clippy with icons (deny warnings)
         run: >-
-          cargo clippy --all-targets --no-default-features --features "desktop,icons"
+          cargo clippy --all-targets --no-default-features
+          --features "desktop,icons,code-editor,markdown-editor,builtin-languages"
           -- -D warnings
 
       # The two halves of one contract: a text origin is the glyph box's TOP edge, not a

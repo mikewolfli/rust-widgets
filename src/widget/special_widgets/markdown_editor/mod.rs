@@ -13,7 +13,6 @@ mod block_renderer;
 mod document;
 mod editor;
 mod events;
-mod find;
 mod outline;
 mod paint;
 mod preview;
@@ -21,12 +20,16 @@ mod preview;
 pub use block_renderer::{MarkdownBlockRender, MarkdownBlockRenderer, MarkdownBlockSpec};
 pub use document::{MarkdownOutlineEntry, MarkdownTextChange};
 pub use editor::MarkdownEditor;
-pub use find::{FindBar, ReplaceRequest};
 pub use outline::MarkdownOutlinePanel;
+
+pub(crate) use crate::widget::special_widgets::editor::companions::{literal_matches, FindState};
+/// The find bar is a member of the editor family, not of this widget: it lives in
+/// `editor::companions` and is re-exported here so every historical
+/// `markdown_editor::FindBar` path keeps working (BLUE31 §1.9.4).
+pub use crate::widget::special_widgets::editor::companions::{FindBar, ReplaceRequest};
 
 pub(crate) use block_renderer::*;
 pub(crate) use document::*;
-pub(crate) use find::*;
 pub(crate) use preview::*;
 
 #[cfg(test)]

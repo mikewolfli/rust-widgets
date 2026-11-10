@@ -12,6 +12,13 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+// The editor vocabulary is shared with `markdown_editor` and the suites crate,
+// so its definitions live in `editor` and are re-exported here to keep every
+// existing `code_editor::*` path working (BLUE31 §1.4).
+pub use crate::widget::special_widgets::editor::caret::CaretStyle;
+pub use crate::widget::special_widgets::editor::syntax::DEFAULT_TAB_WIDTH;
+pub use crate::widget::special_widgets::editor::syntax::{TextPosition, TokenKind, TokenSpan};
+
 // ── Shared constants ─────────────────────────────────────────────────────────
 
 /// Default monospace family used by the editor surface.
@@ -26,75 +33,10 @@ pub const DEFAULT_FONT_SIZE: f32 = 13.0;
 /// ratio of `1.23`, i.e. tighter than either of Zed's presets), while a screen
 /// still shows the ~40 lines a programmer expects.
 pub const DEFAULT_LINE_HEIGHT_RATIO: f32 = 1.5;
-/// Default tab width measured in spaces.
-pub const DEFAULT_TAB_WIDTH: usize = 4;
 /// Minimum height of any touch-driven hit target, in logical pixels.
 pub const MIN_TOUCH_TARGET: i32 = 28;
 /// Upper bound on completion candidates produced by one request.
 pub const MAX_COMPLETIONS: usize = 24;
-
-// ── Token styling ────────────────────────────────────────────────────────────
-
-/// Token categories produced by a [`super::syntax::SyntaxHighlighter`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TokenKind {
-    /// Unstyled source text.
-    Plain,
-    /// Language keyword (`fn`, `let`, `struct`, ...).
-    Keyword,
-    /// Type or primitive name (`String`, `u32`, ...).
-    Type,
-    /// Function or method name.
-    Function,
-    /// String literal, including delimiters.
-    String,
-    /// Character literal.
-    Character,
-    /// Numeric literal.
-    Number,
-    /// Line comment.
-    Comment,
-    /// Block comment.
-    BlockComment,
-    /// Preprocessor or attribute line (`#[...]`, `#define`).
-    Preprocessor,
-    /// Operator or punctuation run.
-    Operator,
-    /// Identifier that is not a keyword, type or function.
-    Identifier,
-}
-
-/// One styled span of a single source line.
-///
-/// `start`/`end` are byte offsets into the line. Spans returned by
-/// `CodeEditor::tokens_on_line` are guaranteed to fall on `char` boundaries;
-/// spans from a third-party highlighter are clamped, never trusted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenSpan {
-    /// Start byte offset inside the line.
-    pub start: usize,
-    /// End byte offset (exclusive) inside the line.
-    pub end: usize,
-    /// Token category.
-    pub kind: TokenKind,
-}
-
-impl TokenSpan {
-    /// Creates a span from byte offsets.
-    pub fn new(start: usize, end: usize, kind: TokenKind) -> Self {
-        Self { start, end, kind }
-    }
-
-    /// Returns `true` when the span covers no text.
-    pub fn is_empty(&self) -> bool {
-        self.end <= self.start
-    }
-
-    /// Returns the byte length of the span.
-    pub fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-}
 
 /// Colour palette for token categories and editor decorations.
 ///
@@ -252,27 +194,6 @@ impl SyntaxPalette {
             Some(entry) => entry.1 = color,
             None => self.colors.push((kind, color)),
         }
-    }
-}
-
-// ── Positions and cursor ─────────────────────────────────────────────────────
-
-/// A caret location addressed in *character* columns, not bytes.
-///
-/// Character columns keep every movement/selection API UTF-8 agnostic: offsets
-/// are converted to byte offsets only at the splice boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
-pub struct TextPosition {
-    /// Zero-based line index.
-    pub line: usize,
-    /// Zero-based character column.
-    pub column: usize,
-}
-
-impl TextPosition {
-    /// Creates a position.
-    pub const fn new(line: usize, column: usize) -> Self {
-        Self { line, column }
     }
 }
 
@@ -840,18 +761,6 @@ impl LineEnding {
             Self::Crlf => "\r\n",
         }
     }
-}
-
-/// How the insertion point is painted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CaretStyle {
-    /// A thin vertical bar, the default in most editors.
-    #[default]
-    Line,
-    /// A filled block covering the character cell.
-    Block,
-    /// A horizontal bar under the character cell.
-    Underline,
 }
 
 /// A caller-owned highlight range drawn behind the text.
@@ -1534,7 +1443,7 @@ pub struct CodeEditorConfig {
     /// Off by default so the default paint path is unchanged. The baseline is
     /// document text held by the host, not part of this configuration.
     pub show_inline_diff: bool,
-    /// Draw host-supplied [`InlayHint`]s inline.
+    /// Draw host-supplied [`InlayHint`](super::InlayHint)s inline.
     ///
     /// On by default: the hint list is empty unless a host pushes one, so the
     /// default rendering is unchanged.

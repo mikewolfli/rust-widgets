@@ -98,6 +98,7 @@ fn an_edit_does_not_discard_tokens_above_it() {
 
 /// A cross-line construct must survive the incremental cache: a block comment
 /// opened far above the viewport still comments the visible rows.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn a_block_comment_spanning_the_viewport_is_still_coloured() {
     let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
@@ -128,6 +129,7 @@ fn a_block_comment_spanning_the_viewport_is_still_coloured() {
 /// `Clean` default, which is the same value a genuinely clean line returns, so "not in a
 /// multi-line construct" and "not lexed yet" share one representation. `line_state_is_known`
 /// separates them, and `resolve_line_state` turns "unknown" into a real answer.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn an_unproven_line_state_is_reported_as_unknown_and_can_be_resolved() {
     let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
@@ -180,6 +182,7 @@ fn resolved_tokens_are_independent_of_paint_history() {
 }
 
 /// Changing the language must drop stale token caches.
+#[cfg(feature = "builtin-languages")]
 #[test]
 fn switching_language_invalidates_the_token_cache() {
     let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
@@ -532,4 +535,42 @@ fn the_match_cache_finds_a_newly_typed_query() {
     assert_eq!(editor.text(), "one\ntwozzz\nthree\n");
     assert_eq!(editor.search_matches().len(), 1, "the new text must be found");
     assert_eq!(editor.search_matches()[0].line, 1);
+}
+
+/// A highlighter that resets state on every line needs no entry-state walk.
+///
+/// `SyntaxHighlighter::resets_each_line` is the hook for that, and `ensure_line_states`
+/// now consults it: a stateless highlighter cannot carry a construct across a line, so
+/// every entry state is `Clean` without lexing the region.
+#[test]
+fn a_stateless_highlighter_needs_no_state_walk() {
+    use std::sync::{Arc, Mutex};
+
+    struct Stateless {
+        calls: Arc<Mutex<usize>>,
+    }
+
+    impl SyntaxHighlighter for Stateless {
+        fn highlight_line(&self, _line: &str, _state: LineState) -> (Vec<TokenSpan>, LineState) {
+            *self.calls.lock().unwrap() += 1;
+            (Vec::new(), LineState::Clean)
+        }
+
+        fn language_name(&self) -> &str {
+            "stateless"
+        }
+
+        fn resets_each_line(&self) -> bool {
+            true
+        }
+    }
+
+    let calls = Arc::new(Mutex::new(0usize));
+    let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
+    editor.set_text(document(500));
+    editor.set_highlighter(Box::new(Stateless { calls: Arc::clone(&calls) }));
+
+    assert_eq!(editor.resolve_line_state(400), LineState::Clean);
+    assert_eq!(*calls.lock().unwrap(), 0, "a resetting highlighter must not be walked");
+    assert!(editor.line_state_is_known(400), "the chain is proven by the hook");
 }

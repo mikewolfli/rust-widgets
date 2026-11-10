@@ -31,7 +31,7 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::effective_font;
-use rust_widgets::widget::special_widgets::code_editor::CaretStyle;
+use rust_widgets::widget::special_widgets::editor::CaretStyle;
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 

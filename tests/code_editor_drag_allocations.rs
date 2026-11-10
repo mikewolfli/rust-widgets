@@ -3,6 +3,9 @@
 
 //! Runtime allocation sample for a code-editor pointer drag.
 //!
+//! The control exists only with the `code-editor` feature, so the whole target
+//! is gated rather than half-compiled (BLUE31 §1.5).
+//!
 //! The issue's runtime-sampling item asked for an allocation count rather than a
 //! description. This measures the steady-state paint of a 200-line editor while a pointer
 //! drag is extending the selection: the first frames warm the row-layout and occurrence
@@ -12,6 +15,7 @@
 //! process-global counter also sees whatever the test harness allocates on its own thread,
 //! which turns an exact property into a flaky one.
 #![allow(clippy::missing_const_for_thread_local)]
+#![cfg(feature = "code-editor")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

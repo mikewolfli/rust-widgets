@@ -1179,6 +1179,7 @@ pub fn default_widget_property_default_value(
             "item_count" => CapabilityValue::UInt(0),
             // SP-022: `markdown_toolbar` shares this kind. Its defaults are the control's own
             // constructor defaults (the standard action set, icons on the left, labels hidden).
+            #[cfg(feature = "markdown-editor")]
             "actions" => CapabilityValue::Tuple(
                 crate::widget::special_widgets::markdown_editor::MARKDOWN_TOOLBAR_ACTIONS
                     .iter()
@@ -1241,6 +1242,7 @@ pub fn default_widget_property_default_value(
             // markers, and the empty list of the declared schema is what a dropped binding resets
             // to. (A plain `RichEdit` has no `markers` property, so this answer is never reached
             // for it.)
+            #[cfg(feature = "code-editor")]
             "markers" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
                 &crate::widget::special_widgets::code_editor::DIAGNOSTIC_MARKER_SCHEMA,
             )),

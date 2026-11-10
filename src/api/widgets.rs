@@ -173,7 +173,7 @@ pub use widget::CheckState;
 pub use widget::Chip;
 #[cfg(full_widgets)]
 pub use widget::ChipItem;
-#[cfg(full_widgets)]
+#[cfg(all(full_widgets, feature = "code-editor"))]
 pub use widget::CodeEditor;
 #[cfg(widgets_unstripped)]
 pub use widget::CollapsiblePane;
@@ -230,7 +230,7 @@ pub use widget::DateTimeEdit;
 pub use widget::DateTimePicker;
 #[cfg(full_widgets)]
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
+#[cfg(all(full_widgets, feature = "code-editor"))]
 pub use widget::DiagnosticMarker;
 #[cfg(full_widgets)]
 pub use widget::Dial;
@@ -279,7 +279,7 @@ pub use widget::FilterExpr;
 pub use widget::FilterField;
 #[cfg(full_widgets)]
 pub use widget::FilterOperator;
-#[cfg(full_widgets)]
+#[cfg(all(full_widgets, any(feature = "code-editor", feature = "markdown-editor")))]
 pub use widget::FindBar;
 #[cfg(full_widgets)]
 pub use widget::FindReplaceDialog;
@@ -371,11 +371,11 @@ pub use widget::ListView;
 #[cfg(full_widgets)]
 #[cfg(full_widgets)]
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
+#[cfg(all(full_widgets, feature = "markdown-editor"))]
 pub use widget::MarkdownEditor;
-#[cfg(full_widgets)]
+#[cfg(all(full_widgets, feature = "markdown-editor"))]
 pub use widget::MarkdownOutlinePanel;
-#[cfg(full_widgets)]
+#[cfg(all(full_widgets, feature = "code-editor"))]
 pub use widget::MarkerSeverity;
 #[cfg(widgets_unstripped)]
 pub use widget::MaskedEdit;

@@ -29,17 +29,11 @@ impl CodeEditor {
     /// Returns the visible document lines within the viewport window, plus slack.
     ///
     /// This is the iterator the paint loop should use: it never materialises the
-    /// document, so its cost depends on the viewport. With folds present the walk starts
-    /// at the line the viewport actually begins on (read off the row-prefix table) instead
-    /// of filtering every line of the file into a `Vec` first — that allocation was the
-    /// folded counterpart of the full-document scan `visible_document_lines` avoids (J-P04).
-    /// Refills the viewport line window in the editor's reused buffer.
-    ///
-    /// This is the iterator the paint loop should use: it never materialises the
-    /// document, so its cost depends on the viewport. With folds present the walk starts
-    /// at the line the viewport actually begins on (read off the row-prefix table) instead
-    /// of filtering every line of the file into a `Vec` first — that allocation was the
-    /// folded counterpart of the full-document scan `visible_document_lines` avoids (J-P04).
+    /// document, so its cost depends on the viewport. Folds and soft wrapping both make a
+    /// row differ from a line, so the walk starts at the line the viewport actually begins
+    /// on (read off the row-prefix table) and steps by `wrap_segments`; filtering every
+    /// line of the file into a `Vec` first was the fold-only counterpart of the
+    /// full-document scan `visible_document_lines` avoids (J-P04).
     ///
     /// The window is written into a buffer the editor owns: a paint calls this for the rows
     /// and again for the gutter, and the previous form allocated twice per frame for a
@@ -48,9 +42,12 @@ impl CodeEditor {
         let mut out = self.viewport_lines_scratch.borrow_mut();
         out.clear();
         let slack = self.visible_rows.max(1) + 1;
-        let first = self.scroll_visual_row.saturating_sub(slack).min(self.line_count());
-        let last = (self.scroll_visual_row + slack * 2).min(self.line_count());
-        if self.folded_lines.is_empty() {
+        // Without folds **and** without wrapping a row is a line, so the window is plain
+        // arithmetic. Wrapping alone makes rows and lines differ, and treating the scroll
+        // row as a line then started the walk far below the viewport and painted nothing.
+        if self.folded_lines.is_empty() && !self.config.word_wrap {
+            let first = self.scroll_visual_row.saturating_sub(slack).min(self.line_count());
+            let last = (self.scroll_visual_row + slack * 2).min(self.line_count());
             out.extend(first..last);
             return;
         }
@@ -253,6 +250,28 @@ impl CodeEditor {
         (usable.max(1) as usize).clamp(1, MAX_MINIMAP_ROWS)
     }
 
+    /// Pixels per document row in the minimap.
+    ///
+    /// The painter places bars at `bucket * pitch`, where the pitch is capped so a short
+    /// document compacts at the top of the strip instead of stretching over it, and the
+    /// viewport band uses the same scale. Hit-testing has to divide by this value, not by
+    /// the strip height, or a click lands on a different line than the bar under the
+    /// pointer.
+    pub(crate) fn minimap_row_scale(&self) -> f32 {
+        let rect = self.geometry();
+        let height =
+            (rect.height as i32 - self.text_origin_y() - self.status_bar_height()).max(1) as f32;
+        let buckets = if self.minimap_buckets.is_empty() {
+            minimap_partition(self.line_count(), self.minimap_rows()).0
+        } else {
+            self.minimap_buckets.len()
+        }
+        .max(1);
+        let pitch = (height / buckets as f32).min(3.0);
+        let total = self.total_visual_rows().max(1);
+        (buckets as f32 * pitch / total as f32).max(0.001)
+    }
+
     /// Returns how many lines have cached token spans.
     ///
     /// Exposed so tests can assert the cache stays proportional to the viewport
@@ -269,7 +288,10 @@ impl CodeEditor {
     }
 
     /// Fills the entry-state chain up to `upto`, for tests of the increments.
-    #[cfg(test)]
+    ///
+    /// Its only caller asserts the *real* lexer's incremental re-lexing, so it is
+    /// compiled only where that lexer is (BLUE31 §1.5).
+    #[cfg(all(test, feature = "builtin-languages"))]
     pub(crate) fn prime_line_states(&mut self, upto: usize) {
         self.ensure_line_states(upto);
     }
