@@ -377,11 +377,14 @@ impl CookieJar {
     pub fn clear_expired(&mut self) {
         self.cookies.retain(|_, cookie| !cookie.is_expired());
     }
-    /// Discards every cookie belonging to `domain` or to one of its subdomains.
+    /// Discards every cookie that applies to `domain`: the cookies stored for it and for its
+    /// parents.
     ///
     /// Uses the same domain rule as [`CookieJar::cookies_for_domain`] — see
     /// `domain_matches` — so the two never disagree about what "cookies for this
-    /// domain" means.
+    /// domain" means. That rule is **upward**, not downward: `clear_for_domain("example.com")`
+    /// removes `example.com`'s and `com`'s cookies, and leaves `api.example.com`'s alone, because a
+    /// cookie stored for a subdomain is not one a request to the parent sends.
     ///
     /// This previously matched a raw **key prefix**, which deleted an unrelated
     /// lookalike's cookies as collateral: `clear_for_domain("example.com")` also

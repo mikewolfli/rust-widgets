@@ -879,10 +879,13 @@ impl Calendar {
     /// Installs a pre-filtered, sorted set and damages only the cells whose selection changed.
     fn replace_selected_dates(&mut self, next: Vec<chrono::NaiveDate>) {
         let primary = next.last().copied();
+        // A completed range has no pending anchor, so the next click starts a new range rather
+        // than extending this one. The reset used to sit below the equality guard, so re-applying
+        // the current range left the anchor armed.
+        self.selection_anchor = None;
         if self.selected_dates == next && primary.is_none_or(|date| date == self.selected_date) {
             return;
         }
-        self.selection_anchor = None;
         let previous = core::mem::replace(&mut self.selected_dates, next);
         if let Some(primary) = primary {
             self.selected_date = primary;
@@ -915,11 +918,20 @@ impl Calendar {
     /// A same-value write is a no-op: it cannot clamp anything (the selected date was already
     /// clamped against this value or a larger one) and it cannot change a pixel, so the repaint it
     /// used to request is pure waste in a host that syncs state in a loop.
+    ///
+    /// # Inverted bounds
+    ///
+    /// A minimum above the current maximum raises the maximum to meet it: `selected_date` must
+    /// always be selectable, and leaving an empty range made every later `set_selected_date` a
+    /// silent no-op.
     pub fn set_minimum_date(&mut self, date: chrono::NaiveDate) {
         if self.minimum_date == date {
             return;
         }
         self.minimum_date = date;
+        if self.maximum_date < date {
+            self.maximum_date = date;
+        }
         if self.selected_date < date {
             self.set_selected_date(date);
         }
@@ -932,12 +944,16 @@ impl Calendar {
     }
     /// Sets maximum date.
     ///
-    /// See [`Calendar::set_minimum_date`] for why a same-value write returns early.
+    /// See [`Calendar::set_minimum_date`] for why a same-value write returns early, and for the
+    /// inverted-bounds rule this setter mirrors (a maximum below the minimum lowers the minimum).
     pub fn set_maximum_date(&mut self, date: chrono::NaiveDate) {
         if self.maximum_date == date {
             return;
         }
         self.maximum_date = date;
+        if self.minimum_date > date {
+            self.minimum_date = date;
+        }
         if self.selected_date > date {
             self.set_selected_date(date);
         }
@@ -1051,10 +1067,16 @@ impl Calendar {
     /// called [`Calendar::set_today`], the accent cell would otherwise keep pointing at the pinned
     /// day.
     pub fn show_today(&mut self) {
+        let previous_today = self.today;
         let today = clock_today();
         self.today = today;
         self.show_page(today);
         self.set_selected_date(today);
+        // The accent cell moves with `today` even when neither the page nor the selection did (a
+        // pinned `set_today` on the same month), and neither of those paths repaints in that case.
+        if previous_today != today {
+            self.base.request_redraw();
+        }
     }
     /// Shows next month in the grid (does not change selected date).
     pub fn show_next_month(&mut self) {
@@ -1651,7 +1673,11 @@ impl Calendar {
     }
 
     /// Returns the date at a given pixel position, or `None` if outside the grid.
-    fn date_at_position(&self, pos: Point) -> Option<chrono::NaiveDate> {
+    ///
+    /// `pub(crate)` because the fields that embed this calendar forward a press into the popup and
+    /// need to know whether the point named a day (a press on the *already selected* day changes
+    /// nothing, so "did the selection change" is not that answer).
+    pub(crate) fn date_at_position(&self, pos: Point) -> Option<chrono::NaiveDate> {
         if !self.grid_visible {
             return None;
         }
@@ -1930,8 +1956,16 @@ impl EventHandler for Calendar {
         if !self.base.is_enabled() {
             // A disable mid-hover must drop the wash: every event, including `MouseLeave`, is
             // refused below, so a hovered day would stay highlighted for as long as the control
-            // remained disabled.
-            if self.hovered_date.take().is_some() {
+            // remained disabled. The month/year menus are part of the same state: they paint from
+            // their flags alone and every press is refused here, so an open panel would stay on
+            // screen and be impossible to dismiss.
+            let mut repaint = self.hovered_date.take().is_some();
+            if self.month_menu_open || self.year_menu_open {
+                self.month_menu_open = false;
+                self.year_menu_open = false;
+                repaint = true;
+            }
+            if repaint {
                 self.base.request_redraw();
             }
             return;
@@ -2704,6 +2738,50 @@ mod tests {
     use crate::core::{Font, Rect, Size};
     use crate::event::FocusReason;
     use chrono::NaiveDate;
+
+    /// A bound write never leaves an empty range.
+    ///
+    /// # What this pins
+    ///
+    /// `set_maximum_date` stored a maximum below the current minimum, so the selection stayed
+    /// outside its own range and every later `set_selected_date` was silently refused.
+    #[test]
+    fn a_bound_write_keeps_the_range_non_empty() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let early = NaiveDate::from_ymd_opt(1800, 1, 1).expect("a valid date");
+        cal.set_maximum_date(early);
+        assert!(cal.minimum_date() <= cal.maximum_date(), "the range stayed non-empty");
+        assert!(cal.selected_date() >= cal.minimum_date());
+        assert!(cal.selected_date() <= cal.maximum_date());
+
+        cal.set_selected_date(cal.maximum_date());
+        assert_eq!(cal.selected_date(), cal.maximum_date(), "an in-range write still takes");
+    }
+
+    /// Disabling the calendar closes an open month menu.
+    ///
+    /// # What this pins
+    ///
+    /// The menu paints from its flag alone and every press is refused while disabled, so an open
+    /// panel stayed on screen with no way to dismiss it.
+    #[test]
+    fn disabling_the_calendar_closes_an_open_menu() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        assert!(!cal.is_dropdown_navigation_enabled());
+        cal.set_dropdown_navigation(true);
+        let title = cal.month_title_rect();
+        cal.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(title.x + 2, title.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(cal.is_month_menu_open(), "the title press opens the menu");
+
+        cal.set_enabled(false);
+        // Any event routed to a disabled control is what finalises the cancellation.
+        cal.handle_event(&crate::event::Event::MouseMove { pos: crate::core::Point::new(1, 1) });
+        assert!(!cal.is_month_menu_open());
+    }
 
     #[test]
     fn calendar_creation_defaults() {

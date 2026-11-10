@@ -186,7 +186,12 @@ impl DependencyEditor {
         self.base.request_redraw();
     }
 
-    /// Adds an edge. Returns `false` for a self-edge or a duplicate.
+    /// Adds an edge. Returns `false` for a self-edge, or when an edge between the same two tasks
+    /// already exists.
+    ///
+    /// The pair is the editor's edge identity, the same rule [`Self::set_dependencies`] and
+    /// [`Self::remove_dependency`] use: the arrows the chart draws are pair-shaped, so a second edge
+    /// for one pair would paint two arrows on top of each other. The existing edge keeps its kind.
     pub fn add_dependency(&mut self, dependency: Dependency) -> bool {
         if dependency.predecessor == dependency.successor {
             return false;
@@ -204,7 +209,12 @@ impl DependencyEditor {
         true
     }
 
-    /// Removes the first occurrence of `dependency`. Returns whether it existed.
+    /// Removes the first edge whose endpoints match `dependency`, whatever its kind.
+    ///
+    /// Returns whether such an edge existed. The pair is the identity (see
+    /// [`Self::add_dependency`]); the payload names the edge that was actually removed, so a caller
+    /// asking to remove a start-to-start edge between two tasks is told when the finish-to-start one
+    /// was the edge that existed.
     pub fn remove_dependency(&mut self, dependency: &Dependency) -> bool {
         let Some(index) = self.dependencies.iter().position(|edge| {
             edge.predecessor == dependency.predecessor && edge.successor == dependency.successor

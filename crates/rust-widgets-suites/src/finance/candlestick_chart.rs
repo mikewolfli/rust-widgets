@@ -305,9 +305,13 @@ impl CandlestickChart {
     pub fn set_series(&mut self, series: PriceSeries) {
         self.series = series;
         // A hovered index from the previous series may not exist in the new one, and a
-        // stale index would report a bar that is no longer there.
-        if self.hovered_index.is_some_and(|index| index >= self.series.len()) {
+        // stale index would report a bar that is no longer there. The exit is published the same
+        // way `set_view_range` publishes it, and the price goes with the index: leaving it behind
+        // let `hovered_price()` answer for a bar `hovered_index()` had already dropped.
+        if let Some(previous) = self.hovered_index.filter(|index| *index >= self.series.len()) {
             self.hovered_index = None;
+            self.hovered_price = None;
+            self.bar_unhovered.emit(previous);
         }
         self.rebuild_series_cache();
         // The window was measured against the old bars; re-running the one clamping entry

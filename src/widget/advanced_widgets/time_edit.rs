@@ -308,6 +308,12 @@ pub struct TimeEdit {
     /// Same reason as `DateEdit::value_text_scratch`: the substituter writes into a caller's
     /// buffer, and a fresh `String` per frame allocated on its first push.
     value_text_scratch: crate::compat::RefCell<String>,
+    /// The section boxes measured from the last painted run.
+    ///
+    /// `section_zone` has no renderer, so it answers from this cache after a paint and from the
+    /// documented equal-fifths approximation before one. The cache follows the pattern's token
+    /// order, its separators and the field's alignment.
+    section_zone_cache: crate::compat::RefCell<super::date_edit::SectionZoneCache<5>>,
 }
 
 /// The clock face's numeral offsets and the inputs they were built from.
@@ -364,6 +370,7 @@ impl TimeEdit {
             editing_finished: GenericSignal::new(),
             clock_numeral_cache: crate::compat::RefCell::new(ClockNumeralsCache::default()),
             value_text_scratch: crate::compat::RefCell::new(String::new()),
+            section_zone_cache: crate::compat::RefCell::new(Default::default()),
         }
     }
     /// Returns the current time.
@@ -412,6 +419,14 @@ impl TimeEdit {
         if !popup {
             self.hovered_hand = None;
         }
+        // The face is painted below the field, outside `geometry()`: without the popup grab the
+        // runtime treats it as background and a press inside the visible clock is swallowed.
+        #[cfg(not(alloc_frugal))]
+        if popup {
+            crate::widget::runtime::set_popup_grab(self.base.id());
+        } else {
+            crate::widget::runtime::clear_popup_grab_for(self.base.id());
+        }
         self.popup_visibility_changed.emit(popup);
         self.base.request_redraw();
     }
@@ -444,16 +459,97 @@ impl TimeEdit {
     /// underline and the pointer target still agree with each other.
     pub fn section_zone(&self, section: TimeSection) -> Rect {
         let rect = self.geometry();
+        if let Some(zones) = self.measured_section_zones() {
+            return zones[Self::section_slot(section)];
+        }
         let width = rect.width.saturating_sub(12);
         let fifth = width / 5;
-        let index = match section {
+        Rect::new(
+            rect.x + 6 + Self::section_slot(section) as i32 * fifth as i32,
+            rect.y,
+            fifth,
+            rect.height,
+        )
+    }
+
+    /// The slot a section occupies in the measured table.
+    fn section_slot(section: TimeSection) -> usize {
+        match section {
             TimeSection::Hour => 0,
             TimeSection::Minute => 1,
             TimeSection::Second => 2,
             TimeSection::AmPm => 3,
             TimeSection::Millisecond => 4,
+        }
+    }
+
+    /// The measured boxes, when the cache still describes the current geometry.
+    fn measured_section_zones(&self) -> Option<[Rect; 5]> {
+        let rect = self.geometry();
+        let cache = self.section_zone_cache.borrow();
+        let key = cache.key?;
+        if key.rect == rect && key.trailing == 0 {
+            Some(cache.zones)
+        } else {
+            None
+        }
+    }
+
+    /// Re-measures the five section boxes from the painted run.
+    ///
+    /// Called from `draw`, the only place a renderer can measure text. Walking the shared token
+    /// table recovers the pattern's own order and separators, so a `ss:mm:HH` field hit-tests
+    /// where it draws; the alignment shift keeps the boxes under a centred or right-aligned run.
+    fn refresh_section_zones(
+        &self,
+        context: &RenderContext,
+        rect: Rect,
+        font: &crate::core::Font,
+        alignment: HorizontalAlignment,
+    ) {
+        let run_width = rect.width.saturating_sub(12);
+        if run_width == 0 {
+            self.section_zone_cache.borrow_mut().key = None;
+            return;
+        }
+        let components = super::date_edit::DateTimeComponents {
+            hour: Some(self.time.hour()),
+            minute: Some(self.time.minute()),
+            second: Some(self.time.second()),
+            millisecond: Some(self.time.msec()),
+            ..Default::default()
         };
-        Rect::new(rect.x + 6 + index * fifth as i32, rect.y, fifth, rect.height)
+        // A section the pattern does not draw has no target: a zero-width box at the run's end.
+        let fallback = Rect::new(rect.x + 6 + run_width as i32, rect.y, 0, rect.height);
+        let (zones, key) = super::date_edit::measure_pattern_zones(
+            context,
+            super::date_edit::SectionZoneRequest {
+                rect,
+                run_width,
+                trailing: 0,
+                pattern: &self.display_format,
+                font,
+                alignment,
+                fallback,
+            },
+            |token, _component, out| {
+                super::date_edit::format_with_pattern_into(token, components, out)
+            },
+            |component| match component {
+                super::date_edit::RunComponent::Hour => Some(0),
+                super::date_edit::RunComponent::Minute => Some(1),
+                super::date_edit::RunComponent::Second => Some(2),
+                super::date_edit::RunComponent::AmPm => Some(3),
+                super::date_edit::RunComponent::Millisecond => Some(4),
+                _ => None,
+            },
+        );
+        let mut cache = self.section_zone_cache.borrow_mut();
+        if cache.key == Some(key) {
+            return;
+        }
+        cache.key = Some(key);
+        cache.zones = zones;
     }
 
     /// The section containing `pos`, when the point is on the value text.
@@ -774,6 +870,9 @@ impl TimeEdit {
             self.current_section = None;
             self.digit_buffer.clear();
         }
+        // The pattern this setter may have rewritten decides `size_hint` as well, so the host has
+        // to re-lay the field out.
+        self.base.request_layout();
         self.base.request_redraw();
     }
     /// Sets the current time, subject to validity and the accepted range.
@@ -878,6 +977,9 @@ impl TimeEdit {
             return;
         }
         self.display_format = fmt;
+        // The pattern decides `size_hint`, so the host has to be told to lay the field out again:
+        // a redraw alone kept the old width and the new value was fitted into it.
+        self.base.request_layout();
         self.base.request_redraw();
     }
     /// Advances the time by one second, carrying into minutes and hours.
@@ -922,16 +1024,17 @@ impl TimeEdit {
         let mut t = self.time;
         if t.second() > 0 {
             t.set_second(t.second() - 1);
-        } else {
+        } else if t.minute() > 0 {
             t.set_second(59);
-            if t.minute() > 0 {
-                t.set_minute(t.minute() - 1);
-            } else {
-                t.set_minute(59);
-                if t.hour() > 0 {
-                    t.set_hour(t.hour() - 1);
-                }
-            }
+            t.set_minute(t.minute() - 1);
+        } else if t.hour() > 0 {
+            t.set_second(59);
+            t.set_minute(59);
+            t.set_hour(t.hour() - 1);
+        } else {
+            // Midnight is the bottom of the clock: the hour does not wrap, so a step down here
+            // is a no-op. The old carry wrote 00:59:59 — nearly an hour *forward*.
+            return;
         }
         self.set_time(t);
     }
@@ -969,7 +1072,13 @@ impl TimeEdit {
     }
     fn restore_history_time(&mut self) {
         self.restoring_history = true;
-        self.time = *self.history_target.borrow();
+        // A bound change after the edit does not rewrite the stack, so an undone value can be
+        // outside the range the control now advertises. Clamp the restore through the same rule
+        // every other write uses.
+        let restored =
+            super::clamp_ordered_range(*self.history_target.borrow(), self.minimum, self.maximum);
+        self.time = restored;
+        *self.history_target.borrow_mut() = restored;
         self.restoring_history = false;
         self.time_changed.emit(self.time);
         self.base.request_redraw();
@@ -978,6 +1087,15 @@ impl TimeEdit {
 impl Widget for TimeEdit {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+
+    /// The field **and** the open clock face are this control's own area.
+    ///
+    /// The face is painted below `geometry()`; without this override the runtime answered "not
+    /// this widget" for every point on it, so the ring was painted and never clickable.
+    fn contains_point(&self, point: crate::core::Point) -> bool {
+        self.base.contains_point_with_touch_expansion(point)
+            || (self.clock_popup && self.clock_rect().contains_point(point))
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
@@ -1412,6 +1530,10 @@ impl Draw for TimeEdit {
         // body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
         let line = context.text_line(rect, font);
+        let alignment = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        // The section boxes come from the same run the painter is about to draw, so the underline
+        // and the pointer target follow the pattern's order, separators and alignment.
+        self.refresh_section_zones(context, rect, font, alignment);
         context.draw_text_fitted_ellipsis(
             Rect {
                 x: rect.x + 6,
@@ -1422,7 +1544,7 @@ impl Draw for TimeEdit {
             text.as_str(),
             font,
             ink,
-            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+            alignment,
         );
         // The painter takes `&mut self` further down, so the buffer is released here.
         drop(text_scratch);
@@ -1877,11 +1999,9 @@ mod tests {
         let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
         editor.set_time(Time::new(0, 0, 0, 0));
         editor.step_down();
-        // hour 0, minute 0, second 0: step_down keeps hour at 0, minute at 59, second at 59
-        // But then set_time rejects because 0:59:59 >= minimum (0,0,0,0) so it should accept.
-        // Actually wait: hour starts at 0, step_down: second is 0, so second=59, minute is 0 so minute=59,
-        // hour is 0 so hour stays at 0. Result is 0:59:59 which is valid.
-        assert_eq!(editor.time(), Time::new(0, 59, 59, 0));
+        // Midnight is the bottom of the clock, so the step is a no-op — the mirror of `step_up`
+        // at 23:59:59. The carry used to wrap 00:00:00 to 00:59:59, i.e. nearly an hour forward.
+        assert_eq!(editor.time(), Time::new(0, 0, 0, 0));
     }
 
     #[test]
@@ -2099,6 +2219,23 @@ mod tests {
     ///
     /// The assertion reads the **document**, not the flag: the face must add ink, and it must add the
     /// *ring positions* -- a bare plate would satisfy "the documents differ".
+    /// The open clock face is part of the control's area.
+    ///
+    /// # What this pins
+    ///
+    /// The face is painted below `geometry()`. Without a `contains_point` override the runtime
+    /// answered "not this widget" for every point on it, so the painted ring could never be clicked.
+    #[test]
+    fn the_open_clock_face_is_part_of_the_control() {
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        let face = editor.clock_rect();
+        let inside = crate::core::Point::new(face.x + 4, face.y + 4);
+        assert!(!editor.contains_point(inside), "a closed face is not part of the field");
+        editor.set_clock_popup(true);
+        let face = editor.clock_rect();
+        assert!(editor.contains_point(crate::core::Point::new(face.x + 4, face.y + 4)));
+    }
+
     #[test]
     fn the_clock_popup_is_actually_painted() {
         use crate::widget::svg::{render_to_svg, text_subpath_count};

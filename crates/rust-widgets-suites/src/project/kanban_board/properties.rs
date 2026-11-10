@@ -50,7 +50,10 @@ impl WidgetProperties for KanbanBoard {
             }),
             "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
             "horizontal_scroll_offset" => {
-                Ok(CapabilityValue::UInt(self.horizontal_scroll().max(0) as u64))
+                // Every paint and hit path clamps on read; the property reports that same offset
+                // rather than the raw field a resize can leave past the content.
+                let offset = self.horizontal_scroll().max(0).min(self.max_horizontal_scroll());
+                Ok(CapabilityValue::UInt(offset as u64))
             }
             "lane_mode" => Ok(CapabilityValue::String(self.lane_mode.token().to_string())),
             "swimlanes" => Ok(CapabilityValue::Bool(self.lane_mode == KanbanLaneMode::Lanes)),
@@ -139,8 +142,13 @@ impl WidgetProperties for KanbanBoard {
                 self.invalidate_layout();
                 self.prune_card_state();
                 // The write can reorder the columns, and the selection's documented order is
-                // display order.
+                // display order. A pure reorder keeps the same ids, so length is not the test —
+                // the `cards` arm's rule is.
+                let selection_before = self.selected_cards.clone();
                 self.sort_selection();
+                if self.selected_cards != selection_before {
+                    self.selection_changed.emit(self.selected_cards.clone());
+                }
                 self.clamp_horizontal_scroll();
                 self.base.request_redraw();
                 Ok(())

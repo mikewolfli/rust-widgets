@@ -323,6 +323,10 @@ pub struct QuoteBoard {
 /// so the type is not `Eq`.)
 #[derive(Clone)]
 struct ColumnRangesKey {
+    /// The board's horizontal origin. The cached pairs are **absolute** x positions, so a board
+    /// moved sideways without changing width (a docked sidebar, a splitter) would otherwise reuse
+    /// them and paint every column where it used to be.
+    origin_x: i32,
     width: i32,
     decimals: usize,
     quote_count: usize,
@@ -334,7 +338,8 @@ struct ColumnRangesKey {
 
 impl PartialEq for ColumnRangesKey {
     fn eq(&self, other: &Self) -> bool {
-        self.width == other.width
+        self.origin_x == other.origin_x
+            && self.width == other.width
             && self.decimals == other.decimals
             && self.quote_count == other.quote_count
             && self.data_generation == other.data_generation
@@ -916,6 +921,7 @@ impl QuoteBoard {
         // them remeasures. One small `Vec` clone per frame is the price of the `&self`
         // signature — far below the pass it replaces.
         let key = ColumnRangesKey {
+            origin_x: geometry.x,
             width,
             decimals,
             quote_count: self.quotes.len(),
@@ -1290,6 +1296,10 @@ impl Draw for QuoteBoard {
         if geometry.width == 0 || geometry.height == 0 {
             return;
         }
+        // The scroll maximum depends on how many rows the *current* height shows, and there is no
+        // resize hook: without this a board made taller keeps an offset `set_scroll_offset` would
+        // reject, paints the tail at the top and leaves blank, unclickable bands below.
+        self.clamp_scroll();
 
         // Column ranges first, before the style borrow below: the cached-range path
         // needs `&mut self`, and the measurement inputs are `self`-derived either way.
@@ -1494,15 +1504,21 @@ impl Draw for QuoteBoard {
                 // into its neighbour reads as a corrupted table.
                 let text_width = measure_body_text(text, font) as i32;
                 let inset = self.cell_inset();
-                let band = if column.is_numeric() {
+                // A number wider than its column used to be placed from
+                // `start + width - inset - text_width`, i.e. starting inside the previous column.
+                // It is fitted like a text cell in that case.
+                let numeric_fits = text_width <= width - inset * 2;
+                let band = if column.is_numeric() && numeric_fits {
                     // Reserved from the trailing edge so the digits line up column-wise.
                     Rect::new(start + width - inset - text_width, y, text_width.max(1) as u32, 0)
+                } else if column.is_numeric() {
+                    Rect::new(start + inset, y, (width - inset * 2).max(1) as u32, 0)
                 } else {
                     // Reserved from the leading inset to the column's edge.
                     Rect::new(start + inset, y, (width - inset * 2).max(1) as u32, 0)
                 };
                 let line = context.text_line(Rect { height: ROW_TEXT_HEIGHT, ..band }, font);
-                if column.is_numeric() {
+                if column.is_numeric() && numeric_fits {
                     // A numeric cell is already exactly as wide as its measured text. Fitting
                     // it again subtracts `draw_text_fitted`'s inset at each end from that
                     // measured width, so every value was truncated to `248...` even though
@@ -1626,7 +1642,11 @@ impl WidgetProperties for QuoteBoard {
                 None => Ok(CapabilityValue::Null),
             },
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
-            "scroll_offset" => Ok(CapabilityValue::UInt(self.scroll_offset() as u64)),
+            "scroll_offset" => {
+                // The property reports what the paint uses, which is the clamped offset.
+                let max = self.quotes.len().saturating_sub(self.visible_row_count());
+                Ok(CapabilityValue::UInt(self.scroll_offset().min(max) as u64))
+            }
             // RW-79: the quote rows as typed records. The schema's field order is the order a
             // designer offers them, and the symbol is the identity a row keeps across a reorder.
             "quotes" => Ok(CapabilityValue::Records(

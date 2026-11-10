@@ -759,10 +759,19 @@ impl PieMenu {
     }
 
     /// Enables or disables the item at `index`, ignoring out-of-range indices.
-    /// Disabling does not clear an existing hover highlight or redraw.
+    ///
+    /// A wedge that becomes disabled cannot stay hovered (the hit test refuses it) and changes the
+    /// fill its wedge is painted with, so the highlight is dropped and a repaint is requested.
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(item) = self.items.get_mut(index) {
+            if item.is_enabled() == enabled {
+                return;
+            }
             item.set_enabled(enabled);
+            if !enabled && self.hovered_index == Some(index) {
+                self.hovered_index = None;
+            }
+            self.base.request_redraw();
         }
     }
 
@@ -1617,8 +1626,13 @@ impl EventHandler for PieMenu {
                 key_codes::ENTER | key_codes::SPACE => {
                     if let Some(index) = self.hovered_index {
                         self.activate(index);
-                    } else if let Some(index) = self.selected_index() {
-                        self.activate(index);
+                    } else if self.submenu_path.is_empty() {
+                        // `selected_index()` addresses the **top-level** list, while an open child
+                        // ring is indexed by its own slots: using the fallback there triggered an
+                        // unrelated child command.
+                        if let Some(index) = self.selected_index() {
+                            self.activate(index);
+                        }
                     }
                 }
                 _ => {}

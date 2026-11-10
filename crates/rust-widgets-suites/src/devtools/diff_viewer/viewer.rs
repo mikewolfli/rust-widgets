@@ -408,7 +408,14 @@ impl DiffViewer {
             return;
         }
         self.view_mode = mode;
+        // `first_visible_line` indexes the display rows, and unified mode inserts a row for every
+        // changed line, so the same index names a different line in the other mode. Every sibling
+        // setter that rebuilds the rows resets it; this one kept it, so toggling the presentation
+        // moved a scrolled reader to an earlier line.
+        self.first_visible_line = 0;
         self.display_dirty = true;
+        self.ensure_display_rows();
+        self.reconcile_selection_with_display();
         self.view_mode_changed.emit(mode.as_str().to_string());
         self.base.request_redraw();
     }
@@ -701,10 +708,24 @@ impl DiffViewer {
             RowSource::Line { index, .. } => Some(*index),
             RowSource::Fold { .. } => None,
         };
-        // Prefer the painted row below the marker, then the one above.
-        self.display_rows.get(row + 1).and_then(line_of).or_else(|| {
-            row.checked_sub(1).and_then(|above| self.display_rows.get(above)).and_then(line_of)
-        })
+        // "Nearest" is a distance: the old code always took the painted row *below* the marker,
+        // so a selection two lines into a collapsed hunk jumped to its far side instead of to the
+        // adjoining context row.
+        let above =
+            row.checked_sub(1).and_then(|above| self.display_rows.get(above)).and_then(line_of);
+        let below = self.display_rows.get(row + 1).and_then(line_of);
+        match (above, below) {
+            (Some(above), Some(below)) => {
+                if index.saturating_sub(above) <= below.saturating_sub(index) {
+                    Some(above)
+                } else {
+                    Some(below)
+                }
+            }
+            (Some(above), None) => Some(above),
+            (None, Some(below)) => Some(below),
+            (None, None) => None,
+        }
     }
 
     /// Keeps the selection on a line the rebuilt rows paint.
@@ -1038,6 +1059,10 @@ impl DiffViewer {
         // pointed past the new row count, and `scroll_lines` would then jump to the end.
         self.first_visible_line = 0;
         self.ensure_display_rows();
+        // A fresh comparison whose first line sits inside a fold selects a row the paint path
+        // skips: the fold setters already reconcile, and `recompute` must too, or
+        // `selected_index` names line 0 while nothing is painted.
+        self.reconcile_selection_with_display();
         self.compared.emit(self.change_count());
         self.base.request_layout();
         self.base.request_redraw();

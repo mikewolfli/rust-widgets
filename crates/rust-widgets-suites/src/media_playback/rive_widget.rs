@@ -1743,6 +1743,29 @@ impl RiveWidget {
         self.base.request_redraw();
     }
 
+    /// The numeric `"progress"` scrub pin, if the inputs carry a usable one.
+    ///
+    /// This is the single lookup `tick` re-applies and [`Self::is_animating`] consults, so the
+    /// "the playhead is held still" answer cannot drift between the two.
+    fn progress_pin(&self) -> Option<f32> {
+        self.state_machine_inputs.iter().find(|input| input.name == "progress").and_then(|input| {
+            match &input.value {
+                // A non-finite value is not a scrub position. `get_input_mut` can put one there
+                // after `set_input` has refused it, and `clamp` would pass it through.
+                RiveInputValue::Number(value) if value.is_finite() => Some(*value),
+                _ => None,
+            }
+        })
+    }
+
+    /// Whether a boolean `"playing"` input currently gates advancement.
+    fn playback_gated(&self) -> bool {
+        self.state_machine_inputs
+            .iter()
+            .find(|input| input.name == "playing")
+            .is_some_and(|input| input.value == RiveInputValue::Bool(false))
+    }
+
     /// Returns a reference to a named state machine input, if it exists.
     pub fn get_input(&self, name: &str) -> Option<&RiveInput> {
         self.state_machine_inputs.iter().find(|i| i.name == name)
@@ -1821,27 +1844,13 @@ impl RiveWidget {
     /// - a boolean `"playing"` input set to `false` gates advancement until it is
     ///   set back to `true` or removed.
     pub fn tick(&mut self, delta_ms: u64) -> bool {
-        let pinned_progress =
-            self.state_machine_inputs.iter().find(|input| input.name == "progress").and_then(
-                |input| match &input.value {
-                    // A non-finite value is not a scrub position. `get_input_mut` can put one
-                    // there after `set_input` has refused it, and `clamp` would pass it through.
-                    RiveInputValue::Number(value) if value.is_finite() => Some(*value),
-                    _ => None,
-                },
-            );
-        if let Some(value) = pinned_progress {
+        if let Some(value) = self.progress_pin() {
             self.animation_progress = value.clamp(0.0, 1.0);
             self.base.request_redraw();
             return false;
         }
 
-        let gated_playback = self
-            .state_machine_inputs
-            .iter()
-            .find(|input| input.name == "playing")
-            .is_some_and(|input| input.value == RiveInputValue::Bool(false));
-        if gated_playback || !self.is_playing || self.animation_name.is_empty() {
+        if self.playback_gated() || !self.is_playing || self.animation_name.is_empty() {
             return false;
         }
 
@@ -2012,11 +2021,20 @@ impl Widget for RiveWidget {
     // no more frames, and the frame on which it finished reported that it did.
     fn tick(&mut self, delta_ms: u32) -> bool {
         RiveWidget::tick(self, u64::from(delta_ms));
-        self.is_playing()
+        self.is_animating()
     }
 
+    /// Whether another frame is owed.
+    ///
+    /// Answering `is_playing()` alone asked for frames that could never change the picture: a
+    /// numeric `"progress"` pin re-applies the scrubbed playhead on every call and a boolean
+    /// `"playing"` input set to `false` gates advancement, yet both leave `is_playing` true. The
+    /// frame bus then spun forever on a static image.
     fn is_animating(&self) -> bool {
         self.is_playing()
+            && !self.animation_name.is_empty()
+            && !self.playback_gated()
+            && self.progress_pin().is_none()
     }
     /// Resolves a published event name to the control's own signal.
     ///
@@ -2917,6 +2935,30 @@ mod tests {
         rive.play();
         rive.tick(100);
         assert!(rive.animation_progress() > 0.0, "playback advances again");
+    }
+
+    /// A held playhead owes no frames even while `is_playing` is true.
+    ///
+    /// `is_animating` answered `is_playing()` alone, so a scrub pin or a boolean `playing` gate
+    /// left the frame bus asking for frames that could not change a pixel.
+    #[test]
+    fn a_held_playhead_owes_no_frames() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("run", &make_rive_json()).unwrap();
+        rive.play();
+        assert!(Widget::is_animating(&rive), "a playing animation owes frames");
+
+        rive.set_progress(0.4);
+        assert!(rive.is_playing(), "a scrub does not stop playback");
+        assert!(!Widget::is_animating(&rive), "but a pinned playhead moves on no frame");
+
+        rive.play();
+        assert!(rive.get_input("progress").is_none(), "play releases the pin");
+        assert!(Widget::is_animating(&rive), "and the frames are owed again");
+
+        rive.set_input("playing", RiveInputValue::Bool(false));
+        assert!(rive.is_playing(), "the gate is an input, not a lifecycle change");
+        assert!(!Widget::is_animating(&rive), "a gated animation owes no frames either");
     }
 
     /// `play` replays a finished animation instead of completing it on the first frame.

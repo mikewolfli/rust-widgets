@@ -882,6 +882,43 @@ mod issue_2_8_tests {
         )));
     }
 
+    /// A comparison rebuilt while folding is on reconciles its selection with the folds.
+    ///
+    /// `recompute` always selected line 0, and never reconciled it with the row list: a fresh
+    /// comparison whose first line sits inside a fold reported a selection the paint path skips.
+    #[test]
+    fn a_rebuilt_comparison_reconciles_its_selection_with_the_folds() {
+        let text: Vec<String> = (0..30).map(|n| format!("line{n}")).collect();
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_fold_unchanged(true);
+        viewer.set_texts(text.join("\n"), text.join("\n"));
+        assert_eq!(viewer.display_row_count(), 1, "the whole comparison is one marker");
+        assert_eq!(viewer.selected_index(), None, "nothing painted, so nothing is selected");
+    }
+
+    /// A selection inside a fold snaps to the nearest painted context row.
+    ///
+    /// The old `nearest_painted_line` always preferred the row **below** the marker, so a selection
+    /// near the top of a collapsed hunk jumped to its far side.
+    #[test]
+    fn a_hidden_selection_snaps_to_the_nearest_context_row() {
+        let text: Vec<String> = (0..30).map(|n| format!("line{n}")).collect();
+        let mut changed = text.clone();
+        changed[25] = "line twenty-five".to_string();
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts(text.join("\n"), changed.join("\n"));
+        viewer.set_fold_context_lines(2);
+        viewer.set_fold_unchanged(true);
+        viewer.display_row_count();
+
+        assert!(viewer.select_index(5));
+        let selected = viewer.selected_index().expect("the snap keeps a selection");
+        assert!(
+            selected <= 5,
+            "line 5 must snap to the context row above it, not across the hunk to {selected}"
+        );
+    }
+
     /// A document folded into a single marker paints nothing, so it cannot hold a selection.
     ///
     /// `nearest_painted_line` returns `None` when the fold has no painted neighbour on either
@@ -950,6 +987,27 @@ mod issue_2_8_tests {
             vec!["a.rs", "c.rs"],
             "a path that was not newly selected is never reported"
         );
+    }
+
+    /// A `None` view holds no selection, whatever it held before.
+    ///
+    /// Entering `SelectionMode::None` only truncated a multi-selection to one row, so the published
+    /// mode and `selected_paths()` contradicted each other and the highlight stayed painted.
+    #[test]
+    fn a_none_selection_mode_clears_the_selection() {
+        use rust_widgets::widget::view_widgets::list_view::SelectionMode;
+
+        let mut list = DiffFileList::new(Rect::new(0, 0, 300, 200));
+        list.set_files(
+            ["a.rs", "b.rs"]
+                .iter()
+                .map(|path| FileDiffEntry::new(*path, FileDiffStatus::Modified))
+                .collect(),
+        );
+        assert!(list.select_file("a.rs"));
+        list.set_selection_mode(SelectionMode::None);
+        assert!(list.selected_paths().is_empty(), "a `None` view selects nothing");
+        assert!(!list.select_file("a.rs"), "and a select request reports that it did nothing");
     }
 
     /// A path containing the token separator round-trips through the published property.

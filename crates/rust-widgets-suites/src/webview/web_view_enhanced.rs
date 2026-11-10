@@ -19,6 +19,7 @@ use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
 use rust_widgets::style::WidgetStyle;
+use rust_widgets::widget::metrics::{dimensions, ControlMetrics};
 use rust_widgets::widget::{Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 
@@ -337,9 +338,19 @@ impl WebViewPainter {
         context.fill_rect(rect, bg_color);
         context.draw_rect(rect, border_color);
 
-        // ── Address bar area (30px at top) ──
-        let addr_h = 30u32;
-        let addr_rect = Rect::new(rect.x + 1, rect.y + 1, rect.width.saturating_sub(2), addr_h);
+        // ── Address bar area ──
+        //
+        // The height is the shared `WEB_URL_BAR_HEIGHT`, not a second literal: `WebEngineView`
+        // paints its URL band from the same constant, and the two wrappers showing different
+        // band heights for the same chrome was the drift. The band is clamped to the control, so
+        // a short view cannot paint its chrome outside its own rectangle.
+        let bar_band = ControlMetrics::top_band(rect, dimensions::WEB_URL_BAR_HEIGHT);
+        let addr_rect = Rect::new(
+            rect.x + 1,
+            rect.y + 1,
+            rect.width.saturating_sub(2),
+            bar_band.height.saturating_sub(1),
+        );
         // The bar is the page fill eased toward the ink, which is the old 245/245/245 on a light
         // theme and stays distinct from the page on a dark one.
         context.fill_rect(addr_rect, window_fill.blend(&ink, 0.05));

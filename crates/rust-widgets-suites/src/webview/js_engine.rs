@@ -337,7 +337,7 @@ pub trait JsEngine: Send + Sync {
 ///
 /// It is not a conforming engine: it supports var/let/const declarations,
 /// function definitions and calls with positional parameters, `if`/`else`,
-/// `for` loops, array literals, member/index access, the **arithmetic, comparison and
+/// `for` loops, array literals, the **arithmetic, comparison and
 /// logical operators** (`+ - * / %`, `== != < <= > >=`, `&& || !`, with the usual
 /// precedence and left associativity), and the `parseInt`, `parseFloat`, `String`,
 /// `Number` and `Boolean` built-ins. It performs no prototype lookups, no closures
@@ -347,10 +347,13 @@ pub trait JsEngine: Send + Sync {
 ///
 /// # What it does not do
 ///
-/// An argument that is itself an expression (`f(a + 1)`) is evaluated like any other
-/// expression, and a bare identifier argument reads its variable (an identifier that was
-/// never defined is `undefined`). There are no escapes inside string literals, and no arrow
-/// functions (`=>`).
+/// There is no member or index access: `a.b` and `a[0]` are not evaluated, and an array
+/// literal can be built but not read back element-wise. A dotted identifier is looked up as
+/// one flat global name, which is why a call such as `console.log(1)` resolves only if a global
+/// named exactly that exists. An argument that is itself an expression (`f(a + 1)`) is evaluated
+/// like any other expression, and a bare identifier argument reads its variable (an identifier
+/// that was never defined is `undefined`). There are no escapes inside string literals, and no
+/// arrow functions (`=>`).
 ///
 /// Globals are stored in the engine and mirrored into the passed [`JsContext`] after every
 /// [`JsEngine::evaluate`] call, so a host can inspect and seed them through the context.

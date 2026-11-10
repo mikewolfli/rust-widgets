@@ -756,6 +756,23 @@ impl MapView {
         self.set_center(self.center_x + dx, self.center_y + dy);
     }
 
+    /// Pans by a **screen-pixel** delta, through the projection and the painted zoom.
+    ///
+    /// Screen +x moves the content right (so the centre moves left) and screen +y moves it down (so
+    /// the projected centre decreases), matching the drag path. One conversion for pointers and
+    /// keys is what keeps their steps equal; see the arrow-key arm for what dividing the raw
+    /// latitude cost under Mercator.
+    fn pan_screen(&mut self, dx: f32, dy: f32) {
+        if !dx.is_finite() || !dy.is_finite() {
+            return;
+        }
+        let zoom = self.painted_zoom().max(0.0001);
+        let next_x = self.center_x - dx / zoom;
+        let projected_y = self.project_world_y(self.center_y) - dy / zoom;
+        let next_y = self.unproject_world_y(projected_y);
+        self.pan_by(next_x - self.center_x, next_y - self.center_y);
+    }
+
     /// Returns zoom level.
     pub fn zoom(&self) -> f32 {
         self.zoom
@@ -1378,7 +1395,11 @@ impl MapView {
         }
         let px = pos.x as f32;
         let py = pos.y as f32;
-        self.clusters().iter().find_map(|cluster| {
+        // Painted last wins: `draw` walks the list in order, so a later badge covers an earlier
+        // one. Searching forwards reported the hidden cluster's centre from a press on the visible
+        // badge. The pin path was fixed for exactly this (reverse iteration).
+        let clusters = self.clusters();
+        clusters.iter().rev().find_map(|cluster| {
             if cluster.indices.len() < 2 {
                 return None;
             }
@@ -1745,10 +1766,14 @@ impl EventHandler for MapView {
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
-                37 => self.pan_by(-20.0 / self.zoom, 0.0),
-                38 => self.pan_by(0.0, -20.0 / self.zoom),
-                39 => self.pan_by(20.0 / self.zoom, 0.0),
-                40 => self.pan_by(0.0, 20.0 / self.zoom),
+                // A key is a 20 px pan, converted through the same projection and painted zoom a
+                // drag uses. Dividing the raw latitude moved `20 / cos(lat)` screen pixels under
+                // Mercator (2x at 60 deg, ~5.8x at 80 deg), and used the animation's destination
+                // zoom rather than the one on screen.
+                37 => self.pan_screen(20.0, 0.0),
+                38 => self.pan_screen(0.0, 20.0),
+                39 => self.pan_screen(-20.0, 0.0),
+                40 => self.pan_screen(0.0, -20.0),
                 187 | 107 => self.zoom_by(1.12),
                 189 | 109 => self.zoom_by(0.9),
                 _ => { /* Other keys are not relevant */ }
@@ -1785,6 +1810,16 @@ impl EventHandler for MapView {
                         if reset {
                             self.compass.set_bearing(0.0);
                         }
+                        return;
+                    }
+                    if self.control_fits(self.scale_bar.base().geometry())
+                        && self.scale_bar.base().geometry().contains_point(*pos)
+                    {
+                        // The legend is painted over the pins, so a press on it must not fall
+                        // through to the cluster/marker/pan logic: it selected an invisible
+                        // marker under the legend, or panned the map as if the legend were bare
+                        // imagery.
+                        self.scale_bar.handle_event(event);
                         return;
                     }
                 }
@@ -1920,7 +1955,26 @@ impl Draw for MapView {
             for cluster in clusters.iter() {
                 let (sx, sy) = cluster.screen;
                 if cluster.indices.len() > 1 {
-                    context.fill_circle(Point::new(sx as i32, sy as i32), 9, MAP_MARKER_COLOR);
+                    // The badge is drawn last and nothing clips a widget at this layer, so one near
+                    // an edge used to ink up to its radius over the neighbouring widget — with the
+                    // overhanging part unclickable, because events stop at `rect`. Pins already
+                    // refuse to paint outside the pane (`marker_is_inside`); the badge follows the
+                    // same rule.
+                    const BADGE_RADIUS: i32 = 9;
+                    let badge_x = sx as i32;
+                    let badge_y = sy as i32;
+                    if badge_x - BADGE_RADIUS < rect.x
+                        || badge_y - BADGE_RADIUS < rect.y
+                        || badge_x + BADGE_RADIUS > rect.right()
+                        || badge_y + BADGE_RADIUS > rect.bottom()
+                    {
+                        continue;
+                    }
+                    context.fill_circle(
+                        Point::new(badge_x, badge_y),
+                        BADGE_RADIUS as u32,
+                        MAP_MARKER_COLOR,
+                    );
                     // One buffer reused for every badge in the frame: the count was a fresh
                     // `String` per cluster on every paint.
                     let count = &mut self.cluster_badge;
@@ -1928,7 +1982,7 @@ impl Draw for MapView {
                     let _ = write!(count, "{}", cluster.indices.len());
                     let metrics = context.measure_text(count, effective_font(style));
                     context.draw_text(
-                        Point::new(sx as i32 - metrics.width as i32 / 2, sy as i32 - 6),
+                        Point::new(badge_x - metrics.width as i32 / 2, badge_y - 6),
                         count,
                         effective_font(style),
                         Color::WHITE,
@@ -2357,6 +2411,53 @@ mod tests {
         assert!((centred_y - 120.0).abs() < 0.5, "centred marker y was {centred_y}");
     }
 
+    /// An arrow key and a drag of the same length move the map the same screen distance.
+    ///
+    /// The keys added `20 / self.zoom` to the raw latitude, while a drag converts its pixel delta
+    /// through projected space. Under Mercator one world degree of y is `zoom / cos(lat)` pixels,
+    /// so a key moved `20 / cos(lat)` px — 2× at 60° — and used the animation's destination zoom
+    /// rather than the painted one.
+    #[test]
+    fn arrow_keys_pan_the_same_screen_distance_as_a_drag() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_projection(MapProjection::Mercator);
+        map.set_center(0.0, 60.0);
+        let (_, before) = map.world_to_screen(0.0, 55.0);
+
+        map.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+
+        let (_, after) = map.world_to_screen(0.0, 55.0);
+        let moved = (after - before).abs();
+        assert!((moved - 20.0).abs() < 1.0, "the down arrow must pan 20 screen px, not {moved:.1}");
+    }
+
+    /// A press on the scale legend does not select a marker painted underneath it.
+    ///
+    /// The legend is painted over the pins, but `handle_event` never consulted its rectangle, so a
+    /// press fell through to the marker hit test and selected a marker the user could not see.
+    #[test]
+    fn the_scale_legend_is_an_input_barrier() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.layout_map_controls();
+        map.sync_map_controls();
+        let legend = map.scale_bar().base().geometry();
+        assert!(legend.width > 0 && legend.height > 0, "the legend is painted");
+        let target = legend.center();
+
+        // The pin is placed exactly under the legend, using the map's own screen mapping.
+        let rect = map.geometry();
+        let zoom = map.painted_zoom().max(0.0001);
+        let (center_x, center_y) = map.center();
+        let world_x =
+            center_x + (target.x as f32 - (rect.x as f32 + rect.width as f32 / 2.0)) / zoom;
+        let world_y =
+            center_y + (target.y as f32 - (rect.y as f32 + rect.height as f32 / 2.0)) / zoom;
+        map.set_markers(vec![MapMarker::new("hidden", "Hidden", world_x, world_y)]);
+
+        map.handle_event(&Event::mouse_press(target.x, target.y, 1));
+        assert_eq!(map.selected_marker_id(), None, "the legend swallowed the press");
+    }
+
     #[test]
     fn projection_property_round_trips() {
         let mut map = MapView::new(Rect::new(0, 0, 400, 240));
@@ -2478,7 +2579,10 @@ mod tests {
                 guard.push(*key);
             }
         });
-        assert!(loader.deliver_tile(second.key, vec![1, 2, 3]));
+        assert!(!loader.deliver_tile(second.key, vec![1, 2, 3]), "a truncated tile is refused");
+        assert!(!loader.is_cached(second.key), "and stays outstanding so the host can retry");
+        let tile_bytes = vec![7u8; 256 * 256 * 4];
+        assert!(loader.deliver_tile(second.key, tile_bytes));
         assert!(loader.is_cached(second.key));
         assert_eq!(
             loaded.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
@@ -2920,7 +3024,8 @@ mod tests {
         assert!(requests.iter().all(|request| !request.url.is_empty()));
 
         let first = requests[0].clone();
-        assert!(map.deliver_tile(first.key, vec![1, 2, 3]));
+        let tile_size = map.tile_loader().tile_size() as usize;
+        assert!(map.deliver_tile(first.key, vec![1u8; tile_size * tile_size * 4]));
         assert!(map.tile_loader().is_cached(first.key));
         assert!(!map.reject_tile(TileKey::new(19, 0, 0)), "an unrequested tile is refused");
 

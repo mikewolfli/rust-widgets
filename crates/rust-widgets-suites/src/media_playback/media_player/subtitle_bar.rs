@@ -183,6 +183,7 @@ impl SubtitleBar {
     /// host that switches tracks calls this again (the player announces the switch through
     /// `subtitle_track_selected`) (MW-016).
     pub fn follow_video_player(&mut self, player: &VideoPlayer) {
+        let before = self.current_caption();
         let cues = player
             .subtitle_track()
             .and_then(|index| player.subtitle_tracks().get(index))
@@ -213,6 +214,12 @@ impl SubtitleBar {
         });
         self.binding = Some(SubtitleBinding { caption, _scope: scope });
         self.base.request_redraw();
+        // Binding swaps the painted caption in one step (the fallback text is replaced by the
+        // cue at the player's clock). That is a visible caption change, so it is announced the
+        // same way the clock's own transitions are.
+        if self.current_caption() != before {
+            self.text_changed.emit();
+        }
     }
 
     /// Whether the band is following a player's clock.
@@ -222,8 +229,14 @@ impl SubtitleBar {
 
     /// Stops following the player and returns to the explicit [`Self::text`].
     pub fn stop_following_player(&mut self) {
+        let before = self.current_caption();
         if self.binding.take().is_some() {
             self.base.request_redraw();
+            // Returning to the explicit fallback text is also a caption change; only the
+            // clock-driven ones were announced before.
+            if self.current_caption() != before {
+                self.text_changed.emit();
+            }
         }
     }
 
@@ -486,6 +499,38 @@ mod tests {
 
         bar.stop_following_player();
         assert_eq!(bar.get("text"), Ok(CapabilityValue::String("explicit".into())));
+    }
+
+    /// Binding and unbinding change the painted caption, so both are published.
+    ///
+    /// Only the clock-driven cue transitions emitted `text_changed`; a host that bound the band
+    /// (or stopped the follow) saw the pixels change in silence.
+    #[test]
+    fn binding_and_unbinding_announce_the_caption_change() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(10.0);
+        player.set_subtitle_tracks(vec![crate::media_playback::video_player::SubtitleTrack::new(
+            "s1",
+            "English",
+            vec![SubtitleCue::new(0.0, 2.0, "hello")],
+        )]);
+        player.set_subtitle_track(0).expect("the track exists");
+
+        let mut bar = SubtitleBar::new(Rect::new(0, 0, 320, 48));
+        bar.set_text("explicit");
+        let changes = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&changes);
+        bar.text_changed.connect(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        bar.follow_video_player(&player);
+        assert_eq!(changes.load(Ordering::SeqCst), 1, "binding replaced the explicit text");
+
+        bar.stop_following_player();
+        assert_eq!(changes.load(Ordering::SeqCst), 2, "unbinding returned to the explicit text");
     }
 
     /// A followed caption change owes the band a repaint.

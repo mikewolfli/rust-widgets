@@ -125,9 +125,10 @@ impl WebFindBar {
             return;
         }
         self.query = query;
-        // The old counts describe the old query; the view's answer arrives through
-        // `sync_find_progress` once the attached queue is drained.
+        // The old counts describe the old query, and a result already sitting in the attached view's
+        // cell described it too: adopting it would label the new query with the old match count.
         self.set_match_progress(0, 0);
+        self.discard_pending_progress();
         self.base.request_redraw();
         self.search_requested.emit((self.query.clone(), self.case_sensitive));
     }
@@ -160,6 +161,9 @@ impl WebFindBar {
             return;
         }
         self.case_sensitive = case_sensitive;
+        // The counts were measured under the other case rule, exactly as they are for a new query.
+        self.set_match_progress(0, 0);
+        self.discard_pending_progress();
         self.base.request_redraw();
         if !self.query.is_empty() {
             self.search_requested.emit((self.query.clone(), self.case_sensitive));
@@ -234,6 +238,17 @@ impl WebFindBar {
             return;
         };
         self.set_match_progress(index, count);
+    }
+
+    /// Drops a result the attached view published for a superseded query or case rule.
+    ///
+    /// The cell is filled asynchronously by the view. Clearing the visible counts is not enough: a
+    /// result already sitting in the cell describes the *old* options and was adopted by the next
+    /// [`Self::sync_find_progress`], labelling the new query with the old match count.
+    fn discard_pending_progress(&mut self) {
+        if let Some(sink) = self.find_progress.as_ref() {
+            *lock(sink) = None;
+        }
     }
 
     /// Whether the bar is attached to a view's find queue.
@@ -428,9 +443,11 @@ impl Draw for WebFindBar {
         if !self.visible {
             return;
         }
-        // The query line, fitted to the box the action controls leave.
-        let actions = 84u32;
-        let text_width = rect.width.saturating_sub(actions + 12);
+        // The query line, fitted to the box the trailing controls leave. The counter starts at
+        // `right - 112`; the query used to run to `right - 88` and therefore painted its longest
+        // line (and its ellipsis) *underneath* the counter, which is drawn after it.
+        const TRAILING_STRIP: u32 = 116;
+        let text_width = rect.width.saturating_sub(8 + TRAILING_STRIP);
         let shown = if self.query.is_empty() { "Find in page" } else { &self.query };
         context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + 8, rect.y + 8, text_width, rect.height.saturating_sub(16)),
@@ -604,6 +621,44 @@ mod tests {
         assert_eq!(closes.load(order), 1);
         assert_eq!(bar.get("visible").unwrap(), CapabilityValue::Bool(false));
         assert_eq!(bar.command("no_such_command"), Err(CapabilityAccessError::UnknownCommand));
+    }
+
+    /// A case-rule change clears the counts it just invalidated, like a new query does.
+    ///
+    /// The toggle re-ran the search but kept painting the previous rule's counter until the view
+    /// answered; an answer already sitting in the attached cell was adopted for the new rule.
+    #[test]
+    fn changing_the_case_rule_clears_the_old_counts() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 320, 240));
+        view.load_html("<p>cat category cat</p>");
+        let mut bar = WebFindBar::new(Rect::new(0, 0, 320, 36));
+        bar.open();
+        bar.set_query("cat");
+        assert_eq!(bar.apply_to(&mut view), (1, 3));
+
+        bar.set_case_sensitive(true);
+        assert_eq!(bar.match_progress(), (0, 0), "the old counts described the other rule");
+    }
+
+    /// A result the view published for the previous query is not adopted for the new one.
+    #[test]
+    fn a_stale_published_result_is_not_adopted() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 320, 240));
+        view.load_html("<p>cat category cat</p>");
+        let mut bar = WebFindBar::new(Rect::new(0, 0, 320, 36));
+        bar.open();
+        bar.attach(&mut view);
+        bar.set_query("cat");
+        // The view answers `cat` into the bar's cell, but the bar has not drained it yet.
+        let _ = view.poll_find_requests();
+
+        bar.set_query("dog");
+        bar.sync_find_progress();
+        assert_eq!(
+            bar.match_progress(),
+            (0, 0),
+            "the cat result must not be adopted as the count for dog"
+        );
     }
 
     /// The companion drives the engine's find API and adopts its counter (MW-014).

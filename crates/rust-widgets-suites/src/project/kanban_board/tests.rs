@@ -1259,6 +1259,81 @@ mod cases {
         );
     }
 
+    /// A grouped reorder inside a full column still moves the group.
+    ///
+    /// The batch budget was computed as `limit - cards.len()`, so in the destination's own column
+    /// it was `limit - limit == 0`: the primary card moved and the rest of the selection stayed.
+    /// A WIP limit caps arrivals, not movement — the same rule `on_drop` applies to the primary.
+    #[test]
+    fn a_grouped_reorder_inside_a_full_column_moves_the_group() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 400, 400));
+        board.add_column(KanbanColumn::new("only", "Only").with_wip_limit(4));
+        for id in ["a", "b", "c", "d"] {
+            board.add_card(0, KanbanCard::new(id, id));
+        }
+        assert!(board.set_card_selected("a", true));
+        assert!(board.set_card_selected("b", true));
+
+        // Dropping on card 2's centre commits the primary at index 1 (the midpoint rule, minus the
+        // in-column compensation); the selected group follows it.
+        let start = card_center(&board, CardPosition { column: 0, card: 0 });
+        let target = card_center(&board, CardPosition { column: 0, card: 2 });
+        board.handle_event(&Event::mouse_press(start.x, start.y, 1));
+        board.handle_event(&Event::mouse_move(target.x, target.y));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+
+        let order: Vec<&str> = board
+            .column(0)
+            .expect("the only column")
+            .cards
+            .iter()
+            .map(|card| card.id.as_str())
+            .collect();
+        assert_eq!(order, ["a", "c", "b", "d"], "the group followed the primary card");
+        assert_eq!(board.column(0).expect("the only column").cards.len(), 4);
+    }
+
+    /// A collapsed column paints no insertion line, because the commit always appends there.
+    #[test]
+    fn no_insertion_line_in_a_collapsed_column() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("src", "Src"));
+        board.add_column(KanbanColumn::new("dst", "Dst"));
+        for index in 0..3 {
+            board.add_card(1, KanbanCard::new(format!("d{index}"), "D"));
+        }
+        let rect = board.column_rect(1).expect("column 1");
+        let pos = Point::new(rect.x + 10, rect.y + HEADER_HEIGHT as i32 + 100);
+        assert!(board.insertion_line_y(pos).is_some(), "an open column has a slot");
+
+        assert!(board.set_column_collapsed(1, true));
+        assert_eq!(
+            board.insertion_line_y(pos),
+            None,
+            "the line must not promise a slot the commit ignores"
+        );
+    }
+
+    /// A WIP-full destination accepts no drop, so nothing may paint it as a target.
+    #[test]
+    fn a_wip_full_destination_is_not_an_accepted_drop() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("src", "Src"));
+        board.add_column(KanbanColumn::new("full", "Full").with_wip_limit(1));
+        board.add_card(0, KanbanCard::new("a", "A"));
+        board.add_card(1, KanbanCard::new("x", "X"));
+
+        let start = card_center(&board, CardPosition { column: 0, card: 0 });
+        let full = board.column_rect(1).expect("full");
+        let target = Point::new(full.x + full.width as i32 / 2, full.y + HEADER_HEIGHT as i32 + 10);
+        board.handle_event(&Event::mouse_press(start.x, start.y, 1));
+        board.handle_event(&Event::mouse_move(target.x, target.y));
+
+        assert_eq!(board.hovered_column(), Some(1), "the pointer is over the full column");
+        assert!(!board.accepts_drop(1), "but the drop is refused, so no tint may promise it");
+        assert!(board.accepts_drop(0), "the card's own column still accepts a reorder");
+    }
+
     /// A drop on a collapsed column appends instead of guessing a hidden slot.
     #[test]
     fn dropping_on_a_collapsed_column_appends() {

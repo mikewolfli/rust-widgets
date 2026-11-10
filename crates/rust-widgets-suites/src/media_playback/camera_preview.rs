@@ -415,12 +415,14 @@ impl CameraPreview {
         self.base.request_redraw();
     }
 
-    /// Supplies a decoded RGBA frame for the viewfinder.
+    /// Supplies a decoded frame for the viewfinder.
     ///
     /// The frame's own dimensions become the preview's resolution, which is what makes
     /// [`Self::set_resolution`] a *format negotiation* rather than a label: the picture and the
-    /// readout name the same size because both come from the frame that is on screen. Returns
-    /// `Err` when the dimensions are empty or the byte count is not `width * height * 4`.
+    /// readout name the same size because both come from the frame that is on screen. The byte
+    /// layout is the preview's current [`Self::pixel_format`] (both variants are 4 bytes per
+    /// pixel), not necessarily RGBA. Returns `Err` when the dimensions are empty or the byte
+    /// count is not `width * height * 4`.
     pub fn set_frame(&mut self, width: u32, height: u32, data: &[u8]) -> Result<(), String> {
         let result = self.set_frame_bytes_shared(width, height, 0, Arc::from(data));
         if let Err(error) = &result {
@@ -431,9 +433,10 @@ impl CameraPreview {
 
     /// Supplies a frame from a shared byte buffer, with no pixel copy.
     ///
-    /// The buffer must hold `width * height * 4` RGBA bytes; the length is checked against the
-    /// shared slice, not copied. Use [`Self::set_frame_shared`] when the caller already owns a
-    /// whole [`CameraFrame`], which also carries the layout.
+    /// The buffer must hold `width * height * 4` bytes in the preview's current
+    /// [`Self::pixel_format`]; the length is checked against the shared slice, not copied. Use
+    /// [`Self::set_frame_shared`] when the caller already owns a whole [`CameraFrame`], which
+    /// also carries the layout.
     pub fn set_frame_bytes_shared(
         &mut self,
         width: u32,
@@ -1084,7 +1087,9 @@ impl EventHandler for CameraPreview {
                 return;
             }
             let rect = self.geometry();
-            if self.show_controls {
+            // The overlay is painted only while the preview is active and controls are shown;
+            // a hit test that ignored `is_active` accepted clicks on buttons that were not drawn.
+            if self.is_active && self.show_controls {
                 if self.zoom_in_rect(rect).contains_point(*pos) {
                     self.zoom_in();
                     return;
@@ -1105,6 +1110,27 @@ impl EventHandler for CameraPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A zoom button that is not painted is not clickable either.
+    ///
+    /// The overlay is drawn only while the preview is active, but the hit test checked
+    /// `show_controls` alone: a press on the invisible button zoomed the picture instead of
+    /// toggling the preview.
+    #[test]
+    fn zoom_buttons_only_answer_while_the_overlay_is_painted() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        preview.show_controls();
+        let rect = preview.geometry();
+        let zoom_in = preview.zoom_in_rect(rect);
+        let target = zoom_in.center();
+
+        preview.handle_event(&Event::MousePress { pos: target, button: 1, modifiers: 0 });
+        assert_eq!(preview.zoom_level(), 1.0, "an unpainted button must not zoom");
+        assert!(preview.is_active(), "the press falls through to the preview toggle");
+
+        preview.handle_event(&Event::MousePress { pos: target, button: 1, modifiers: 0 });
+        assert_eq!(preview.zoom_level(), 1.5, "now that it is painted, the button works");
+    }
 
     /// Both published names must resolve, and an unpublished one must not.
     #[test]

@@ -245,6 +245,12 @@ impl DiffFileList {
         if !matches!(mode, rust_widgets::widget::view_widgets::list_view::SelectionMode::Multi) {
             self.selected.truncate(1);
         }
+        if mode == rust_widgets::widget::view_widgets::list_view::SelectionMode::None {
+            // `None` is documented as "the view accepts no selection at all", so entering it must
+            // drop the row that was selected: leaving it made `selection_mode == "none"`
+            // contradict `selected_paths()` and kept the highlight painted.
+            self.selected.clear();
+        }
         // Leaving `Extended` must not leave an anchor behind for a later switch back to extend
         // from; entering it starts from whatever row survived the mode change.
         self.selection_anchor =
@@ -278,6 +284,12 @@ impl DiffFileList {
         let Some(index) = self.files.iter().position(|file| file.path == path) else {
             return false;
         };
+        // A `None` view selects nothing, so this call cannot have selected anything and must not
+        // report that it did.
+        if self.selection_mode == rust_widgets::widget::view_widgets::list_view::SelectionMode::None
+        {
+            return false;
+        }
         // `select_index` toggles in `Multi` mode (a click on a selected row removes it), but this
         // method's contract is to *select*: calling it for an already-selected path must not
         // deselect the file the caller asked for, nor report it as newly selected.

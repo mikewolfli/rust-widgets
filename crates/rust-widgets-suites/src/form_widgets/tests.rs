@@ -553,6 +553,96 @@ fn writing_a_value_through_the_form_probes_the_child_contract() {
     assert!(!form.set_value_of("missing", "value"));
 }
 
+/// A control whose `value` is a String is writable, not merely readable.
+///
+/// The read probe accepted a String from any of `text`/`value`/`current_text`, while the write probe
+/// only ever wrote a String to `text`/`current_text`: such a control read fine, but `set_value_of`
+/// always answered `false` and `reset` could never restore its baseline.
+#[test]
+fn a_string_valued_control_is_writable_through_the_form() {
+    let factory = factory();
+    let otp = mount(&factory, "otp_input", "");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("code", "Code").with_widget(otp)));
+
+    assert!(form.set_value_of("code", "5678"), "`value` accepts a String");
+    assert_eq!(form.value_of("code").as_deref(), Some("5678"));
+}
+
+/// Hiding a rule's comparison target retires the verdicts it produced in other rows.
+///
+/// Only the hidden row's own verdict was cleared, so a visible row kept `"Required when …"`
+/// against a value the reader could no longer see or change — and `is_valid` disagreed with `validate`.
+#[test]
+fn hiding_a_rule_target_clears_the_verdict_it_caused() {
+    let factory = factory();
+    let country = mount(&factory, "line_edit", "DE");
+    let vat = mount(&factory, "line_edit", "");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("country", "Country").with_widget(country)));
+    assert!(form.add_field(FormField::new("vat", "VAT").with_widget(vat)));
+    assert!(form.set_form_rule("vat", FormRule::required_when("country", ["DE"])));
+    assert!(!form.validate(), "the rule fires while the target is visible");
+    assert!(form.field("vat").unwrap().error().is_some());
+
+    assert!(form.set_field_visible("country", false));
+    assert_eq!(form.field("vat").unwrap().error(), None, "the verdict is re-derived away");
+    assert!(form.is_valid());
+    assert!(form.validate(), "and the next full pass agrees");
+}
+
+/// Removing a cross-field rule keeps a verdict a surviving rule still produces.
+///
+/// The rule removal blind-cleared the row, so a form that was still invalid reported valid until the
+/// next `validate()` put the message back.
+#[test]
+fn removing_a_cross_field_rule_keeps_a_surviving_verdict() {
+    let factory = factory();
+    let name = mount(&factory, "line_edit", "x");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("name", "Name").with_widget(name)));
+    assert!(form.set_field_validator("name", |value: &str| {
+        (value == "x").then(|| "not allowed".to_string())
+    }));
+    assert!(form.set_form_rule("name", FormRule::same_as("other")));
+    assert!(!form.validate());
+    assert_eq!(
+        form.field("name").unwrap().error().map(str::to_string),
+        Some("not allowed".to_string())
+    );
+
+    assert!(form.remove_form_rule("name"));
+    assert_eq!(
+        form.field("name").unwrap().error().map(str::to_string),
+        Some("not allowed".to_string()),
+        "the closure rule still fails, so its verdict stays"
+    );
+    assert!(!form.is_valid());
+}
+
+/// Clearing the errors also cancels a ticket that was already in flight.
+#[test]
+fn clearing_errors_cancels_an_in_flight_async_ticket() {
+    let factory = factory();
+    let email = mount(&factory, "line_edit", "ada@example.com");
+    let mut form = Form::new(Rect::new(0, 0, 320, 240));
+    assert!(form.add_field(FormField::new("email", "Email").with_widget(email)));
+
+    let mut ticket = form.set_field_async_validator("email", |_| Some("Invalid".to_string()));
+    assert!(form.resolve_async(&mut ticket), "the first ticket lands its verdict");
+    assert!(form.field("email").unwrap().error().is_some());
+
+    // A ticket issued now, cleared before it resolves, must not put the error back.
+    let mut pending = form.set_field_async_validator("email", |_| Some("Invalid".to_string()));
+    form.clear_errors();
+    assert_eq!(form.field("email").unwrap().error(), None);
+    assert!(
+        !form.resolve(&mut pending, Some("Invalid".to_string())),
+        "a ticket issued before the clear must not land after it"
+    );
+    assert_eq!(form.field("email").unwrap().error(), None);
+}
+
 #[test]
 fn validate_field_runs_only_the_named_fields_rule() {
     let factory = factory();
@@ -623,6 +713,53 @@ fn form_set_dirty_aggregates_its_pages() {
     set.reset_all();
     assert!(!set.dirty());
     assert_eq!(*dirty.lock().unwrap(), Some(false), "reset publishes the clearing edge");
+}
+
+/// A disabled page is outside the dirty aggregate, as it is outside validity.
+///
+/// `dirty` documented that it aggregates "the same way `is_valid` does", but it read every page:
+/// an uncommittable edit on a page the reader cannot reach kept the set's `dirty` true.
+#[test]
+fn form_set_dirty_ignores_a_disabled_page() {
+    let factory = factory();
+    let field = mount(&factory, "line_edit", "Ada");
+    let mut inner = Form::new(Rect::new(0, 0, 240, 120));
+    assert!(inner.add_field(FormField::new("v", "V").with_widget(field)));
+    assert!(inner.set_value_of("v", "Grace"));
+    let form_id = runtime::register(Box::new(inner)).expect("the form registers");
+
+    let mut set = FormSet::new(Rect::new(0, 0, 480, 360));
+    assert!(set.add_page_form("one", "One", form_id));
+    assert!(set.dirty(), "the enabled page reports uncommitted changes");
+
+    set.page_mut("one").expect("page one").set_enabled(false);
+    set.refresh();
+    assert!(!set.dirty(), "a page the reader cannot reach cannot be committed");
+}
+
+/// `refresh` publishes the active-page move a repair causes.
+///
+/// `refresh` re-anchored the index after a `page_mut` edit but never routed the change through
+/// `publish_current_change`, so a host tracking the active page through `current_changed` was
+/// silently skipped — the one mutation path that did not announce it.
+#[test]
+fn refreshing_after_disabling_the_current_page_announces_the_move() {
+    let mut set = FormSet::new(Rect::new(0, 0, 480, 360));
+    assert!(set.add_page(FormPage::new("a", "A")));
+    assert!(set.add_page(FormPage::new("b", "B")));
+    assert!(set.set_current_index(0), "the first page is active");
+    let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let sink = Arc::clone(&seen);
+    set.current_changed.connect(move |index| {
+        if let Ok(mut guard) = sink.lock() {
+            guard.push(*index);
+        }
+    });
+
+    set.page_mut("a").expect("page a").set_enabled(false);
+    set.refresh();
+    assert_eq!(set.current_key(), Some("b"));
+    assert_eq!(*seen.lock().unwrap(), vec![1], "the move is published");
 }
 
 #[test]

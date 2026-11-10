@@ -114,16 +114,23 @@ impl Bar {
 
     /// Whether every field is a finite number and the high/low bracket the open and close.
     ///
-    /// `false` means the bar cannot be a real observation: a `NaN` price, or a high below
-    /// the low. Exposed so a caller loading historical data can report which bars were
-    /// rejected, rather than discovering it as a gap on screen.
+    /// `false` means the bar cannot be a real observation: a `NaN` price, a high below
+    /// the low, or an open/close outside the high/low bracket. The bracket is checked, not just
+    /// `high >= low`: a bar whose body sits outside its own wick draws a candle that cannot exist
+    /// and silently distorts every derived range. Exposed so a caller loading historical data can
+    /// report which bars were rejected, rather than discovering it as a gap on screen.
     pub fn is_consistent(&self) -> bool {
         let finite = self.open.is_finite()
             && self.high.is_finite()
             && self.low.is_finite()
             && self.close.is_finite()
             && self.volume.is_finite();
-        finite && self.high >= self.low
+        finite
+            && self.high >= self.low
+            && self.open >= self.low
+            && self.open <= self.high
+            && self.close >= self.low
+            && self.close <= self.high
     }
 }
 
@@ -591,10 +598,13 @@ impl Quote {
     /// Whether the quote is up on the day.
     ///
     /// An unchanged quote reads as up, matching [`Bar::is_rising`] and every trading
-    /// platform's colour convention.
+    /// platform's colour convention. A quote whose change is not a number reads as **not** up:
+    /// `change()` returns `NaN` for a missing or non-finite price, and `NaN >= 0.0` is false in
+    /// IEEE arithmetic, so treating it as rising painted a data-less row in the gaining colour
+    /// beside a `—` value.
     pub fn is_up(&self) -> bool {
         let change = self.change();
-        !change.is_finite() || change >= 0.0
+        change.is_finite() && change >= 0.0
     }
 }
 
@@ -821,6 +831,33 @@ mod tests {
         assert!((up.change() - 10.0).abs() < 1e-9);
         assert!((up.change_percent() - 10.0).abs() < 1e-9);
         assert!(up.is_up());
+    }
+
+    /// A quote with no usable change is not "up".
+    ///
+    /// `change()` answers `NaN` for a missing or non-finite price, and `is_up` used to test
+    /// `!change.is_finite() || change >= 0.0`, which classified that `NaN` as rising: the board
+    /// painted a data-less row in the gaining colour beside a `—` value.
+    #[test]
+    fn a_quote_without_a_change_is_not_up() {
+        assert!(!Quote::new("MISSING", f64::NAN, 100.0).is_up());
+        assert!(!Quote::new("NOBASE", 100.0, f64::NAN).is_up());
+        assert!(Quote::new("FLAT", 100.0, 100.0).is_up(), "an unchanged quote reads as up");
+    }
+
+    /// A bar's body has to sit inside the high/low bracket it claims.
+    ///
+    /// `is_consistent` promised "the high/low bracket the open and close" but checked only
+    /// `high >= low`, so an impossible observation passed the audit a historical loader uses to
+    /// reject bad rows — and was then drawn with its body outside its wick.
+    #[test]
+    fn an_inconsistent_bar_is_rejected() {
+        assert!(Bar::new(100.0, 110.0, 90.0, 105.0, 1.0).is_consistent());
+        assert!(!Bar::new(150.0, 100.0, 90.0, 80.0, 1.0).is_consistent(), "open above high");
+        assert!(!Bar::new(50.0, 100.0, 90.0, 95.0, 1.0).is_consistent(), "open below low");
+        assert!(!Bar::new(95.0, 100.0, 90.0, 80.0, 1.0).is_consistent(), "close below low");
+        assert!(!Bar::new(95.0, 100.0, 90.0, 105.0, 1.0).is_consistent(), "close above high");
+        assert!(!Bar::new(95.0, 80.0, 90.0, 85.0, 1.0).is_consistent(), "high below low");
     }
 }
 

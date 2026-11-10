@@ -54,6 +54,9 @@ impl Compass {
             return;
         }
         let normalized = bearing_deg.rem_euclid(360.0);
+        // `rem_euclid` can return 360.0 itself: a tiny negative angle rounds back up to 360 in
+        // f32 (the ULP at 360 is about 3e-5), which the getter's `0 .. 360` contract excludes.
+        let normalized = if normalized >= 360.0 { 0.0 } else { normalized };
         if (self.bearing_deg - normalized).abs() < f32::EPSILON {
             return;
         }
@@ -228,6 +231,19 @@ mod tests {
     use super::super::{ScaleBar, TileLoader, ZoomControl};
     use super::*;
     use crate::maps::ScaleUnits;
+
+    /// The bearing stays inside the documented `0 .. 360` even for a tiny negative angle.
+    ///
+    /// `(-1e-7f32).rem_euclid(360.0)` rounds back up to exactly 360.0 (the ULP at 360 is about
+    /// 3e-5), so the getter and the `bearing_deg` property published a value the contract excludes.
+    #[test]
+    fn a_negative_bearing_normalises_inside_the_range() {
+        let mut compass = Compass::new(Rect::new(0, 0, 56, 56));
+        compass.set_bearing(-1.0e-7);
+        assert!(compass.bearing_deg() < 360.0, "got {}", compass.bearing_deg());
+        assert!(compass.bearing_deg() >= 0.0);
+        assert!((compass.bearing_deg() - 0.0).abs() < 1.0e-5, "it is north, not a full turn");
+    }
 
     /// The tile status, the scale label and the zoom strip's label metrics are rebuilt only when
     /// their inputs move, not on every frame (SP-120).

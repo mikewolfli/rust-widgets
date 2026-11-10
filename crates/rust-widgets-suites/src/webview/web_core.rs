@@ -310,9 +310,12 @@ impl WebViewCore {
         self.url = url.clone();
         self.loading = true;
         self.load_progress = 0;
+        // The progress strip starts at zero, so a host mirroring the signal has to hear it: only
+        // the completion used to be published, and the strip jumped straight to full.
+        self.loading_progress.emit(self.load_progress);
         self.url_changed.emit(url.clone());
         self.loading_started.emit(url.clone());
-        self.history.navigate(url.clone());
+        self.record_session_navigation(url.clone());
 
         // ── Real HTTP fetch (web-http feature) ──
         //
@@ -363,8 +366,9 @@ impl WebViewCore {
         // ── Simulated mode (no web-http feature) ──
         #[cfg(not(feature = "web-http"))]
         {
-            // Emit progress at 50% without sleeping: the caller may be the UI thread.
+            // Report the intermediate step without sleeping: the caller may be the UI thread.
             self.load_progress = 50;
+            self.loading_progress.emit(self.load_progress);
         }
 
         // When an asynchronous HTTP fetch is in flight, the load is *not* finished here: the 100%
@@ -389,7 +393,7 @@ impl WebViewCore {
         self.loading_finished.emit(self.url.clone());
         self.title_changed.emit(self.title.clone());
         self.update_navigation_state();
-        self.browser_history.add_entry(self.url.clone(), self.title.clone());
+        self.record_page_visit();
         if produced_body {
             self.record_current_page();
         }
@@ -409,7 +413,7 @@ impl WebViewCore {
         // (`base_url`, or `data:text/html`); a per-document synthetic URL would change the
         // public `url()` value that the wrappers document and tests assert, so the stable
         // existing URL is kept and two anonymous HTML documents share one history spelling.
-        self.history.navigate(self.url.clone());
+        self.record_session_navigation(self.url.clone());
         self.title = "HTML Content".to_string();
         self.loading = true;
         self.load_progress = 0;
@@ -431,7 +435,7 @@ impl WebViewCore {
         // A document load is a navigation, so the panel-facing history records it exactly as
         // `set_url` does; otherwise `browser_history()` described a different session than
         // `history()` for the same loads.
-        self.browser_history.add_entry(self.url.clone(), self.title.clone());
+        self.record_page_visit();
         self.record_current_page();
         self.base.request_redraw();
     }
@@ -444,7 +448,7 @@ impl WebViewCore {
 
         self.url = base_url.to_string();
         // See `load_html`: a data load is a navigation and must be reachable through Back.
-        self.history.navigate(self.url.clone());
+        self.record_session_navigation(self.url.clone());
         self.title = format!("Data: {mime_type}");
         self.loading = true;
         self.load_progress = 0;
@@ -466,7 +470,7 @@ impl WebViewCore {
         // reason, which left a data load as the one navigation that moved silently.
         self.url_changed.emit(self.url.clone());
         self.update_navigation_state();
-        self.browser_history.add_entry(self.url.clone(), self.title.clone());
+        self.record_page_visit();
         self.record_current_page();
         self.base.request_redraw();
     }
@@ -559,7 +563,13 @@ impl WebViewCore {
         self.invalidate_pending_load();
         if self.loading {
             self.loading = false;
+            let had_progress = self.load_progress != 0;
             self.load_progress = 0;
+            // A host mirroring the strip would otherwise keep showing the progress of a load that
+            // was cancelled while `load_progress()` already reads zero.
+            if had_progress {
+                self.loading_progress.emit(self.load_progress);
+            }
             self.loading_finished.emit(self.url.clone());
             self.base.request_redraw();
         }
@@ -659,6 +669,31 @@ impl WebViewCore {
         &self.content
     }
 
+    /// Whether this session may record where it went.
+    ///
+    /// `WebSettings::private_browsing` is documented as "avoids persisting cookies and history",
+    /// but nothing read it: a host that entered a private session still got a visit list and a
+    /// back/forward stack that outlived the session.
+    fn records_history(&self) -> bool {
+        !self.settings.private_browsing
+    }
+
+    /// Pushes `url` on the session stack, unless this is a private session.
+    fn record_session_navigation(&mut self, url: String) {
+        if !self.records_history() {
+            return;
+        }
+        self.history.navigate(url);
+    }
+
+    /// Appends the current page to the visit list, unless this is a private session.
+    fn record_page_visit(&mut self) {
+        if !self.records_history() {
+            return;
+        }
+        self.browser_history.add_entry(self.url.clone(), self.title.clone());
+    }
+
     pub fn clear_browsing_data(&mut self, data: super::privacy::BrowsingData) {
         if data.cookies {
             self.cookies.clear();
@@ -734,7 +769,7 @@ impl WebViewCore {
                 self.loading_progress.emit(self.load_progress);
                 self.loading_finished.emit(self.url.clone());
                 self.title_changed.emit(self.title.clone());
-                self.browser_history.add_entry(self.url.clone(), self.title.clone());
+                self.record_page_visit();
                 self.record_current_page();
                 self.update_navigation_state();
                 self.base.request_redraw();

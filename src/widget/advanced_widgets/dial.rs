@@ -21,7 +21,14 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// bottom. Every place that maps between a position and an angle reads this pair of
 /// constants, so the needle, the notch ring and the hit test cannot disagree about
 /// where the gap is.
-const NON_WRAPPING_START: f64 = -std::f64::consts::PI * 0.75;
+///
+/// # Why the start is positive
+///
+/// Screen `y` grows **downward**, so a positive angle is below the centre. `+135°` is the
+/// lower-left corner; sweeping 270° from there ends at `+405°` (the lower-right corner) and leaves
+/// the arc through the bottom uncovered — the gap a rotary knob has, with its minimum at 7:30 and
+/// its maximum at 4:30.
+const NON_WRAPPING_START: f64 = std::f64::consts::PI * 0.75;
 
 /// The angular sweep, in radians, of a non-wrapping dial's scale (270°).
 const NON_WRAPPING_SWEEP: f64 = std::f64::consts::PI * 1.5;
@@ -229,6 +236,18 @@ impl Dial {
             // the wrapping contract intact for every in-range span while making the
             // extreme case saturate instead of panic.
             let span = self.maximum as i64 - self.minimum as i64 + 1;
+            if span <= 0 {
+                // An inverted pair (`maximum == minimum - 1` after a bound write) has no span to
+                // wrap into; `rem_euclid(0)` panics inside the setter. Keep the value and let the
+                // read paths clamp through `ordered_clamp_i32`.
+                if self.value != ordered_clamp_i32(value, self.minimum, self.maximum) {
+                    let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
+                    self.value = clamped;
+                    self.value_changed.emit(clamped);
+                    self.base.request_redraw();
+                }
+                return;
+            }
             let offset = (value as i64 - self.minimum as i64).rem_euclid(span);
             (self.minimum as i64 + offset) as i32
         } else {
@@ -322,8 +341,8 @@ impl Dial {
     /// they annotate, which is a scale pointing at nothing. Every caller therefore comes here.
     ///
     /// A wrapping dial sweeps the full circle from `-π` at the bottom of the range; a
-    /// non-wrapping one sweeps 270° starting at `-135°`, leaving the gap at the bottom of the
-    /// face.
+    /// non-wrapping one sweeps 270° starting at `+135°` (the lower-left corner), leaving the gap
+    /// across the bottom of the face.
     fn angle_at_fraction(fraction: f64, wrapping: bool) -> f64 {
         if wrapping {
             fraction * 2.0 * std::f64::consts::PI - std::f64::consts::PI
@@ -341,8 +360,8 @@ impl Dial {
     ///
     /// The angle is measured from the dial's centre and mapped through the **same**
     /// fraction-to-angle relation the needle and the notch ring use, so a click on a
-    /// tick lands on that tick's value. Points in the non-wrapping dial's bottom gap
-    /// snap to the nearer end of the sweep rather than wrapping through the gap.
+    /// tick lands on that tick's value. Points in the non-wrapping dial's bottom gap snap to the
+    /// nearer end of the sweep rather than wrapping through the gap.
     pub fn value_at_point(&self, pos: Point) -> i32 {
         let rect = self.geometry();
         let centre_x = rect.x as f64 + rect.width as f64 / 2.0;
@@ -356,7 +375,20 @@ impl Dial {
         let fraction = if self.wrapping {
             ((angle + std::f64::consts::PI) / (2.0 * std::f64::consts::PI)).rem_euclid(1.0)
         } else {
-            ((angle - NON_WRAPPING_START) / NON_WRAPPING_SWEEP).clamp(0.0, 1.0)
+            let progress = (angle - NON_WRAPPING_START).rem_euclid(2.0 * std::f64::consts::PI);
+            if progress <= NON_WRAPPING_SWEEP {
+                progress / NON_WRAPPING_SWEEP
+            } else {
+                // The point is in the gap: take the nearer end of the sweep rather than wrapping
+                // through it, which is what a knob's dead arc does.
+                let to_end = progress - NON_WRAPPING_SWEEP;
+                let to_start = 2.0 * std::f64::consts::PI - progress;
+                if to_start < to_end {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
         };
         let range = self.maximum as f64 - self.minimum as f64;
         let value = self.minimum as f64 + fraction * range;
@@ -366,6 +398,26 @@ impl Dial {
         // through `ordered_clamp_i32`; this read path is the one that was missed.
         ordered_clamp_i32(value.round() as i32, self.minimum, self.maximum)
     }
+
+    /// Whether `pos` is on the disc the draw paints.
+    ///
+    /// The face is a disc of `min(width, height) / 2 - 4`; the press arm used the whole control
+    /// rectangle, so a corner press announced `slider_pressed` and moved the value through an
+    /// area with no ink in it.
+    fn face_contains(&self, pos: Point) -> bool {
+        let rect = self.geometry();
+        let radius = (rect.width.min(rect.height) / 2).saturating_sub(4);
+        if radius == 0 {
+            return false;
+        }
+        let centre_x = rect.x as f64 + rect.width as f64 / 2.0;
+        let centre_y = rect.y as f64 + rect.height as f64 / 2.0;
+        let dx = pos.x as f64 - centre_x;
+        let dy = pos.y as f64 - centre_y;
+        let radius = radius as f64;
+        dx * dx + dy * dy <= radius * radius
+    }
+
     /// The angular sweep the dial's scale occupies, in radians.
     fn sweep_radians(wrapping: bool) -> f64 {
         if wrapping {
@@ -577,7 +629,10 @@ impl EventHandler for Dial {
                 // before the hit test meant a click anywhere outside the control still announced a
                 // press and entered the pressed state, so a host listening to `slider_pressed` saw
                 // presses that the dial never received.
-                if self.geometry().contains_point(*pos) {
+                // The press belongs to the dial only when it lands on the **painted face**: the
+                // draw is a disc of `min(width, height)/2 - 4`, so a corner press used to emit
+                // `slider_pressed` and jump the value to that corner's angle.
+                if self.face_contains(*pos) {
                     self.slider_pressed.emit();
                     self.dragging = true;
                     let value = self.drag_value_at(*pos);
@@ -797,6 +852,37 @@ mod tests {
     use crate::core::Rect;
     use crate::event::FocusReason;
 
+    /// A wrapping dial whose bounds invert does not divide by zero.
+    ///
+    /// # What this pins
+    ///
+    /// `span = maximum - minimum + 1` is zero for the inverted pair `maximum == minimum - 1`, and
+    /// `rem_euclid(0)` panicked inside the bound setter (a property write aborted the host).
+    #[test]
+    fn an_inverted_wrapping_range_does_not_panic() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_wrapping(true);
+        d.set_minimum(100); // the default maximum is 99: the span is zero
+        assert_eq!(d.minimum(), 100);
+        d.set_value(120);
+        assert!(d.value() >= d.minimum());
+    }
+
+    /// A press in a corner of the control box is not a press on the painted face.
+    ///
+    /// # What this pins
+    ///
+    /// The press arm tested `geometry()`, so a corner with no ink in it announced `slider_pressed`
+    /// and jumped the value to that corner's angle.
+    #[test]
+    fn a_corner_press_is_not_on_the_face() {
+        let mut d = Dial::new(Rect::new(0, 0, 80, 80));
+        d.set_range(0, 100);
+        d.handle_event(&Event::mouse_press(1, 1, 1));
+        assert!(!d.is_dragging(), "the corner is outside the painted disc");
+        assert_eq!(d.value(), 0);
+    }
+
     #[test]
     fn dial_creation_defaults() {
         let d = Dial::new(Rect::new(0, 0, 64, 64));
@@ -922,12 +1008,12 @@ mod tests {
     /// mapping — a ring out of phase with its own needle is the defect `meter.rs` had to fix.
     #[test]
     fn dial_notch_ring_is_in_phase_with_the_needle() {
-        // The first notch of an unwrapped dial sits at the start of its 270 degree sweep, which
-        // the accessor documents as `-135 deg`; the needle at `minimum` sits there too.
+        // The first notch of an unwrapped dial sits at the start of its 270° sweep, the lower-left
+        // corner (`+135°` on screen); the needle at `minimum` sits there too.
         let start = Dial::angle_at_fraction(0.0, false);
         let end = Dial::angle_at_fraction(1.0, false);
-        assert!((start - (-std::f64::consts::PI * 0.75)).abs() < 1e-9);
-        assert!((end - (std::f64::consts::PI * 0.75)).abs() < 1e-9);
+        assert!((start - (std::f64::consts::PI * 0.75)).abs() < 1e-9);
+        assert!((end - start - std::f64::consts::PI * 1.5).abs() < 1e-9);
         assert!((Dial::sweep_radians(false) - std::f64::consts::PI * 1.5).abs() < 1e-9);
 
         // A wrapping dial spans the whole circle, so its first notch is opposite its last.
@@ -1139,23 +1225,24 @@ mod tests {
 
         let mut d = Dial::new(Rect::new(0, 0, 80, 80));
         d.set_range(0, 100);
-        // The right-hand point of the sweep is the middle of the range.
-        let right = d.value_at_point(Point::new(70, 40));
-        assert!((45..=55).contains(&right), "the 3 o'clock position is the midpoint, got {right}");
+        // 12 o'clock is the middle of a 270° sweep that starts at the lower-left and ends at
+        // the lower-right.
+        let middle = d.value_at_point(Point::new(40, 10));
+        assert!((45..=55).contains(&middle), "the top of the face is the midpoint, got {middle}");
 
-        d.handle_event(&Event::mouse_press(70, 40, 1));
+        d.handle_event(&Event::mouse_press(40, 10, 1));
         assert!(d.is_dragging());
         assert!((45..=55).contains(&d.value()));
 
-        // Moving up toward the start of the sweep lowers the value.
-        d.handle_event(&Event::mouse_move(52, 14));
-        let up = d.value();
-        assert!(up < right, "moving toward the sweep's start must lower the value");
+        // Moving down-left toward the start of the sweep lowers the value.
+        d.handle_event(&Event::mouse_move(14, 66));
+        let lower = d.value();
+        assert!(lower < middle, "moving toward the sweep's start must lower the value");
 
-        d.handle_event(&Event::mouse_release(52, 14, 1));
+        d.handle_event(&Event::mouse_release(14, 66, 1));
         assert!(!d.is_dragging());
         let after_release = d.value();
-        d.handle_event(&Event::mouse_move(70, 40));
+        d.handle_event(&Event::mouse_move(40, 10));
         assert_eq!(d.value(), after_release, "a released dial stops following the pointer");
     }
 
@@ -1222,17 +1309,39 @@ mod tests {
         d.set_single_step(10);
         assert!(d.snap_drag_to_step(), "snapping is the documented default");
 
-        // ~52 on the sweep, which is not a reachable keyboard value.
-        d.handle_event(&Event::mouse_press(73, 43, 1));
+        // ~54 on the sweep, which is not a reachable keyboard value.
+        d.handle_event(&Event::mouse_press(46, 6, 1));
         assert_eq!(d.value(), 50, "the press snaps to the nearest step");
 
         // ~57 on the sweep: the nearest step is 60.
-        d.handle_event(&Event::mouse_move(70, 50));
+        d.handle_event(&Event::mouse_move(51, 8));
         assert_eq!(d.value(), 60);
 
         d.set_snap_drag_to_step(false);
-        d.handle_event(&Event::mouse_move(70, 50));
+        d.handle_event(&Event::mouse_move(52, 6));
         assert_eq!(d.value(), 57, "with snapping off the continuous reading is used");
+    }
+
+    /// The non-wrapping gap is across the bottom, and a point in it snaps to the nearer end.
+    ///
+    /// # What this pins
+    ///
+    /// The sweep starts at `+135°` (lower-left) and ends at `+405°` (lower-right), so the dead arc
+    /// is the one through the bottom. The old start (`-135°`) put the gap on the left while the
+    /// docs still promised the bottom, and a gap point used to clamp to the sweep's start by
+    /// subtraction alone.
+    #[test]
+    fn the_gap_is_at_the_bottom_and_snaps_to_the_nearer_end() {
+        let mut d = Dial::new(Rect::new(0, 0, 80, 80));
+        d.set_range(0, 100);
+        // The ends of the sweep are the two lower corners.
+        assert!(d.value_at_point(Point::new(10, 60)) <= 10, "lower-left is the minimum");
+        assert!(d.value_at_point(Point::new(70, 60)) >= 90, "lower-right is the maximum");
+        // Inside the bottom gap the nearer end wins.
+        let right_gap = d.value_at_point(Point::new(50, 70));
+        assert!(right_gap >= 90, "the gap's right half snaps to the maximum, got {right_gap}");
+        let left_gap = d.value_at_point(Point::new(30, 70));
+        assert!(left_gap <= 10, "the gap's left half snaps to the minimum, got {left_gap}");
     }
 
     /// The non-wrapping gap is stated once and read by every angle consumer.
@@ -1241,9 +1350,9 @@ mod tests {
         assert_eq!(Dial::angle_at_fraction(0.0, false), NON_WRAPPING_START);
         assert_eq!(Dial::angle_at_fraction(1.0, false), NON_WRAPPING_START + NON_WRAPPING_SWEEP);
         assert_eq!(Dial::sweep_radians(false), NON_WRAPPING_SWEEP);
-        // The scale sweeps three quarters of a turn, leaving the bottom gap.
+        // The scale sweeps three quarters of a turn from the lower-left, leaving the bottom gap.
         assert!((NON_WRAPPING_SWEEP - 1.5 * std::f64::consts::PI).abs() < 1e-12);
-        assert!((NON_WRAPPING_START + 0.75 * std::f64::consts::PI).abs() < 1e-12);
+        assert!((NON_WRAPPING_START - 0.75 * std::f64::consts::PI).abs() < 1e-12);
     }
 
     /// The notch ring used `f64::clamp(4.0, radius * 0.35)`, which panics when the cap is

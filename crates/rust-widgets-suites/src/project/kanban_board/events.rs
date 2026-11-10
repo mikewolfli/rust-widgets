@@ -76,12 +76,14 @@ impl EventHandler for KanbanBoard {
                 }
             }
             Event::MouseMove { pos } if self.drag.is_some() => {
+                self.hover_position = Some(*pos);
                 // Edge auto-scroll first: `update_card_drag` then resolves the column and the drop
                 // index against the viewport the scroll just produced.
                 self.autoscroll_drag(*pos);
                 self.update_card_drag(*pos);
             }
             Event::MouseMove { pos } => {
+                self.hover_position = Some(*pos);
                 let hovered = self.card_at(*pos);
                 let column = self.column_at(*pos);
                 let changed = hovered != self.hovered_card || column != self.hovered_column;

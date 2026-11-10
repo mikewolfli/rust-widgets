@@ -285,6 +285,18 @@ impl AudioVisualizer {
         self.samples = data.into_iter().skip(skip).map(sanitized_sample).collect();
         self.spectrum_cache.set(None);
         self.invalidate_levels();
+        self.mark_levels_changed();
+    }
+
+    /// Arms the repaint and the two follow-on clocks a bar-level change owes.
+    ///
+    /// Three things follow a level change and every entry point must arm all of them: the pixel
+    /// (an immediate repaint), the smoothing envelope (`smoothing_moving`, so the bus keeps
+    /// ticking until the bars reach their new target), and the throttled report
+    /// (`report_pending`, so `level_changed` is published for a silent stream too).
+    /// `clear_samples` and the other level setters armed only the repaint, so with smoothing on
+    /// the bars kept painting the cleared stream's levels and no report ever fired.
+    fn mark_levels_changed(&mut self) {
         self.report_pending = true;
         if !self.smoothed_levels.is_empty() {
             self.smoothing_moving = true;
@@ -309,11 +321,7 @@ impl AudioVisualizer {
         }
         self.spectrum_cache.set(None);
         self.invalidate_levels();
-        self.report_pending = true;
-        if !self.smoothed_levels.is_empty() {
-            self.smoothing_moving = true;
-        }
-        self.base.request_redraw();
+        self.mark_levels_changed();
     }
 
     /// Appends one sample, evicting the oldest in O(1) once the history is full.
@@ -332,11 +340,7 @@ impl AudioVisualizer {
         self.push_sample(value);
         self.spectrum_cache.set(None);
         self.invalidate_levels();
-        self.report_pending = true;
-        if !self.smoothed_levels.is_empty() {
-            self.smoothing_moving = true;
-        }
-        self.base.request_redraw();
+        self.mark_levels_changed();
     }
 
     /// Sets a one-pole attack/release smoother for the bar bodies.
@@ -374,15 +378,29 @@ impl AudioVisualizer {
         self.smoothed_levels.get(index).copied().unwrap_or_else(|| self.bar_value(index))
     }
 
-    /// Advances the one-pole smoother by `delta_ms`; `true` if any level moved.
-    fn advance_smoothing(&mut self, delta_ms: u32) -> bool {
-        if self.smoothed_levels.is_empty() || delta_ms == 0 {
-            return false;
+    /// Advances the one-pole smoother by `delta_ms`.
+    ///
+    /// Returns `(moved, in_flight)`: `moved` says a level changed this call (a repaint is owed),
+    /// `in_flight` says some level has still not reached its target. The two differ on a zero-delta
+    /// tick — the crate's documented post-resume frame — where nothing moves but the transition is
+    /// not settled; answering the bus from `moved` alone dropped a suspended animation mid-flight.
+    fn advance_smoothing(&mut self, delta_ms: u32) -> (bool, bool) {
+        if self.smoothed_levels.is_empty() {
+            return (false, false);
         }
         let mut moved = false;
+        let mut in_flight = false;
         for index in 0..self.smoothed_levels.len() {
             let target = self.bar_value(index);
             let current = self.smoothed_levels[index];
+            if (target - current).abs() > f32::EPSILON {
+                in_flight = true;
+            }
+            // No time passed, so the envelope does not move; the transition is simply still in
+            // flight.
+            if delta_ms == 0 {
+                continue;
+            }
             let tau = if target > current { self.attack_ms } else { self.release_ms };
             let next = if tau <= 0.0 {
                 target
@@ -395,7 +413,7 @@ impl AudioVisualizer {
                 moved = true;
             }
         }
-        moved
+        (moved, in_flight)
     }
 
     /// Clears all audio samples.
@@ -403,7 +421,7 @@ impl AudioVisualizer {
         self.samples.clear();
         self.spectrum_cache.set(None);
         self.invalidate_levels();
-        self.base.request_redraw();
+        self.mark_levels_changed();
     }
 
     /// Returns the retained samples, at most 512 of the newest ones.
@@ -430,7 +448,7 @@ impl AudioVisualizer {
             VisualizerMode::Spectrum => "spectrum",
         };
         self.mode_changed.emit(name.to_string());
-        self.base.request_redraw();
+        self.mark_levels_changed();
     }
 
     /// The threshold above which `peak_exceeded` fires.
@@ -481,7 +499,7 @@ impl AudioVisualizer {
             .collect();
         self.spectrum = if sanitized.is_empty() { None } else { Some(sanitized) };
         self.invalidate_levels();
-        self.base.request_redraw();
+        self.mark_levels_changed();
     }
 
     /// Sets the number of vertical bars to display, clamped to `1..=MAX_VISUALIZER_BARS`.
@@ -501,7 +519,7 @@ impl AudioVisualizer {
         if !self.smoothed_levels.is_empty() {
             self.smoothed_levels.resize(self.bar_count, 0.0);
         }
-        self.base.request_redraw();
+        self.mark_levels_changed();
     }
 
     /// Returns the current bar count.
@@ -698,13 +716,22 @@ impl AudioVisualizer {
     /// there. [`Widget::tick`] is the bus's clock, so the duration reaches it here and the control
     /// asks for the repaint its falling marker needs.
     ///
-    /// Returns `true` when a marker moved, which is what tells the bus to keep ticking.
-    fn advance_peak_hold(&mut self, delta_ms: u64) -> bool {
-        if !self.peak_hold || delta_ms == 0 {
-            return false;
+    /// Returns `(moved, in_flight)`.
+    ///
+    /// `moved` says a marker's value changed this call, which is what tells the bus to repaint.
+    /// `in_flight` says some marker still sits above the bar it tracks — whether this call moved it
+    /// or it is still inside its hold window. The two are separate because the hold window moves
+    /// nothing by definition: answering the bus from "did anything move" declared the marker
+    /// settled for the whole interval whose end the bus has to observe, so the marker froze above
+    /// its bar instead of falling when the hold expired (the very "held forever" shape this clock
+    /// was written to end).
+    fn advance_peak_hold(&mut self, delta_ms: u64) -> (bool, bool) {
+        if !self.peak_hold {
+            return (false, false);
         }
         let fall = PEAK_FALL_PER_SECOND * (delta_ms as f32 / 1000.0);
         let mut moved = false;
+        let mut in_flight = false;
         for index in 0..self.peak_values.len() {
             let value = self.bar_value(index);
             if value >= self.peak_values[index] {
@@ -714,25 +741,27 @@ impl AudioVisualizer {
                 moved |= self.peak_values[index] != value;
                 self.peak_values[index] = value;
                 self.peak_ages[index] = 0;
-                continue;
+            } else if delta_ms != 0 {
+                self.peak_ages[index] = self.peak_ages[index].saturating_add(delta_ms);
+                if self.peak_ages[index] > self.peak_hold_duration {
+                    let next =
+                        (self.peak_values[index] - fall).max(self.peak_values[index].min(value));
+                    // A marker that has fallen to (or below) its bar has done its job and is released
+                    // here rather than being left a hair above it, which would paint a fraction of a
+                    // pixel of highlight on every quiet bar for the widget's whole life.
+                    if next <= 0.0 || next <= value {
+                        self.peak_values[index] = value;
+                        self.peak_ages[index] = 0;
+                    } else {
+                        self.peak_values[index] = next;
+                    }
+                    moved = true;
+                }
             }
-            self.peak_ages[index] = self.peak_ages[index].saturating_add(delta_ms);
-            if self.peak_ages[index] <= self.peak_hold_duration {
-                continue;
-            }
-            let next = (self.peak_values[index] - fall).max(self.peak_values[index].min(value));
-            // A marker that has fallen to (or below) its bar has done its job and is released here
-            // rather than being left a hair above it, which would paint a fraction of a pixel of
-            // highlight on every quiet bar for the widget's whole life.
-            if next <= 0.0 || next <= value {
-                self.peak_values[index] = value;
-                self.peak_ages[index] = 0;
-            } else {
-                self.peak_values[index] = next;
-            }
-            moved = true;
+            // Evaluated after the update, so a marker released this call reports as settled.
+            in_flight |= self.peak_values[index] > value;
         }
-        moved
+        (moved, in_flight)
     }
 
     /// The normalized level of bar `index` in the active mode.
@@ -882,13 +911,17 @@ impl AudioVisualizer {
         magnitudes
     }
 
-    /// Emits the throttled level and peak reports; `true` when either fired.
-    fn advance_level_report(&mut self, delta_ms: u32) -> bool {
+    /// Emits the throttled level and peak reports.
+    ///
+    /// Returns `(ran, emitted)`: `ran` says the throttle window elapsed and the reports were
+    /// evaluated (so a pending request is satisfied whether or not a value changed), `emitted`
+    /// says at least one signal fired this call.
+    fn advance_level_report(&mut self, delta_ms: u32) -> (bool, bool) {
         self.report_clock_ms = self.report_clock_ms.saturating_add(delta_ms);
         if self.level_report_interval_ms != 0
             && self.report_clock_ms < self.level_report_interval_ms
         {
-            return false;
+            return (false, false);
         }
         self.report_clock_ms = 0;
 
@@ -906,12 +939,19 @@ impl AudioVisualizer {
         }
 
         let peak = self.samples.iter().fold(0.0f32, |current, sample| current.max(sample.abs()));
-        if peak > self.peak_threshold && (peak - self.last_reported_peak).abs() > 0.005 {
-            self.last_reported_peak = peak;
-            self.peak_exceeded.emit(peak);
-            reported = true;
+        if peak > self.peak_threshold {
+            if (peak - self.last_reported_peak).abs() > 0.005 {
+                self.last_reported_peak = peak;
+                self.peak_exceeded.emit(peak);
+                reported = true;
+            }
+        } else {
+            // Back under the threshold invalidates "already announced", so the next exceedance at
+            // the same amplitude is a fresh event. Without this reset a periodic signal at a
+            // constant amplitude produced exactly one `peak_exceeded` for the widget's lifetime.
+            self.last_reported_peak = 0.0;
         }
-        reported
+        (true, reported)
     }
 }
 
@@ -1030,33 +1070,35 @@ impl Widget for AudioVisualizer {
         )
     }
 
-    /// Drives the peak-hold markers' clock.
+    /// Drives the peak-hold markers' clock, the smoothing envelope and the throttled report.
     ///
     /// The trait's `tick` is the animation bus's entry point, which is the only place a *duration*
     /// can be observed: `draw` runs when something asks for a repaint, and a paused stream asks for
-    /// none. Returning `advance_peak_hold`'s answer keeps the bus ticking while markers fall and lets
-    /// it stop once they have settled, rather than asking a still visualizer to run at frame rate
-    /// forever.
+    /// none. The answer is "another frame is owed", taken from each clock's `in_flight` state rather
+    /// than from "did anything move this call", so a marker waiting out its hold window (which moves
+    /// nothing) keeps the bus running until it can fall.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        let peaked = self.advance_peak_hold(delta_ms as u64);
-        let smoothed = self.advance_smoothing(delta_ms);
-        let reported = self.advance_level_report(delta_ms);
+        let (peak_moved, peak_in_flight) = self.advance_peak_hold(delta_ms as u64);
+        let (smooth_moved, smooth_in_flight) = self.advance_smoothing(delta_ms);
+        let (report_ran, reported) = self.advance_level_report(delta_ms);
         // The "am I animating?" answer is read from these flags, not recomputed from the bar
         // values: a query must not run the spectrum derivation (L-P05).
-        self.peak_moving = peaked;
-        self.smoothing_moving = smoothed;
-        if peaked || smoothed {
+        self.peak_moving = peak_in_flight;
+        self.smoothing_moving = smooth_in_flight;
+        if peak_moved || smooth_moved {
             self.base.request_redraw();
         }
-        // A report that has not fired yet keeps the bus ticking; once the throttle window passed
-        // this turn the pending edge is satisfied.
-        if self.report_clock_ms == 0 {
+        // A report that has not fired yet keeps the bus ticking. The pending edge is satisfied when
+        // the throttle window elapses — not merely when `report_clock_ms` happens to be zero, which
+        // the zero-delta resume frame also satisfies and which used to cancel the report silently.
+        if report_ran {
             self.report_pending = false;
         }
-        peaked || smoothed || reported || self.report_pending
+        peak_in_flight || smooth_in_flight || reported || self.report_pending
     }
 
-    /// Whether the peak-hold markers are still falling, i.e. whether a frame is owed.
+    /// Whether a frame is owed: a marker is above its bar, a smoothing envelope is still moving, or
+    /// a report is waiting on the throttle.
     ///
     /// # Why this is not the trait's default
     ///
@@ -1064,9 +1106,9 @@ impl Widget for AudioVisualizer {
     /// answer to decide whether a frame is needed **before** paying for a sweep. A visualizer whose
     /// markers were still falling answered `false`, so such a host would stop scheduling frames
     /// mid-decline and the markers would freeze part-way — the exact "held forever" shape the
-    /// peak-hold clock was written to end, reintroduced one layer up. The condition mirrors
-    /// `Self::advance_peak_hold`: a marker is in flight while peak-hold is on and it sits above the
-    /// bar it tracks.
+    /// peak-hold clock was written to end, reintroduced one layer up. The flags are set by `tick`
+    /// from `in_flight` (not from "did anything move"), because a marker inside its hold window is
+    /// in flight while moving nothing.
     fn is_animating(&self) -> bool {
         self.peak_moving || self.smoothing_moving || self.report_pending
     }
@@ -1518,16 +1560,18 @@ mod tests {
         // A loud moment, then silence: the marker is raised by the loud one and has to fall on its
         // own once the bar left it.
         av.set_samples(vec![1.0]);
-        assert!(av.advance_peak_hold(16), "the marker rises to meet the bar");
+        assert!(av.advance_peak_hold(16).0, "the marker rises to meet the bar");
         assert!((av.peak_values[0] - 1.0).abs() < 0.001, "it rose to the bar's level");
 
         av.set_samples(vec![0.0]);
         // Well inside the hold window: the marker does not move at all, which is the "hold" half.
-        assert!(!av.advance_peak_hold(400), "a held marker owes no frame");
+        let (moved, in_flight) = av.advance_peak_hold(400);
+        assert!(!moved, "a held marker moves nothing");
+        assert!(in_flight, "but it is still in flight, so it owes frames");
         assert!((av.peak_values[0] - 1.0).abs() < 0.001, "still at its peak, not falling yet");
 
         // Past the window: now it descends rather than vanishing.
-        assert!(av.advance_peak_hold(200), "past the hold, the marker moves");
+        assert!(av.advance_peak_hold(200).0, "past the hold, the marker moves");
         let falling = av.peak_values[0];
         assert!(
             falling < 1.0 && falling > 0.0,
@@ -1540,21 +1584,54 @@ mod tests {
         patient.set_peak_hold(true);
         patient.set_peak_hold_duration(5_000);
         patient.set_samples(vec![1.0]);
-        patient.advance_peak_hold(16);
+        let _ = patient.advance_peak_hold(16);
         patient.set_samples(vec![0.0]);
-        assert!(!patient.advance_peak_hold(200), "a 5 s hold is still holding at 200 ms");
+        let (moved, in_flight) = patient.advance_peak_hold(200);
+        assert!(!moved, "a 5 s hold has not released the marker at 200 ms");
+        assert!(in_flight, "but the frame is still owed");
         assert!((patient.peak_values[0] - 1.0).abs() < 0.001);
 
         // Once it has fallen back to the bar it marks, it is released and stops owing frames.
         for _ in 0..40 {
-            av.advance_peak_hold(100);
+            let _ = av.advance_peak_hold(100);
         }
         assert!(
             (av.peak_values[0] - 0.0).abs() < 0.001,
             "a fully released marker sits on its bar: {}",
             av.peak_values[0]
         );
-        assert!(!av.advance_peak_hold(100), "a settled marker owes no frame");
+        let (moved, in_flight) = av.advance_peak_hold(100);
+        assert!(!moved, "a settled marker moves nothing");
+        assert!(!in_flight, "and owes no frame");
+    }
+
+    /// A hold that moves nothing still owes frames, and a zero-delta tick settles nothing.
+    ///
+    /// The bus asked `advance_peak_hold` "did anything move", which is false for the whole hold
+    /// window, so the marker froze above its bar until some unrelated animation restarted the bus.
+    /// The same shape hid in the smoothing envelope and in the level report: the documented
+    /// post-resume frame (delta 0) marked both settled.
+    #[test]
+    fn a_held_marker_and_a_suspended_transition_still_owe_frames() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        av.set_bar_count(1);
+        av.set_peak_hold(true);
+        av.set_peak_hold_duration(500);
+        av.set_samples(vec![1.0]);
+        let _ = av.tick(16);
+        av.set_samples(vec![0.0]);
+        let _ = av.tick(100);
+        assert!((av.peak_values[0] - 1.0).abs() < 0.001, "still inside the hold window");
+        assert!(av.is_animating(), "a marker inside its hold window is still in flight");
+
+        let mut smooth = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        smooth.set_bar_count(1);
+        smooth.set_smoothing(100.0, 100.0);
+        smooth.set_samples(vec![1.0]);
+        let _ = smooth.tick(16);
+        assert!(smooth.is_animating(), "the envelope is still rising");
+        let _ = smooth.tick(0);
+        assert!(smooth.is_animating(), "a zero-delta tick settles nothing");
     }
 
     /// The duration is genuinely *observable*: two controls differing only in it render differently
@@ -1570,10 +1647,10 @@ mod tests {
             av.set_peak_hold(true);
             av.set_peak_hold_duration(duration);
             av.set_samples(vec![1.0]);
-            av.advance_peak_hold(16);
+            let _ = av.advance_peak_hold(16);
             av.set_samples(vec![0.0]);
             // One step past the shorter window and inside the longer one.
-            av.advance_peak_hold(600);
+            let _ = av.advance_peak_hold(600);
             render_to_svg(&mut av)
         };
         assert_ne!(
@@ -1592,14 +1669,14 @@ mod tests {
         av.set_peak_hold_duration(0);
         // The first bar is loud, the second silent: both markers are raised where they stand.
         av.set_samples(vec![1.0, 0.0]);
-        av.advance_peak_hold(16);
+        let _ = av.advance_peak_hold(16);
         assert!((av.peak_values[0] - 1.0).abs() < 0.001);
         assert!(av.peak_values[1].abs() < 0.001);
 
         // Bar 0 goes quiet while bar 1 becomes loud. Bar 1's marker must rise, and bar 0's must fall
         // without taking bar 1's with it.
         av.set_samples(vec![0.0, 1.0]);
-        av.advance_peak_hold(1_000);
+        let _ = av.advance_peak_hold(1_000);
         assert!((av.peak_values[1] - 1.0).abs() < 0.001, "bar 1's marker rose");
         assert!(
             av.peak_values[0] < 1.0,

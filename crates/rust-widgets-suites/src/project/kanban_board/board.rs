@@ -17,6 +17,11 @@ pub struct KanbanBoard {
     pub(super) hovered_column: Option<usize>,
     /// The card under the pointer, when no drag is in progress.
     pub(super) hovered_card: Option<CardPosition>,
+    /// Where the pointer last was, so a scroll can re-resolve the hover it moved.
+    ///
+    /// A wheel or page scroll moves the rows under a stationary pointer; without the position the
+    /// board kept `hovered_card` naming the card that used to be there (and its `card_hovered`).
+    pub(super) hover_position: Option<Point>,
     /// The card keyboard navigation has reached.
     pub(super) focused_card: Option<CardPosition>,
     /// Per-column scroll offsets, in cards.
@@ -249,6 +254,7 @@ impl KanbanBoard {
             drag: None,
             drag_origin: None,
             hovered_column: None,
+            hover_position: None,
             hovered_card: None,
             focused_card: None,
             column_scroll: Vec::new(),
@@ -518,8 +524,14 @@ impl KanbanBoard {
             self.hovered_card = Some(target);
         }
         self.invalidate_layout();
-        // The selection's documented order is display order, and the move changed it.
+        // The selection's documented order is display order, and the move changed it. A pure
+        // reorder keeps the same length, which is exactly the case the `cards` write republishes;
+        // without it a host mirroring `selection_changed` keeps the pre-move order.
+        let selection_before = self.selected_cards.clone();
         self.sort_selection();
+        if self.selected_cards != selection_before {
+            self.selection_changed.emit(self.selected_cards.clone());
+        }
         self.base.request_redraw();
         self.card_moved.emit((card_id, target));
         Some(target)
@@ -545,6 +557,33 @@ impl KanbanBoard {
         self.base.request_redraw();
     }
 
+    /// Re-resolves the hover against the pointer's last position.
+    ///
+    /// Called by the scroll paths, which move the rows/columns under a pointer that has not moved.
+    pub(super) fn refresh_hover_for_pointer(&mut self) {
+        let Some(pos) = self.hover_position else {
+            return;
+        };
+        let hovered = self.card_at(pos);
+        let column = self.column_at(pos);
+        if hovered == self.hovered_card && column == self.hovered_column {
+            return;
+        }
+        let hover_changed = hovered != self.hovered_card;
+        self.hovered_card = hovered;
+        self.hovered_column = column;
+        self.base.request_redraw();
+        if hover_changed {
+            let id = hovered.and_then(|position| {
+                self.columns
+                    .get(position.column)
+                    .and_then(|entry| entry.cards.get(position.card))
+                    .map(|card| card.id.clone())
+            });
+            self.card_hovered.emit(id);
+        }
+    }
+
     /// Returns how far the columns are scrolled left, in pixels.
     pub fn horizontal_scroll(&self) -> i32 {
         self.horizontal_scroll
@@ -558,6 +597,7 @@ impl KanbanBoard {
         }
         self.horizontal_scroll = next;
         self.base.request_redraw();
+        self.refresh_hover_for_pointer();
     }
 
     /// Scrolls the board horizontally by `delta` pixels.
@@ -789,6 +829,7 @@ impl KanbanBoard {
         }
         self.column_scroll[column] = next;
         self.base.request_redraw();
+        self.refresh_hover_for_pointer();
     }
 
     // ── Drag handling ───────────────────────────────────────────────────────

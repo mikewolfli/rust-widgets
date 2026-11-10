@@ -308,20 +308,40 @@ impl TerminalView {
     /// The offset is clamped rather than reset: a reader who was scrolling back keeps the window
     /// they were reading unless the trim consumed all of it.
     fn trim_scrollback(&mut self) {
-        if self.lines.len() <= self.scrollback_lines {
+        // In screen mode the grid is authoritative and its rows are addressed absolutely by the
+        // program's escape sequences, while a trim drops rows from the **front** of `lines`.
+        // Keeping fewer rows than the grid has made `feed_screen` patch every later update a row
+        // or more off. The buffer therefore never shrinks below the grid's own height.
+        let keep = match self.screen.as_ref() {
+            Some(screen) => self.scrollback_lines.max(screen.cells.len()),
+            None => self.scrollback_lines,
+        };
+        if self.lines.len() <= keep {
             return;
         }
-        let drop_count = self.lines.len() - self.scrollback_lines;
+        let drop_count = self.lines.len() - keep;
         self.lines.drain(0..drop_count);
         self.scroll_offset = self.scroll_offset.saturating_sub(drop_count);
-        // A trim removes the rows the selection names, so the selection is gone as well. Routed
-        // through `apply_output_selection` so subscribers hear the disappearance; the previous
-        // direct store left `selection_changed` silent and kept `selecting_output` latched for a
-        // drag that could no longer resolve.
-        self.output_anchor = None;
-        self.output_head = None;
-        self.selecting_output = false;
-        self.apply_output_selection(None);
+        // A trim only removes the **front** of the buffer: a selection on the newer rows survives it
+        // once shifted. Clearing it unconditionally threw away text the reader had just selected
+        // (at the configured depth every appended line trims), and the next Ctrl+C then found no
+        // selection and fell through to an interrupt request.
+        let shift =
+            |point: (usize, usize)| point.0.checked_sub(drop_count).map(|line| (line, point.1));
+        self.output_anchor = self.output_anchor.and_then(shift);
+        self.output_head = self.output_head.and_then(shift);
+        if self.output_anchor.is_some() && self.output_head.is_some() {
+            self.recompute_output_selection();
+        } else {
+            // Part of the selection named rows the trim removed, so the selection is gone. Routed
+            // through `apply_output_selection` so subscribers hear the disappearance; the previous
+            // direct store left `selection_changed` silent and kept `selecting_output` latched for
+            // a drag that could no longer resolve.
+            self.output_anchor = None;
+            self.output_head = None;
+            self.selecting_output = false;
+            self.apply_output_selection(None);
+        }
         self.revision = self.revision.wrapping_add(1);
         self.clamp_selection_offset();
     }
@@ -765,7 +785,15 @@ impl TerminalView {
         let Some(track) = self.scrollbar_track() else {
             return;
         };
-        let ratio = ((y - track.y) as f32 / track.height.max(1) as f32).clamp(0.0, 1.0);
+        let Some(thumb) = self.scrollbar_thumb() else {
+            return;
+        };
+        // Invert the **thumb's** travel, which is what `scrollbar_thumb` maps rows onto. Dividing
+        // by the full track height made every press jump the viewport by a chunk of the range —
+        // including a press on the thumb itself, which then never stayed under the pointer.
+        let travel = track.height.saturating_sub(thumb.height);
+        let offset_px = (y - track.y).clamp(0, travel as i32) as u32;
+        let ratio = if travel == 0 { 0.0 } else { offset_px as f32 / travel as f32 };
         let max = self.max_scroll_offset();
         let top_row = (ratio * max as f32).round() as usize;
         let next = max.saturating_sub(top_row);
@@ -1041,6 +1069,9 @@ impl TerminalView {
             return;
         }
         self.input_line = line;
+        // A programmatic line is not a history entry, so the recall cursor must not stay pointing
+        // at one: after `Up` recalled `cmd2`, a host write followed by `Up` stepped to `cmd1`.
+        self.history_index = None;
         // A programmatic line is placed whole, so the caret follows its end: leaving the caret
         // where the previous line's cursor was made a later Backspace delete from the middle.
         self.input_cursor = self.input_line.chars().count();
@@ -1431,10 +1462,16 @@ impl WidgetProperties for TerminalView {
                 }
                 let mut palette = [Color::BLACK; 16];
                 for (slot, entry) in palette.iter_mut().zip(values.iter()) {
-                    let packed = *entry as i64;
-                    if !(0..=0xFF_FFFF).contains(&packed) {
+                    // Validate before casting: `*entry as i64` truncates, so -0.5 became 0 (accepted
+                    // as black) and `0xFF_FFFF + 0.9` landed inside the range.
+                    if !entry.is_finite()
+                        || *entry < 0.0
+                        || *entry > 0xFF_FFFF as f64
+                        || entry.fract() != 0.0
+                    {
                         return Err(CapabilityAccessError::OutOfRange);
                     }
+                    let packed = *entry as i64;
                     *slot = Color::rgb(
                         ((packed >> 16) & 0xFF) as u8,
                         ((packed >> 8) & 0xFF) as u8,
@@ -1495,6 +1532,10 @@ impl EventHandler for TerminalView {
         // typed into), and an enabled one blinks. This is the only place the two states differ.
         if !self.base.is_enabled() {
             self.cursor.stop();
+            // A disable mid-drag must end the gesture: the release that would clear this latch is
+            // refused by the same guard, so a re-enabled terminal would extend the output
+            // selection on a plain hover.
+            self.selecting_output = false;
             return;
         }
         if !self.caret_blink_enabled {
@@ -1911,8 +1952,10 @@ impl Draw for TerminalView {
         } else {
             rect.width.saturating_sub(16)
         } as i32;
-        let palette =
-            self.ansi_palette.unwrap_or_else(|| default_ansi_palette(background.luminance() < 0.5));
+        // The default palette follows the **appearance**, which is what `ansi_palette()` documents
+        // and what `get("ansi_palette")` returns. Deriving it here from the body's luminance
+        // instead made the property and the painted glyphs disagree for a host-set body colour.
+        let palette = self.ansi_palette();
         ensure_output_rows(
             &mut self.output_cache,
             &self.lines,
@@ -2081,22 +2124,18 @@ impl Draw for TerminalView {
         //
         // The box is resolved on every frame, visible or not, because the blink's damage
         // rectangle has to be the same box on both halves of the cycle.
-        let caret_box = if self.base.is_enabled() {
-            let caret_x = caret_x.min(rect.x + rect.width as i32 - 2).max(rect.x + 8);
-            let cell = context.measure_text("M", prompt_font).width.max(1);
-            Some(match self.caret_style {
-                CaretStyle::Line => Rect::new(caret_x, prompt_y, 1, prompt_line_height.max(1)),
-                CaretStyle::Block => Rect::new(caret_x, prompt_y, cell, prompt_line_height.max(1)),
-                CaretStyle::Underline => Rect::new(
-                    caret_x,
-                    prompt_y + prompt_line_height.saturating_sub(2) as i32,
-                    cell,
-                    2,
-                ),
-            })
-        } else {
-            None
-        };
+        // Painted even while disabled: `handle_event` stops the blink there, which is the
+        // documented steady caret, and `is_caret_visible()` reports it. Gating the paint on the
+        // enabled flag made the accessor and the frame disagree.
+        let caret_x = caret_x.min(rect.x + rect.width as i32 - 2).max(rect.x + 8);
+        let cell = context.measure_text("M", prompt_font).width.max(1);
+        let caret_box = Some(match self.caret_style {
+            CaretStyle::Line => Rect::new(caret_x, prompt_y, 1, prompt_line_height.max(1)),
+            CaretStyle::Block => Rect::new(caret_x, prompt_y, cell, prompt_line_height.max(1)),
+            CaretStyle::Underline => {
+                Rect::new(caret_x, prompt_y + prompt_line_height.saturating_sub(2) as i32, cell, 2)
+            }
+        });
         self.caret_rect = caret_box;
         if self.cursor.is_visible() || !self.caret_blink_enabled {
             if let Some(caret) = caret_box {
@@ -3735,6 +3774,87 @@ mod tests {
         assert_eq!(terminal.output_selection(), None, "the selected row was trimmed away");
         let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(seen, vec![true, false], "the loss is published, not just stored");
+    }
+
+    /// A trim removes the **front** of the buffer, so a selection on the newer rows survives it.
+    ///
+    /// Clearing the selection unconditionally discarded text the reader had just selected — at the
+    /// configured depth every appended line trims — and the next Ctrl+C then found no selection and
+    /// fell through to an interrupt request.
+    #[test]
+    fn a_trim_keeps_a_selection_on_the_surviving_rows() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        for line in ["one", "two", "three"] {
+            terminal.append_output(line);
+        }
+        terminal.set_scrollback_lines(3);
+        terminal.handle_event(&Event::mouse_double_click(40, 16 + 2 * OUTPUT_LINE_HEIGHT, 1));
+        assert_eq!(terminal.output_selection(), Some((2, 2)), "the newest row is selected");
+
+        terminal.append_output("four");
+        assert_eq!(
+            terminal.output_selection(),
+            Some((1, 1)),
+            "the range follows the surviving row"
+        );
+        assert_eq!(terminal.selected_output().as_deref(), Some("three"));
+    }
+
+    /// Pressing the painted thumb does not scroll the content away from the pointer.
+    ///
+    /// `scrollbar_thumb` maps rows onto the thumb's **travel**, while `scroll_to_track` divided by
+    /// the whole track height; the two inverses disagreed, so a press on the thumb (the way a reader
+    /// starts to drag) jumped the viewport by a chunk of the range.
+    #[test]
+    fn pressing_the_thumb_does_not_jump_the_viewport() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 400, 200));
+        for index in 0..80 {
+            terminal.append_output(alloc::format!("line {index}"));
+        }
+        terminal.scroll_to_end();
+        assert_eq!(terminal.scroll_offset, 0, "the view starts at the tail");
+
+        let thumb = terminal.scrollbar_thumb().expect("the buffer overflows the pane");
+        let centre = thumb.center();
+        terminal.handle_event(&Event::mouse_press(centre.x, centre.y, 1));
+        assert_eq!(terminal.scroll_offset, 0, "the thumb stays under the pointer");
+    }
+
+    /// A programmatic line resets the history cursor.
+    ///
+    /// The cursor is only meaningful while the shown line came from history; leaving it set made
+    /// the next Up recall the entry *older* than the recalled one and discard the host's line.
+    #[test]
+    fn setting_the_input_line_resets_history_recall() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal
+            .handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        terminal.set_input_line("cmd1");
+        assert!(terminal.submit());
+        terminal.set_input_line("cmd2");
+        assert!(terminal.submit());
+
+        terminal.handle_event(&Event::key_press(38, 0));
+        assert_eq!(terminal.input_line(), "cmd2");
+        terminal.set_input_line("custom");
+        terminal.handle_event(&Event::key_press(38, 0));
+        assert_eq!(terminal.input_line(), "cmd2", "recall restarts from the newest entry");
+    }
+
+    /// The published `ansi_palette` rejects a value it cannot store exactly.
+    ///
+    /// The guard ran after `*entry as i64`, so `-0.5` truncated to `0` and was accepted as black
+    /// instead of answering `OutOfRange`.
+    #[test]
+    fn a_fractional_palette_entry_is_refused() {
+        use rust_widgets::widget::capability::{CapabilityValue, WidgetProperties};
+
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 400, 200));
+        let entries = alloc::vec![-0.5_f64; 16].into_iter().map(CapabilityValue::Float).collect();
+        assert_eq!(
+            terminal.set("ansi_palette", CapabilityValue::Tuple(entries)),
+            Err(rust_widgets::widget::capability::CapabilityAccessError::OutOfRange)
+        );
     }
 
     /// The presence signal fires once per drag, not once per pointer move.

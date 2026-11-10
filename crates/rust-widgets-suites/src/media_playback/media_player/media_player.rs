@@ -190,8 +190,6 @@ pub struct MediaPlayer {
     volume: u8,
     muted: bool,
     fullscreen: bool,
-    /// The playback rate multiplier.
-    rate: f32,
     /// The decoded frame to show, if any.
     frame: Option<MediaFrame>,
     /// Whether the progress handle is being dragged.
@@ -225,8 +223,6 @@ pub struct MediaPlayer {
     readout_cache: String,
     /// `(position_ms / 1000, duration_ms)` behind `readout_cache`.
     readout_key: Option<(u64, u64)>,
-    /// The rate label, built when the rate changes rather than every frame.
-    rate_text: String,
     /// Emitted when the host should change the window's fullscreen state.
     pub fullscreen_requested: Signal1<bool>,
     /// Emitted when playback toggles.
@@ -275,7 +271,6 @@ impl MediaPlayer {
             volume: 80,
             muted: false,
             fullscreen: false,
-            rate: 1.0,
             frame: None,
             scrubbing: false,
             adjusting_volume: false,
@@ -289,7 +284,6 @@ impl MediaPlayer {
             status_key: None,
             readout_cache: String::new(),
             readout_key: None,
-            rate_text: String::from("1.00x"),
             fullscreen_requested: Signal1::new(),
             playback_changed: Signal1::new(),
             position_changed: Signal1::new(),
@@ -624,10 +618,12 @@ impl MediaPlayer {
 
     /// Seeks by signed delta milliseconds.
     pub fn seek_by(&mut self, delta_ms: i64) {
-        let current = self.position_ms() as i64;
-        let max_pos = self.duration_ms as i64;
-        let next = (current + delta_ms).clamp(0, max_pos);
-        self.seek_to(next as u64);
+        // `duration_ms` is a `u64`; casting it to `i64` turns a long source negative and makes
+        // `clamp(0, ..)` panic on its `min <= max` assertion. Staying unsigned (with a signed add)
+        // also keeps a large delta from overflowing.
+        let current = self.position_ms();
+        let next = current.saturating_add_signed(delta_ms).min(self.duration_ms);
+        self.seek_to(next);
     }
 
     /// Sets volume [0, 100].
@@ -667,9 +663,13 @@ impl MediaPlayer {
         self.set_fullscreen(!self.fullscreen);
     }
 
-    /// Returns the playback rate multiplier.
+    /// The playback rate multiplier.
+    ///
+    /// Read from the clock, which is the one home for the timeline: a host that reaches the rate
+    /// through [`Self::clock_mut`] is reflected here immediately, where a cached copy made the
+    /// accessor (and the painted `1.00x` label) disagree with the clock actually driving playback.
     pub fn playback_rate(&self) -> f32 {
-        self.rate
+        self.clock.rate() as f32
     }
 
     /// Sets the playback rate, clamped to `0.25..=4.0`.
@@ -678,13 +678,10 @@ impl MediaPlayer {
             return;
         }
         let rate = rate.clamp(0.25, 4.0);
-        if (self.rate - rate).abs() < f32::EPSILON {
+        if (self.playback_rate() - rate).abs() < f32::EPSILON {
             return;
         }
-        self.rate = rate;
         self.clock.set_rate(f64::from(rate));
-        self.rate_text.clear();
-        let _ = write!(self.rate_text, "{rate:.2}x");
         self.base.request_redraw();
     }
 
@@ -882,7 +879,11 @@ impl MediaPlayer {
         self.set_muted(false);
     }
 
-    /// Advances playback by `delta_secs`, and reports whether it is still running.
+    /// Advances playback by `delta_secs`, and reports whether a further frame is owed.
+    ///
+    /// The answer is *"another frame is owed"*, not *"still running"*: the media's end frame
+    /// returns `true` as well, because the pause it observed still has to be painted. Reading this
+    /// as "still running" inverts it on exactly the frame that matters.
     ///
     /// # Why this exists (BLUE24 §1: a mechanism with no consumer)
     ///
@@ -1231,8 +1232,8 @@ impl EventHandler for MediaPlayer {
                 77 | 109 => self.toggle_mute(),
                 70 | 102 => self.toggle_fullscreen(),
                 // Brackets step the rate by a quarter, the convention a media player uses.
-                91 | 219 => self.set_playback_rate(self.rate - 0.25),
-                93 | 221 => self.set_playback_rate(self.rate + 0.25),
+                91 | 219 => self.set_playback_rate(self.playback_rate() - 0.25),
+                93 | 221 => self.set_playback_rate(self.playback_rate() + 0.25),
                 // Unknown key; ignore
                 _ => {}
             },
@@ -1571,10 +1572,14 @@ impl Draw for MediaPlayer {
             );
         }
         // The rate is shown only when it is not real time, so the ordinary view stays uncluttered.
-        if (self.rate - 1.0).abs() > f32::EPSILON {
+        // The label is derived from the clock at paint time, so it cannot go stale behind a write
+        // through `clock_mut()`.
+        let rate = self.playback_rate();
+        if (rate - 1.0).abs() > f32::EPSILON {
+            let rate_text = format!("{rate:.2}x");
             context.draw_text(
                 Point::new(volume_rail.x + volume_rail.width as i32 + 6, volume_rail.y - 2),
-                &self.rate_text,
+                &rate_text,
                 font,
                 muted,
                 HorizontalAlignment::Left,
@@ -1657,6 +1662,27 @@ mod tests {
         let shared = Arc::new(vec![0; 3 * 4 + 8]);
         assert!(MediaFrame::from_shared(3, 1, shared).is_some());
         assert!(MediaFrame::new(3, 1, vec![0; 11]).is_none(), "a short buffer is refused");
+    }
+
+    /// The rate is the clock's, so a write through `clock_mut` cannot leave it stale.
+    ///
+    /// `playback_rate` used to answer a cached `f32` that only `set_playback_rate` updated: a host
+    /// that reached the rate through the documented `clock_mut()` accessor got a player whose
+    /// accessor (and painted rate label) disagreed with the clock driving the timeline.
+    #[test]
+    fn the_rate_reads_the_clock_directly() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        assert!((player.playback_rate() - 1.0).abs() < f32::EPSILON);
+
+        player.clock_mut().set_rate(2.0);
+        assert!((player.playback_rate() - 2.0).abs() < f32::EPSILON, "a direct write is reflected");
+
+        player.set_playback_rate(0.5);
+        assert!((player.playback_rate() - 0.5).abs() < f32::EPSILON);
+        assert!(
+            (player.clock().rate() - 0.5).abs() < f64::EPSILON,
+            "`set_playback_rate` drives the same clock"
+        );
     }
 
     /// The panel's surface follows the appearance instead of a fixed dark blue.

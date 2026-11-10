@@ -509,10 +509,17 @@ impl Widget for MapAttributionOverlay {
     }
 
     fn size_hint(&self) -> Size {
+        // The floor must fit the chrome one entry row needs. The old 18 px box could not: the
+        // overlay's own insets and padding left nothing to draw in, `compute_layout_rows` returned
+        // an empty list, and a control the designer sized to this hint painted no data-source
+        // credit at all — which is a licence obligation, not decoration.
+        let step = self.row_height() + OVERLAY_ROW_GAP;
+        let height =
+            (OVERLAY_INSET * 2 + OVERLAY_PADDING * 2 + step - OVERLAY_ROW_GAP).max(1) as u32;
         rust_widgets::widget::metrics::ControlMetrics::implicit_size(
             Size::new(0, 0),
             rust_widgets::style::EdgeOffsets::all(0),
-            Size::new(220, 18),
+            Size::new(220, height),
         )
     }
 
@@ -654,6 +661,27 @@ mod tests {
         overlay.handle_event(&Event::mouse_press(at.x, at.y, 1));
         let out = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         out
+    }
+
+    /// A control sized to its own `size_hint` can paint one credit row.
+    ///
+    /// The hint was a fixed 220×18 — shorter than the overlay's own insets and padding — so the
+    /// layout produced no rows at all and the overlay painted nothing. The data-source credit is a
+    /// licence obligation, and the designer path sizes a control from exactly this hint.
+    #[test]
+    fn the_size_hint_fits_one_credit_row() {
+        let mut overlay = MapAttributionOverlay::new(Rect::new(0, 0, 1, 1));
+        overlay.add_entry("OpenStreetMap", None::<String>);
+        let hint = overlay.size_hint();
+        assert_eq!(hint.width, 220);
+
+        overlay.base_mut().set_geometry(Rect::new(0, 0, hint.width, hint.height));
+        assert_eq!(
+            overlay.entry_rects().len(),
+            1,
+            "a {} px tall overlay must fit one row",
+            hint.height
+        );
     }
 
     /// A click reports the URL when the entry has one and the text otherwise.

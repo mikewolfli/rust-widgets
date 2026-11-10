@@ -260,9 +260,10 @@ impl GanttTaskGrid {
             return false;
         };
         let depth = self.depth_of(index);
-        if depth > self.max_depth {
-            self.max_depth = depth;
-        }
+        // Through the public entry point: it clamps the scroll and requests the frame the reveal
+        // needs. The direct write changed what paints without asking for a repaint, so when the
+        // scroll offset happened to be unchanged the row stayed invisible.
+        self.expand_to_depth(depth);
         let indices = self.visible_indices();
         let Some(position) = indices.iter().position(|candidate| *candidate == index) else {
             return false;

@@ -272,6 +272,13 @@ impl IndicatorChart {
         self.view = range;
         let (start, end) = self.view_bounds();
         self.view_changed.emit((start, end));
+        // The window moved under a stationary pointer: a hover outside it names a bar the pane no
+        // longer draws, so `hovered_summary`/`hovered_price` would report values for it.
+        if let Some(previous) = self.hovered_index {
+            if previous < start || previous >= end {
+                self.hovered_index = None;
+            }
+        }
         self.base.request_redraw();
     }
 
@@ -774,9 +781,9 @@ impl IndicatorChart {
 
     /// The hovered bar's anchor and suggested tooltip content, for an external read-out.
     ///
-    /// The anchor is the primary series' point at the hovered index; when that series has no
-    /// finite value there, the pane's vertical middle is used so the bubble still points at the
-    /// bar the host is reading (gap 10).
+    /// The anchor is the **first drawn series** that has a finite value at the hovered index; when
+    /// none has one (a warm-up gap in every line), the pane's vertical middle is used so the bubble
+    /// still points at the bar the host is reading (gap 10).
     pub fn hover_anchor(
         &self,
     ) -> Option<(Point, Vec<rust_widgets::widget::companions::TooltipLine>)> {

@@ -322,9 +322,13 @@ impl FormSet {
         }
         let key = page.key.clone();
         self.pages.push(page);
-        if self.pages.len() == 1 {
+        if self.pages.len() == 1 && self.pages[0].enabled {
             self.current = 0;
         }
+        // A disabled page is outside the aggregate and is never shown, so it must not be the
+        // current index either: the documented "first page becomes current and is shown" would
+        // otherwise announce a page whose form `apply_page_visibility` hides.
+        self.reanchor_current();
         self.apply_page_visibility();
         self.base.request_layout();
         self.base.request_redraw();
@@ -508,6 +512,20 @@ impl FormSet {
     ///
     /// `None` when every page is disabled: the caller keeps the clamped index rather than
     /// pretending there is an enabled page to activate.
+    /// Moves `current` onto an enabled page when the active one is disabled.
+    ///
+    /// A disabled page is outside the aggregate (`is_valid`, `submit`, navigation) and
+    /// [`Self::apply_page_visibility`] never shows it, so an index naming one reports a page the
+    /// set does not paint.
+    fn reanchor_current(&mut self) {
+        if self.pages.get(self.current).is_some_and(|page| page.enabled) {
+            return;
+        }
+        if let Some(index) = self.nearest_enabled_page() {
+            self.current = index;
+        }
+    }
+
     fn nearest_enabled_page(&self) -> Option<usize> {
         if self.pages.get(self.current).is_some_and(|page| page.enabled) {
             return Some(self.current);
@@ -570,6 +588,16 @@ impl FormSet {
     /// signals are edge detectors that only a publish can fire. A presentation-only change still
     /// costs nothing extra (the publish is a comparison).
     pub fn refresh(&mut self) {
+        // The repair point after a `page_mut` edit: disabling the current page has to move the
+        // index, or the set names a page it does not paint. That is a change of the *active page*,
+        // so it must be published like every other one (`add_page`, `remove_page`, `move_page`,
+        // `set_current_index` all route it through `publish_current_change`), and the page the set
+        // now shows must be swapped in before the next paint.
+        let before_key = self.current_key().map(str::to_string);
+        let before_index = self.current;
+        self.reanchor_current();
+        self.publish_current_change(before_key, before_index);
+        self.apply_page_visibility();
         self.base.request_layout();
         self.base.request_redraw();
         self.publish_validity(self.is_valid());
@@ -602,13 +630,14 @@ impl FormSet {
             .count()
     }
 
-    /// Whether any page's form reports uncommitted changes.
+    /// Whether any enabled page's form reports uncommitted changes.
     ///
     /// Aggregated from each form's own `dirty` property the same way [`Self::is_valid`]
     /// aggregates `valid`; a page with no form has nothing to modify and never makes the set
-    /// dirty.
+    /// dirty. A **disabled** page is outside the aggregate for the same reason it is outside
+    /// validity: the reader cannot reach it, so its edits cannot be committed either.
     pub fn dirty(&self) -> bool {
-        self.pages.iter().any(|page| match page.form {
+        self.pages.iter().filter(|page| page.enabled).any(|page| match page.form {
             Some(form) => read_form_flag(form, "dirty").unwrap_or(false),
             None => false,
         })
@@ -1168,9 +1197,11 @@ impl Draw for FormSet {
                 let page = &self.pages[index];
                 let active = index == self.current;
                 // A page whose form reports a refusal is marked in the header: the tab title
-                // alone cannot tell a user which step is blocking the submit.
-                let invalid =
-                    page.form.is_some_and(|form| read_form_flag(form, "valid") == Some(false));
+                // alone cannot tell a user which step is blocking the submit. A disabled page is
+                // outside the aggregate, so it is not marked — a dot there would name a step that
+                // `is_valid()`/`submit()` ignore.
+                let invalid = page.enabled
+                    && page.form.is_some_and(|form| read_form_flag(form, "valid") == Some(false));
                 match self.header_style {
                     FormSetHeaderStyle::Tabs => {
                         if active {

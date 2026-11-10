@@ -129,7 +129,10 @@ impl TimelineAxis {
             return;
         }
         self.range = (start, end);
-        self.base_span = end.saturating_sub(start).max(1) as f64;
+        // In `f64`, not `i64`: a range wider than `i64::MAX` (the whole axis is supported) saturated
+        // the difference to half its true width, so every value in the upper half projected onto the
+        // same pixel and the first zoom showed half the span.
+        self.base_span = (end as f64 - start as f64).max(1.0);
         self.zoom_level = 1.0;
         self.scale_changed.emit(self.range);
         self.base.request_redraw();
@@ -231,20 +234,27 @@ impl TimelineAxis {
     /// inverse of [`Self::date_to_pixel`] up to rounding.
     pub fn pixel_to_date(&self, x: i32) -> i64 {
         let (left, width) = self.track_geometry();
-        let span = self.range.1.saturating_sub(self.range.0).max(1) as f64;
-        let ratio = (f64::from(x - left) / f64::from(width)).clamp(0.0, 1.0);
-        self.range.0.saturating_add((ratio * span).round() as i64)
+        // Both conversions widen each endpoint separately, like `GanttWidget::project_x`: doing the
+        // subtraction in `i64` first saturates on a whole-axis range.
+        let span = (self.range.1 as f64 - self.range.0 as f64).max(1.0);
+        // `saturating_sub`: `x` can be `i32::MIN`, where a plain subtraction panics in debug builds.
+        let ratio = (f64::from(x.saturating_sub(left)) / f64::from(width)).clamp(0.0, 1.0);
+        // The addition stays in `f64` as well: casting the offset to `i64` first saturated it (the
+        // offset of a whole-axis range is `2^64`-scale) and then added it to the range's start,
+        // which answered `-1` for the right edge. The final float→`i64` cast saturates correctly.
+        (self.range.0 as f64 + ratio * span).round() as i64
     }
 
     /// Converts an axis value to an x coordinate.
     ///
     /// Values outside the range project outside the track rather than clamping, so
-    /// a caller can tell "off the axis" from "at the edge".
+    /// a caller can tell "off the axis" from "at the edge". The sum saturates: a value far outside
+    /// the range used to overflow `i32` and panic in a debug build.
     pub fn date_to_pixel(&self, date: i64) -> i32 {
         let (left, width) = self.track_geometry();
-        let span = self.range.1.saturating_sub(self.range.0).max(1) as f64;
-        let ratio = date.saturating_sub(self.range.0) as f64 / span;
-        left + (ratio * f64::from(width)).round() as i32
+        let span = (self.range.1 as f64 - self.range.0 as f64).max(1.0);
+        let ratio = (date as f64 - self.range.0 as f64) / span;
+        left.saturating_add((ratio * f64::from(width)).round() as i32)
     }
 
     /// The track's left edge and width.
@@ -487,5 +497,51 @@ mod tests {
         assert_eq!(ticks.first().map(|(value, _)| *value), Some(i64::MIN));
         assert_eq!(ticks.last().map(|(value, _)| *value), Some(i64::MAX));
         assert!(ticks.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    }
+
+    /// The pixel mapping is the documented inverse even on a whole-axis range.
+    ///
+    /// The span was computed with `i64::saturating_sub` before widening to `f64`, which halved a
+    /// range wider than `i64::MAX`: every value in the upper half projected onto the right edge and
+    /// `pixel_to_date` of that edge answered `-1`.
+    #[test]
+    fn the_whole_axis_projects_and_inverts() {
+        let mut axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        axis.set_range(i64::MIN, i64::MAX);
+        let (left, width) = axis.track_geometry();
+        let right = left + width as i32 - 1;
+
+        assert_eq!(axis.pixel_to_date(left), i64::MIN, "the left edge is the range's start");
+        // The last pixel is a pixel short of the end, so the answer is near — not equal to — the
+        // maximum. What the defect produced was `-1`: the upper half projected onto the same edge.
+        let near_end = axis.pixel_to_date(right);
+        assert!(near_end > i64::MAX / 2, "the right edge is near the range's end, got {near_end}");
+        assert_eq!(
+            axis.date_to_pixel(i64::MIN),
+            left,
+            "the range's start is the track's left edge"
+        );
+        assert!(
+            (axis.date_to_pixel(i64::MAX) - (left + width as i32)).abs() <= 1,
+            "the range's end is the track's right edge"
+        );
+        let middle = axis.date_to_pixel(0);
+        assert!(
+            (middle - (left + width as i32 / 2)).abs() <= 1,
+            "zero is the middle of a symmetric range, got {middle}"
+        );
+    }
+
+    /// A value far outside the range projects without panicking.
+    ///
+    /// The doc promises that a value outside the range projects outside the track; the float→`i32`
+    /// sum overflowed (a debug-build panic) instead.
+    #[test]
+    fn a_far_out_of_range_value_does_not_panic() {
+        let axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        let far = axis.date_to_pixel(1_000_000_000);
+        assert!(far > 0, "an off-axis value still has an x, got {far}");
+        assert_eq!(axis.pixel_to_date(i32::MIN), axis.range().0, "outside clamps to the start");
+        assert_eq!(axis.pixel_to_date(i32::MAX), axis.range().1, "outside clamps to the end");
     }
 }

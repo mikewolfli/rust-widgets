@@ -1500,6 +1500,19 @@ impl LottieWidget {
         self.total_frames
     }
 
+    /// The fraction of the frame sequence that is on screen, for the progress bar.
+    ///
+    /// `current_frame` is an index clamped to `total_frames - 1`, so the frame being shown is
+    /// `current_frame + 1`: frame 0 already shows one frame of progress. Dividing the bare index
+    /// left the bar empty on the first frame and one frame short at the end. An unloaded widget
+    /// has no sequence, so it reports `0.0`.
+    fn progress_fill_ratio(&self) -> f64 {
+        if self.total_frames == 0 {
+            return 0.0;
+        }
+        (self.current_frame as f64 + 1.0) / (self.total_frames as f64)
+    }
+
     /// Sets the current frame index directly (clamped to valid range).
     pub fn set_current_frame(&mut self, frame: u32) {
         if self.total_frames == 0 {
@@ -2821,7 +2834,7 @@ impl Draw for LottieWidget {
         context.fill_rounded_rect(progress_bar_full, 3, trough_color);
 
         if self.total_frames > 0 {
-            let fill_ratio = (self.current_frame as f64) / (self.total_frames as f64);
+            let fill_ratio = self.progress_fill_ratio();
             let filled_width = ((progress_bar_full.width as f64) * fill_ratio) as u32;
             if filled_width > 0 {
                 let progress_bar_fill = Rect::new(
@@ -2965,6 +2978,30 @@ mod tests {
         assert_eq!(lottie.current_frame(), 0);
         assert_eq!(lottie.frame_rate(), 30.0);
         assert!(lottie.json_data().is_some());
+    }
+
+    /// The progress bar counts the frame on screen, not the number of frames behind it.
+    ///
+    /// Frame 0 is the first frame, so it must already show one frame of progress; the bar used
+    /// to sit empty there and stop one frame short of full.
+    #[test]
+    fn the_progress_bar_counts_the_frame_on_screen() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(lottie.progress_fill_ratio(), 0.0, "no sequence, no progress");
+
+        let json = make_lottie_json(10.0, 0.0, 10.0);
+        lottie.load_json(&json).unwrap();
+        assert_eq!(lottie.total_frames(), 10);
+        assert!(
+            (lottie.progress_fill_ratio() - 0.1).abs() < 1.0e-9,
+            "the first frame is one frame of progress"
+        );
+
+        lottie.set_current_frame(9);
+        assert!(
+            (lottie.progress_fill_ratio() - 1.0).abs() < 1.0e-9,
+            "the last frame fills the bar"
+        );
     }
 
     /// The async load path retains its document, so `source` reads back the animation it shows.

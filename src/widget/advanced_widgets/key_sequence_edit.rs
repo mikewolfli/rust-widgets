@@ -347,6 +347,9 @@ impl KeySequenceEdit {
             Some(last) => {
                 self.set_key_sequence(last);
                 self.chords = chords;
+                // The painted text is cached; `set_key_sequence` returns early for an unchanged
+                // last chord, so the cache has to be dropped here explicitly.
+                self.invalidate_display();
                 self.base.request_redraw();
             }
             None => self.clear(),
@@ -567,6 +570,11 @@ impl EventHandler for KeySequenceEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            // A disable mid-capture must end it: nothing below can run, so the field would keep
+            // painting the recording state and `editing_finished` would never fire.
+            if self.recording {
+                self.stop_recording();
+            }
             return;
         }
         match event {
@@ -909,6 +917,54 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     // ── 1. Creating default widget ──────────────────────────────────
+
+    /// Replacing the chord list refreshes the painted text.
+    ///
+    /// # What this pins
+    ///
+    /// `set_chords` writes `self.chords` and relies on `set_key_sequence` to invalidate the cached
+    /// display — but that setter returns early when the last chord is unchanged, so a new *prefix*
+    /// left the old text on screen.
+    #[test]
+    fn replacing_the_chords_refreshes_the_painted_text() {
+        let mut edit = KeySequenceEdit::new(Rect::new(0, 0, 150, 28));
+        let a = KeySequence::new(0, 65, "A");
+        let x = KeySequence::new(0, 88, "X");
+        let b = KeySequence::new(0, 66, "B");
+        edit.set_chords(vec![a, x.clone()]);
+        edit.refresh_display_text();
+        let first = edit.display_text.clone();
+
+        edit.set_chords(vec![b, x]);
+        edit.refresh_display_text();
+        assert_ne!(edit.display_text, first, "the prefix is part of the painted text");
+        assert!(edit.display_text.contains('B'));
+    }
+
+    /// Disabling the editor ends a recording in progress.
+    ///
+    /// # What this pins
+    ///
+    /// The disabled early return skipped the `FocusLost` arm that stops recording, so the field
+    /// kept painting "Recording..." and `editing_finished` never fired.
+    #[test]
+    fn disabling_the_editor_stops_recording() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut edit = KeySequenceEdit::new(Rect::new(0, 0, 150, 28));
+        let finished = Arc::new(AtomicBool::new(false));
+        edit.editing_finished.connect({
+            let flag = Arc::clone(&finished);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+        edit.start_recording();
+        assert!(edit.is_recording());
+
+        edit.set_enabled(false);
+        edit.handle_event(&Event::FocusLost);
+        assert!(!edit.is_recording());
+        assert!(finished.load(Ordering::SeqCst));
+    }
 
     /// The field's surface and ink follow the appearance.
     ///

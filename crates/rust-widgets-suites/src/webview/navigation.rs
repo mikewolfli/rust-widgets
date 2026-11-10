@@ -40,8 +40,11 @@ impl NavigationHistory {
     /// `max_size` is a hard cap on retained entries; there is no clamping of the
     /// argument, so a value of `0` produces a history that discards every entry
     /// as soon as it is pushed. [`NavigationHistory::default`] uses 100.
+    ///
+    /// The cap is *not* an up-front allocation: `usize::MAX` used to panic here with a capacity
+    /// overflow before a single entry was pushed.
     pub fn new(max_size: usize) -> Self {
-        Self { entries: VecDeque::with_capacity(max_size), current_index: None, max_size }
+        Self { entries: VecDeque::new(), current_index: None, max_size }
     }
     /// Records a visit and makes it the current entry.
     ///
@@ -311,6 +314,22 @@ mod tests {
         assert!(!history.can_go_back());
         assert!(!history.can_go_forward());
         assert!(history.is_empty());
+    }
+
+    /// The cap is a retained-entry limit, not an up-front allocation.
+    ///
+    /// `VecDeque::with_capacity(max_size)` panicked with a capacity overflow for a natural
+    /// "unlimited" sentinel such as `usize::MAX`, before a single entry was pushed.
+    #[test]
+    fn an_unbounded_cap_does_not_allocate_or_panic() {
+        let mut history = NavigationHistory::new(usize::MAX);
+        history.push(NavigationEntry {
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            timestamp: 1,
+        });
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.current().map(|entry| entry.url.as_str()), Some("https://example.com"));
     }
 
     #[test]

@@ -2116,10 +2116,15 @@ impl EventHandler for TabBar {
                 }
             }
             Event::MouseLeave { .. } => {
-                // The hint belongs to the hover it was registered for; leaving drops it.
-                self.hovered_index = None;
+                // The hint belongs to the hover it was registered for; leaving drops it. The hover
+                // wash is painted from `hovered_index`, and a move-based backend repaints only when
+                // the hovered *widget* changes, so the strip has to ask for its own frame.
+                let had_hover = self.hovered_index.take().is_some();
                 self.tooltip_source = None;
                 self.tooltips.note_leave();
+                if had_hover {
+                    self.base.request_redraw();
+                }
             }
             // Keyboard tab stepping is reachable only while the strip holds focus: a tab bar
             // embedded in a page must not consume the arrows of whatever the user is editing.
@@ -2264,6 +2269,33 @@ mod tests {
     use super::*;
     use crate::core::Rect;
     use std::sync::Arc;
+
+    /// Leaving the strip repaints the hover it drops.
+    ///
+    /// # What this pins
+    ///
+    /// `MouseMove` requested a frame on every hover change while `MouseLeave` cleared the same
+    /// field silently, so the last hovered tab kept its fill until an unrelated repaint.
+    #[test]
+    fn leaving_the_strip_repaints_the_hover_away() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("A".to_string());
+        tb.add_tab("B".to_string());
+        let tab = tb.tab_rect(0).expect("the first tab has a box");
+        tb.handle_event(&crate::event::Event::MouseMove {
+            pos: crate::core::Point::new(tab.x + 2, tab.y + 2),
+        });
+
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        tb.base.redraw_requested.connect({
+            let flag = Arc::clone(&fired);
+            move || flag.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+        tb.handle_event(&crate::event::Event::MouseLeave {
+            pos: crate::core::Point::new(5000, 5000),
+        });
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn tabbar_creation_defaults() {

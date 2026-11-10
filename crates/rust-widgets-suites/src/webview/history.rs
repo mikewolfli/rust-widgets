@@ -359,11 +359,14 @@ impl SessionHistory {
     /// [`Self::MAX_PAGE_SNAPSHOT_BYTES`] bounds that single snapshot.
     fn trim_snapshots(&mut self) {
         while self.snapshot_bytes > Self::MAX_SNAPSHOT_BYTES {
-            if let Some(dropped) = self.back_pages.front_mut().and_then(|slot| slot.take()) {
+            // Scan for the first slot that actually holds a body: an empty slot at the front is
+            // common (a simulated navigation or an oversize page pushes `None`), and stopping at
+            // it let the cached total exceed the documented budget for the session's life.
+            if let Some(dropped) = self.back_pages.iter_mut().find_map(|slot| slot.take()) {
                 self.snapshot_bytes -= dropped.byte_len();
                 continue;
             }
-            if let Some(dropped) = self.forward_pages.back_mut().and_then(|slot| slot.take()) {
+            if let Some(dropped) = self.forward_pages.iter_mut().rev().find_map(|slot| slot.take()) {
                 self.snapshot_bytes -= dropped.byte_len();
                 continue;
             }

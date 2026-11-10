@@ -249,6 +249,18 @@ impl KanbanBoard {
     /// Computed from the pointer's y against the laid-out cards, so dropping in the
     /// gap between two cards inserts between them rather than being snapped to one
     /// of their indices. A drop below the last card appends.
+    /// Returns whether the column can accept the card currently being dragged.
+    ///
+    /// A WIP limit caps *arrivals*, not movement, so a card already in the column may be reordered
+    /// inside a full one. This is the one acceptance rule the drop tint, the insertion line, the
+    /// preview and the commit all read; computing it more than once is how the tint came to paint a
+    /// target the drop refused.
+    pub(super) fn accepts_drop(&self, column: usize) -> bool {
+        let arriving_from_here = self.drag_origin.is_some_and(|origin| origin.column == column);
+        arriving_from_here
+            || !self.columns.get(column).is_some_and(|target| target.is_at_wip_limit())
+    }
+
     pub(super) fn insert_index_at(&self, column: usize, pos: Point) -> usize {
         let Some(entries) = self.columns.get(column) else {
             return 0;
@@ -373,14 +385,10 @@ impl DropTarget for KanbanBoard {
         // have room"); this answers the one that needs the drop site.
         //
         // A card arriving from *this* column does not add to it, so a move within a
-        // full column stays legal — that is the case the limit must not block.
-        let arriving_from_here = self.drag_origin.is_some_and(|origin| origin.column == column);
-        if !arriving_from_here {
-            if let Some(target) = self.columns.get(column) {
-                if target.is_at_wip_limit() {
-                    return DropEffect::None;
-                }
-            }
+        // full column stays legal — that is the case the limit must not block. The rule lives in
+        // `accepts_drop`, which the tint, the insertion line and the preview also read.
+        if !self.accepts_drop(column) {
+            return DropEffect::None;
         }
         // The board is the target *and* the owner of the card, so the move itself
         // happens in `finish_card_drag` where the origin is known. Reporting `Move`
@@ -397,10 +405,7 @@ impl DropTarget for KanbanBoard {
         // A destination that cannot accept the arrival gets no highlight or insertion line: the
         // commit (`on_drop`) refuses a WIP-full column unless the card is already in it, so the
         // preview must not promise that drop.
-        let arriving_from_here = self.drag_origin.is_some_and(|origin| origin.column == column);
-        if !arriving_from_here
-            && self.columns.get(column).is_some_and(|target| target.is_at_wip_limit())
-        {
+        if !self.accepts_drop(column) {
             return None;
         }
         let mut rect = self.column_rect(column)?;

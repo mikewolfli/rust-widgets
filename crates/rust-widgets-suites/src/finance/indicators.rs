@@ -367,7 +367,10 @@ pub fn stochastic(
     let length = closes.len().min(highs.len()).min(lows.len());
     let mut raw_k = vec![f64::NAN; length];
 
-    if period == 0 {
+    // A period longer than the series produces no readings, and the two `VecDeque`s below would
+    // reserve `period` slots on **every** call — the published `period` property accepts any
+    // `UInt`, so a large write aborted the host on allocation.
+    if period == 0 || period > length {
         return (vec![f64::NAN; length], vec![f64::NAN; length]);
     }
     // The trailing extremes come from monotonic deques, the same structure

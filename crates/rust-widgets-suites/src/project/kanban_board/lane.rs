@@ -29,6 +29,8 @@ impl KanbanBoard {
         let index = self.lanes.len();
         self.lanes.push(lane);
         self.invalidate_layout();
+        // `size_hint` sums the lane bands, so a new lane changes the preferred height.
+        self.base.request_layout();
         self.base.request_redraw();
         index
     }
@@ -47,6 +49,7 @@ impl KanbanBoard {
             self.collapsed_lanes.remove(collapsed);
         }
         self.invalidate_layout();
+        self.base.request_layout();
         self.base.request_redraw();
         Some(removed)
     }
@@ -96,6 +99,8 @@ impl KanbanBoard {
         }
         self.card_lanes.insert(card_id.to_string(), next);
         self.invalidate_layout();
+        // Moving a card between lanes changes which bands the board's height covers.
+        self.base.request_layout();
         self.base.request_redraw();
         true
     }

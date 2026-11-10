@@ -324,6 +324,10 @@ impl TerminalFindBar {
     /// not read into a document that can be modified: only the text is copied.
     pub fn attach(&mut self, terminal: &mut TerminalView) {
         self.attached = true;
+        // The scan key carries no terminal identity, and two fresh terminals both report revision
+        // 0: reattaching to a different one reused the previous terminal's matches and row
+        // snapshot. Attaching is rare, so forcing the scan is cheaper than carrying an identity.
+        self.rescan_key = None;
         let _ = self.rescan(terminal);
         self.emit_matches();
         self.base.request_redraw();
@@ -705,6 +709,26 @@ mod tests {
             }
         });
         emitted
+    }
+
+    /// Attaching to a different terminal rescans it, even at the same revision.
+    ///
+    /// The scan key records the revision and the query options but no terminal identity, and two
+    /// fresh terminals both report revision 0 — reattaching reused the first terminal's matches and
+    /// row snapshot.
+    #[test]
+    fn attaching_to_another_terminal_rescans_it() {
+        let mut first = terminal_with(&["error here", "error again"]);
+        let mut second = terminal_with(&["nothing to find"]);
+        let mut bar = TerminalFindBar::new(Rect::new(0, 0, 320, 30));
+        bar.set_query("error");
+        bar.attach(&mut first);
+        assert_eq!(bar.match_count(), 2);
+
+        bar.attach(&mut second);
+        assert_eq!(bar.match_count(), 0, "the new terminal's matches are counted");
+        assert!(bar.matches().is_empty());
+        assert_eq!(bar.attached_row_text(0), Some("nothing to find"));
     }
 
     /// Attach scans the real buffer, reports `(total, 0)`, and leaves the terminal untouched.

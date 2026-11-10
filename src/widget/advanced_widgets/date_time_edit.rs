@@ -273,6 +273,11 @@ pub struct DateTimeEdit {
     /// Same reason as `DateEdit::value_text_scratch`: the substituter writes into a caller's
     /// buffer, and a fresh `String` per frame allocated on its first push.
     value_text_scratch: crate::compat::RefCell<String>,
+    /// The section boxes measured from the last painted run.
+    ///
+    /// `section_zone` has no renderer, so it answers from this cache after a paint and from the
+    /// documented equal-sixths approximation before one.
+    section_zone_cache: crate::compat::RefCell<super::date_edit::SectionZoneCache<6>>,
 }
 impl DateTimeEdit {
     /// Creates a date-time editor occupying `geometry`.
@@ -318,6 +323,7 @@ impl DateTimeEdit {
             calendar_sync_dirty: true,
             calendar_sync_rect: Rect::new(0, 0, 0, 0),
             value_text_scratch: crate::compat::RefCell::new(String::new()),
+            section_zone_cache: crate::compat::RefCell::new(Default::default()),
         }
     }
     /// Returns the current combined value.
@@ -533,6 +539,14 @@ impl DateTimeEdit {
         }
         self.calendar_open = open;
         self.calendar_reveal.set_open(open);
+        // The grid is painted below the field, outside `geometry()`; the grab is what makes a press
+        // inside the visible calendar reach this control instead of being swallowed.
+        #[cfg(not(alloc_frugal))]
+        if open {
+            crate::widget::runtime::set_popup_grab(self.base.id());
+        } else {
+            crate::widget::runtime::clear_popup_grab_for(self.base.id());
+        }
         self.popup_visibility_changed.emit(open);
         if open {
             self.calendar_opened.emit();
@@ -671,11 +685,93 @@ impl DateTimeEdit {
     /// underline and the pointer target still agree with each other.
     pub fn section_zone(&self, section: DateTimeSection) -> Rect {
         let rect = self.geometry();
-        let trailing =
-            if self.calendar_popup { 16u32 } else { 0 } + if self.spin_buttons { 24 } else { 0 };
+        if let Some(zones) = self.measured_section_zones() {
+            return zones[section.index()];
+        }
+        let trailing = self.trailing_chrome_width();
         let width = rect.width.saturating_sub(12 + trailing);
         let part = width / 6;
         Rect::new(rect.x + 6 + section.index() as i32 * part as i32, rect.y, part, rect.height)
+    }
+
+    /// The width the trailing chrome (calendar arrow and spin buttons) reserves.
+    fn trailing_chrome_width(&self) -> u32 {
+        let arrow = if self.calendar_popup { 16u32 } else { 0 };
+        let spin = if self.spin_buttons { 24u32 } else { 0 };
+        arrow + spin
+    }
+
+    /// The measured boxes, when the cache still describes the current geometry.
+    fn measured_section_zones(&self) -> Option<[Rect; 6]> {
+        let rect = self.geometry();
+        let cache = self.section_zone_cache.borrow();
+        let key = cache.key?;
+        if key.rect == rect && key.trailing == self.trailing_chrome_width() {
+            Some(cache.zones)
+        } else {
+            None
+        }
+    }
+
+    /// Re-measures the six section boxes from the painted run.
+    ///
+    /// Called from `draw`, the only place a renderer can measure text. The shared token walk
+    /// recovers the pattern's own order and separators, and the alignment shift keeps the boxes
+    /// under a centred or right-aligned run.
+    fn refresh_section_zones(
+        &self,
+        context: &RenderContext,
+        rect: Rect,
+        text_width: u32,
+        font: &crate::core::Font,
+        alignment: HorizontalAlignment,
+    ) {
+        let trailing = self.trailing_chrome_width();
+        if text_width == 0 {
+            self.section_zone_cache.borrow_mut().key = None;
+            return;
+        }
+        let components = super::date_edit::DateTimeComponents {
+            year: Some(self.datetime.date.year()),
+            month: Some(self.datetime.date.month()),
+            day: Some(self.datetime.date.day()),
+            hour: Some(self.datetime.time.hour()),
+            minute: Some(self.datetime.time.minute()),
+            second: Some(self.datetime.time.second()),
+            millisecond: Some(self.datetime.time.msec()),
+        };
+        // A section the pattern does not draw has no target: a zero-width box at the run's end.
+        let fallback = Rect::new(rect.x + 6 + text_width as i32, rect.y, 0, rect.height);
+        let (zones, key) = super::date_edit::measure_pattern_zones(
+            context,
+            super::date_edit::SectionZoneRequest {
+                rect,
+                run_width: text_width,
+                trailing,
+                pattern: &self.display_format,
+                font,
+                alignment,
+                fallback,
+            },
+            |token, _component, out| {
+                super::date_edit::format_with_pattern_into(token, components, out)
+            },
+            |component| match component {
+                super::date_edit::RunComponent::Year => Some(0),
+                super::date_edit::RunComponent::Month => Some(1),
+                super::date_edit::RunComponent::Day => Some(2),
+                super::date_edit::RunComponent::Hour => Some(3),
+                super::date_edit::RunComponent::Minute => Some(4),
+                super::date_edit::RunComponent::Second => Some(5),
+                _ => None,
+            },
+        );
+        let mut cache = self.section_zone_cache.borrow_mut();
+        if cache.key == Some(key) {
+            return;
+        }
+        cache.key = Some(key);
+        cache.zones = zones;
     }
 
     /// The section containing `pos`, when the point is on the value text.
@@ -1000,9 +1096,15 @@ impl DateTimeEdit {
         self.undo_stack.can_redo()
     }
     fn restore_history_datetime(&mut self) {
+        // A bound change after the recorded edit does not rewrite the stack, so an undone value
+        // can be outside the range the control now advertises. Clamp it through the same rule
+        // every other write uses.
+        let restored =
+            super::clamp_ordered_range(*self.history_target.borrow(), self.minimum, self.maximum);
         let before = self.datetime;
         self.restoring_history = true;
-        self.datetime = *self.history_target.borrow();
+        self.datetime = restored;
+        *self.history_target.borrow_mut() = restored;
         self.restoring_history = false;
         self.datetime_changed.emit(self.datetime);
         // The date/time signals are the filtered views `set_datetime` publishes. An undo
@@ -1020,6 +1122,16 @@ impl DateTimeEdit {
 impl Widget for DateTimeEdit {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+
+    /// The field **and** the open calendar grid are this control's own area.
+    ///
+    /// The grid is painted below `geometry()`, so without this override the runtime refused every
+    /// point on it and the popup was reachable by keyboard only.
+    fn contains_point(&self, point: crate::core::Point) -> bool {
+        self.base.contains_point_with_touch_expansion(point)
+            || (self.calendar_open
+                && super::date_edit::calendar_popup_rect(self.geometry()).contains_point(point))
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
@@ -1251,7 +1363,10 @@ impl EventHandler for DateTimeEdit {
                 // belongs to the embedded calendar while it is open: arrows move its selection,
                 // Page Up/Down move its page, and Enter/Space commit.
                 if *key == 27 {
+                    // Escape is one of the three ways an edit ends (see `editing_finished`); it
+                    // used to close the grid silently and leave a host waiting for the commit.
                     self.close_calendar();
+                    self.editing_finished.emit();
                 } else {
                     self.sync_calendar_page();
                     self.calendar.handle_event(event);
@@ -1261,8 +1376,9 @@ impl EventHandler for DateTimeEdit {
                 }
             }
             Event::KeyPress { key, modifiers } => match *key {
-                // Escape closes an open grid first, before any value navigation runs.
-                27 if self.calendar_open => self.set_calendar_open(false),
+                // Escape ends the edit. The open-grid case was handled by the arm above, which now
+                // emits too.
+                27 => self.editing_finished.emit(),
                 13 => {
                     // Enter commits the edited value, which is where a field's edit ends.
                     self.editing_finished.emit();
@@ -1403,12 +1519,15 @@ impl Draw for DateTimeEdit {
                 0
             })
             .saturating_sub(if self.spin_buttons { 24 } else { 0 });
+        let alignment = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        // The section boxes come from the same run the painter is about to draw.
+        self.refresh_section_zones(context, rect, text_width, font, alignment);
         context.draw_text_fitted_ellipsis(
             Rect { x: rect.x + 6, y: line.y, width: text_width, height: line.height },
             text.as_str(),
             font,
             ink,
-            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+            alignment,
         );
         // The painter takes `&mut self` further down, so the buffer is released here.
         drop(text_scratch);
@@ -1482,7 +1601,46 @@ mod tests {
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 
+    /// The open calendar grid is part of the control's area.
+    ///
+    /// # What this pins
+    ///
+    /// The grid is painted below `geometry()`. Without a `contains_point` override the runtime
+    /// refused every point on it, so the popup was reachable by keyboard only.
+    #[test]
+    fn the_open_calendar_is_part_of_the_control() {
+        let mut edit = DateTimeEdit::new(Rect::new(0, 0, 260, 32));
+        let popup =
+            crate::widget::advanced_widgets::date_edit::calendar_popup_rect(edit.geometry());
+        let inside = Point::new(popup.x + 4, popup.y + 4);
+        assert!(!edit.contains_point(inside), "a closed grid is not part of the field");
+        edit.set_calendar_popup(true);
+        edit.set_calendar_open(true);
+        let popup =
+            crate::widget::advanced_widgets::date_edit::calendar_popup_rect(edit.geometry());
+        assert!(edit.contains_point(Point::new(popup.x + 4, popup.y + 4)));
+    }
+
     // ─── DateTime helper tests ───────────────────────────────────
+
+    /// Escape ends the edit and says so.
+    ///
+    /// # What this pins
+    ///
+    /// `editing_finished` is documented as firing on "Enter, Escape, or focus leaving", but no
+    /// Escape path emitted it: the open-grid arm closed the popup silently, and the arm that
+    /// looked like it handled Escape was unreachable behind that same guard.
+    #[test]
+    fn escape_ends_the_edit() {
+        let mut edit = DateTimeEdit::new(Rect::new(0, 0, 260, 32));
+        let fired = Arc::new(crate::compat::atomic::AtomicBool::new(false));
+        edit.editing_finished.connect({
+            let flag = Arc::clone(&fired);
+            move || flag.store(true, crate::compat::atomic::Ordering::SeqCst)
+        });
+        edit.handle_event(&Event::key_press(27, 0));
+        assert!(fired.load(crate::compat::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn date_time_creation_and_accessors() {

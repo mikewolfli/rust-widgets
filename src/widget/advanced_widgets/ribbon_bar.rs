@@ -570,10 +570,16 @@ impl RibbonBar {
             self.current_tab_index = 0;
         } else if index < before {
             self.current_tab_index = before - 1;
+        } else if index == before {
+            // The visible tab itself went away: the documented rule is the last tab. Leaving the
+            // index alone silently selected whichever tab shifted into the slot.
+            self.current_tab_index = self.tabs.len() - 1;
         } else if self.current_tab_index >= self.tabs.len() {
             self.current_tab_index = self.tabs.len() - 1;
         }
-        if self.current_tab_index != before {
+        // `index == before` can leave the index numerically unchanged while naming a different
+        // tab, so the signal cannot ride on the numeric comparison alone.
+        if self.current_tab_index != before || index == before {
             self.current_tab_changed.emit(self.current_tab_index);
         }
         self.base.request_redraw();
@@ -980,11 +986,10 @@ impl RibbonBar {
             used += width + QUICK_ACCESS_GAP;
             visible = index + 1;
         }
-        if !self.quick_access_overflow_menu {
-            self.quick_access_items.len()
-        } else {
-            visible
-        }
+        // The strip is bounded by the minimize button whether or not the overflow marker is
+        // enabled: returning the whole list painted the overflowing labels over that button and
+        // made the item's box, which the press path tests first, swallow its clicks.
+        visible
     }
 
     /// The box of quick-access item `index`, or `None` when it is not visible.
@@ -2235,6 +2240,9 @@ impl EventHandler for RibbonBar {
                             self.quick_access_overflowed_indices().get(row).copied()
                         {
                             self.quick_access_overflow_open = false;
+                            // `emit_quick_access` repaints only for a checkable item; a plain
+                            // command left the panel painted after it had closed in the model.
+                            self.base.request_redraw();
                             self.emit_quick_access(index);
                             return;
                         }
@@ -2542,37 +2550,6 @@ impl Draw for RibbonBar {
                     HorizontalAlignment::Center,
                 );
             }
-            if let Some(panel) = self.quick_access_overflow_panel_rect() {
-                context.fill_rect(panel, palette.surface);
-                context.draw_rect(panel, palette.border);
-                for (row, index) in self.quick_access_overflowed_indices().into_iter().enumerate() {
-                    let Some(item) = self.quick_access_items.get(index) else {
-                        continue;
-                    };
-                    let band = Rect::new(
-                        panel.x + 2,
-                        panel.y + row as i32 * QUICK_ACCESS_OVERFLOW_ROW as i32,
-                        panel.width.saturating_sub(4),
-                        QUICK_ACCESS_OVERFLOW_ROW,
-                    );
-                    if item.separator {
-                        let y = band.y + band.height as i32 / 2;
-                        context.draw_line(
-                            Point::new(band.x, y),
-                            Point::new(band.x + band.width as i32, y),
-                            palette.border,
-                        );
-                    } else {
-                        context.draw_text_fitted_ellipsis(
-                            band,
-                            item.label.as_str(),
-                            font,
-                            palette.ink,
-                            HorizontalAlignment::Left,
-                        );
-                    }
-                }
-            }
         }
 
         // ── Draw minimize button ──
@@ -2580,6 +2557,44 @@ impl Draw for RibbonBar {
 
         // ── Draw content panel (if expanded) ──
         self.draw_panel(context, &palette);
+
+        // ── Draw the quick-access overflow panel ──
+        //
+        // After the content panel, because that is the order the press path already uses: the
+        // panel takes a press before any ribbon item. Painted before, the list was covered by the
+        // panel body while its rows still ate the clicks.
+        if let Some(panel) = self.quick_access_overflow_panel_rect() {
+            let font = effective_font(self.style());
+            context.fill_rect(panel, palette.surface);
+            context.draw_rect(panel, palette.border);
+            for (row, index) in self.quick_access_overflowed_indices().into_iter().enumerate() {
+                let Some(item) = self.quick_access_items.get(index) else {
+                    continue;
+                };
+                let band = Rect::new(
+                    panel.x + 2,
+                    panel.y + row as i32 * QUICK_ACCESS_OVERFLOW_ROW as i32,
+                    panel.width.saturating_sub(4),
+                    QUICK_ACCESS_OVERFLOW_ROW,
+                );
+                if item.separator {
+                    let y = band.y + band.height as i32 / 2;
+                    context.draw_line(
+                        Point::new(band.x, y),
+                        Point::new(band.x + band.width as i32, y),
+                        palette.border,
+                    );
+                } else {
+                    context.draw_text_fitted_ellipsis(
+                        band,
+                        item.label.as_str(),
+                        font,
+                        palette.ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+        }
 
         // The tooltip pipeline owns the bubble; keeping it in the same control means a host does
         // not need a second mounted widget to get hint text from the ribbon (ADV-10).
@@ -2592,6 +2607,33 @@ impl Draw for RibbonBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Removing the visible tab selects the last one and says so.
+    ///
+    /// # What this pins
+    ///
+    /// When the removed index was the current one, the index was left numerically unchanged (now
+    /// naming the next tab) and no `current_tab_changed` was emitted, so a host mirroring the
+    /// signal kept showing the removed tab's page.
+    #[test]
+    fn removing_the_visible_tab_announces_the_last_one() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 640, 140));
+        ribbon.add_tab("A");
+        ribbon.add_tab("B");
+        ribbon.add_tab("C");
+        ribbon.set_current_tab(1);
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        ribbon
+            .current_tab_changed
+            .connect(move |index: std::sync::Arc<usize>| sink.lock().unwrap().push(*index));
+
+        ribbon.remove_tab(1);
+        assert_eq!(ribbon.tab_count(), 2);
+        assert_eq!(ribbon.current_tab(), 1, "the documented rule is the last tab");
+        assert_eq!(*seen.lock().unwrap(), vec![1]);
+    }
 
     #[test]
     fn ribbon_item_typed_icon_renders_and_legacy_text_replaces_it() {

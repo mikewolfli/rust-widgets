@@ -40,6 +40,65 @@ ships the DSH skill plugin, which touches no crate code.
 
 ### Fixed
 
+- **Date/time pickers: the clickable sections follow the painted pattern.** The section zones were
+  equal fractions of the run in a fixed year/month/day order, while the painter drew the value in
+  `display_format` order — a `dd/MM/yyyy` field selected the year from a press on the painted day,
+  and a centred or right-aligned run put every zone beside its glyphs. One token table now drives
+  both the formatter and a measuring pass that walks the pattern and boxes the components it paints.
+- **`Dial` puts its layout gap at the bottom**, matching the documented geometry (the needle sweep
+  starts lower-left and ends `+405°` later); a press inside the gap snaps to the nearer end instead
+  of clamping to the start.
+- **`crates/rust-widgets-suites` second full read, 33 defects closed.** Highlights: `RiveWidget`
+  reported itself as animating while a `progress` pin or a `playing=false` input held the playhead
+  still, and now derives that answer from the same two gates `tick` uses; `VideoPlayer::load`
+  pauses playback silently; `SubtitleBar` binds and unbinds a caption without `text_changed`;
+  `CameraPreview` hit-tests zoom buttons it does not paint; `LottieWidget`'s progress bar counted
+  the frames *behind* the playhead and now counts the frame on screen; `MediaPlayer` kept a rate
+  cache that a write through `clock_mut()` could not reach; `ChapterListPanel`'s `position_ms`
+  property read its field instead of following the attached clock. In `finance`, `stochastic`
+  over-allocated on an out-of-range period, `QuoteBoard` cached column ranges without the control's
+  origin, drew an over-wide number into the previous column, and published an unclamped
+  `scroll_offset`, while the three charts kept a hover that a new series or view range had removed.
+  In `project`, `KanbanBoard` stopped tracking hover across scrolls, missed
+  `selection_changed` on a reorder, and skipped layout after a lane edit; `GanttWidget`
+  overwrote editor-only dependency edges from the task list. In `webview`, navigation did not
+  publish `loading_progress(0)`, history trimming stopped at an empty head slot, clearing the find
+  query did not repaint, the enhanced view drew a 30 px address band beside the shared 28 px one,
+  and two docs (`go_back`/`can_go_back`, `SimpleJsEngine`'s feature list) described behaviour the
+  code does not have.
+- **`crates/rust-widgets-suites` third full read, 27 more defects closed.** `MapAttributionOverlay`'s
+  220×18 size hint could not fit a single credit row — a control sized from its own hint painted no
+  licence credit at all; cluster badges were painted outside the map's rectangle and `cluster_at`
+  returned the badge hidden underneath; arrow keys panned the raw latitude (`20/cos(lat)` pixels
+  under Mercator) where a drag went through the projection; the scale-bar legend was painted last
+  but accepted no input, so a press on it selected an invisible marker; `deliver_tile` stored a
+  truncated payload as a complete tile. `TerminalView` dropped an output selection that a
+  scrollback trim had merely shifted (and the next Ctrl+C then asked to interrupt), divided the
+  scrollbar inverse by the track instead of the thumb's travel, read a default ANSI palette that
+  disagreed with the one it painted, and left the history cursor set after `set_input_line`. The
+  diff viewer selected line 0 after a rebuild without reconciling folds, snapped a hidden line to
+  the wrong side of its hunk, and kept a selection under `SelectionMode::None`. `AudioVisualizer`
+  reported itself idle for the whole peak-hold window (freezing the marker above its bar), and its
+  level setters left stale smoothed bars; `MediaTransportBar` still filled its strip while hidden.
+  `Quote::is_up` classified a missing price as rising, `Bar::is_consistent` did not check the
+  high/low bracket, `DepthChart::apply_*_level` answered for the book rather than the curve, and
+  `PriceAxis::price_at` mirrored prices on an inverted screen range.
+- **`crates/rust-widgets-suites` fourth full read, 20 defects closed.** A control that publishes its
+  value as a `String` under `value` (an `OtpInput`) was readable through a form but never writable,
+  because the write probe only tried `text`; hiding a cross-field rule's comparison target left the
+  verdict it had produced in *other* rows; removing a rule blind-cleared a verdict a surviving
+  closure rule still produces; `clear_errors` left an in-flight async ticket able to write its
+  verdict back; `FormSet::refresh` re-anchored the active page without publishing
+  `current_changed`, and its `dirty` / header mark / validity did not agree about disabled pages.
+  Private browsing was inert: `WebSettings::private_browsing` was stored and read by nothing, so a
+  private session still recorded its history and cookies — both are now gated by one predicate and
+  dropped on entry. The web find bar kept the previous case rule's counts (and adopted a result
+  published for the superseded query), painted a long query underneath the match counter, and the
+  history panel anchored itself to a stale painted address bar. `NavigationHistory::new(usize::MAX)`
+  panicked before storing a single entry. In `project`, `TimelineAxis` computed its span in `i64`
+  before widening (a whole-axis range collapsed to half, and out-of-range values overflowed `i32`);
+  a grouped drop inside a WIP-full column moved only its primary card, a collapsed column painted an
+  insertion line it ignores, and a WIP-full column was tinted as a drop target the commit refuses.
 - **Code editor: soft-wrapped text, and every row after scrolling, painted nothing.** The row
   painter counted from the viewport window's first entry instead of from its absolute visual row,
   so once the scroll passed the window's slack every row was skipped; and a wrapped row's token
@@ -247,6 +306,36 @@ ships the DSH skill plugin, which touches no crate code.
     `Keyboard` keeps a dead key's accent when there is no precomposed form and clears the old grid's
     gestures on a layout change; `AutoCompleteEdit`'s highlight stops at the painted window;
     `ListBox` honours the press event's modifiers, so `Extended` is reachable by pointer.
+- **The time, date and advanced controls were re-read after the previous sweep.** 25 further semantic
+  defects were fixed and pinned in `advanced_widgets/`:
+  - `Dial` divided by a zero span when a wrapping dial's bounds inverted (`rem_euclid(0)` aborted the
+    host) and treated a press in the control's corners as a press on the painted disc.
+  - `TimeEdit::step_down` wrapped `00:00:00` forward to `00:59:59`; it is now the no-op its `step_up`
+    counterpart is at `23:59:59`. Its format setters now request a layout, because the pattern decides
+    `size_hint`.
+  - `DateEdit`/`TimeEdit`/`DateTimeEdit` clamp a restored undo/redo value to the current range, so a
+    bound change can no longer be undone into a value the control calls impossible.
+  - `DateEdit` commits and closes its popup when a press names a day — including the day already
+    selected, which is the common confirmation gesture — and repaints after forwarding events to its
+    embedded calendar (a non-child, whose own redraw request goes nowhere).
+  - `DateTimeEdit` emits `editing_finished` on Escape, as its contract says; the arm that looked like
+    it did was unreachable.
+  - `TimeEdit` and `DateTimeEdit` include their open clock face / calendar grid in `contains_point`
+    and take the popup grab, so a popup painted below the field is reachable by pointer at all.
+  - `Calendar` never stores an inverted range (the two bound setters raise the other end), resets the
+    range anchor before the equality early-return, repaints `show_today` when the accent day moved,
+    and closes an open month/year menu when disabled.
+  - `PieMenu` no longer resolves Enter against the top-level selection while a child ring is open, and
+    `set_item_enabled` drops the hover and repaints.
+  - `TabBar` repaints the hover it drops on `MouseLeave`.
+  - `RibbonBar` paints the quick-access overflow panel above the content panel (matching its press
+    order), bounds the quick-access strip so labels cannot cover the minimize button, applies the
+    documented "removing the visible tab selects the last one" rule with a signal, and repaints when
+    an overflow choice closes the panel.
+  - `KeySequenceEdit` invalidates its painted text when only the chord prefix changed, and ends a
+    recording in progress when it is disabled.
+  - `InplaceEditor`'s `undo` doc now states the implemented contract (a cancelled edit discards its
+    own steps), pinned by two more tests.
 
 ### Added
 

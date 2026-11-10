@@ -179,6 +179,13 @@ impl VolumeChart {
         self.view = range;
         let (start, end) = self.view_bounds();
         self.view_changed.emit((start, end));
+        // The window moved under a stationary pointer: a hover outside it names a bar the pane no
+        // longer draws, so `hovered_summary`/`hovered_price` would report values for it.
+        if let Some(previous) = self.hovered_index {
+            if previous < start || previous >= end {
+                self.hovered_index = None;
+            }
+        }
         self.base.request_redraw();
     }
 

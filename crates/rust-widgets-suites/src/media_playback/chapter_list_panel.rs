@@ -601,7 +601,9 @@ impl WidgetProperties for ChapterListPanel {
             // the count, which left no writable carrier for the rows.
             "chapters" => Ok(CapabilityValue::Records(chapters_to_records(&self.chapters))),
             "chapter_count" => Ok(CapabilityValue::UInt(self.chapters.len() as u64)),
-            "position_ms" => Ok(CapabilityValue::UInt(self.position_ms)),
+            // The property follows the attached clock through the accessor; reading the field
+            // froze the readout at the value captured when the player was bound.
+            "position_ms" => Ok(CapabilityValue::UInt(self.position_ms())),
             _ => base_property_get(self, name),
         }
     }
@@ -960,6 +962,8 @@ mod tests {
     /// While attached, `position_ms` follows the player's clock instead of freezing at bind time.
     #[test]
     fn position_ms_follows_the_attached_clock() {
+        use rust_widgets::widget::capability::WidgetProperties;
+
         let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
         player.set_duration(200.0);
         player.set_chapters(chapters());
@@ -969,5 +973,10 @@ mod tests {
 
         player.seek(65.0);
         assert_eq!(panel.position_ms(), 65_000, "the readout follows the followed clock");
+        assert_eq!(
+            panel.get("position_ms"),
+            Ok(CapabilityValue::UInt(65_000)),
+            "the published property reads the same accessor, not the frozen field"
+        );
     }
 }

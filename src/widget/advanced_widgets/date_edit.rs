@@ -262,143 +262,16 @@ pub(crate) fn format_with_pattern_into(
     components: DateTimeComponents,
     out: &mut String,
 ) -> bool {
-    /// One pattern token and the way it renders itself from the components.
-    ///
-    /// Named so the table below is an array of pairs rather than an array of a type whose shape has to
-    /// be read off the literal. Renders into the caller's buffer and reports whether the component
-    /// existed — a token with no value behind it writes nothing and is dropped rather than passed
-    /// through: the caller chose the pattern and knows which components it has, so `HH` in a date-only
-    /// pattern is a mistake to swallow, not a literal to display.
-    type Token = (&'static str, fn(&DateTimeComponents, &mut String) -> bool);
-    // Longest first, so a two-character token is never eaten by its one-character prefix.
-    const TOKENS: [Token; 16] = [
-        // 12-hour clock: `0` and `12` both read as 12, the way a wall clock does.
-        ("hh", |c, out| match c.hour {
-            Some(h) => {
-                let hour12 = if h % 12 == 0 { 12 } else { h % 12 };
-                let _ = write!(out, "{hour12:02}");
-                true
-            }
-            None => false,
-        }),
-        ("h", |c, out| match c.hour {
-            Some(h) => {
-                let hour12 = if h % 12 == 0 { 12 } else { h % 12 };
-                let _ = write!(out, "{hour12}");
-                true
-            }
-            None => false,
-        }),
-        ("zzz", |c, out| match c.millisecond {
-            Some(ms) => {
-                let _ = write!(out, "{ms:03}");
-                true
-            }
-            None => false,
-        }),
-        ("AP", |c, out| match c.hour {
-            Some(h) => {
-                out.push_str(if h < 12 { "AM" } else { "PM" });
-                true
-            }
-            None => false,
-        }),
-        ("ap", |c, out| match c.hour {
-            Some(h) => {
-                out.push_str(if h < 12 { "am" } else { "pm" });
-                true
-            }
-            None => false,
-        }),
-        ("yyyy", |c, out| match c.year {
-            Some(y) => {
-                let _ = write!(out, "{y:04}");
-                true
-            }
-            None => false,
-        }),
-        ("SSS", |c, out| match c.millisecond {
-            Some(ms) => {
-                let _ = write!(out, "{ms:03}");
-                true
-            }
-            None => false,
-        }),
-        ("yy", |c, out| match c.year {
-            Some(y) => {
-                let _ = write!(out, "{:02}", y.rem_euclid(100));
-                true
-            }
-            None => false,
-        }),
-        ("MM", |c, out| match c.month {
-            Some(m) => {
-                let _ = write!(out, "{m:02}");
-                true
-            }
-            None => false,
-        }),
-        ("dd", |c, out| match c.day {
-            Some(d) => {
-                let _ = write!(out, "{d:02}");
-                true
-            }
-            None => false,
-        }),
-        ("HH", |c, out| match c.hour {
-            Some(h) => {
-                let _ = write!(out, "{h:02}");
-                true
-            }
-            None => false,
-        }),
-        ("mm", |c, out| match c.minute {
-            Some(m) => {
-                let _ = write!(out, "{m:02}");
-                true
-            }
-            None => false,
-        }),
-        ("ss", |c, out| match c.second {
-            Some(s) => {
-                let _ = write!(out, "{s:02}");
-                true
-            }
-            None => false,
-        }),
-        ("M", |c, out| match c.month {
-            Some(m) => {
-                let _ = write!(out, "{m}");
-                true
-            }
-            None => false,
-        }),
-        ("d", |c, out| match c.day {
-            Some(d) => {
-                let _ = write!(out, "{d}");
-                true
-            }
-            None => false,
-        }),
-        ("H", |c, out| match c.hour {
-            Some(h) => {
-                let _ = write!(out, "{h}");
-                true
-            }
-            None => false,
-        }),
-    ];
-
     let mut substituted = false;
     let mut rest = pattern;
     // Whether a token may start here: only at the beginning or after a non-letter. See the doc
-    // comment above for the `"Today"` case this exists to fix.
+    // comment above the `"Today"` case this exists to fix.
     let mut at_token_start = true;
     'scan: while !rest.is_empty() {
         if at_token_start {
-            for (token, render) in TOKENS {
+            for (token, _component) in PATTERN_TOKENS {
                 if let Some(after) = rest.strip_prefix(token) {
-                    if render(&components, out) {
+                    if render_token(token, &components, out) {
                         substituted = true;
                     }
                     rest = after;
@@ -419,8 +292,347 @@ pub(crate) fn format_with_pattern_into(
         rest = &rest[ch.len_utf8()..];
         at_token_start = !ch.is_alphabetic();
     }
-
     substituted
+}
+
+/// One component a value pattern can render.
+///
+/// The zone layout walks the same token table as the formatter, so a pattern that draws the day
+/// first also hit-tests the day first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RunComponent {
+    /// The year.
+    Year,
+    /// The month.
+    Month,
+    /// The day of the month.
+    Day,
+    /// The hour.
+    Hour,
+    /// The minute.
+    Minute,
+    /// The second.
+    Second,
+    /// The meridiem of a 12-hour clock.
+    AmPm,
+    /// The millisecond.
+    Millisecond,
+}
+
+impl RunComponent {
+    /// The index used by the per-component width array.
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Year => 0,
+            Self::Month => 1,
+            Self::Day => 2,
+            Self::Hour => 3,
+            Self::Minute => 4,
+            Self::Second => 5,
+            Self::AmPm => 6,
+            Self::Millisecond => 7,
+        }
+    }
+}
+
+/// The pattern tokens, longest first, with the component each one renders.
+///
+/// One table for the formatter and the zone layout: two lists would drift, and a token the
+/// formatter knows but the layout does not is a section whose box lands on its neighbour.
+pub(crate) const PATTERN_TOKENS: [(&str, RunComponent); 16] = [
+    ("hh", RunComponent::Hour),
+    ("h", RunComponent::Hour),
+    ("zzz", RunComponent::Millisecond),
+    ("AP", RunComponent::AmPm),
+    ("ap", RunComponent::AmPm),
+    ("yyyy", RunComponent::Year),
+    ("SSS", RunComponent::Millisecond),
+    ("yy", RunComponent::Year),
+    ("MM", RunComponent::Month),
+    ("dd", RunComponent::Day),
+    ("HH", RunComponent::Hour),
+    ("mm", RunComponent::Minute),
+    ("ss", RunComponent::Second),
+    ("M", RunComponent::Month),
+    ("d", RunComponent::Day),
+    ("H", RunComponent::Hour),
+];
+
+/// Renders one token from the components, reporting whether its component exists.
+fn render_token(token: &str, c: &DateTimeComponents, out: &mut String) -> bool {
+    match token {
+        "hh" => match c.hour {
+            Some(h) => {
+                let hour12 = if h % 12 == 0 { 12 } else { h % 12 };
+                let _ = write!(out, "{hour12:02}");
+                true
+            }
+            None => false,
+        },
+        "h" => match c.hour {
+            Some(h) => {
+                let hour12 = if h % 12 == 0 { 12 } else { h % 12 };
+                let _ = write!(out, "{hour12}");
+                true
+            }
+            None => false,
+        },
+        "zzz" | "SSS" => match c.millisecond {
+            Some(ms) => {
+                let _ = write!(out, "{ms:03}");
+                true
+            }
+            None => false,
+        },
+        "AP" => match c.hour {
+            Some(h) => {
+                out.push_str(if h < 12 { "AM" } else { "PM" });
+                true
+            }
+            None => false,
+        },
+        "ap" => match c.hour {
+            Some(h) => {
+                out.push_str(if h < 12 { "am" } else { "pm" });
+                true
+            }
+            None => false,
+        },
+        "yyyy" => match c.year {
+            Some(y) => {
+                let _ = write!(out, "{y:04}");
+                true
+            }
+            None => false,
+        },
+        "yy" => match c.year {
+            Some(y) => {
+                let _ = write!(out, "{:02}", y.rem_euclid(100));
+                true
+            }
+            None => false,
+        },
+        "MM" => match c.month {
+            Some(m) => {
+                let _ = write!(out, "{m:02}");
+                true
+            }
+            None => false,
+        },
+        "dd" => match c.day {
+            Some(d) => {
+                let _ = write!(out, "{d:02}");
+                true
+            }
+            None => false,
+        },
+        "HH" => match c.hour {
+            Some(h) => {
+                let _ = write!(out, "{h:02}");
+                true
+            }
+            None => false,
+        },
+        "mm" => match c.minute {
+            Some(m) => {
+                let _ = write!(out, "{m:02}");
+                true
+            }
+            None => false,
+        },
+        "ss" => match c.second {
+            Some(s) => {
+                let _ = write!(out, "{s:02}");
+                true
+            }
+            None => false,
+        },
+        "M" => match c.month {
+            Some(m) => {
+                let _ = write!(out, "{m}");
+                true
+            }
+            None => false,
+        },
+        "d" => match c.day {
+            Some(d) => {
+                let _ = write!(out, "{d}");
+                true
+            }
+            None => false,
+        },
+        "H" => match c.hour {
+            Some(h) => {
+                let _ = write!(out, "{h}");
+                true
+            }
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// The code stored for an alignment in [`SectionZoneKey`].
+fn alignment_code(alignment: HorizontalAlignment) -> u8 {
+    match alignment {
+        HorizontalAlignment::Left => 0,
+        HorizontalAlignment::Center => 1,
+        HorizontalAlignment::Right => 2,
+    }
+}
+
+/// The inputs one measured zone table depends on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SectionZoneKey {
+    pub(crate) rect: Rect,
+    pub(crate) run_width: u32,
+    pub(crate) trailing: u32,
+    pub(crate) alignment: u8,
+    pub(crate) pattern_hash: u64,
+    pub(crate) font_size_bits: u32,
+    pub(crate) font_weight: u16,
+    pub(crate) font_family_hash: u64,
+    pub(crate) widths: [u32; 8],
+}
+
+/// A zone table cached from the paint pass.
+pub(crate) struct SectionZoneCache<const N: usize> {
+    pub(crate) key: Option<SectionZoneKey>,
+    pub(crate) zones: [Rect; N],
+}
+
+impl<const N: usize> Default for SectionZoneCache<N> {
+    fn default() -> Self {
+        Self { key: None, zones: [Rect::new(0, 0, 0, 0); N] }
+    }
+}
+
+/// The FNV-1a hash of a font family, used to key measured tables.
+pub(crate) fn font_family_hash(font: &crate::core::Font) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in font.family().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The FNV-1a hash of a pattern, used to key measured tables.
+fn pattern_hash(pattern: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in pattern.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The per-paint inputs one measured zone table is derived from.
+///
+/// Bundled rather than passed one by one: the measurement needs seven values from the caller's
+/// paint pass, and threading them individually made the signature unreadable at the call site.
+pub(crate) struct SectionZoneRequest<'a> {
+    pub(crate) rect: Rect,
+    pub(crate) run_width: u32,
+    pub(crate) trailing: u32,
+    pub(crate) pattern: &'a str,
+    pub(crate) font: &'a crate::core::Font,
+    pub(crate) alignment: HorizontalAlignment,
+    pub(crate) fallback: Rect,
+}
+
+/// Measures the box each pattern component occupies inside the painted run.
+///
+/// # Why this parses the pattern
+///
+/// The zones used to be equal fractions of the run in a fixed year/month/day order, while the
+/// painter drew the value in `display_format` order. A `dd/MM/yyyy` field therefore selected the
+/// year from a press on the painted day, and a centred or right-aligned run put every zone beside
+/// its glyphs. Walking the formatter's token table recovers the rendered order and the literals
+/// between the components, so the pointer target is the pixels it marks.
+///
+/// `render` writes one component's own text; `slot_of` maps it to its slot in the returned table.
+/// A component the pattern does not draw (or cannot render for this value) keeps `fallback`.
+pub(crate) fn measure_pattern_zones<const N: usize>(
+    context: &RenderContext,
+    request: SectionZoneRequest<'_>,
+    mut render: impl FnMut(&str, RunComponent, &mut String) -> bool,
+    slot_of: impl Fn(RunComponent) -> Option<usize>,
+) -> ([Rect; N], SectionZoneKey) {
+    let SectionZoneRequest { rect, run_width, trailing, pattern, font, alignment, fallback } =
+        request;
+    let mut zones = [fallback; N];
+    let mut widths = [0u32; 8];
+    let mut scratch = String::new();
+    let mut literal = String::new();
+    let mut cursor: i32 = 0;
+
+    let mut rest = pattern;
+    let mut at_token_start = true;
+    while !rest.is_empty() {
+        let mut matched = false;
+        if at_token_start {
+            for (token, component) in PATTERN_TOKENS {
+                if let Some(after) = rest.strip_prefix(token) {
+                    if !literal.is_empty() {
+                        cursor += context.measure_text(literal.as_str(), font).width as i32;
+                        literal.clear();
+                    }
+                    scratch.clear();
+                    if render(token, component, &mut scratch) {
+                        let width = context.measure_text(scratch.as_str(), font).width.max(1);
+                        widths[component.index()] = width;
+                        if let Some(slot) = slot_of(component) {
+                            zones[slot] =
+                                Rect::new(rect.x + 6 + cursor, rect.y, width, rect.height);
+                        }
+                        cursor += width as i32;
+                    }
+                    rest = after;
+                    matched = true;
+                    at_token_start = true;
+                    break;
+                }
+            }
+        }
+        if !matched {
+            let Some(ch) = rest.chars().next() else {
+                break;
+            };
+            literal.push(ch);
+            rest = &rest[ch.len_utf8()..];
+            at_token_start = !ch.is_alphabetic();
+        }
+    }
+    if !literal.is_empty() {
+        cursor += context.measure_text(literal.as_str(), font).width as i32;
+    }
+
+    // The painter aligns the whole run inside the same box, so the zones shift with it.
+    let total = cursor;
+    let offset = match alignment {
+        HorizontalAlignment::Left => 0,
+        HorizontalAlignment::Center => ((run_width as i32 - total) / 2).max(0),
+        HorizontalAlignment::Right => (run_width as i32 - total).max(0),
+    };
+    if offset != 0 {
+        for zone in zones.iter_mut() {
+            zone.x += offset;
+        }
+    }
+
+    let key = SectionZoneKey {
+        rect,
+        run_width,
+        trailing,
+        alignment: alignment_code(alignment),
+        pattern_hash: pattern_hash(pattern),
+        font_size_bits: font.size().to_bits(),
+        font_weight: font.weight(),
+        font_family_hash: font_family_hash(font),
+        widths,
+    };
+    (zones, key)
 }
 
 /// The allocating wrapper around [`format_with_pattern_into`], kept for `size_hint` and the
@@ -601,46 +813,16 @@ pub struct DateEdit {
     ///
     /// A `RefCell` because `draw` resolves `style` once, which holds an immutable borrow of
     /// `self` for the rest of the pass — the same reason `Calendar` caches its day line boxes.
-    section_zone_cache: crate::compat::RefCell<SectionZoneCache>,
+    section_zone_cache: crate::compat::RefCell<SectionZoneCache<3>>,
     /// The value text `draw` spells for the field.
     ///
     /// `format_with_pattern_into` writes into a caller's buffer; the caller used to hand it a
     /// fresh `String`, which allocated on its first push in every frame. The buffer is cleared
     /// and refilled in place.
     value_text_scratch: crate::compat::RefCell<String>,
-    /// The three section labels `refresh_section_zones` formats and measures.
-    ///
-    /// Same reason as `value_text_scratch`: one fresh `String` per section per frame.
-    section_labels_scratch: crate::compat::RefCell<[String; 3]>,
 }
 
 /// The three value sections' measured boxes and the inputs they were measured for.
-#[derive(Default)]
-struct SectionZoneCache {
-    /// `None` before the first measured draw, and after a state whose text cannot be measured
-    /// (the special-value text).
-    key: Option<SectionZoneKey>,
-    /// Year, month, day — the [`DateSection`] order.
-    zones: [Rect; 3],
-}
-
-/// Everything a section box's measured layout depends on.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct SectionZoneKey {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    /// The trailing chrome (calendar arrow and/or spin buttons) the text stops before.
-    trailing: u32,
-    font_size_bits: u32,
-    font_weight: u16,
-    font_family_hash: u64,
-    /// The measured advance of each section's own rendered text, in pixels.
-    year_px: u32,
-    month_px: u32,
-    day_px: u32,
-}
 impl DateEdit {
     /// Creates a date editor occupying `geometry`.
     ///
@@ -680,7 +862,6 @@ impl DateEdit {
             calendar_sync_rect: Rect::new(0, 0, 0, 0),
             section_zone_cache: crate::compat::RefCell::new(SectionZoneCache::default()),
             value_text_scratch: crate::compat::RefCell::new(String::new()),
-            section_labels_scratch: crate::compat::RefCell::new(Default::default()),
         }
     }
     /// Returns the current date.
@@ -1106,12 +1287,7 @@ impl DateEdit {
         let rect = self.geometry();
         let cache = self.section_zone_cache.borrow();
         let key = cache.key?;
-        if key.x == rect.x
-            && key.y == rect.y
-            && key.width == rect.width
-            && key.height == rect.height
-            && key.trailing == self.trailing_chrome_width()
-        {
+        if key.rect == rect && key.trailing == self.trailing_chrome_width() {
             Some(cache.zones)
         } else {
             None
@@ -1120,9 +1296,10 @@ impl DateEdit {
 
     /// Re-measures the three section boxes when their text, font or geometry changed.
     ///
-    /// Called from `draw`, which is the only place a renderer can measure text. The widths
-    /// are the sections' own rendered labels; the available run is then divided in those
-    /// proportions, so the sum of the boxes is still the whole text run.
+    /// Called from `draw`, which is the only place a renderer can measure text. The boxes follow
+    /// the **rendered** run: its token order, its separators and its horizontal alignment all come
+    /// from the same walk the painter's pattern uses, so a `dd/MM/yyyy` field hit-tests the day
+    /// where the day is drawn and a centred run keeps its zones under its glyphs (ADV-003).
     fn refresh_section_zones(&self, context: &RenderContext, rect: Rect, font: &crate::core::Font) {
         // The special-value text replaces the whole value and has no section structure, so the
         // documented thirds approximation is the only answer that stays true.
@@ -1140,87 +1317,38 @@ impl DateEdit {
             return;
         }
 
-        let mut labels_scratch = self.section_labels_scratch.borrow_mut();
-        let labels = &mut *labels_scratch;
-        for label in labels.iter_mut() {
-            label.clear();
-        }
-        let components = [
-            DateTimeComponents { year: Some(self.date.year()), ..Default::default() },
-            DateTimeComponents { month: Some(self.date.month()), ..Default::default() },
-            DateTimeComponents { day: Some(self.date.day()), ..Default::default() },
-        ];
-        for (index, (label, component)) in labels.iter_mut().zip(components).enumerate() {
-            if !format_with_pattern_into(&self.display_format, component, label) {
-                label.clear();
-            }
-            // Keep only the rendered digits. The pattern's separators and literal words belong to
-            // the run between the sections, not to a section's own box, so measuring `2026--` for
-            // a year would overstate it. A negative year's sign is restored explicitly.
-            label.retain(|ch| ch.is_ascii_digit());
-            if index == 0 && self.date.year() < 0 && !label.is_empty() {
-                label.insert(0, '-');
-            }
-        }
-        if labels[0].is_empty() {
-            let _ = write!(labels[0], "{:04}", self.date.year());
-        }
-        if labels[1].is_empty() {
-            let _ = write!(labels[1], "{:02}", self.date.month());
-        }
-        if labels[2].is_empty() {
-            let _ = write!(labels[2], "{:02}", self.date.day());
-        }
-
-        let widths = [
-            context.measure_text(&labels[0], font).width.max(1),
-            context.measure_text(&labels[1], font).width.max(1),
-            context.measure_text(&labels[2], font).width.max(1),
-        ];
-        let total: u64 = widths.iter().map(|width| u64::from(*width)).sum();
-        if total == 0 {
-            self.section_zone_cache.borrow_mut().key = None;
-            return;
-        }
-
-        let mut family_hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in font.family().as_bytes() {
-            family_hash ^= u64::from(*byte);
-            family_hash = family_hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        let key = SectionZoneKey {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-            trailing,
-            font_size_bits: font.size().to_bits(),
-            font_weight: font.weight(),
-            font_family_hash: family_hash,
-            year_px: widths[0],
-            month_px: widths[1],
-            day_px: widths[2],
+        let components = DateTimeComponents {
+            year: Some(self.date.year()),
+            month: Some(self.date.month()),
+            day: Some(self.date.day()),
+            ..Default::default()
         };
-        if self.section_zone_cache.borrow().key == Some(key) {
+        let alignment = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        // A section the pattern does not draw has no target: a zero-width box at the run's end.
+        let fallback = Rect::new(rect.x + 6 + available as i32, rect.y, 0, rect.height);
+        let (zones, key) = measure_pattern_zones(
+            context,
+            SectionZoneRequest {
+                rect,
+                run_width: available,
+                trailing,
+                pattern: &self.display_format,
+                font,
+                alignment,
+                fallback,
+            },
+            |token, _component, out| format_with_pattern_into(token, components, out),
+            |component| match component {
+                RunComponent::Year => Some(0),
+                RunComponent::Month => Some(1),
+                RunComponent::Day => Some(2),
+                _ => None,
+            },
+        );
+        let mut cache = self.section_zone_cache.borrow_mut();
+        if cache.key == Some(key) {
             return;
         }
-
-        let start = rect.x + 6;
-        let mut cumulative = 0u64;
-        let mut boundaries = [start; 4];
-        for index in 0..3 {
-            cumulative += u64::from(widths[index]);
-            boundaries[index + 1] = start + ((u64::from(available) * cumulative) / total) as i32;
-        }
-        let zones: [Rect; 3] = core::array::from_fn(|index| {
-            Rect::new(
-                boundaries[index],
-                rect.y,
-                (boundaries[index + 1] - boundaries[index]) as u32,
-                rect.height,
-            )
-        });
-        let mut cache = self.section_zone_cache.borrow_mut();
         cache.key = Some(key);
         cache.zones = zones;
     }
@@ -1445,7 +1573,12 @@ impl DateEdit {
     }
     fn restore_history_date(&mut self) {
         self.restoring_history = true;
-        self.date = *self.history_target.borrow();
+        // A bound change after the recorded edit does not rewrite the stack, so an undone date can
+        // be outside the range the control now advertises. Clamp it through the same rule every
+        // other write uses, and keep the history mirror on the value that is actually held.
+        let restored = (*self.history_target.borrow()).min(self.maximum).max(self.minimum);
+        self.date = restored;
+        *self.history_target.borrow_mut() = restored;
         self.restoring_history = false;
         self.date_changed.emit(self.date);
         self.base.request_redraw();
@@ -1614,6 +1747,9 @@ impl EventHandler for DateEdit {
         {
             self.sync_calendar_page();
             self.calendar.handle_event(event);
+            // See the press arm: the embedded calendar's own repaint request cannot reach the
+            // runtime, so the hover wash it just changed is drawn only if the field repaints.
+            self.base.request_redraw();
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
@@ -1640,15 +1776,25 @@ impl EventHandler for DateEdit {
                     let popup = calendar_popup_rect(field);
                     if popup.contains_point(*pos) {
                         self.sync_calendar_page();
+                        // A press on a day is a commit even when it names the day the field already
+                        // holds: the selection does not change, so "did it change" left the popup
+                        // open on the most common confirmation gesture.
+                        let day = self.calendar.date_at_position(*pos).filter(|day| {
+                            *day >= self.calendar.minimum_date()
+                                && *day <= self.calendar.maximum_date()
+                        });
                         let before = self.calendar.selected_date();
                         self.calendar.handle_event(event);
                         let after = self.calendar.selected_date();
-                        if after != before {
-                            // A day click commits the value and finishes the interaction, which
-                            // is what the previous self-drawn grid did.
+                        if day.is_some() || after != before {
+                            // A day click commits the value and finishes the interaction, which is
+                            // what the previous self-drawn grid did.
                             self.set_date(naive_to_date(after));
                             self.close_calendar();
                         }
+                        // The embedded calendar is not a registered child, so its own redraw
+                        // request names an id the runtime does not know; the field repaints for it.
+                        self.base.request_redraw();
                     } else {
                         // A press anywhere else dismisses the popup rather than editing a
                         // section hidden underneath it.
@@ -1981,6 +2127,29 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     // ─── Date helper tests ───────────────────────────────────────
+
+    /// An undo after a bound change never restores a date outside the range.
+    ///
+    /// # What this pins
+    ///
+    /// The bound setters clamp the value and the history mirror, but `ValueCommand` keeps its own
+    /// copies, so undoing a pre-bound edit restored a date the control's own accessors call
+    /// impossible.
+    #[test]
+    fn undo_after_a_bound_change_stays_in_range() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 220, 32));
+        edit.set_date(Date::new(2024, 1, 10));
+        edit.set_maximum_date(Date::new(2024, 1, 5));
+        assert_eq!(edit.date(), Date::new(2024, 1, 5));
+
+        assert!(edit.undo());
+        assert!(
+            edit.date() <= edit.maximum_date(),
+            "the restored date is inside the range: {:?} > {:?}",
+            edit.date(),
+            edit.maximum_date()
+        );
+    }
 
     #[test]
     fn date_creation_and_accessors() {
@@ -2880,13 +3049,53 @@ mod tests {
             year.width,
             month.width
         );
-        assert_eq!(year.x + year.width as i32, month.x, "the boxes are contiguous");
-        assert_eq!(month.x + month.width as i32, day.x, "the boxes are contiguous");
-        assert_eq!(day.x + day.width as i32, 240 - 6, "they cover the whole value run");
+        // The boxes are the painted components, so the pattern's two separators sit between
+        // them: each box starts after the previous one, and together they end where the value
+        // text ends rather than at the control's right edge.
+        assert!(
+            month.x >= year.x + year.width as i32,
+            "the month follows the year and its separator"
+        );
+        assert!(
+            day.x >= month.x + month.width as i32,
+            "the day follows the month and its separator"
+        );
+        assert!(
+            day.x + day.width as i32 <= 240 - 6,
+            "the run ends inside the text box, not at its edge"
+        );
 
         // The pointer target is the same measured box the underline uses.
         edit.handle_event(&Event::mouse_press(year.x + 2, year.y + 2, 1));
         assert_eq!(edit.current_section(), Some(DateSection::Year));
+    }
+
+    /// The zones follow the pattern's component order and the value's alignment.
+    ///
+    /// # What this pins
+    ///
+    /// The zones used to be equal fractions in a fixed year/month/day order while the painter
+    /// drew `display_format` order and alignment, so a `dd/MM/yyyy` field selected the year from
+    /// a press on the day and a centred run hit-tested beside its glyphs.
+    #[test]
+    fn the_zones_follow_the_pattern_order_and_alignment() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 240, 30));
+        edit.set_date(Date::new(2026, 6, 8));
+        edit.set_display_format("dd/MM/yyyy".to_string());
+        let _ = crate::widget::svg::render_to_svg(&mut edit);
+
+        let year = edit.section_zone(DateSection::Year);
+        let month = edit.section_zone(DateSection::Month);
+        let day = edit.section_zone(DateSection::Day);
+        assert!(day.x < month.x, "the pattern draws the day first");
+        assert!(month.x < year.x, "the pattern draws the year last");
+        edit.handle_event(&Event::mouse_press(day.x + 2, day.y + 2, 1));
+        assert_eq!(edit.current_section(), Some(DateSection::Day));
+
+        edit.set_alignment(crate::core::Alignment::Center);
+        let _ = crate::widget::svg::render_to_svg(&mut edit);
+        let centred = edit.section_zone(DateSection::Day);
+        assert!(centred.x > day.x, "a centred run moves its zones with the glyphs");
     }
 
     /// A year/month step must keep the day valid by clamping it to the target month.

@@ -526,6 +526,9 @@ impl VideoPlayer {
     /// The source is stored as a label only: it is not opened, demuxed or
     /// decoded. Loading also resets the simulated clock and pauses playback.
     pub fn load(&mut self, source: &str) {
+        // Loading pauses playback. A bound transport bar learns of every other pause through
+        // `playback_paused`; a silent pause left its play/pause toggle showing "playing".
+        let was_playing = self.is_playing;
         self.source = source.to_string();
         // A direct load of a source that is in the queue keeps the "where am I" answer, the same
         // rule `set_playlist` applies in the other direction (MW-015).
@@ -547,6 +550,9 @@ impl VideoPlayer {
         self.pipeline =
             if source.is_empty() { VideoPipelineState::Idle } else { VideoPipelineState::Demuxing };
         self.set_status(if source.is_empty() { MediaStatus::Idle } else { MediaStatus::Paused });
+        if was_playing {
+            self.playback_paused.emit();
+        }
         // The clock moved to zero. Every other clock change announces itself, so a bound
         // transport bar or caption companion does not keep the previous media's position,
         // buffered run or cue.
@@ -1807,7 +1813,10 @@ impl Widget for VideoPlayer {
                 self.base.request_redraw();
             }
         }
-        finished
+        // The trait contract is "true while I owe frames"; the control's own `tick` returns the
+        // opposite (the end flag), so a host driving frames from this method stopped after one
+        // ordinary frame. The frame bus ORs `is_animating`, which is what hid it.
+        finished || self.is_playing()
     }
 
     fn is_animating(&self) -> bool {
@@ -2864,6 +2873,36 @@ mod tests {
 
         vp.pause();
         assert!(*paused.lock().unwrap());
+    }
+
+    /// Loading a new source pauses playback and says so.
+    ///
+    /// `load` cleared `is_playing` silently, so a bound transport bar kept showing "playing"
+    /// after the picture had been replaced by a paused one.
+    #[test]
+    fn loading_while_playing_announces_the_pause() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("a.mp4");
+        vp.set_duration(10.0);
+        vp.play();
+        assert!(vp.is_playing());
+
+        let pauses = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&pauses);
+        vp.playback_paused.connect(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        vp.load("b.mp4");
+        assert!(!vp.is_playing());
+        assert_eq!(pauses.load(std::sync::atomic::Ordering::SeqCst), 1, "the pause is published");
+
+        vp.load("c.mp4");
+        assert_eq!(
+            pauses.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "loading while already paused has nothing to announce"
+        );
     }
 
     #[test]

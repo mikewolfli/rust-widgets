@@ -235,12 +235,16 @@ impl PriceAxis {
     /// The inverse of [`Self::y_for`], used to turn a pointer position into a price for a
     /// tooltip. Not clamped, because a readout should be able to report "above the top of
     /// the scale" rather than lying about a value that is visibly off-chart.
+    ///
+    /// The divisor is signed (`bottom - top`), not `height()`'s absolute value: an inverted screen
+    /// range is representable here and `y_for` already handles it, so dividing by the magnitude
+    /// mirrored the readout about the range (`price_at(y_for(p))` returned `2*low - p`).
     pub fn price_at(&self, y: i32) -> f64 {
-        let height = self.height() as f64;
-        if height == 0.0 {
+        let span = (self.bottom - self.top) as f64;
+        if span == 0.0 {
             return self.low;
         }
-        let fraction = (self.bottom - y) as f64 / height;
+        let fraction = (self.bottom - y) as f64 / span;
         self.low + fraction * (self.high - self.low)
     }
 }
@@ -334,6 +338,26 @@ mod tests {
         assert!(axis.y_for(110.0) < axis.y_for(90.0));
         assert_eq!(axis.y_for(110.0), 0);
         assert_eq!(axis.y_for(90.0), 100);
+    }
+
+    /// `price_at` inverts `y_for`, including on an inverted screen range.
+    ///
+    /// It divided by `height()`'s **absolute** span while `y_for` uses the signed one, so a
+    /// `top > bottom` axis (which `y_for` handles deliberately) reported prices mirrored about the
+    /// range: `price_at(y_for(p))` came back as `2*low - p`.
+    #[test]
+    fn price_at_inverts_y_for_in_both_orientations() {
+        for (top, bottom) in [(0, 100), (100, 0)] {
+            let axis = PriceAxis::new(top, bottom, 90.0, 110.0);
+            assert!(
+                (axis.price_at(axis.y_for(100.0)) - 100.0).abs() < 1.0,
+                "round trip at y={top}..{bottom}"
+            );
+            assert!(
+                (axis.price_at(axis.y_for(95.0)) - 95.0).abs() < 1.0,
+                "round trip at y={top}..{bottom}"
+            );
+        }
     }
 
     /// Every stacked pane must reserve the **same** horizontal margins, or a bar index

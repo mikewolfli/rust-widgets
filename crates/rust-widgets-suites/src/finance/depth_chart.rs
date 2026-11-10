@@ -226,28 +226,50 @@ impl DepthChart {
         self.base.request_redraw();
     }
 
-    /// Applies one bid level edit, returning whether the curve changed.
+    /// Applies one bid level edit, returning whether the **drawn curve** changed.
     ///
     /// The incremental counterpart of [`Self::set_book`]. The plotted levels and the cumulative
     /// curve are rebuilt from the edited book, so the drawn picture matches the model without a
     /// full snapshot being handed in.
+    ///
+    /// The answer is the curve's, not the book's: with a bounded [`Self::depth`], an edit outside
+    /// the plotted window changes the book while every pixel stays identical, and a caller that
+    /// trusts the answer to refresh its own read-out would do that work for nothing.
     pub fn apply_bid_level(&mut self, price: f64, quantity: f64) -> bool {
+        let before = self.curve_snapshot();
         if !self.book.apply_bid_level(price, quantity) {
             return false;
         }
-        self.rebuild();
-        self.base.request_redraw();
-        true
+        self.rebuild_after_edit(before)
     }
 
-    /// Applies one ask level edit, returning whether the curve changed.
+    /// Applies one ask level edit, returning whether the **drawn curve** changed.
     pub fn apply_ask_level(&mut self, price: f64, quantity: f64) -> bool {
+        let before = self.curve_snapshot();
         if !self.book.apply_ask_level(price, quantity) {
             return false;
         }
+        self.rebuild_after_edit(before)
+    }
+
+    /// The plotted levels, whose equality is exactly "the curve is the same picture".
+    ///
+    /// `BookLevel` is `Copy`, so this is a short clone of at most `depth` entries per side.
+    fn curve_snapshot(&self) -> (Vec<BookLevel>, Vec<BookLevel>) {
+        (self.bid_levels.clone(), self.ask_levels.clone())
+    }
+
+    /// Rebuilds after an incremental edit and reports whether the curve changed.
+    fn rebuild_after_edit(&mut self, before: (Vec<BookLevel>, Vec<BookLevel>)) -> bool {
+        let hover_before = (self.hovered_level, self.hovered_side);
         self.rebuild();
-        self.base.request_redraw();
-        true
+        let curve_changed = before.0 != self.bid_levels || before.1 != self.ask_levels;
+        // `rebuild` drops a hover whose level left the window; that is a pixel change too.
+        let hover_changed = hover_before != (self.hovered_level, self.hovered_side);
+        if curve_changed || hover_changed {
+            self.base.request_redraw();
+        }
+        curve_changed
     }
 
     /// How many levels per side are plotted; zero means all of them.
@@ -974,6 +996,25 @@ mod tests {
         chart.set_depth(3);
         assert_eq!(chart.depth(), 3);
         assert_eq!(chart.curve().len(), 6, "three levels per side");
+    }
+
+    /// An incremental edit answers for the **drawn curve**, not for the book.
+    ///
+    /// With a bounded depth, editing a level outside the plotted window changes the book while
+    /// every plotted point stays identical; the method used to return `true` (and ask for a
+    /// repaint) for that no-op picture.
+    #[test]
+    fn an_edit_outside_the_plotted_depth_reports_no_change() {
+        let mut chart = DepthChart::new(Rect::new(0, 0, 480, 240));
+        chart.set_book(fixtures::sample_book(10));
+        chart.set_depth(2);
+
+        // 99.7 is the third bid; the top two are 99.9 and 99.8.
+        assert!(!chart.apply_bid_level(99.7, 55.0), "the plotted curve is unchanged");
+        assert!(chart.book().bids().iter().any(|level| (level.price - 99.7).abs() < 1e-9));
+
+        assert!(chart.apply_bid_level(99.9, 120.0), "the top level is plotted, so it changed");
+        assert!(!chart.apply_bid_level(99.9, 120.0), "an idempotent write changes nothing");
     }
 
     /// Colours are stored and returned.

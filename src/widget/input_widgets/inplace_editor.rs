@@ -273,9 +273,10 @@ impl InplaceEditor {
     /// nothing to undo.
     ///
     /// Edits made inside the box are undoable like any other text edit (a typed run merges into
-    /// one word-sized step). [`Self::finish_edit`] with `accept = false` restores the value; it
-    /// does not itself become an undo step. The cursor is moved to the end of the
-    /// restored text.
+    /// one word-sized step). Accepting the edit keeps those steps; cancelling it discards them, so
+    /// the value and the history end where the edit began — a cancelled keystroke is not a no-op
+    /// undo step, and an undo can never resurrect text the user cancelled. The cursor is moved to
+    /// the end of the restored text.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -1235,6 +1236,43 @@ impl EventHandler for InplaceEditor {
 mod tests {
     use super::*;
     use crate::core::Point;
+
+    /// Cancelling an edit discards the steps it recorded.
+    ///
+    /// # What this pins
+    ///
+    /// The keystrokes typed in the box were pushed onto the shared undo stack while the box held
+    /// an uncommitted value. `finish_edit(false)` restored the value but left those steps behind, so
+    /// the next `undo()` reported a change while leaving the text alone (and a later splice could
+    /// re-insert what had been cancelled).
+    #[test]
+    fn cancelling_an_edit_leaves_no_undo_step_behind() {
+        let mut ie = InplaceEditor::new("A", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.insert_committed_text("BC");
+        assert_eq!(ie.text(), "ABC");
+
+        ie.finish_edit(false);
+        assert_eq!(ie.text(), "A");
+        assert!(!ie.undo(), "the cancelled edit left nothing to undo");
+        assert_eq!(ie.text(), "A");
+    }
+
+    /// Accepting an edit keeps its steps undoable, and the step before the edit is still there.
+    #[test]
+    fn accepting_an_edit_leaves_one_undo_step_for_the_edit() {
+        let mut ie = InplaceEditor::new("A", Rect::new(0, 0, 200, 30));
+        ie.set_text("AB");
+        ie.start_edit();
+        ie.insert_committed_text("C");
+        ie.finish_edit(true);
+        assert_eq!(ie.text(), "ABC");
+
+        assert!(ie.undo());
+        assert_eq!(ie.text(), "AB", "the edit is one step back");
+        assert!(ie.undo());
+        assert_eq!(ie.text(), "A", "the committed write before it is still undoable");
+    }
 
     #[test]
     fn inplace_editor_initial_state() {

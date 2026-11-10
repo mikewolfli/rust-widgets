@@ -235,8 +235,11 @@ impl KanbanBoard {
         let wip_limit = column.wip_limit;
 
         // The drop preview is drawn under the cards, so a highlighted column still
-        // shows its contents.
-        let is_drop_target = self.is_dragging_card() && self.hovered_column == Some(index);
+        // shows its contents. The tint reads the same acceptance rule the commit and the preview
+        // do: a WIP-full destination that the drop would refuse must not be painted as a target.
+        let is_drop_target = self.is_dragging_card()
+            && self.hovered_column == Some(index)
+            && self.accepts_drop(index);
         let background = if is_drop_target { chrome.drop_target() } else { chrome.column() };
         context.fill_rounded_rect(column_rect, 8, background);
 
@@ -496,10 +499,25 @@ impl KanbanBoard {
     /// what the commit resolves too.
     pub(super) fn insertion_line_y(&self, pos: Point) -> Option<i32> {
         let column = self.column_at(pos)?;
+        // A collapsed column paints no card rows and the commit appends, so there is no slot to
+        // invert: a line inside it promised a position the release ignores.
+        if self.columns.get(column).is_some_and(|entries| entries.collapsed) {
+            return None;
+        }
         let column_rect = self.column_rect(column)?;
         let mut first_card_y = column_rect.y + HEADER_HEIGHT as i32;
         if self.lanes_active() {
             if let Some(lane) = self.lane_at(pos) {
+                // The commit appends when the lane holds no card in this column, so there is no card
+                // boundary to point at.
+                let occupied = self
+                    .lane_cache()
+                    .card_lane
+                    .get(column)
+                    .is_some_and(|slots| slots.contains(&lane));
+                if !occupied {
+                    return None;
+                }
                 if let Some(band) = self.lane_band_rect(lane) {
                     first_card_y = band.y + LANE_HEADER_HEIGHT;
                 }

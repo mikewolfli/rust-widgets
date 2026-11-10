@@ -342,11 +342,23 @@ impl WebEngineViewEnhanced {
     /// discarding the previous policy and its blocked-request count. Turning it
     /// off resets the flag only — strict protection stays in force, and the
     /// relaxed policy that preceded it is not restored.
+    ///
+    /// Entering also discards the history and cookies the session must not keep: recording is
+    /// gated from that point on, but whatever was already recorded stays on the machine until it is
+    /// dropped.
     pub fn set_private_browsing(&mut self, enabled: bool) {
+        if self.core.settings.private_browsing == enabled {
+            return;
+        }
         self.core.settings.private_browsing = enabled;
         if enabled {
             self.core.privacy =
                 super::privacy::TrackingProtection::new(super::privacy::PrivacySettings::strict());
+            self.core.clear_browsing_data(super::privacy::BrowsingData {
+                history: true,
+                cookies: true,
+                ..Default::default()
+            });
         }
     }
 
@@ -387,6 +399,38 @@ mod tests {
     #[cfg(not(feature = "web-http"))]
     use crate::webview::privacy::BrowsingData;
     use rust_widgets::core::Rect;
+
+    /// A private session keeps no visit list and no back/forward stack.
+    ///
+    /// `private_browsing` is documented as "avoids persisting cookies and history", but only the
+    /// flag was stored: every navigation was still recorded, so a host that entered a private
+    /// session left a persistent record of where it went.
+    #[test]
+    fn a_private_session_records_no_history() {
+        let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 320, 200));
+        // A visit before the switch, so entering private mode has something to drop. Whether it
+        // has completed yet is feature-dependent (the `web-http` build fetches off-thread), so the
+        // assertion is on what is *kept*, not on when the load finishes.
+        engine.set_url("https://seen.example/".to_string());
+
+        engine.set_private_browsing(true);
+        assert!(
+            engine.browser_history().is_empty(),
+            "entering a private session drops what was already kept"
+        );
+        assert!(!engine.history().can_go_back(), "and the back stack goes with it");
+        assert!(
+            engine.history().back_entries().is_empty() && engine.history().current().is_none(),
+            "the session stack is empty too"
+        );
+
+        engine.set_url("https://private.example/".to_string());
+        assert!(engine.browser_history().is_empty(), "a private visit is not recorded");
+        assert!(
+            engine.history().back_entries().is_empty() && engine.history().current().is_none(),
+            "nor pushed on the session stack"
+        );
+    }
 
     #[test]
     fn test_web_engine_view_new() {

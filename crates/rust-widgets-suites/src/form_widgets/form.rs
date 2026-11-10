@@ -697,6 +697,10 @@ impl Form {
             return false;
         };
         field.clear_error();
+        // An in-flight async ticket for this value still matches the form, the value and the
+        // revision, so without this bump it would land its verdict straight back on the next frame
+        // — the rule `cancel` and `reset` already follow.
+        self.bump_validation_revision();
         self.base.request_layout();
         self.base.request_redraw();
         self.publish_derived_state();
@@ -708,6 +712,9 @@ impl Form {
         for field in &mut self.fields {
             field.clear_error();
         }
+        // Same invariant as `clear_field_error`: a ticket issued before this call must not land
+        // after it.
+        self.bump_validation_revision();
         self.base.request_layout();
         self.base.request_redraw();
         self.publish_derived_state();
@@ -778,6 +785,22 @@ impl Form {
         if !visible {
             if let Some(field) = self.field_mut(key) {
                 field.validation_error = None;
+            }
+            // A rule attached to *another* row may name this one as its comparison target, and
+            // `field_validation_error` skips such a rule once the target is hidden. The row's stored
+            // verdict was produced while the target was visible, so it has to be re-derived — the
+            // same rule `remove_field` applies — or a visible row keeps an error the reader can no
+            // longer see the cause of.
+            let judged: Vec<String> = self
+                .form_rules
+                .iter()
+                .filter(|(_, rules)| rules.iter().any(|rule| rule.other() == key))
+                .map(|(target, _)| target.clone())
+                .collect();
+            for target in judged {
+                if target != key {
+                    self.revalidate_field(&target);
+                }
             }
         }
         self.publish_derived_state();
@@ -901,16 +924,10 @@ impl Form {
         if self.form_rules.remove(key).is_none() {
             return false;
         }
-        // The verdict on `key` was produced by a rule that no longer exists; retire it, repaint
-        // the form it was painted on and publish the new aggregate. Removing only the rule left
-        // the old error painted and still counted until an unrelated event forced a pass.
-        if let Some(field) = self.field_mut(key) {
-            field.validation_error = None;
-        }
-        self.bump_validation_revision();
-        self.base.request_layout();
-        self.base.request_redraw();
-        self.publish_derived_state();
+        // Re-derive rather than clear: `validation_error` carries no provenance, so a blind clear
+        // also destroyed a verdict the row's own closure rule, typed rule or required flag still
+        // produces — the form then reported valid until the next `validate()` put the message back.
+        self.revalidate_field(key);
         true
     }
 
@@ -1251,14 +1268,19 @@ impl Form {
     pub fn reset(&mut self) -> bool {
         let mut restored = true;
         for field in &mut self.fields {
-            if let (Some(widget), Some(baseline)) = (field.widget, field.baseline.clone()) {
-                if write_field_value(widget, &baseline) {
-                    field.clear_error();
-                } else {
-                    restored = false;
+            match (field.widget, field.baseline.clone()) {
+                (Some(widget), Some(baseline)) => {
+                    if write_field_value(widget, &baseline) {
+                        field.clear_error();
+                    } else {
+                        restored = false;
+                    }
                 }
-            } else {
-                field.clear_error();
+                // Bound, but the control publishes none of `text`/`current_text`/`value`, so
+                // `add_field` stored no baseline: this field was not restored, and the documented
+                // `false` is what tells the host the reset was partial.
+                (Some(_), None) => restored = false,
+                (None, _) => field.clear_error(),
             }
         }
         self.bump_validation_revision();
@@ -1791,6 +1813,12 @@ fn write_field_value(widget: ObjectId, value: &str) -> bool {
         rust_widgets::write_widget_property_by_id(widget, name, value).is_ok()
     };
     if write("text", CapabilityValue::String(value.to_string())) {
+        return true;
+    }
+    // A control that publishes its value only as a String under `value` (`OtpInput`, for one) was
+    // readable but never writable: the read probe takes a String from any of the three names, while
+    // this probe only ever wrote a String to `text`/`current_text`.
+    if write("value", CapabilityValue::String(value.to_string())) {
         return true;
     }
     if write("current_text", CapabilityValue::String(value.to_string())) {

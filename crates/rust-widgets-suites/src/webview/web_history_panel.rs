@@ -336,6 +336,11 @@ impl WebHistoryPanel {
     }
 
     /// Replaces the list with records that carry their visit times.
+    ///
+    /// The slice must be **oldest first**, which is the order the engine's own record list uses and
+    /// the order every reader here assumes: [`Self::entry_url`] counts `0` as the newest entry, the
+    /// paint walks the list backwards, and [`Self::set_max_entries`] trims from the oldest end. A
+    /// newest-first list is therefore displayed backwards and capped from the wrong side.
     pub fn set_records(&mut self, records: &[WebHistoryRecord]) {
         self.records = records.to_vec();
         self.revision = self.revision.wrapping_add(1);
@@ -425,14 +430,13 @@ impl WebHistoryPanel {
 
     /// Anchors the panel under `view`'s address bar and adopts the view's history.
     ///
-    /// The bar's painted rectangle is authoritative once the view has drawn; before that the
-    /// view has not recorded one, so the same `top_band` derivation the view itself uses is
-    /// applied to its geometry. The panel keeps its own height and takes the bar's x, width and
-    /// bottom edge, which is where a drop-down belongs.
+    /// The bar's rectangle is derived from the view's **current** geometry with the same
+    /// `top_band` derivation the view's own paint uses. `url_bar_rect` is written only by `draw`, so
+    /// a view that painted, was resized, and was attached before repainting anchored the panel to
+    /// the old bar's x, width and bottom. The panel keeps its own height and takes the bar's x,
+    /// width and bottom edge, which is where a drop-down belongs.
     pub fn attach_web_view(&mut self, view: &mut WebEngineView) {
-        let bar = view.url_bar_rect().unwrap_or_else(|| {
-            ControlMetrics::top_band(view.geometry(), dimensions::WEB_URL_BAR_HEIGHT)
-        });
+        let bar = ControlMetrics::top_band(view.geometry(), dimensions::WEB_URL_BAR_HEIGHT);
         let current = self.geometry();
         self.base.set_geometry(Rect::new(bar.x, bar.bottom(), bar.width, current.height));
         self.set_entries(view.history_entries());
@@ -1107,5 +1111,22 @@ mod tests {
         panel.clear();
         assert_eq!(panel.visible_count(), 0);
         assert!(panel.records().is_empty());
+    }
+
+    /// Attaching after a resize anchors the panel to the bar's **new** rectangle.
+    ///
+    /// The panel used the view's last *painted* bar rect, which a resize between paint and attach
+    /// left at the old geometry.
+    #[test]
+    fn attaching_after_a_resize_uses_the_new_bar_rect() {
+        use rust_widgets::widget::svg::render_to_svg;
+
+        let mut view = WebEngineView::new(Rect::new(0, 0, 320, 240));
+        let _ = render_to_svg(&mut view);
+        view.base_mut().set_geometry(Rect::new(0, 0, 800, 600));
+
+        let mut panel = WebHistoryPanel::new(Rect::new(0, 0, 200, 120));
+        panel.attach_web_view(&mut view);
+        assert_eq!(panel.geometry().width, 800, "the panel follows the resized bar");
     }
 }

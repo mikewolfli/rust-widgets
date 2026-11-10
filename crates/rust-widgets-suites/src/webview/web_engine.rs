@@ -994,8 +994,10 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
-    /// Returns whether going back is currently available. The flag reflects the
-    /// simulated navigation state, not a real history stack.
+    /// Returns whether going back is currently available.
+    ///
+    /// Derived from the recorded history: `history_index > 0`, so it answers the same fact
+    /// [`Self::go_back`] acts on rather than a flag maintained beside it.
     pub fn can_go_back(&self) -> bool {
         self.can_go_back
     }
@@ -1212,7 +1214,12 @@ impl WebEngineView {
     ///
     /// The list is capped at [`MAX_WEB_HISTORY_ENTRIES`]: once it is full the oldest entry is
     /// dropped and the current index shifts down with it, keeping back/forward semantics valid.
+    /// A private session records nothing — the flag already refuses cookies and cookie restoration,
+    /// and history is the other thing it promises not to keep.
     fn push_history(&mut self, url: &str) {
+        if self.private_browsing {
+            return;
+        }
         self.history.truncate(self.history_index + 1);
         self.history.push(HistoryEntry {
             url: url.to_string(),
@@ -1417,9 +1424,11 @@ impl WebEngineView {
         self.update_navigation_state();
         self.base.request_redraw();
     }
-    /// Models a back navigation by flipping the availability flags: `can_go_back`
-    /// becomes false and `can_go_forward` true. No history is kept and the URL is
-    /// left unchanged. No-op when going back is unavailable.
+    /// Navigates back one history entry, restoring its URL, title and document.
+    ///
+    /// The history stack *is* kept: this steps `history_index` back and reinstates the recorded
+    /// entry, then re-derives the two availability flags from the new position. A no-op when
+    /// going back is unavailable.
     pub fn go_back(&mut self) {
         if self.history_index > 0 {
             self.history_index -= 1;
@@ -1835,6 +1844,9 @@ impl WebEngineView {
         if needle.is_empty() {
             self.find_matches.clear();
             self.find_current = None;
+            // Clearing the query removes the painted highlight, so the view is owed a repaint.
+            // Returning before the redraw below left the previous match highlighted on screen.
+            self.base.request_redraw();
             return (0, 0);
         }
         let mut matches =
@@ -2967,6 +2979,28 @@ mod tests {
         assert!(svg.starts_with("<svg"));
     }
 
+    /// Clearing the query drops the painted highlight, so the view is owed a repaint.
+    ///
+    /// The empty-needle branch returned before the redraw at the end of the method, leaving the
+    /// previous match highlighted on screen after a host cleared the find bar.
+    #[test]
+    fn clearing_the_find_query_repaints_the_view() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        wv.load_html("<p>hello hello</p>");
+        assert_eq!(wv.find_text("hello", false, false), (2, 3), "the offset is a byte index");
+
+        let redraws = Arc::new(Mutex::new(0usize));
+        let sink = redraws.clone();
+        wv.base.redraw_requested.connect(move || {
+            if let Ok(mut count) = sink.lock() {
+                *count += 1;
+            }
+        });
+
+        assert_eq!(wv.find_text("", false, false), (0, 0));
+        assert_eq!(*redraws.lock().expect("redraw lock poisoned"), 1, "the clear owes a repaint");
+    }
+
     #[test]
     fn web_engine_view_url_and_title() {
         let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
@@ -2974,6 +3008,20 @@ mod tests {
         assert!(wv.title().is_empty());
         wv.set_url("https://example.com".to_string());
         assert_eq!(wv.url(), "https://example.com");
+    }
+
+    /// A private session records no history, so it also leaves no back entry behind.
+    #[test]
+    fn private_browsing_records_no_history() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        wv.set_url("https://seen.example/".to_string());
+        assert_eq!(wv.history().len(), 1, "an ordinary visit is recorded");
+
+        wv.set_private_browsing(true);
+        wv.set_url("https://private.example/".to_string());
+        assert_eq!(wv.history().len(), 1, "the private visit is not recorded");
+        assert_eq!(wv.url(), "https://private.example/");
+        assert!(!wv.can_go_back(), "and the earlier page is not reachable back");
     }
 
     #[test]

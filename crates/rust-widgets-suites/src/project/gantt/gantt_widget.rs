@@ -661,6 +661,24 @@ impl GanttWidget {
                 ));
             }
         }
+        // An edge whose successor is not on the chart is editor-only: `add_dependency` accepts it
+        // and reports it, so replacing the whole list from the tasks would make the edge the host
+        // was just told about vanish as soon as any task was added.
+        let known: Vec<String> = self.tasks.iter().map(|task| task.id.clone()).collect();
+        let existing: Vec<Dependency> = self.dependency_editor.dependencies().to_vec();
+        for edge in existing {
+            if known.contains(&edge.successor) {
+                continue;
+            }
+            let duplicate = edges.iter().any(|candidate| {
+                candidate.predecessor == edge.predecessor
+                    && candidate.successor == edge.successor
+                    && candidate.kind == edge.kind
+            });
+            if !duplicate {
+                edges.push(edge);
+            }
+        }
         self.dependency_editor.set_dependencies(edges);
         self.invalidate_critical_path();
         self.base.request_redraw();

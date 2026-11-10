@@ -851,11 +851,14 @@ impl Draw for MediaTransportBar {
         let icon_ink = strip_fill.contrast_color();
         let font = &role_font(style, 12.0);
 
-        context.fill_rect(strip, strip_fill);
         if !self.visible {
-            // A hidden bar paints no controls, so the hit regions the last visible paint
-            // recorded must go with them: a press on the strip would otherwise still toggle
-            // play or start a drag on a control nobody can see.
+            // A hidden bar paints nothing — not just no controls: filling the strip first left a
+            // full-width opaque band over the media for as long as the bar stayed hidden, which
+            // reads as "the bar is still there, its buttons just vanished".
+            //
+            // The hit regions the last visible paint recorded must go with the pixels: a press on
+            // the strip would otherwise still toggle play or start a drag on a control nobody can
+            // see.
             self.play_rect = None;
             self.volume_rect = None;
             self.fullscreen_rect = None;
@@ -864,6 +867,8 @@ impl Draw for MediaTransportBar {
             self.track_rect = None;
             return;
         }
+
+        context.fill_rect(strip, strip_fill);
 
         let button = strip.height.saturating_sub(8).min(24);
         let button_y = strip.y + (strip.height as i32 - button as i32) / 2;

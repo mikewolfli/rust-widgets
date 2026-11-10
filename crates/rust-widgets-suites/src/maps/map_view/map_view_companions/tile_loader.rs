@@ -342,11 +342,19 @@ impl TileLoader {
     /// Records the pixels a host fetched for `key` and reports success.
     ///
     /// Returns `false` when the address was never requested, so a stray answer is
-    /// refused instead of silently growing the cache.
+    /// refused instead of silently growing the cache — and when the payload is not a decoded
+    /// `tile_size`×`tile_size` RGBA8 tile. A short buffer used to be stored as if complete:
+    /// `is_cached` answered `true` for good, the map skipped the placeholder for a tile it could
+    /// not blit, and the host was never asked for it again, leaving a permanently blank cell.
     pub fn deliver_tile(&mut self, key: TileKey, payload: Vec<u8>) -> bool {
+        let expected =
+            (self.tile_size as usize).saturating_mul(self.tile_size as usize).saturating_mul(4);
         let Some(entry) = self.cache.get_mut(&key) else {
             return false;
         };
+        if payload.len() != expected {
+            return false;
+        }
         entry.payload = Some(payload);
         self.cache_revision = self.cache_revision.wrapping_add(1);
         self.tile_loaded.emit(key);

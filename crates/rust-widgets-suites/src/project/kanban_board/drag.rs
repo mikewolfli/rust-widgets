@@ -292,10 +292,18 @@ impl KanbanBoard {
             // The acceptance check saw the destination *before* any card landed, so it cannot
             // bound a group. The destination's own limit does: a batch into a column with room
             // for one must not write past its WIP limit.
+            //
+            // Members that already live in the destination are not *arrivals* — the same rule
+            // `on_drop` applies to the primary card — so they must not consume the room the limit
+            // allows. Without this a grouped reorder inside a full column moved only its primary.
+            let already_here = batch
+                .iter()
+                .filter(|id| self.position_of(id).is_some_and(|position| position.column == column))
+                .count();
             let room = self.columns.get(column).map_or(0, |target| {
-                target
-                    .wip_limit
-                    .map_or(usize::MAX, |limit| limit.saturating_sub(target.cards.len()))
+                target.wip_limit.map_or(usize::MAX, |limit| {
+                    limit.saturating_sub(target.cards.len()).saturating_add(already_here)
+                })
             });
             let mut destination = target.card + 1;
             let mut moved_ids = vec![card_id.clone()];
