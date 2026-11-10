@@ -36,6 +36,36 @@ use rust_widgets::control_backend::{
 use rust_widgets::platform::get_platform;
 use rust_widgets::widget::WidgetKind;
 
+/// Serializes the tests in this file that hand the process-global backend a window.
+///
+/// # Why a lock *and* a lease
+///
+/// Each integration-test file is its own process, so the only competition for the shared host is
+/// between the tests below — but a host whose model is one window (`harmony`, `android`, `wasm`)
+/// answers `0` to a second live `create_window` (BLUE28 B28.43). Three tests here open one, so run
+/// concurrently the loser reports a backend that cannot build a window, and a window left open
+/// denies the slot to every later test in the file. The lock makes them sequential; [`HostWindowLease`]
+/// hands the slot back.
+fn serialise_window_tests() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Releases a host window when the test ends, including on an assertion panic.
+///
+/// A `Drop` rather than a line at the end of each test: every test here has an early `return` for
+/// the honest "this backend has no surface" case, and a cleanup line after those returns is a line
+/// exactly one of them will eventually miss.
+struct HostWindowLease(u64);
+
+impl Drop for HostWindowLease {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            let _ = get_platform().destroy_widget(self.0);
+        }
+    }
+}
+
 /// Kinds drawn from both of the former routes.
 ///
 /// `Button` / `Label` / `Slider` used to be `NativePreferred`; `GroupBox` / `Chart`
@@ -78,6 +108,7 @@ fn every_kind_resolves_to_the_library_painted_route() {
 /// rather than a shadow copy.
 #[test]
 fn the_single_backend_owns_real_state_for_a_hosted_widget() {
+    let _serial = serialise_window_tests();
     let backend = get_control_backend_for_widget(WidgetKind::GroupBox);
     assert_eq!(backend.kind(), ControlBackendKind::Custom);
 
@@ -85,6 +116,8 @@ fn the_single_backend_owns_real_state_for_a_hosted_widget() {
     // window is created first and becomes the parent.
     let window = backend.create_window("Router state", 0, 0, 320, 200);
     assert_ne!(window, 0, "the backend must allocate a usable window id");
+    let _lease =
+        HostWindowLease(rust_widgets::widget::runtime::host_window_for(window).unwrap_or(0));
 
     let label = backend.create_label(window, "hello", 10, 10, 120, 20);
     assert_ne!(label, 0, "the backend must host a child of a live container");
@@ -130,10 +163,12 @@ fn router_entry_point_is_public() {
 /// branch in which `Button` behaves differently from `GroupBox`.
 #[test]
 fn unified_entry_point_hosts_every_kind_without_the_caller_branching() {
+    let _serial = serialise_window_tests();
     rust_widgets::init();
     let platform = get_platform();
     let host = platform.create_window("unified", 0, 0, 400, 300);
     assert_ne!(host, 0, "the host must supply a window to mount onto");
+    let _lease = HostWindowLease(host);
 
     let mut outcomes = Vec::new();
     for kind in [WidgetKind::Button, WidgetKind::GroupBox] {
@@ -196,6 +231,7 @@ fn unified_entry_point_hosts_every_kind_without_the_caller_branching() {
 /// avoid, per §7 of log-20260916-1).
 #[test]
 fn library_window_is_linked_to_its_host_window() {
+    let _serial = serialise_window_tests();
     rust_widgets::init();
     let platform = get_platform();
 
@@ -236,6 +272,7 @@ fn library_window_is_linked_to_its_host_window() {
          window built for it; without the link no control can ever mount onto it",
         platform.backend_name()
     );
+    let _lease = HostWindowLease(host.unwrap_or(0));
 
     if button == 0 {
         // The host window exists (asserted above) but the mount was still refused.

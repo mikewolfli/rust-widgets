@@ -169,3 +169,20 @@ pie_chart series-palette true A pie slice colour identifies the category, and th
 # and its marks, and the border — and that is asserted directly by
 # `carousel::tests::the_chrome_follows_the_appearance_beneath_a_data_coloured_page`.
 carousel page-identity true The page fill is the colour the caller gave that page; it identifies which page is showing, so remapping it by theme would change the data.
+
+# ── Caller-supplied fills: image content and masonry cards ────────────────────
+# Both entries are the same judgement as `carousel`'s: the dominant colour is a value the
+# **caller** supplied, and the control passes it through untouched by design. In each case the
+# chrome that must keep following the theme is asserted directly, so the exemption cannot
+# become a licence for a theme-blind control.
+#
+# `image_view` draws the decoded bitmap — the image *is* the subject. With no image it paints a
+# themed placeholder, asserted by `image_view::tests::the_placeholder_follows_the_appearance`.
+#
+# `masonry_layout` draws one card per item; the fill is the colour `add_item` was given, which
+# identifies the card. The panel behind the cards is themed, asserted by
+# `masonry_layout::tests::the_panel_chrome_follows_the_appearance_beneath_data_coloured_cards`.
+# Neither control was exempted before, because both were reported by the gate only once their
+# chrome was made to follow the theme and the caller's colour became the dominant one.
+image_view bitmap-pixels true The dominant colour is the decoded bitmap's own pixels: the image is the content the caller supplied, not chrome.
+masonry_layout card-fill true Each card's fill is the colour the caller gave that item; it identifies the card, the same judgement `carousel` records for a page.

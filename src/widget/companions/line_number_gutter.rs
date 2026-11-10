@@ -87,6 +87,14 @@ pub struct LineNumberGutter {
     marker_lines: Vec<u64>,
     /// Caller-supplied font; the theme font is used until one is set.
     font: Option<Font>,
+    /// Holds one row's number while it is painted.
+    ///
+    /// Retained rather than a local of `draw`: the gutter writes one number per visible row on
+    /// every frame, so a fresh `String` there was an allocation per frame — measured as
+    /// `line_number_gutter` allocating four times over four steady-state frames by
+    /// `tests/key_normalization_allocations.rs`. `clear()` keeps the capacity. A `RefCell` because
+    /// `draw` already holds `&self` borrows (`style()`, `font`) for the whole frame.
+    label_scratch: crate::compat::RefCell<String>,
     /// Emitted with the document line a press landed on.
     pub line_clicked: Signal1<u64>,
     /// Emitted with the new caret line when it differs from the previous one.
@@ -106,6 +114,7 @@ impl LineNumberGutter {
             align: LineNumberAlign::Right,
             marker_lines: Vec::new(),
             font: None,
+            label_scratch: crate::compat::RefCell::new(String::new()),
             line_clicked: Signal1::new(),
             current_line_changed: Signal1::new(),
         }
@@ -291,7 +300,7 @@ impl Draw for LineNumberGutter {
             LineNumberAlign::Left => HorizontalAlignment::Left,
             LineNumberAlign::Right => HorizontalAlignment::Right,
         };
-        let mut label = String::new();
+        let mut label = self.label_scratch.borrow_mut();
 
         for index in 0..rows {
             let offset =
@@ -330,7 +339,7 @@ impl Draw for LineNumberGutter {
             }
 
             label.clear();
-            let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{line}"));
+            let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{line}"));
             let text_bounds = Rect::new(
                 rect.x.saturating_add(GUTTER_INSET as i32),
                 y,

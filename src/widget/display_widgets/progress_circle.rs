@@ -71,6 +71,13 @@ pub struct ProgressCircle {
     /// be stored, read back, and never painted.
     track_color_is_explicit: bool,
     progress_color: Color,
+    /// Whether the caller chose the arc colour through [`ProgressCircle::set_progress_color`].
+    ///
+    /// The arc's *default* is a theme role, so it is re-resolved on every draw; a colour captured
+    /// in the constructor kept the appearance that was active when the control was built — which
+    /// the rendering census measured (a dark-theme accent painted under the light appearance too).
+    /// An explicit caller colour is a decision and must survive an appearance switch.
+    progress_color_is_explicit: bool,
     stroke_width: f32,
     diameter: u32,
     /// The indeterminate sweep's rotation, in turns: `0.0` and `1.0` are the same angle.
@@ -134,6 +141,10 @@ impl ProgressCircle {
     /// The two progress controls are the same reading of the same data, so a caller who
     /// left the colour alone must not get a blue ring beside an orange bar. The literal is
     /// still the no-theme fallback, so a build without a theme renders what it used to.
+    ///
+    /// That initial value is also the **fallback** for a build with no active theme: see
+    /// [`ProgressCircle::resolved_progress_color`], which re-resolves the role on every draw so
+    /// an appearance switch reaches the arc.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ProgressCircle, geometry, "ProgressCircle"),
@@ -147,6 +158,7 @@ impl ProgressCircle {
             progress_color: crate::style::resolved_theme_style_shared("progress_bar")
                 .and_then(|resolved| resolved.background_color)
                 .unwrap_or(Color::PRIMARY),
+            progress_color_is_explicit: false,
             stroke_width: 4.0,
             diameter: geometry.width.min(geometry.height),
             sweep: 0.0,
@@ -321,14 +333,20 @@ impl ProgressCircle {
         }
     }
 
-    /// Returns the current track color.
+    /// Returns the track (background circle) color the control paints.
+    ///
+    /// This is the resolved colour, so a host reading it back after an appearance switch sees
+    /// what the next frame will paint rather than the literal the constructor stored.
     pub fn track_color(&self) -> Color {
-        self.track_color
+        self.resolved_track_color()
     }
 
     /// Sets the track (background circle) color.
     pub fn set_track_color(&mut self, color: Color) {
-        if self.track_color == color {
+        // A same-value write still has to mark the colour as the caller's: the stored literal and
+        // the theme groove can coincide, and an early return would leave the theme in charge of a
+        // colour the caller explicitly asked for.
+        if self.track_color == color && self.track_color_is_explicit {
             return;
         }
         self.track_color = color;
@@ -336,18 +354,62 @@ impl ProgressCircle {
         self.base.request_redraw();
     }
 
-    /// Returns the current progress (foreground arc) color.
+    /// Returns the progress (foreground arc) color the control paints.
     pub fn progress_color(&self) -> Color {
-        self.progress_color
+        self.resolved_progress_color()
     }
 
     /// Sets the progress (foreground arc) color.
     pub fn set_progress_color(&mut self, color: Color) {
-        if self.progress_color == color {
+        if self.progress_color == color && self.progress_color_is_explicit {
             return;
         }
         self.progress_color = color;
+        self.progress_color_is_explicit = true;
         self.base.request_redraw();
+    }
+
+    /// The groove the ring paints when the caller has not chosen one.
+    ///
+    /// # Why the neutral container and not the role colour
+    ///
+    /// The `Accent` role fills a *value indicator*: for a bar that is its fill, and for this ring
+    /// it is the arc. The groove is the empty part of the ring, so using the same role for both
+    /// made the value invisible against its own track — the census fixture worked around that with
+    /// a fixed grey, and that literal is why the control rendered identically in both appearances.
+    /// [`crate::theme::Colors::surface_container`] names exactly "a panel a step off the page", so
+    /// the groove follows the theme and stays one class away from the accent.
+    ///
+    /// Precedence: an explicit [`Self::set_track_color`], then a caller-authored style background,
+    /// then the theme's container, then the constructor literal.
+    fn resolved_track_color(&self) -> Color {
+        if self.track_color_is_explicit {
+            return self.track_color;
+        }
+        let style = self.base.style();
+        // A theme-authored style carries the *role* colour — the accent — so it is not a caller
+        // decision about the groove. A caller-touched style is left unmarked and wins.
+        if !style.theme_derived {
+            if let Some(color) = style.background_color {
+                return color;
+            }
+        }
+        crate::style::palette_shared()
+            .map(|colors| colors.surface_container)
+            .unwrap_or(self.track_color)
+    }
+
+    /// The colour the value arc paints: the caller's, else the theme's accent for this reading.
+    ///
+    /// Re-resolved on every draw unless the caller set one, because the accent is a theme role and
+    /// a value captured at construction would not follow an appearance switch.
+    fn resolved_progress_color(&self) -> Color {
+        if self.progress_color_is_explicit {
+            return self.progress_color;
+        }
+        crate::style::resolved_theme_style_shared("progress_bar")
+            .and_then(|resolved| resolved.background_color)
+            .unwrap_or(self.progress_color)
     }
 
     /// Returns the current stroke width in logical pixels.
@@ -660,40 +722,23 @@ impl Draw for ProgressCircle {
         let is_enabled = self.base.is_enabled();
         let stroke_w = self.stroke_width as u32;
 
-        // Draw track (full circle). The track is the ring's empty groove — chrome, not a
-        // value — so it follows the theme. Chrome colours resolve the explicit style first,
-        // then the theme's resolved style for this control, and only then the original
-        // literal, which stays as the fallback so an inactive theme still has a defined
-        // appearance. The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so no guard is held across the draw (the mutex is not
-        // re-entrant).
-        let style = self.base.style();
-        let themed = crate::style::resolved_theme_style_shared("progress_circle");
-        let themed_bg = themed.as_ref().and_then(|r| r.background_color);
-        // `progress_circle` is `WidgetRole::Accent`, so the theme writes a groove colour into
-        // the style's background. The control's own `track_color` literal is deliberately
-        // **not** the base here: it is a near-white grey in every palette, so using it would
-        // leave the track identical in light and dark — the exact defect being fixed. It
-        // stays as the enabled-state literal fallback instead.
-        let fallback_track = themed_bg.unwrap_or(Color::rgba(220, 220, 220, 200));
-        let surface = style.background_color.unwrap_or(fallback_track);
-        // An explicit `set_track_color` wins over the theme groove (it is a caller decision, like
-        // every other explicit colour in this crate); with no explicit colour the theme's groove
-        // is used, because the field's near-white literal made the track identical in both
-        // appearances. A disabled control derives its groove from the resolved colours instead.
-        let track_color = if !is_enabled {
-            surface.blend(&Color::DISABLED_FOREGROUND, 0.5)
-        } else if self.track_color_is_explicit {
-            self.track_color
-        } else {
-            surface
-        };
+        // Draw track (full circle). The track is the ring's empty groove — chrome, not a value — so
+        // it follows the theme. `resolved_track_color` owns the precedence (explicit setter, a
+        // caller-authored style, the theme's neutral container, the constructor literal); the
+        // theme read inside it takes and releases the manager lock, so no guard is held across the
+        // draw (the mutex is not re-entrant).
+        let groove = self.resolved_track_color();
+        let track_color =
+            if !is_enabled { groove.blend(&Color::DISABLED_FOREGROUND, 0.5) } else { groove };
 
         // Draw track as a circle stroke
         context.draw_circle_stroke(center, radius as u32, track_color, stroke_w.max(1));
 
-        // The progress arc is deliberately NOT themed: its colour can encode a value or a
-        // threshold the caller chose, which is data, so its computation is left untouched.
+        // The progress arc is the control's value ink: the theme's accent unless the caller chose
+        // one, resolved per draw so an appearance switch reaches it. A colour the caller set can
+        // still encode a value or a threshold, and then it is data and is left untouched.
+        let prog_color =
+            if is_enabled { self.resolved_progress_color() } else { Color::DISABLED_FOREGROUND };
 
         if self.indeterminate {
             // The arc sweeps a fixed share of the circle and the whole thing revolves, which is
@@ -707,8 +752,6 @@ impl Draw for ProgressCircle {
             let start_angle = self.sweep_angle();
             let end_angle = start_angle + arc_sweep;
 
-            let prog_color =
-                if is_enabled { self.progress_color } else { Color::DISABLED_FOREGROUND };
             crate::render::draw_arc_segments(
                 context,
                 center,
@@ -750,11 +793,6 @@ impl Draw for ProgressCircle {
                     // the intent readable without relying on a helper's internals.
                     let sweep_px = (radius * (end_angle - start_angle)).round() as u32;
                     if sweep_px > 0 {
-                        let prog_color = if is_enabled {
-                            self.progress_color
-                        } else {
-                            Color::DISABLED_FOREGROUND
-                        };
                         crate::render::draw_arc_segments(
                             context,
                             center,
@@ -779,7 +817,11 @@ impl Draw for ProgressCircle {
             if !cache.text.is_empty() {
                 let hole = (radius - self.stroke_width / 2.0).max(0.0);
                 if (cache.width as f32) <= hole * 2.0 && (cache.height as f32) <= hole * 2.0 {
-                    let ink = self.base.style().text_color.unwrap_or(self.progress_color);
+                    let ink = self
+                        .base
+                        .style()
+                        .text_color
+                        .unwrap_or_else(|| self.resolved_progress_color());
                     // The centring term is the *measured* glyph-box height, so the ring's
                     // centre is the text's centre rather than the top edge's position.
                     let line_height = cache.height as i32;
@@ -826,14 +868,53 @@ mod tests {
         assert!((pc.value() - 0.0).abs() < f32::EPSILON);
         assert!(!pc.is_indeterminate());
         assert!((pc.stroke_width() - 4.0).abs() < f32::EPSILON);
-        assert_eq!(pc.track_color(), Color::rgba(220, 220, 220, 200));
-        // The arc's default is the token `progress_bar` fills with, so the two progress
-        // controls agree; the literal is only the no-theme fallback. Asserting the literal
-        // here would re-assert the defect the default was changed to remove.
-        let expected = crate::style::resolved_theme_style_shared("progress_bar")
+        // The groove's default is the theme's neutral container — a step off the page in both
+        // appearances — and the arc's is the token `progress_bar` fills with, so the two progress
+        // controls agree. The literals are only the no-theme fallback; asserting them would
+        // re-assert the theme-blind defect the defaults were changed to remove.
+        let expected_track = crate::style::palette_shared()
+            .map(|colors| colors.surface_container)
+            .unwrap_or(Color::rgba(220, 220, 220, 200));
+        assert_eq!(pc.track_color(), expected_track);
+        let expected_arc = crate::style::resolved_theme_style_shared("progress_bar")
             .and_then(|resolved| resolved.background_color)
             .unwrap_or(Color::PRIMARY);
-        assert_eq!(pc.progress_color(), expected);
+        assert_eq!(pc.progress_color(), expected_arc);
+    }
+
+    /// The groove and the arc are both theme-derived, so a control drawn under a different
+    /// appearance must paint that appearance's colours.
+    ///
+    /// # The defect this pins
+    ///
+    /// The arc's colour used to be captured in the constructor, so a control built under one
+    /// appearance kept it forever; the census measured a dark-theme accent painted under the light
+    /// appearance as well (its P3 "theme-blind" finding for this control). The groove had the
+    /// mirror-image problem: it took the same `Accent` role as the arc, so the value was invisible
+    /// against its own track, and the fixture hid that with a fixed grey.
+    #[test]
+    fn the_groove_and_the_arc_follow_the_appearance() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let colors = |appearance| {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let circle = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+            (circle.track_color(), circle.progress_color())
+        };
+        let (light_track, light_arc) = colors(crate::theme::AppearanceMode::Light);
+        let (dark_track, dark_arc) = colors(crate::theme::AppearanceMode::Dark);
+        assert_ne!(light_track, dark_track, "the groove is chrome");
+        assert_ne!(light_arc, dark_arc, "the arc's default is the theme's accent");
+        assert_ne!(light_track, light_arc, "the value must read against its own groove");
+
+        // A caller colour is a decision, so it survives an appearance switch.
+        let mut explicit = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        explicit.set_track_color(Color::rgb(1, 2, 3));
+        explicit.set_progress_color(Color::rgb(4, 5, 6));
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+        assert_eq!(explicit.track_color(), Color::rgb(1, 2, 3));
+        assert_eq!(explicit.progress_color(), Color::rgb(4, 5, 6));
     }
 
     #[test]

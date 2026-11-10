@@ -646,6 +646,26 @@ pub mod pdf;
 /// Print and preview support.
 pub mod print;
 
+/// Whether the `RW_RESIZE_TRACE=1` pause diagnostics are enabled (GV4-01).
+///
+/// # Why the probe lives at the crate root
+///
+/// It is a **process-level diagnostic switch**, not a device fact — the same shape as
+/// [`trace_runtime_route`]'s `RUST_WIDGETS_TRACE_RUNTIME`, which is read here for the same reason.
+/// A *device* fact read from the environment is the defect `check_environment_is_single_sourced`
+/// names: it cannot be substituted, so no test can exercise the other branch, and a host that
+/// states the fact properly is indistinguishable from one that does not. The scan cannot tell a
+/// fact from a debug switch, so the widget layer now reads no environment at all and the probe sits
+/// here, where the crate's other diagnostic switches live.
+///
+/// The caller keeps its per-thread memo: the widget layer must stay lock-free
+/// (`tools/check_locking.sh`), and the environment does not change under a running process, so one
+/// probe per thread is the whole steady-state cost either way.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn resize_trace_requested() -> bool {
+    std::env::var("RW_RESIZE_TRACE").ok().as_deref() == Some("1")
+}
+
 /// Logs the resolved profile/backend/route when `RUST_WIDGETS_TRACE_RUNTIME=1`.
 ///
 /// # Why this writes to stderr as well as the log

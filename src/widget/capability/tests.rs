@@ -12,6 +12,26 @@ use super::*;
 use crate::core::Rect;
 use crate::widget::view_widgets::virtual_list::VirtualList;
 
+/// Whether this build compiles the control named `name`.
+///
+/// The editor widgets are behind `code-editor` / `markdown-editor` (BLUE31 §1.5). `default` turns
+/// both on, but the `full`, `tablet` and `mobile` feature sets do not, and those are sets this
+/// crate is built with — so a test that demanded the editors unconditionally failed on exactly the
+/// builds that legitimately omit them. A name that *is* compiled still has to resolve; this only
+/// says which names exist in this build.
+fn compiled_here(name: &str) -> bool {
+    // Early returns, not an `if`/`else` chain: every branch is a `cfg!` boolean literal in the
+    // build being compiled, and clippy reads a boolean-returning `if`/`else` of literals as a
+    // literal it can fold — the fold would drop the feature gate entirely.
+    if matches!(name, "code_editor" | "codeeditor") {
+        return cfg!(feature = "code-editor");
+    }
+    if matches!(name, "markdown_editor" | "md_editor") {
+        return cfg!(feature = "markdown-editor");
+    }
+    true
+}
+
 /// `same_key` must be exactly `normalize_key(left) == normalize_key(right)`.
 ///
 /// Every schema lookup uses it instead of building both normalised strings — one allocation per
@@ -186,7 +206,8 @@ fn default_factory_registers_core_capabilities() {
     assert!(factory.capability("toolbar").is_some());
     assert!(factory.capability("ribbon").is_some());
     assert!(factory.capability("colorpicker").is_some());
-    assert!(factory.capability("code_editor").is_some());
+    // The editors are feature-gated (BLUE31 §1.5): present iff this build compiles them.
+    assert_eq!(factory.capability("code_editor").is_some(), cfg!(feature = "code-editor"));
     assert!(factory.capability("snackbar").is_some());
     // The first suite batch lives in `rust-widgets-suites`, not the parent registry. These
     // names must be absent here so a host cannot silently build a control whose capability row
@@ -307,10 +328,12 @@ fn factory_creates_registered_widgets_by_alias() {
         factory.create("color_dialog", rect, "").expect("colour dialog must be registered");
     assert_eq!(color_dialog.kind(), WidgetKind::ColorDialog);
 
-    let code_editor = factory
-        .create("codeeditor", rect, "// code")
-        .expect("code editor must be created via alias");
-    assert_eq!(code_editor.kind(), WidgetKind::RichEdit);
+    if cfg!(feature = "code-editor") {
+        let code_editor = factory
+            .create("codeeditor", rect, "// code")
+            .expect("code editor must be created via alias");
+        assert_eq!(code_editor.kind(), WidgetKind::RichEdit);
+    }
 
     let snackbar =
         factory.create("snackbar", rect, "Saved").expect("snackbar must be created via alias");
@@ -1157,6 +1180,9 @@ fn unregistered_controls_are_constructible_by_canonical_name_and_alias() {
     ];
 
     for (name, alias, kind) in cases {
+        if !compiled_here(name) {
+            continue;
+        }
         let widget = factory
             .create(name, rect, "")
             .unwrap_or_else(|| panic!("{name} must be constructible through the factory"));
@@ -1200,6 +1226,9 @@ fn unregistered_controls_publish_their_own_properties() {
     ];
 
     for (name, property) in cases {
+        if !compiled_here(name) {
+            continue;
+        }
         let widget = factory
             .create(name, rect, "")
             .unwrap_or_else(|| panic!("{name} must be constructible through the factory"));
@@ -1248,14 +1277,16 @@ fn unregistered_controls_round_trip_writable_properties() {
         Ok(CapabilityValue::String("open".to_string()))
     );
 
-    let mut markdown = factory.create("markdown_editor", rect, "").expect("markdown editor");
-    factory
-        .write_property(markdown.as_mut(), "preview_mode", CapabilityValue::Bool(true))
-        .expect("markdown preview_mode should be writable");
-    assert_eq!(
-        factory.read_property(markdown.as_ref(), "preview_mode"),
-        Ok(CapabilityValue::Bool(true))
-    );
+    if cfg!(feature = "markdown-editor") {
+        let mut markdown = factory.create("markdown_editor", rect, "").expect("markdown editor");
+        factory
+            .write_property(markdown.as_mut(), "preview_mode", CapabilityValue::Bool(true))
+            .expect("markdown preview_mode should be writable");
+        assert_eq!(
+            factory.read_property(markdown.as_ref(), "preview_mode"),
+            Ok(CapabilityValue::Bool(true))
+        );
+    }
 
     let mut toasts = factory.create("toast_stack", rect, "").expect("toast stack");
     factory
@@ -1338,6 +1369,9 @@ fn derived_names_reject_writes_on_newly_registered_controls() {
     ];
 
     for (name, property, value) in cases {
+        if !compiled_here(name) {
+            continue;
+        }
         let mut widget = factory
             .create(name, rect, "")
             .unwrap_or_else(|| panic!("{name} must be constructible through the factory"));

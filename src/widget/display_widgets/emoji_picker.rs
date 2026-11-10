@@ -1220,28 +1220,23 @@ impl EmojiPicker {
         // Fitted to the field so a long query cannot paint past the box (and under the
         // underline that closes it).
         let search_width = ((rect.width as i32) - 28 - 8).max(0) as u32;
-        context.draw_text_fitted_ellipsis(
-            Rect::new(
-                rect.x + 28,
-                rect.y + (rect.height as i32 - text_h as i32) / 2,
-                search_width.max(1),
-                text_h.max(1),
-            ),
-            text,
-            font,
-            color,
-            HorizontalAlignment::Left,
+        let search_box = Rect::new(
+            rect.x + 28,
+            rect.y + (rect.height as i32 - text_h as i32) / 2,
+            search_width.max(1),
+            text_h.max(1),
         );
+        context.draw_text_fitted_ellipsis(search_box, text, font, color, HorizontalAlignment::Left);
 
         // The uncommitted IME composition follows the query in the search box, underlined, so a
-        // CJK composition is visible before it is confirmed (WC6-03).
+        // CJK composition is visible before it is confirmed (WC6-03). Bounded by the search box
+        // rather than the panel, so it cannot be pushed under the trailing chrome.
         if !self.preedit.is_empty() {
             let line_y = rect.y + (rect.height as i32 - text_h as i32) / 2;
             let query_width = context.measure_text(&self.search, font).width as i32;
-            let max_x = rect.x + rect.width as i32 - 1;
-            let preedit_x = (rect.x + 28 + query_width).min(max_x);
+            let preedit_x = crate::widget::text_utils::composition_x(query_width, search_box);
             let width = (context.measure_text(&self.preedit, font).width as i32)
-                .min(max_x - preedit_x)
+                .min(search_box.right() - preedit_x)
                 .max(0);
             context.push_clip(rect.x, rect.y, rect.width, rect.height);
             context.draw_text(

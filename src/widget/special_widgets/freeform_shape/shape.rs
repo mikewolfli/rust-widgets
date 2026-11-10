@@ -159,6 +159,15 @@ pub struct FreeformShapeWidget {
     path_revision: u64,
     /// Cached flattened outline; see [`OutlineCache`].
     outline_cache: RefCell<Option<OutlineCache>>,
+    /// Scratch polygon for one draw: the outline offset into screen coordinates, or the heart
+    /// approximation.
+    ///
+    /// Retained rather than built per call: `draw_polygon` used to `collect()` the offset outline
+    /// into a fresh `Vec` on **every** frame, and `draw_heart` built its own 64-point `Vec`, which
+    /// `tests/key_normalization_allocations.rs` measured as `freeform_shape` allocating four times
+    /// over four steady-state frames. One buffer serves both variants because only one of them
+    /// paints per draw, and `clear()` keeps the capacity.
+    polygon_scratch: RefCell<Vec<Point>>,
 }
 
 impl FreeformShapeWidget {
@@ -196,6 +205,7 @@ impl FreeformShapeWidget {
             pressed_changed: Signal1::new(),
             path_revision: 1,
             outline_cache: RefCell::new(None),
+            polygon_scratch: RefCell::new(Vec::new()),
         }
     }
 
@@ -880,8 +890,19 @@ impl FreeformShapeWidget {
             | ShapePath::Polygon(_)
             | ShapePath::Custom(_)
             | ShapePath::UnitCustom(_) => {
-                let vertices = self.outline_vertices(rect.width as i32, rect.height as i32);
-                self.draw_polygon(context, rect, &vertices);
+                // The offset copy is what the renderer wants (absolute coordinates), and it is
+                // written into the retained buffer rather than `collect`ed per frame.
+                let mut absolute = self.polygon_scratch.borrow_mut();
+                absolute.clear();
+                {
+                    let vertices = self.outline_vertices(rect.width as i32, rect.height as i32);
+                    absolute.extend(
+                        vertices
+                            .iter()
+                            .map(|vertex| Point::new(rect.x + vertex.x, rect.y + vertex.y)),
+                    );
+                }
+                self.draw_polygon(context, &absolute);
             }
             ShapePath::RoundedRect { radius } => self.draw_rounded_rect(context, rect, *radius),
             ShapePath::Bubble { tail_direction } => {
@@ -902,7 +923,11 @@ impl FreeformShapeWidget {
         let cy = rect.y as f32 + rect.height as f32 / 2.0;
         let sx = rect.width as f32 / 32.0;
         let sy = rect.height as f32 / 29.0;
-        let mut points = Vec::with_capacity(SAMPLES);
+        // The retained scratch, not a fresh `Vec` per frame: the heart is the other polygon
+        // variant, and it is the only one that paints on a given draw, so the two can share.
+        let mut points = self.polygon_scratch.borrow_mut();
+        points.clear();
+        points.reserve(SAMPLES);
         for sample in 0..SAMPLES {
             let t = sample as f32 / SAMPLES as f32 * std::f32::consts::TAU;
             let sin = t.sin();
@@ -918,18 +943,14 @@ impl FreeformShapeWidget {
         }
     }
 
-    /// Fills and strokes one closed polygon, offset by the widget's own origin.
-    fn draw_polygon(&self, context: &mut RenderContext, rect: Rect, vertices: &[Point]) {
+    /// Fills and strokes one closed polygon, already in screen coordinates.
+    fn draw_polygon(&self, context: &mut RenderContext, vertices: &[Point]) {
         if vertices.len() < 3 {
             return;
         }
-        let absolute: Vec<Point> = vertices
-            .iter()
-            .map(|vertex| Point::new(rect.x + vertex.x, rect.y + vertex.y))
-            .collect();
-        context.draw_path(&absolute, true, self.fill_color, true, 0);
+        context.draw_path(vertices, true, self.fill_color, true, 0);
         if let Some(stroke) = self.stroke_color {
-            context.draw_path(&absolute, true, stroke, false, self.stroke_width.max(1));
+            context.draw_path(vertices, true, stroke, false, self.stroke_width.max(1));
         }
     }
 

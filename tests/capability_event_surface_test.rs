@@ -273,6 +273,18 @@ fn every_emitted_event_name_is_subscribable() {
 
     let mut refused: Vec<(&str, &str)> = Vec::new();
     for (control, event) in EMITTED {
+        // `code_editor` is behind `code-editor` (BLUE31 §1.5), which `full`, `tablet` and `mobile`
+        // do not enable — so this build has no such capability to publish anything for, and the
+        // bridge legitimately answers `UnknownCommand` for a control that does not exist. The gate
+        // is the registration's own `cfg!` (not a blanket skip): on a build that *does* register
+        // it, the pair still has to resolve, and a gate that drifted from the registry fails here.
+        if *control == "code_editor" && !cfg!(feature = "code-editor") {
+            assert!(
+                factory.capability(control).is_none(),
+                "`code_editor` is gated out of this build but still registered"
+            );
+            continue;
+        }
         if factory.event_is_subscribable(control, event, &hub).is_err() {
             refused.push((control, event));
         }

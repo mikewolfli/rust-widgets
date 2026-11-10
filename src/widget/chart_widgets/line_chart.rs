@@ -273,6 +273,17 @@ pub struct LineChart {
     /// Cached y-axis label width; `None` until the first measured paint.
     #[cfg(feature = "chart")]
     y_label_cache: Option<YAxisLabelCache>,
+    /// Holds one axis-label number while it is painted by the fallback backdrop.
+    ///
+    /// Retained rather than a local: the comment on the loop already says "one buffer reused across
+    /// all ten labels", but a buffer created inside the call is reused only *within* one frame —
+    /// so the first `write!` allocated again on every frame. That is what
+    /// `tests/key_normalization_allocations.rs` reported as `line_chart` allocating on
+    /// `tablet`/`mobile`, where this fallback (rather than the engine-backed path) paints.
+    /// A `RefCell` because the painter takes `&self`, and gated on `not(chart)` because that is the
+    /// only build in which the fallback painter this serves is compiled.
+    #[cfg(not(feature = "chart"))]
+    label_scratch: crate::compat::RefCell<String>,
     /// Emitted with `(series, point)` under the pointer when hover enters a point.
     pub point_hovered: Signal1<(usize, usize)>,
     /// Emitted with `(series, point)` when the pointer leaves the last hovered point.
@@ -401,6 +412,8 @@ impl LineChart {
             last_plot_area: None,
             last_pointer: None,
             readout_cache: None,
+            #[cfg(not(feature = "chart"))]
+            label_scratch: crate::compat::RefCell::new(String::new()),
             #[cfg(feature = "chart")]
             y_label_cache: None,
             point_hovered: Signal1::new(),
@@ -2661,9 +2674,9 @@ impl LineChart {
             // The axis labels take the **effective font** at their role size, so the theme family
             // and the user's text scale reach the chart chrome (D09-STYLE-01).
             let label_font = role_font(self.base.style(), 9.0);
-            // One buffer reused across all ten labels: `format!` per label per frame was
-            // a fresh allocation for a string a `write!` renders in place.
-            let mut label = String::new();
+            // One buffer reused across all ten labels, retained between frames: `format!` per
+            // label per frame was a fresh allocation for a string a `write!` renders in place.
+            let mut label = self.label_scratch.borrow_mut();
             for i in 0..=4 {
                 let t = i as f64 / 4.0;
                 let val = y_min + (y_max - y_min) * (1.0 - t);

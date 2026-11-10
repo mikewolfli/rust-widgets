@@ -7,7 +7,6 @@
 //! from that content by a hairline. This control draws the strip, arranges the slots, reports
 //! which slot a pointer is over, and emits the activated slot's index.
 
-use crate::compat::Cow;
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -17,7 +16,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{profile_metrics, role_font, ControlMetricsProfile};
-use crate::widget::text_utils::elide_to_width;
+use crate::widget::text_utils::elide_to_width_into;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -172,6 +171,13 @@ pub struct MacToolbar {
     slot_widgets: Vec<(usize, crate::compat::Box<dyn Widget>)>,
     /// Cached geometry for every slot, rebuilt when items or metrics change.
     layout_cache: Option<ToolbarLayout>,
+    /// Holds one item's elided caption while it is painted.
+    ///
+    /// Retained rather than a per-call `Cow::Owned`: a caption that does not fit its slot is elided
+    /// on every frame, and the `Cow` form owns a `String` when it elides — one allocation per
+    /// elided label per frame, measured as `mac_toolbar` allocating by
+    /// `tests/key_normalization_allocations.rs`.
+    label_scratch: String,
 }
 
 impl MacToolbar {
@@ -191,6 +197,7 @@ impl MacToolbar {
             last_overflow_count: 0,
             slot_widgets: Vec::new(),
             layout_cache: None,
+            label_scratch: String::new(),
         }
     }
 
@@ -314,10 +321,7 @@ impl MacToolbar {
     /// The rectangle of slot `index`, or `None` when it is absent or runs past the strip.
     fn item_rect(&self, index: usize) -> Option<Rect> {
         if let Some(layout) = self.layout_cache.as_ref() {
-            if layout.icon_bits == self.icon_size.to_bits()
-                && layout.strip == self.strip()
-                && layout.rects.len() == self.items.len()
-            {
+            if self.layout_is_current(layout) {
                 return layout.rects.get(index).copied().flatten();
             }
         }
@@ -343,14 +347,22 @@ impl MacToolbar {
     }
 
     /// Rebuilds [`Self::layout_cache`] when the items or metrics changed.
+    /// Whether `layout` still describes the current strip, icon size and item count.
+    ///
+    /// The three lookups below each spelled this conjunction out, and a fourth copy is exactly how
+    /// the geometry cache and the hit tests drift apart. `cached_slot_x` keeps its own check only
+    /// because it reads `separator_x` rather than `rects`.
+    fn layout_is_current(&self, layout: &ToolbarLayout) -> bool {
+        layout.icon_bits == self.icon_size.to_bits()
+            && layout.strip == self.strip()
+            && layout.rects.len() == self.items.len()
+    }
+
     fn ensure_layout(&mut self) {
         let strip = self.strip();
         let icon_bits = self.icon_size.to_bits();
         if let Some(layout) = self.layout_cache.as_ref() {
-            if layout.icon_bits == icon_bits
-                && layout.strip == strip
-                && layout.rects.len() == self.items.len()
-            {
+            if self.layout_is_current(layout) {
                 return;
             }
         }
@@ -508,10 +520,7 @@ impl MacToolbar {
     /// The indices of action slots that do not fit in the strip.
     pub fn overflow_indices(&self) -> Vec<usize> {
         if let Some(layout) = self.layout_cache.as_ref() {
-            if layout.icon_bits == self.icon_size.to_bits()
-                && layout.strip == self.strip()
-                && layout.rects.len() == self.items.len()
-            {
+            if self.layout_is_current(layout) {
                 return layout.overflow.clone();
             }
         }
@@ -523,8 +532,23 @@ impl MacToolbar {
     }
 
     /// The rectangle of the overflow control, when at least one action slot is folded away.
+    ///
+    /// # Why this reads the cached list instead of [`Self::overflow_indices`]
+    ///
+    /// The paint pass asks for this rectangle every frame, and `overflow_indices` returns its own
+    /// `Vec` — the `clone()` of the cached list was one allocation per frame, measured as
+    /// `mac_toolbar` allocating four times over four steady-state frames by
+    /// `tests/key_normalization_allocations.rs`. Only emptiness is needed here, so it is read in
+    /// place; the stale-cache fallback asks the placement directly with `any`, which allocates
+    /// nothing either.
     pub fn overflow_rect(&self) -> Option<Rect> {
-        if self.overflow_indices().is_empty() {
+        let folded_away = match self.layout_cache.as_ref() {
+            Some(layout) if self.layout_is_current(layout) => !layout.overflow.is_empty(),
+            _ => (0..self.items.len()).any(|index| {
+                self.items[index].kind == ToolbarItemKind::Item && self.item_rect(index).is_none()
+            }),
+        };
+        if !folded_away {
             return None;
         }
         let strip = self.strip();
@@ -772,11 +796,18 @@ impl Draw for MacToolbar {
             if item.display_mode == ToolbarItemDisplayMode::IconOnly {
                 if !drew_icon {
                     let mut measure = |text: &str| context.measure_text(text, &font).width;
-                    let shown: Cow<'_, str> = elide_to_width(&item.label, available, &mut measure);
+                    let elided = elide_to_width_into(
+                        &item.label,
+                        available,
+                        &mut measure,
+                        &mut self.label_scratch,
+                    );
+                    let shown =
+                        if elided { self.label_scratch.as_str() } else { item.label.as_str() };
                     let line = context.text_line(slot, &font);
                     context.draw_text(
                         Point::new(slot.center().x, line.y),
-                        shown.as_ref(),
+                        shown,
                         &font,
                         label_ink,
                         HorizontalAlignment::Center,
@@ -787,7 +818,9 @@ impl Draw for MacToolbar {
             // Text-only, or the caption below an icon.
             let label_font = if drew_icon { role_font(style, 10.0) } else { font.clone() };
             let mut measure = |text: &str| context.measure_text(text, &label_font).width;
-            let shown: Cow<'_, str> = elide_to_width(&item.label, available, &mut measure);
+            let elided =
+                elide_to_width_into(&item.label, available, &mut measure, &mut self.label_scratch);
+            let shown = if elided { self.label_scratch.as_str() } else { item.label.as_str() };
             let line = if drew_icon {
                 let label_h = context.measure_text("M", &label_font).height;
                 Rect::new(
@@ -801,7 +834,7 @@ impl Draw for MacToolbar {
             };
             context.draw_text(
                 Point::new(slot.center().x, line.y),
-                shown.as_ref(),
+                shown,
                 &label_font,
                 label_ink,
                 HorizontalAlignment::Center,

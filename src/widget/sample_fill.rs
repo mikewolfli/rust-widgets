@@ -1546,9 +1546,10 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         "progress_circle" => match widget_as_mut::<ProgressCircle>(widget) {
             Some(circle) => {
                 circle.set_value(0.45);
-                // The groove is themed from the accent role and the arc is the accent too, so at
-                // the default colours the progress was invisible against its own track.
-                circle.set_track_color(Color::rgb(224, 224, 224));
+                // No explicit track or arc colour here: both defaults are theme-derived (the
+                // groove is the neutral container, the arc the accent), so an override would
+                // measure the fixture instead of the control. The earlier fixed grey track was
+                // what made this control render identically in both appearances.
                 // The ring paints the driver's current value, so the tween is advanced here or a
                 // still frame shows an empty ring. Bounded, so a stuck driver cannot wedge us.
                 for _ in 0..600 {

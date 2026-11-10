@@ -1532,6 +1532,29 @@ mod tests {
     use crate::render::{PaintBackend, SoftwarePaintBackend};
     use crate::widget::svg::render_to_svg;
 
+    /// The empty-state placeholder is this control's only chrome, so it must follow the theme.
+    ///
+    /// The bitmap path is data — the decoded pixels are the image the caller supplied — which is
+    /// why the census records this control in `tools/control_color_exemptions.txt`. That exemption
+    /// is only honest while the *chrome* still follows the appearance, so this test pins it:
+    /// remove the placeholder's theme read and the exemption becomes a licence for a theme-blind
+    /// control.
+    #[test]
+    fn the_placeholder_follows_the_appearance() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let rendered = |appearance| {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut view = ImageView::new(Image::new(), Rect::new(0, 0, 120, 80));
+            crate::theme::apply_active_theme(&mut view);
+            render_to_svg(&mut view)
+        };
+        let light = rendered(crate::theme::AppearanceMode::Light);
+        let dark = rendered(crate::theme::AppearanceMode::Dark);
+        assert_ne!(light, dark, "the placeholder is chrome and must follow the appearance");
+    }
+
     /// Disabling mid-pan abandons the drag.
     ///
     /// # What this pins

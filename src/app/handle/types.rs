@@ -143,7 +143,10 @@ impl SurfaceHandle {
     /// `f` returns whether it changed anything; returning `false` skips the
     /// repaint. Returns `None` when the widget is no longer mounted.
     ///
+    /// The example's `CodeEditor` is behind `code-editor`, so the fence is gated on it.
+    ///
     /// ```no_run
+    /// # #[cfg(feature = "code-editor")] {
     /// use rust_widgets::app::{App, WidgetHandle};
     /// use rust_widgets::core::Rect;
     /// use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
@@ -163,6 +166,7 @@ impl SurfaceHandle {
     ///     };
     ///     editor.undo()
     /// });
+    /// # }
     /// ```
     pub fn update(&self, f: impl FnOnce(&mut dyn crate::widget::Widget) -> bool) -> Option<bool> {
         let changed = crate::widget::runtime::with_widget_mut(self.id, f)?;

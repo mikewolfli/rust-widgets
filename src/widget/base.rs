@@ -1928,6 +1928,14 @@ mod tests {
     /// `note_structure_changed`. `Full` is the default mode, so hovering a button bumped the
     /// process-wide structure epoch every frame and the metrics cache — keyed on that epoch —
     /// missed and recomputed the whole tree each time. A tick changes pixels, not structure.
+    ///
+    /// # Why this is `not(alloc_frugal)`
+    ///
+    /// The claim is about the widget **registry's** epoch, and `crate::widget::runtime` is compiled
+    /// out under `alloc_frugal` (`mini`). Without this gate `cargo test --features mini` did not
+    /// skip the test: the binary failed to compile on `crate::widget::runtime` and on the `Box` the
+    /// registration needs.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn a_full_mode_frame_repaint_does_not_bump_the_structure_epoch() {
         use crate::widget::runtime::{register, structure_epoch, unregister, with_widget_mut};

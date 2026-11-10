@@ -141,6 +141,10 @@ fn painting_a_steady_state_frame_allocates_nothing() {
 
     let _guard = exclusive();
     let factory = WidgetFactory::new_with_defaults();
+    // Collected rather than asserted inside the loop: the first offender used to hide every other
+    // one, so each fix cost a full run to discover the next. The assertion at the end still names
+    // the control and its count for each.
+    let mut offenders: Vec<(String, usize)> = Vec::new();
     for name in factory.constructible_names() {
         let Some(mut widget) = factory.create(&name, Rect::new(0, 0, 240, 120), "Sample") else {
             continue;
@@ -183,11 +187,15 @@ fn painting_a_steady_state_frame_allocates_nothing() {
                 backend.end_frame();
             }
         });
-        assert_eq!(
-            allocations, 0,
-            "{name} allocated {allocations} times over four steady-state frames"
-        );
+        if allocations != 0 {
+            offenders.push((name.clone(), allocations));
+        }
     }
+    assert!(
+        offenders.is_empty(),
+        "these controls allocate in a steady-state frame, which the paint path must not do \
+         (name, allocations over four frames): {offenders:?}"
+    );
 }
 
 #[test]

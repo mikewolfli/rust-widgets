@@ -673,11 +673,25 @@ fn capability_flags_agree_with_the_methods_they_promise() {
 // The staged-loop tests below are the only users of these helpers; the gate is theirs, so a
 // profile that cannot stage them (a stripped or non-native device profile) does not compile dead
 // scaffolding.
-#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
+#[cfg(not(any(
+    alloc_frugal,
+    embedded_surface,
+    feature = "tablet",
+    feature = "mobile",
+    feature = "harmony",
+    target_env = "ohos"
+)))]
 use crate::compat::atomic::{AtomicBool, Ordering};
 
 /// A loop that ticks until it is asked to stop.
-#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
+#[cfg(not(any(
+    alloc_frugal,
+    embedded_surface,
+    feature = "tablet",
+    feature = "mobile",
+    feature = "harmony",
+    target_env = "ohos"
+)))]
 struct LoopingPlatform {
     /// Set by the loop thread once its first frame has been driven.
     ticking: AtomicBool,
@@ -685,14 +699,28 @@ struct LoopingPlatform {
     running: AtomicBool,
 }
 
-#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
+#[cfg(not(any(
+    alloc_frugal,
+    embedded_surface,
+    feature = "tablet",
+    feature = "mobile",
+    feature = "harmony",
+    target_env = "ohos"
+)))]
 impl LoopingPlatform {
     const fn new() -> Self {
         Self { ticking: AtomicBool::new(false), running: AtomicBool::new(false) }
     }
 }
 
-#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
+#[cfg(not(any(
+    alloc_frugal,
+    embedded_surface,
+    feature = "tablet",
+    feature = "mobile",
+    feature = "harmony",
+    target_env = "ohos"
+)))]
 impl Platform for LoopingPlatform {
     fn as_any(&self) -> &dyn core::any::Any {
         self
@@ -731,7 +759,14 @@ impl Platform for LoopingPlatform {
 /// (see [`crate::platform::stop::TEST_SEAM_SERIAL`]) so that the stop flag's own unit tests take
 /// the **same** lock; a per-module guard left them able to leave a pending request behind, which
 /// ended this test's loop at its first frame.
-#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
+#[cfg(not(any(
+    alloc_frugal,
+    embedded_surface,
+    feature = "tablet",
+    feature = "mobile",
+    feature = "harmony",
+    target_env = "ohos"
+)))]
 fn loop_seam_serial_guard() -> std::sync::MutexGuard<'static, ()> {
     crate::platform::stop::TEST_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -765,9 +800,21 @@ fn loop_seam_serial_guard() -> std::sync::MutexGuard<'static, ()> {
 /// correctly, because the loop *it* drives is its own — so no request is recorded and the staged
 /// loop is never signalled. Rather than sniff a backend name, the profiles that resolve to a
 /// state/stub default are named: `mini` (`alloc_frugal`), `embedded` (`embedded_surface`),
-/// `tablet` and `mobile` build no native shell. `desktop` stages it, and so does
-/// `examples/probe_cross_thread_quit.rs` on a live GTK session.
-#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
+/// `tablet` and `mobile` build no native shell, and `harmony` (or an OpenHarmony target) installs
+/// `HarmonyPlatform` on **every** host — its state backend stops its own loop from any thread, so
+/// it answers `true` at that middle step exactly like the two profiles above. Without the
+/// `harmony` exclusion this test ran under `--features full` on a desktop host, `crate::platform::
+/// quit()` stopped the *harmony* backend instead of the staged one, and the staged loop spun
+/// forever — which then stole the process-wide trigger queue from `widget::runtime`'s frame tests.
+/// `desktop` stages it, and so does `examples/probe_cross_thread_quit.rs` on a live GTK session.
+#[cfg(not(any(
+    alloc_frugal,
+    embedded_surface,
+    feature = "tablet",
+    feature = "mobile",
+    feature = "harmony",
+    target_env = "ohos"
+)))]
 #[test]
 fn a_request_from_another_thread_ends_a_running_loop() {
     use std::sync::mpsc;
@@ -831,7 +878,14 @@ fn a_request_from_another_thread_ends_a_running_loop() {
 ///
 /// Gated with [`a_request_from_another_thread_ends_a_running_loop`]: it stages the same
 /// \"process-default backend records the request\" step.
-#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
+#[cfg(not(any(
+    alloc_frugal,
+    embedded_surface,
+    feature = "tablet",
+    feature = "mobile",
+    feature = "harmony",
+    target_env = "ohos"
+)))]
 #[test]
 fn work_scheduled_from_another_thread_runs_on_the_loops_thread() {
     use std::sync::atomic::AtomicU64;
@@ -911,7 +965,14 @@ fn work_scheduled_from_another_thread_runs_on_the_loops_thread() {
 ///
 /// `ThreadId` itself is not comparable across allocations by value in a `static`, and the tests
 /// above only need "same thread or not".
-#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
+#[cfg(not(any(
+    alloc_frugal,
+    embedded_surface,
+    feature = "tablet",
+    feature = "mobile",
+    feature = "harmony",
+    target_env = "ohos"
+)))]
 fn thread_id_as_u64() -> u64 {
     // `ThreadId`'s `Debug` form is the only stable accessor (`as_u64` is unstable), and it is
     // unique per thread for the process's lifetime, which is all this comparison needs.

@@ -496,14 +496,30 @@ pub(crate) struct SectionZoneKey {
 }
 
 /// A zone table cached from the paint pass.
+///
+/// The two string buffers are part of the cache, not locals of the measurement, because the
+/// measurement runs on **every** draw: it is what produces the key that decides whether the table
+/// needs rebuilding. Two fresh `String`s per call were therefore two allocations per frame —
+/// measured as `date_edit` allocating 8 times over four steady-state frames by
+/// `tests/key_normalization_allocations.rs`. `clear()` keeps the capacity, so from the second frame
+/// on they are free.
 pub(crate) struct SectionZoneCache<const N: usize> {
     pub(crate) key: Option<SectionZoneKey>,
     pub(crate) zones: [Rect; N],
+    /// Holds one token's rendered text while it is measured.
+    pub(crate) scratch: String,
+    /// Holds the literal run between two tokens while it is measured.
+    pub(crate) literal: String,
 }
 
 impl<const N: usize> Default for SectionZoneCache<N> {
     fn default() -> Self {
-        Self { key: None, zones: [Rect::new(0, 0, 0, 0); N] }
+        Self {
+            key: None,
+            zones: [Rect::new(0, 0, 0, 0); N],
+            scratch: String::new(),
+            literal: String::new(),
+        }
     }
 }
 
@@ -556,15 +572,17 @@ pub(crate) struct SectionZoneRequest<'a> {
 pub(crate) fn measure_pattern_zones<const N: usize>(
     context: &RenderContext,
     request: SectionZoneRequest<'_>,
+    cache: &mut SectionZoneCache<N>,
     mut render: impl FnMut(&str, RunComponent, &mut String) -> bool,
     slot_of: impl Fn(RunComponent) -> Option<usize>,
-) -> ([Rect; N], SectionZoneKey) {
+) {
     let SectionZoneRequest { rect, run_width, trailing, pattern, font, alignment, fallback } =
         request;
     let mut zones = [fallback; N];
     let mut widths = [0u32; 8];
-    let mut scratch = String::new();
-    let mut literal = String::new();
+    // Borrowed from the cache so the two buffers survive between frames; see
+    // [`SectionZoneCache`] for why they are not locals.
+    let SectionZoneCache { scratch, literal, key: cache_key, zones: cached_zones } = cache;
     let mut cursor: i32 = 0;
 
     let mut rest = pattern;
@@ -579,7 +597,7 @@ pub(crate) fn measure_pattern_zones<const N: usize>(
                         literal.clear();
                     }
                     scratch.clear();
-                    if render(token, component, &mut scratch) {
+                    if render(token, component, scratch) {
                         let width = context.measure_text(scratch.as_str(), font).width.max(1);
                         widths[component.index()] = width;
                         if let Some(slot) = slot_of(component) {
@@ -632,7 +650,11 @@ pub(crate) fn measure_pattern_zones<const N: usize>(
         font_family_hash: font_family_hash(font),
         widths,
     };
-    (zones, key)
+    if *cache_key == Some(key) {
+        return;
+    }
+    *cache_key = Some(key);
+    *cached_zones = zones;
 }
 
 /// The allocating wrapper around [`format_with_pattern_into`], kept for `size_hint` and the
@@ -1326,7 +1348,7 @@ impl DateEdit {
         let alignment = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         // A section the pattern does not draw has no target: a zero-width box at the run's end.
         let fallback = Rect::new(rect.x + 6 + available as i32, rect.y, 0, rect.height);
-        let (zones, key) = measure_pattern_zones(
+        measure_pattern_zones(
             context,
             SectionZoneRequest {
                 rect,
@@ -1337,6 +1359,7 @@ impl DateEdit {
                 alignment,
                 fallback,
             },
+            &mut self.section_zone_cache.borrow_mut(),
             |token, _component, out| format_with_pattern_into(token, components, out),
             |component| match component {
                 RunComponent::Year => Some(0),
@@ -1345,12 +1368,6 @@ impl DateEdit {
                 _ => None,
             },
         );
-        let mut cache = self.section_zone_cache.borrow_mut();
-        if cache.key == Some(key) {
-            return;
-        }
-        cache.key = Some(key);
-        cache.zones = zones;
     }
 
     /// The section containing `pos`, when the point is on the value text.

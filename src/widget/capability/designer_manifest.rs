@@ -1353,10 +1353,23 @@ fn manifest_default_matches_kind(value: &CapabilityValue, kind: PropertyValueKin
         }
         PropertyValueKind::IconSpec => matches!(value, CapabilityValue::IconSpec(_)),
         PropertyValueKind::Records => matches!(value, CapabilityValue::Records(_)),
+        // `StringList` also carries the two-dimensional list the vocabulary has no kind for
+        // (`chart_data_table.rows`, `axis_picker.edges`' `[edge, label, auto_range]` triples), so an
+        // element is a string or one row of scalar cells. A bare number is still refused.
         PropertyValueKind::StringList => matches!(
             value,
             CapabilityValue::Tuple(items)
-                if items.iter().all(|item| matches!(item, CapabilityValue::String(_)))
+                if items.iter().all(|item| match item {
+                    CapabilityValue::String(_) => true,
+                    CapabilityValue::Tuple(row) => row.iter().all(|cell| !matches!(
+                        cell,
+                        CapabilityValue::Null
+                            | CapabilityValue::Tuple(_)
+                            | CapabilityValue::Records(_)
+                            | CapabilityValue::IconSpec(_)
+                    )),
+                    _ => false,
+                })
         ),
         PropertyValueKind::NumberList => matches!(
             value,

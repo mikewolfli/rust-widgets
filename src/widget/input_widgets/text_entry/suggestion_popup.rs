@@ -1171,7 +1171,11 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
         popup.highlight_changed.connect_ref({
             let seen = Arc::clone(&seen);
-            move |index: &usize| seen.lock().unwrap().push(*index)
+            // Routed through `crate::compat::lock` rather than `.lock().unwrap()`: under
+            // `alloc_frugal` the mutex is `spin::Mutex`, whose `lock()` returns the guard directly
+            // and has no `unwrap`. The helper is the profile-neutral spelling the rest of this test
+            // already uses.
+            move |index: &usize| lock(&seen).push(*index)
         });
 
         // A new, shorter row set clamps row 3 to row 1 and says so.

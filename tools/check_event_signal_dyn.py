@@ -143,7 +143,7 @@ CONVERTED: dict[str, str] = {
     "fab": "src/widget/overlay_widgets/fab.rs",
     "file_dialog": "src/widget/dialog/file_dialog.rs",
     "filter_row": "src/widget/companions/filter_row.rs",
-    "find_bar": "src/widget/special_widgets/markdown_editor/find.rs",
+    "find_bar": "src/widget/special_widgets/editor/companions/find_bar.rs",
     "find_replace_dialog": "src/widget/dialog/find_replace_dialog.rs",
     "floating_label": "src/widget/display_widgets/floating_label.rs",
     "font_combo_box": "src/widget/input_widgets/font_combo_box.rs",

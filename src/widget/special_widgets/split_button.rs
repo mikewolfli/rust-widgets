@@ -1527,13 +1527,23 @@ mod tests {
     /// `handle_event` returns before the dismissal arms once the control is disabled, while the
     /// menu flag, the popup grab and `contains_point` all stayed live — so the popup could never
     /// be dismissed for the rest of the disabled period.
+    ///
+    /// # Why the probe is the **last** row
+    ///
+    /// The first row sits 4 px below the face. On a touch profile the control's own hit area is
+    /// widened to the recommended touch target (`touch_target` 44x44 for a 160x28 face, so it
+    /// reaches 8 px past the face's bottom edge), and `contains_point` there answers `true` because
+    /// of the button rather than because of the menu — measured: this assertion failed on `tablet`
+    /// and `mobile` only, while the menu itself was already closed. A point inside the last row is
+    /// outside any touch expansion, so the only thing that can claim it is the drop-down, which is
+    /// exactly the claim being released.
     #[test]
     fn disabling_closes_the_open_menu_and_drops_its_claim_on_the_pointer() {
         let mut split = SplitButton::new("Run", Rect::new(0, 0, 160, 28));
         split.set_actions(sample_actions());
         split.open_menu();
         let menu = split.menu_rect();
-        let row = Point::new(menu.x + 4, menu.y + 4);
+        let row = Point::new(menu.x + 4, menu.y + menu.height as i32 - 4);
         assert!(split.has_open_popup());
         assert!(split.contains_point(row));
 

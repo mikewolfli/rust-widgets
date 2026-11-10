@@ -334,18 +334,27 @@ impl Draw for GridFindBar {
             *cache = Some((self.query.clone(), text));
         }
         let label = cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
+        let text_box = Rect::new(rect.x + 6, rect.y, rect.width.saturating_sub(12), rect.height);
         context.draw_text_fitted_ellipsis(
-            Rect::new(rect.x + 6, rect.y, rect.width.saturating_sub(12), rect.height),
+            text_box,
             label,
             font,
             if query_empty { ink.with_alpha(140) } else { ink },
             HorizontalAlignment::Left,
         );
         // The uncommitted IME composition is painted after the query with an underline, so a
-        // CJK composition is visible before it is confirmed.
+        // CJK composition is visible before it is confirmed. The anchor and the run are both
+        // bounded by the query's own text box: `rect.x + 6 + query_width` ran past the bar for a
+        // query longer than it, and the parent's clip then erased the composition the user was
+        // still typing.
         if !self.preedit.is_empty() {
-            let preedit_x = rect.x + 6 + context.measure_text(&self.query, font).width as i32;
+            let query_width = context.measure_text(&self.query, font).width as i32;
+            let preedit_x = crate::widget::text_utils::composition_x(query_width, text_box);
             let line = context.text_line(rect, font);
+            let preedit_width = (context.measure_text(&self.preedit, font).width as i32)
+                .min(text_box.right() - preedit_x)
+                .max(0);
+            context.push_clip(text_box.x, text_box.y, text_box.width, text_box.height);
             context.draw_text(
                 Point::new(preedit_x, line.y),
                 &self.preedit,
@@ -353,13 +362,13 @@ impl Draw for GridFindBar {
                 ink,
                 HorizontalAlignment::Left,
             );
-            let preedit_width = context.measure_text(&self.preedit, font).width as i32;
             let underline_y = line.y + line.height as i32 - 1;
             context.draw_line(
                 Point::new(preedit_x, underline_y),
                 Point::new(preedit_x + preedit_width, underline_y),
                 ink,
             );
+            context.pop_clip();
         }
     }
 }

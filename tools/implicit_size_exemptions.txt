@@ -271,7 +271,8 @@ crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs TileLoader b
 crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs ZoomControl backlog
 crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs ScaleBar backlog
 crates/rust-widgets-suites/src/maps/map_view/map_view_companions.rs Compass backlog
-src/widget/special_widgets/markdown_editor/find.rs FindBar backlog
+src/widget/special_widgets/editor/companions/find_bar.rs FindBar backlog
+src/widget/companions/tree_find_bar.rs TreeFindBar backlog
 src/widget/special_widgets/markdown_editor/outline.rs MarkdownOutlinePanel backlog
 src/widget/special_widgets/markdown_toolbar.rs MarkdownToolbar backlog
 src/widget/view_widgets/data_grid/column_chooser.rs ColumnChooser backlog
@@ -294,6 +295,9 @@ src/widget/container_widgets/dock_area_layout.rs DockAreaLayout permanent
 src/widget/view_widgets/table_widget/widget.rs <free> permanent
 # A drawing surface has no content to measure; the host places it.
 src/widget/special_widgets/canvas/widget.rs Canvas permanent
+# An avatar is a disc whose diameter *is* its `size` state: the hint, the painted disc and the
+# `size` property are the same number, so there is nothing to measure (the swatch shape).
+src/widget/misc_widgets/avatar.rs Avatar permanent
 src/widget/view_widgets/virtual_table/widget.rs VirtualTable permanent
 crates/rust-widgets-suites/src/devtools/diff_viewer/file_list.rs DiffFileList backlog
 crates/rust-widgets-suites/src/devtools/diff_viewer/viewer.rs DiffViewer backlog

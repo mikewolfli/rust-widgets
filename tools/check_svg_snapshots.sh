@@ -89,18 +89,7 @@ echo "[2/5] regenerate every snapshot in place"
 # build without the icon data draws — a picture that is current for nobody, since no caller gets
 # `desktop` by itself without also asking for it. The gate's own contract is "what a reviewer
 # sees is what ships", so the exporter runs what ships.
-DEFAULT_FEATURES="$("$PYTHON" - <<'PY'
-import re, pathlib
-src = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
-match = re.search(r"^default\s*=\s*\[(.*?)\]", src, re.MULTILINE | re.DOTALL)
-names = re.findall(r'"([^"]+)"', match.group(1)) if match else []
-# A device profile is mutually exclusive and `default` names exactly one; the rest are carrying
-# features (`icons`). Keeping only the first profile avoids passing two at once.
-profiles = ["desktop", "tablet", "mobile", "embedded", "mini"]
-chosen = next((n for n in names if n in profiles), "desktop")
-print(",".join([chosen] + [n for n in names if n not in profiles]))
-PY
-)"
+DEFAULT_FEATURES="$("$PYTHON" tools/svg_snapshot_check.py default-features)"
 echo "        exporting with --features $DEFAULT_FEATURES (the manifest's \`default\`)"
 if ! rw_cargo_cached "$STEP_BUDGET" run \
     --no-default-features --features "$DEFAULT_FEATURES" \
@@ -161,23 +150,11 @@ print(len(re.findall(r"canonical_name:\s*\x22", src)))
 # and the failure mode of forgetting is the one this check exists to catch — a snapshot file that
 # nothing accounts for. Reading the table means "which files exist" and "which states are declared"
 # are the same fact, so adding an appearance cannot leave this gate asserting a stale total.
-EXTRAS="$("$PYTHON" - <<'PY'
-import pathlib, re
-src = pathlib.Path("examples/export_control_svgs.rs").read_text(encoding="utf-8")
-match = re.search(r"EXTRA_APPEARANCES[^=]*=\s*&\[(.*?)\];", src, re.DOTALL)
-print(0 if match is None else len(re.findall(r"\(\s*\x22[^\x22]+\x22\s*,", match.group(1))))
-PY
-)"
+EXTRAS="$("$PYTHON" tools/svg_snapshot_check.py extras)"
 # The companion pairings are read from the exporter's own `PAIRS` table for the same reason:
 # a pair is two files, and a number written here could drift from the table that declares
 # them. A missing pair would otherwise be silently subtracted from an expected total.
-PAIRS="$("$PYTHON" - <<'PY'
-import pathlib, re
-src = pathlib.Path("examples/export_control_svgs.rs").read_text(encoding="utf-8")
-match = re.search(r"PAIRS[^=]*=\s*&\[(.*?)\];", src, re.DOTALL)
-print(0 if match is None else len(re.findall(r"\(\s*\x22[^\x22]+\x22\s*,", match.group(1))))
-PY
-)"
+PAIRS="$("$PYTHON" tools/svg_snapshot_check.py pairs)"
 COMMITTED="$(find "$SNAPSHOT_DIR" -maxdepth 1 -name '*.svg' | wc -l)"
 # The icon sheets are counted separately, because they are a different *kind* of file: they
 # do not come from the control registry, so folding them into `CONTROLS * 2` would make the
@@ -199,63 +176,7 @@ fi
 echo "  PASS  $CONTROLS controls x 2 appearances + $EXTRAS extra x 2 + $PAIRS pairs x 2 + $SHEETS icon sheet(s) = $COMMITTED files"
 
 echo "[3b/5] every snapshot contains content, not just a skeleton"
-EMPTY="$("$PYTHON" - <<'PY'
-import pathlib, re
-
-# One drawing element is enough to satisfy "not empty", but it is not enough to be a
-# **reviewable** control: a bare frame plus one rect was the "light-board" class the
-# survey (issue §16.1/§16.5) identified. The floor is therefore three elements, with an
-# explicit whitelist for controls whose content *is* a single shape or a single text run.
-DRAWING = re.compile(r"<(?:rect|circle|line|path|polygon|polyline|text|ellipse|image)\b")
-SHAPE_ONLY = {
-    # Issue §16.5 A1 residuals: a line, an icon, a label, an empty window or a single
-    # arc *is* the whole of these controls; asking for more would demand invented content.
-    "action", "avatar", "command_link", "divider", "frame", "icon", "label",
-    "line", "progress_circle", "window",
-    # An image view's content *is* one raster: the snapshot carries the decoded pixels as a
-    # single `<image>` element, so two elements (frame + raster) is the whole of the control.
-    "image_view",
-    # An icon's extra appearance is still one icon.
-    "icon_info",
-    # Skeleton placeholders are one shape by definition; the extra appearances prove the
-    # other two shapes exist rather than adding a second element.
-    "skeleton_loader", "skeleton_loader_circle",
-    # A transparent swipe wrapper's content is its child label; the wrapper itself paints
-    # no chrome until it is swiped.
-    "swipe_to_dismiss",
-}
-# Content that is a **tree child** is not part of a single control Draw stream. These four
-# were blank after C2-M2 retired the registry path that used to paint the child inline, which is
-# the "looks degraded" regression a reviewer sees in control.md. The exporter mounts the child
-# explicitly now (compose_container_preview in examples/export_control_svgs.rs), so a name
-# here without any text means that arm was lost again. Keep the two lists in step.
-# NOTE: no apostrophes in this block. It lives inside a command substitution, and macOS bash
-# 3.2 parses quote characters there even though the heredoc delimiter is quoted, so a possessive
-# form would break the whole script with an unexpected-EOF quote error.
-COMPOSITE_CONTENT = {"splitter", "stacked_widget", "scroll_area", "mdi_area"}
-bad = []
-for path in sorted(pathlib.Path("snapshots/svg").glob("*.svg")):
-    text = path.read_text(encoding="utf-8")
-    stem = path.stem.removesuffix(".light")
-    count = len(DRAWING.findall(text))
-    if "<svg" not in text:
-        bad.append(f"{path}: no <svg> element")
-    elif count == 0:
-        bad.append(f"{path}: an empty skeleton with no drawing element")
-    elif count < 3 and stem not in SHAPE_ONLY:
-        bad.append(
-            f"{path}: {count} drawing element(s); a reviewable control needs 3 "
-            "unless it is in the shape-only whitelist"
-        )
-    if stem in COMPOSITE_CONTENT and 'data-text="1"' not in text:
-        bad.append(
-            f"{path}: a composite container has no child text; its sample content was lost "
-            "(see compose_container_preview)"
-        )
-if bad:
-    print("\n".join(bad))
-PY
-)"
+EMPTY="$("$PYTHON" tools/svg_snapshot_check.py empty)"
 if [[ -n "$EMPTY" ]]; then
     echo "  FAIL  these snapshots are not reviewable:"
     printf '%s\n' "$EMPTY"
@@ -264,95 +185,7 @@ fi
 echo "  PASS  every snapshot has content (>=3 elements, or a documented shape-only control)"
 
 echo "[4/5] the appearances differ for every control, or the control is recorded as exempt"
-SAME="$("$PYTHON" - <<'PY'
-# A control whose two appearances render identically is theme-blind. That is the P3
-# judgement `tools/check_control_rendering.sh` already makes, with the same two exemption
-# tables (data colours and recorded known-blind controls), so this step applies the SAME
-# tables rather than inventing a third policy: an unrecorded control that renders the
-# same in both files must be a *new* regression, and a *recorded* one must not be
-# reported twice or the two gates would disagree about the same fact.
-#
-# The reason this is repeated here at all is that it is a different *measurement* of the
-# same property: P3 compares dominant pixel colours after a real render, this compares the
-# emitted SVG vector stream. The exporter bug this layer first shipped with (§ the header)
-# was invisible to P3 — the census applies the theme itself, so it saw the colours change
-# while the snapshots did not.
-import pathlib
-
-# The two exemption tables, read the same way the census test reads them: the first
-# whitespace-separated field of each non-comment line.
-def exempted(path):
-    names = set()
-    p = pathlib.Path(path)
-    if not p.exists():
-        return names
-    for line in p.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        names.add(stripped.split()[0])
-    return names
-
-EXEMPT = exempted("tools/control_color_exemptions.txt") | exempted(
-    "tools/control_surface_coincidence_exemptions.txt")
-# The recorded known-blind list lives in the census test, because it is a to-do list that
-# must shrink as the controls are fixed. Parsed rather than duplicated so the two cannot
-# disagree about what is still outstanding.
-import re
-census_src = pathlib.Path("tests/control_rendering_census_test.rs").read_text(encoding="utf-8")
-match = re.search(r"const KNOWN_THEME_BLIND: &\[&str\] = &\[(.*?)\];", census_src, re.S)
-KNOWN = set(re.findall(r'"([a-z0-9_]+)"', match.group(1))) if match else set()
-
-# An empty exemption set would silently pass everything, which is the vacuous-gate
-# failure mode: refuse to report success on a table that did not load.
-if not EXEMPT:
-    raise SystemExit("the exemption table could not be read, so this step cannot judge")
-
-same = []
-# The extra appearances are single-appearance by design: they exist to show a *state* the two
-# default files cannot, and rendering each one in both themes would double the set for a question
-# the default pair already answers. They are therefore skipped rather than reported as "no light
-# companion", which is a real defect for a control and a category error for a state file.
-#
-# Derived from the exporter table, not from the file name: a name pattern like `*_checked`
-# would silently absorb a future control that happened to end that way.
-extra_state = set()
-exporter = pathlib.Path("examples/export_control_svgs.rs")
-if exporter.exists():
-    match_extra = re.search(r"EXTRA_APPEARANCES[^=]*=\s*&\[(.*?)\];", exporter.read_text(encoding="utf-8"), re.S)
-    if match_extra:
-        pattern = r"\(\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\s*\)"
-        for control, suffix, _ in re.findall(pattern, match_extra.group(1)):
-            extra_state.add(f"{control}{suffix}")
-
-for path in sorted(pathlib.Path("snapshots/svg").glob("*.svg")):
-    if path.name.endswith(".light.svg"):
-        continue
-    name = path.name[: -len(".svg")]
-    if name in extra_state:
-        continue
-    # The icon sheets are a pair by file name, but they are not a *control*: `control.md`
-    # does not list them and the theme-blind tables do not apply to them. Their pair is
-    # checked by `tests/icon_census_test.rs` and by the fact that step 3 regenerates both
-    # files from one run, so a sheet that stopped responding to the theme would show as a
-    # diff there. Skipping them here is what keeps this step judging controls only.
-    if name.startswith("icon_sheet"):
-        continue
-    light = path.with_name(path.name[: -len(".svg")] + ".light.svg")
-    if not light.exists():
-        same.append(f"{name}: no light companion")
-        continue
-    # The provenance comment names the appearance, so compare the drawing only. Comparing
-    # whole files would report "differs" for every control, comment and all.
-    def drawing(p):
-        return [line for line in p.read_text(encoding="utf-8").splitlines()
-                if not line.lstrip().startswith("<!--")]
-    if drawing(path) == drawing(light) and name not in EXEMPT and name not in KNOWN:
-        same.append(f"{name}: renders identically in light and dark, and is not exempt or recorded")
-if same:
-    print("\n".join(same))
-PY
-)"
+SAME="$("$PYTHON" tools/svg_snapshot_check.py same)"
 if [[ -n "$SAME" ]]; then
     echo "  FAIL  these controls do not respond to the theme, so their snapshot pair proves nothing:"
     printf '%s\n' "$SAME"

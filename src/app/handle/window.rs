@@ -498,7 +498,10 @@ impl WindowHandle {
     /// `Platform::supports_surfaces`), an off-UI-thread call, or an unknown
     /// parent. Callers must surface the error rather than showing a blank window.
     ///
+    /// The example's `CodeEditor` is behind `code-editor`, so the fence is gated on it.
+    ///
     /// ```no_run
+    /// # #[cfg(feature = "code-editor")] {
     /// use rust_widgets::app::{App, WidgetHandle};
     /// use rust_widgets::core::Rect;
     /// use rust_widgets::widget::special_widgets::code_editor::{CodeEditor, CodeEditorConfig};
@@ -512,6 +515,7 @@ impl WindowHandle {
     ///     .expect("backend must be able to mount widget surfaces");
     /// win.show();
     /// app.run();
+    /// # }
     /// ```
     pub fn mount_surface(
         &self,

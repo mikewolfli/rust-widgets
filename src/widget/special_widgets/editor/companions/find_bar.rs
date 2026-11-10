@@ -790,9 +790,24 @@ impl Draw for FindBar {
             HorizontalAlignment::Left,
         );
         // The uncommitted IME composition is drawn after the query with an underline, so a CJK
-        // composition is visible before it is confirmed.
+        // composition is visible before it is confirmed. Anchored on the **drawn** (elided) text, so
+        // it starts exactly where the visible query ends, and both the anchor and the run are
+        // bounded by the query's box rather than the whole band — an unbounded run covered the
+        // result counter and the toggles once the composition was longer than the space left.
         if matches!(self.focus, FindFocus::Query) && !self.preedit.is_empty() {
-            let preedit_x = text_rect.x + context.measure_text(&query_shown, font).width as i32;
+            let query_box = Rect::new(
+                text_rect.x,
+                text_rect.y,
+                (text_rect.width as i32 - counter_width - 8).max(1) as u32,
+                text_rect.height,
+            );
+            let painted = context.measure_text(&query_shown, font).width as i32;
+            let preedit_x = crate::widget::text_utils::composition_x(painted, query_box);
+            let preedit_width = (context.measure_text(&self.preedit, font).width as i32)
+                .min(query_box.right() - preedit_x)
+                .max(0);
+            let underline_y = text_rect.y + 7 + font.size().ceil().max(1.0) as i32;
+            context.push_clip(query_box.x, query_box.y, query_box.width, query_box.height);
             context.draw_text(
                 Point::new(preedit_x, text_rect.y + 7),
                 &self.preedit,
@@ -800,13 +815,12 @@ impl Draw for FindBar {
                 ink,
                 HorizontalAlignment::Left,
             );
-            let preedit_width = context.measure_text(&self.preedit, font).width as i32;
-            let underline_y = text_rect.y + 7 + font.size().ceil().max(1.0) as i32;
             context.draw_line(
                 Point::new(preedit_x, underline_y),
                 Point::new(preedit_x + preedit_width, underline_y),
                 ink,
             );
+            context.pop_clip();
         }
         context.draw_text(
             Point::new(
@@ -861,10 +875,16 @@ impl Draw for FindBar {
                     HorizontalAlignment::Left,
                 );
                 // The composition belongs to the focused field; the replacement row is the
-                // second one.
+                // second one. Same bounds as the query row: anchored on the drawn text and
+                // clipped to the field's own box.
                 if matches!(self.focus, FindFocus::Replace) && !self.preedit.is_empty() {
-                    let preedit_x =
-                        text_rect.x + context.measure_text(&replacement_shown, font).width as i32;
+                    let painted = context.measure_text(&replacement_shown, font).width as i32;
+                    let preedit_x = crate::widget::text_utils::composition_x(painted, text_rect);
+                    let preedit_width = (context.measure_text(&self.preedit, font).width as i32)
+                        .min(text_rect.right() - preedit_x)
+                        .max(0);
+                    let underline_y = text_rect.y + 7 + font.size().ceil().max(1.0) as i32;
+                    context.push_clip(text_rect.x, text_rect.y, text_rect.width, text_rect.height);
                     context.draw_text(
                         Point::new(preedit_x, text_rect.y + 7),
                         &self.preedit,
@@ -872,13 +892,12 @@ impl Draw for FindBar {
                         ink,
                         HorizontalAlignment::Left,
                     );
-                    let preedit_width = context.measure_text(&self.preedit, font).width as i32;
-                    let underline_y = text_rect.y + 7 + font.size().ceil().max(1.0) as i32;
                     context.draw_line(
                         Point::new(preedit_x, underline_y),
                         Point::new(preedit_x + preedit_width, underline_y),
                         ink,
                     );
+                    context.pop_clip();
                 }
             }
             // The two replacement actions are controls on the bar, so a reader never has to know

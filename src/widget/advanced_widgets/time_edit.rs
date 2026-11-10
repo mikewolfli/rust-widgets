@@ -521,7 +521,7 @@ impl TimeEdit {
         };
         // A section the pattern does not draw has no target: a zero-width box at the run's end.
         let fallback = Rect::new(rect.x + 6 + run_width as i32, rect.y, 0, rect.height);
-        let (zones, key) = super::date_edit::measure_pattern_zones(
+        super::date_edit::measure_pattern_zones(
             context,
             super::date_edit::SectionZoneRequest {
                 rect,
@@ -532,6 +532,7 @@ impl TimeEdit {
                 alignment,
                 fallback,
             },
+            &mut self.section_zone_cache.borrow_mut(),
             |token, _component, out| {
                 super::date_edit::format_with_pattern_into(token, components, out)
             },
@@ -544,12 +545,6 @@ impl TimeEdit {
                 _ => None,
             },
         );
-        let mut cache = self.section_zone_cache.borrow_mut();
-        if cache.key == Some(key) {
-            return;
-        }
-        cache.key = Some(key);
-        cache.zones = zones;
     }
 
     /// The section containing `pos`, when the point is on the value text.

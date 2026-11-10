@@ -106,14 +106,40 @@ def exemptions():
     return keys
 
 
+def is_test_module_file(text):
+    """Whether the file **is** a test module, declared by its own inner `#![cfg(... test ...)]`.
+
+    A module split into `tests.rs` is declared `#[cfg(test)] mod tests;` in its *parent*, which a
+    lexical scan of this file cannot see — so `production_lines` walked it as production code and
+    reported a test delegate's `size_hint` as a hand-rolled hint. The repo's convention is that such
+    a file says so itself (`src/widget/special_widgets/toast/tests.rs` carries the marker for
+    exactly this reason, and `tools/check_locking.sh` reads the same declaration), so this reads the
+    declaration rather than guessing from the file name.
+    """
+    for line in text:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("//"):
+            continue
+        # The first item or attribute decides: an inner attribute that gates on `test`.
+        return stripped.startswith("#![") and "cfg(" in stripped and "test" in stripped
+    return False
+
+
 def production_lines(path):
     """Returns [(line_number, text)] for lines outside a `mod tests` block.
 
     Test modules are excluded because a test that pins a size hint's value is the *fixture* for an
     assertion — it has to name the numbers it expects. The rule's subject is what a control claims
     at runtime, not what a test verifies about it.
+
+    Two spellings count: a `mod tests { .. }` block inside a production file, and a file that *is*
+    the test module (see [`is_test_module_file`]).
     """
     text = path.read_text(encoding="utf-8").splitlines()
+    if is_test_module_file(text):
+        return []
     out = []
     i = 0
     while i < len(text):

@@ -7,6 +7,16 @@
 //! environment variable: the library's unit tests run in parallel threads, so a `set_var` there
 //! would be observed by every concurrently running `apply` and the assertions would race. A
 //! separate binary gets a process of its own, which is also how a real designer shell sets it.
+//!
+//! # Why the file is gated as a whole
+//!
+//! `rust_widgets::designer` is `cfg(designer_tooling)` — `full_widgets` **and** the `designer`
+//! feature, because a `mini`/`embedded`/`tablet`/`mobile` build is the *target* of a generation, not
+//! its host (BLUE19 §5.3.4). This file had no inner gate, so `cargo test --features embedded` (a CI
+//! profile) did not skip it: the binary failed to compile with `could not find designer in
+//! rust_widgets`. Every sibling probe in this directory opens with the same `#![cfg(...)]` line, and
+//! this is the one that was missing it.
+#![cfg(designer_tooling)]
 
 use std::path::PathBuf;
 

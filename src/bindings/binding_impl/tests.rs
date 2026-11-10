@@ -680,6 +680,11 @@ fn c_abi_create_widget_of_kind_reaches_registered_controls() {
             ("toast_stack", ""),
             ("grid_table", ""),
         ] {
+            // The markdown editor is feature-gated (BLUE31 §1.5); a build without it has no such
+            // control to create, so the case belongs to builds that compile it.
+            if name == "markdown_editor" && !cfg!(feature = "markdown-editor") {
+                continue;
+            }
             let kind = c(name);
             let text = c("");
             let id = rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 100, 40);

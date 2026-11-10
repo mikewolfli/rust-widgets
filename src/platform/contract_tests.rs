@@ -27,9 +27,34 @@
 //! Point 1 is the important one: the failure this guards against is a backend that
 //! *pretends* to support a control and then silently does nothing, which would make
 //! an application's calls unobservable failures.
+//!
+//! # Why each test gets its own host
+//!
+//! [`host`] builds a **private** instance of the backend this build resolves to instead of using
+//! the process-global one. The global backend is a `OnceLock` shared by every test in the binary,
+//! and a host whose model is one window (`harmony`, `android`, `wasm`) answers `0` to a second live
+//! `create_window` rather than aliasing the first (BLUE28 B28.43). Sharing it therefore made these
+//! tests report "this host cannot open a window" whenever a sibling test — including one in
+//! `control_backend::custom`, which mounts a window widget through the host — already had one open.
+//! A private instance is the same backend type with an empty window table, so the assertions below
+//! keep their strength while no longer depending on what else ran first.
+//!
+//! [`Platform::supports_multiple_windows`] is still consulted by the one test that genuinely needs
+//! more than one live window.
 
 use crate::platform::types::WindowStateFlag;
-use crate::platform::{get_platform, Platform};
+use crate::platform::Platform;
+
+/// A private instance of the backend this host resolves to, initialised.
+///
+/// The point is the backend *type* the resolution selects, not the process singleton, so a fresh
+/// instance tests exactly the same code. See the module docs for the failure that made this
+/// necessary.
+fn host() -> Box<dyn Platform> {
+    let platform = crate::platform::runtime::fresh_native_platform();
+    platform.init();
+    platform
+}
 
 /// The kinds whose control methods a host may legitimately not implement.
 ///
@@ -59,8 +84,8 @@ fn requested_controls(platform: &dyn Platform) -> Vec<(&'static str, u64)> {
 /// catches: the app would believe a control exists, and nothing would ever appear.
 #[test]
 fn unsupported_controls_report_absence_rather_than_faking_success() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
 
     for (label, id) in requested_controls(platform) {
         // Whatever a backend returns, it must be internally consistent: an id of 0
@@ -106,8 +131,8 @@ fn unsupported_controls_report_absence_rather_than_faking_success() {
 /// which is strictly worse than the widget not appearing.
 #[test]
 fn requesting_unsupported_controls_never_panics() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
 
     for (_, id) in requested_controls(platform) {
         Platform::show_widget(platform, id);
@@ -129,8 +154,8 @@ fn requesting_unsupported_controls_never_panics() {
 /// mutators must be safe no-ops for the same reason.
 #[test]
 fn unknown_ids_are_reported_as_absent_not_as_state() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
 
     let unknown = 987_654_321u64;
     assert!(Platform::get_widget_text(platform, unknown).is_empty());
@@ -154,8 +179,8 @@ fn unknown_ids_are_reported_as_absent_not_as_state() {
 /// control in any code holding the old handle.
 #[test]
 fn destroyed_ids_are_not_reused() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
 
     let window = Platform::create_window(platform, "w", 0, 0, 320, 240);
     assert_ne!(window, 0, "{} must create a window", platform.backend_name());
@@ -179,8 +204,8 @@ fn destroyed_ids_are_not_reused() {
 /// depends on them.
 #[test]
 fn required_host_capabilities_remain_available() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
 
     assert!(!platform.backend_name().is_empty(), "a backend must name itself");
     assert!(platform.dpi_scale_factor() > 0.0, "DPI must be a positive scale factor");
@@ -196,8 +221,8 @@ fn required_host_capabilities_remain_available() {
 /// A window is not a control: window state must be refused for anything else.
 #[test]
 fn window_state_is_not_applied_to_non_windows() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
 
     let window = Platform::create_window(platform, "w", 0, 0, 320, 240);
     assert_ne!(window, 0);
@@ -218,8 +243,8 @@ fn window_state_is_not_applied_to_non_windows() {
 /// An id space that mixes windows and controls must stay consistent across churn.
 #[test]
 fn id_allocation_stays_consistent_across_churn() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
 
     let mut seen = std::collections::HashSet::new();
     for round in 0..8 {

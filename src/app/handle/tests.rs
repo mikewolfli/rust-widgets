@@ -572,7 +572,11 @@ fn returning_to_the_default_delivery_path_always_succeeds() {
 /// still receives the size it recorded, so the fields are not orphaned by a refactor.
 #[test]
 fn the_window_geometry_mirror_reaches_the_layout_path() {
-    let id = crate::platform::get_platform().create_window("probe", 10, 20, 400, 300);
+    // A private host instance: the process-global backend is shared by the whole test binary, and a
+    // one-window host would already have its slot taken by another test (see
+    // `crate::platform::contract_tests`).
+    let host = crate::platform::runtime::fresh_native_platform();
+    let id = host.create_window("probe", 10, 20, 400, 300);
     WindowHandle::record_created_geometry(id, 10, 20, 400, 300);
 
     let recorded = WINDOW_STATES
@@ -598,7 +602,9 @@ fn the_window_geometry_mirror_reaches_the_layout_path() {
 /// stop being consulted, whichever way that happens.
 #[test]
 fn the_window_position_mirror_is_read_by_center_on_screen() {
-    let id = crate::platform::get_platform().create_window("probe", 10, 20, 400, 300);
+    // See `the_window_geometry_mirror_reaches_the_layout_path` for why this uses a private host.
+    let host = crate::platform::runtime::fresh_native_platform();
+    let id = host.create_window("probe", 10, 20, 400, 300);
     WindowHandle::record_created_geometry(id, 10, 20, 400, 300);
     let window = WindowHandle::from_raw(id);
 
@@ -656,7 +662,9 @@ fn the_close_callback_fires_from_the_widget_close_signal() {
 /// `close()` with nothing registered must not panic.
 #[test]
 fn closing_a_window_without_a_close_callback_is_not_a_panic() {
-    let id = crate::platform::get_platform().create_window("probe", 0, 0, 320, 240);
+    // See `the_window_geometry_mirror_reaches_the_layout_path` for why this uses a private host.
+    let host = crate::platform::runtime::fresh_native_platform();
+    let id = host.create_window("probe", 0, 0, 320, 240);
     WindowHandle::from_raw(id).close();
 }
 

@@ -1,4 +1,19 @@
-#![cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
+#![cfg(all(
+    not(feature = "mini"),
+    not(target_arch = "wasm32"),
+    // The baselines in `snapshots/` are **outlines** (`M7.49 14.48L8.79…`), which only a vector
+    // face produces. A build with no `fonts-*` data feature draws the 8x8 1-bit fallback
+    // (`M0 3h1v1h-1z…`), so comparing it to these files compares two renderers rather than two
+    // builds of one — the baseline cannot be right for both. `embedded` is that build (its feature
+    // set carries no face), and it was failing all four snapshots for this reason alone.
+    //
+    // Gated on the face that supplies the **Latin** outlines every baseline uses. A profile with
+    // only a CJK face would still fall back to the 8x8 face for `OK` / `Hello`, so widening this
+    // to "any vector face" would only move the false failure to a different profile. A caller who
+    // wants snapshots on such a build regenerates the baselines with `UPDATE_SNAPSHOTS=1` and
+    // widens this line deliberately.
+    feature = "fonts-vector-latin"
+))]
 
 //! Snapshot/visual regression tests (BLUE11 R3.10).
 //!

@@ -36,6 +36,18 @@
 # `set_hide_delay`), and the constants are only their documented defaults. No transition reads them.
 src/widget/dialog/tooltip.rs    hover dwell timings with their own settable properties, not transitions
 
+# ──────────────────────────────���──────────────────────────────────────────────
+# This entry is a STALL DIAGNOSTIC threshold, not a transition.
+#
+# `trace_stall_if_enabled` prints the previous frame's ledger once when the host loop stalled, so a
+# "the window appeared frozen" reproduction can be closed without a profiler. `250 ms` is how long a
+# gap between two `drive_frame` calls has to be before the *diagnostic* treats it as a stall. Nothing
+# animates from it: no control has two states this duration moves between, and shortening it makes
+# the log chattier rather than the interface faster. Routing it through `theme.motion` would make
+# "the animation is fast" and "the stall log is eager" one setting, which is the conflation this
+# table exists to keep apart.
+src/widget/runtime/frame.rs    a frame-stall diagnostic threshold, not an interaction transition
+
 # ─────────────────────────────────────────────────────────────────────────────
 # This entry is a FRAME STEP, not a transition duration.
 #

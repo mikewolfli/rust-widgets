@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 //! TableWidget tests.
+
+// The module-level gate, so tooling that scans file text recognises this as a test module. The
+// parent declares `mod tests;` under `#[cfg(test)]`, which the compiler sees but a text scan of
+// this file does not — and a scan that cannot tell a test module from production code reports the
+// test delegate's `size_hint` as a hand-rolled hint (`tools/check_implicit_size_uses_metrics.sh`).
+// Same marker as `widget/capability/tests.rs` and `special_widgets/toast/tests.rs`.
+#![cfg(test)]
+
 use super::*;
 use crate::core::Point;
 use crate::event::types::EventHandler;

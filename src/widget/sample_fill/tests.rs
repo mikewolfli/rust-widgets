@@ -79,6 +79,30 @@ fn every_filled_name_downcasts_to_the_type_the_registry_builds() {
         claimed.len()
     );
     for name in claimed {
+        // A feature-gated control (the editors, BLUE31 §1.5) has an arm in the source but no
+        // entry in this build's registry, so there is nothing to downcast to. The skip is derived
+        // from the *same* gate the registration uses rather than from a hard list: a control that
+        // is missing from a build which does enable its feature still reaches the assertion below
+        // and fails, so a rename cannot hide behind this branch.
+        //
+        // `markdown_outline_panel` and `find_bar` are the two arms `apply` gates; the editors
+        // themselves have no fill arm of their own. Early `continue`s rather than a computed bool:
+        // each test is a `cfg!` literal in the build being compiled, and clippy folds a
+        // boolean-returning `if`/`else` of literals — the fold would drop the gate.
+        if name == "markdown_outline_panel" && !cfg!(feature = "markdown-editor") {
+            assert!(
+                factory.capability(name).is_none(),
+                "{name} is gated out of this build but still registered"
+            );
+            continue;
+        }
+        if name == "find_bar" && !cfg!(any(feature = "code-editor", feature = "markdown-editor")) {
+            assert!(
+                factory.capability(name).is_none(),
+                "{name} is gated out of this build but still registered"
+            );
+            continue;
+        }
         let Some(mut widget) = factory.create(name, crate::widget::census::CENSUS_RECT, "Sample")
         else {
             panic!("{name} is claimed as fillable but the factory cannot build it");

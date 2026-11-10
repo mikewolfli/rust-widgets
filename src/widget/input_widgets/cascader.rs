@@ -485,6 +485,9 @@ impl Cascader {
         self.options = options;
         self.expanded_path.clear();
         self.filter.clear();
+        // The pending composition belongs to the query that is being discarded; keeping it would
+        // paint an IME preview over the new tree's field.
+        self.preedit.clear();
         *self.display_cache.borrow_mut() = None;
         self.invalidate_level_rows();
         if !self.selected_path.is_empty() && self.resolve(&self.selected_path).is_none() {
@@ -662,6 +665,9 @@ impl Cascader {
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.base.id());
         self.filter.clear();
+        // A fresh open starts with no query and no composition, so a preview left from a previous
+        // session cannot re-appear in the field.
+        self.preedit.clear();
         self.scroll_offsets.clear();
         self.reveal_progress = 0.0;
         self.invalidate_level_rows();
@@ -681,6 +687,11 @@ impl Cascader {
         crate::widget::runtime::clear_popup_grab_for(self.base.id());
         self.expanded_path.clear();
         self.filter.clear();
+        // The field is about to show the selection again, so the composition that belonged to the
+        // query has to go with it. Without this the closed field painted the stale preview after
+        // the selection text — a ghost of text the user never committed (measured: `collapse`
+        // cleared `filter` only).
+        self.preedit.clear();
         self.invalidate_level_rows();
         self.base.request_redraw();
     }
@@ -756,6 +767,9 @@ impl Cascader {
         }
         self.filterable = filterable;
         self.filter.clear();
+        // The composition is only ever a preview of a query the field owns; with filtering off the
+        // field goes back to the selection, so the preview must go too.
+        self.preedit.clear();
         self.invalidate_level_rows();
         self.base.request_redraw();
     }
@@ -1111,6 +1125,9 @@ impl Cascader {
         self.expanded_path.truncate(level);
         self.expanded_path.push(option_index);
         self.filter.clear();
+        // Choosing moves the browsing to a new level, whose query is empty by definition; the
+        // composition that belonged to the previous level's query ends here as well.
+        self.preedit.clear();
         self.invalidate_level_rows();
 
         if is_leaf {
@@ -1541,10 +1558,19 @@ impl Cascader {
 
         // The uncommitted composition follows the query, underlined, so a CJK composition is
         // visible before it is confirmed (WC6-03).
-        if !self.preedit.is_empty() {
-            let max_x = rect.x + rect.width as i32 - 1;
+        //
+        // Gated on `filtering`, not only on `preedit` being non-empty: the composition *belongs to*
+        // the filtering mode, and every path that leaves that mode clears it (`collapse`,
+        // `expand`, `set_filterable`, `set_options`, and choosing a row). This is the second half
+        // of the same rule, so a future path that forgets cannot paint a preview over the
+        // selection — the failure the first half exists to prevent.
+        if filtering && !self.preedit.is_empty() {
+            // The query is painted *fitted*, so its painted end is at most `line_rect`'s right
+            // edge; the shared clamp is what states that, and it also keeps the composition from
+            // starting under the trailing chevron (a field-edge clamp did).
             let query_width = context.measure_text(display, &font).width as i32;
-            let preedit_x = (line_rect.x + query_width).min(max_x);
+            let preedit_x = crate::widget::text_utils::composition_x(query_width, line_rect);
+            let max_x = line_rect.right();
             let width = (context.measure_text(&self.preedit, &font).width as i32)
                 .min(max_x - preedit_x)
                 .max(0);
@@ -2546,6 +2572,158 @@ mod tests {
         c.set_filterable(true);
         c.handle_event(&Event::ime_preedit("2", 0));
         assert!(c.preedit.is_empty());
+    }
+
+    /// The field paints the **query** while a filterable list is open.
+    ///
+    /// # The defect this pins
+    ///
+    /// The filter narrowed the rows but the field kept painting the selected path: `filter` was
+    /// read by the row projection and never by the draw path, so a query the user typed appeared
+    /// nowhere on screen. An IME composition then had no text to sit after, which is why the two
+    /// halves of this item were one omission.
+    ///
+    /// # Why the difference must be confined to the field's band
+    ///
+    /// The query is chosen so it keeps **both** level-0 rows, so the overlay paints the same rows
+    /// and the same highlight as the frame before it. Every differing pixel therefore has to be in
+    /// the field: a frame-wide `assert_ne!` alone would also be satisfied by a narrower row set,
+    /// which is the *other* half of the filter and was never broken.
+    #[test]
+    fn the_field_paints_the_query_while_filtering() {
+        let size = Size::new(240, 180);
+        let mut c = cascader();
+        // A selection long enough that its text cannot be mistaken for the short query.
+        c.set_selected_path(vec![0, 0, 0, 0]);
+        c.set_filterable(true);
+        c.expand();
+        let selection_frame = render(&mut c, size);
+
+        c.handle_event(&Event::text_input("Province"));
+        assert_eq!(c.filter(), "Province");
+        assert_eq!(
+            c.level_visible_row_count(0),
+            2,
+            "the query keeps both rows, so the overlay is unchanged"
+        );
+        let query_frame = render(&mut c, size);
+
+        let field_bytes = 32 * size.width as usize * 4;
+        let differences: Vec<usize> = selection_frame
+            .iter()
+            .zip(query_frame.iter())
+            .enumerate()
+            .filter(|(_, (before, after))| before != after)
+            .map(|(index, _)| index)
+            .collect();
+        assert!(!differences.is_empty(), "the field must show the query, not the selection");
+        assert!(
+            differences.iter().all(|index| *index < field_bytes),
+            "only the field may differ, because the rows the query keeps are unchanged: {differences:?}"
+        );
+    }
+
+    /// The smallest byte index at which two frames of the same size differ.
+    ///
+    /// Row-major order, so the first difference is the topmost differing row, at its leftmost
+    /// differing column.
+    fn first_difference(before: &[u8], after: &[u8]) -> Option<usize> {
+        before.iter().zip(after.iter()).position(|(left, right)| left != right)
+    }
+
+    /// An uncommitted composition is anchored **after the query**, not at the field's left edge.
+    ///
+    /// # Why the anchor needs its own assertion
+    ///
+    /// "The preview is painted" and "it is painted where the query ends" are different claims: a
+    /// preview drawn at the field's left edge would sit on top of the query and still be visible.
+    /// The comparison is between two frames that differ **only** by the composition — one with an
+    /// empty query, one with a query — so the first differing pixel is the composition's own first
+    /// lit pixel, and the assertion is that it moved right by exactly the query's advance.
+    #[test]
+    fn a_composition_is_drawn_after_the_query_it_belongs_to() {
+        let size = Size::new(240, 180);
+
+        // With no query, the composition sits at the field's text origin.
+        let mut plain = cascader();
+        plain.set_filterable(true);
+        plain.expand();
+        let plain_bare = render(&mut plain, size);
+        plain.handle_event(&Event::ime_preedit("2", 0));
+        let plain_composition = render(&mut plain, size);
+
+        // With a query, the same composition sits after it. "Pro" keeps both level-0 rows, so
+        // the two frames below differ by the composition alone.
+        let mut filtered = cascader();
+        filtered.set_filterable(true);
+        filtered.expand();
+        filtered.handle_event(&Event::text_input("Pro"));
+        let filtered_bare = render(&mut filtered, size);
+        filtered.handle_event(&Event::ime_preedit("2", 0));
+        let filtered_composition = render(&mut filtered, size);
+
+        let at_origin = first_difference(&plain_bare, &plain_composition)
+            .expect("the composition must be painted");
+        let after_query = first_difference(&filtered_bare, &filtered_composition)
+            .expect("the composition must be painted");
+        assert!(
+            after_query > at_origin,
+            "the composition must follow the query's advance rather than the field's left edge: \
+             at the origin it starts at byte {at_origin}, after the query at byte {after_query}"
+        );
+    }
+
+    /// Leaving the filtering mode ends the composition with the query it belonged to.
+    ///
+    /// # The ghost this pins
+    ///
+    /// `collapse` cleared `filter` but not `preedit`, so the closed field painted the stale preview
+    /// after the selection text — text the user never committed and could not delete. Every path
+    /// that leaves the mode now clears it, and `draw_field` additionally gates the preview on the
+    /// mode itself, so the two halves of the rule cannot drift apart again.
+    #[test]
+    fn leaving_the_filtering_mode_drops_the_pending_composition() {
+        let mut c = cascader();
+        c.set_filterable(true);
+        c.expand();
+        c.handle_event(&Event::ime_preedit("2", 0));
+        assert_eq!(c.preedit, "2");
+
+        // Collapse (Escape / outside press).
+        c.collapse();
+        assert!(c.preedit.is_empty(), "the preview ends with the query it belonged to");
+
+        // Paint: a field that once had a preview must be byte-identical to one that never did.
+        let mut never = cascader();
+        never.set_filterable(true);
+        never.expand();
+        never.collapse();
+        assert_eq!(
+            render(&mut c, Size::new(200, 32)),
+            render(&mut never, Size::new(200, 32)),
+            "a collapsed field must not keep a ghost of the composition"
+        );
+
+        // Turning filtering off is the other way out of the mode.
+        c.expand();
+        c.handle_event(&Event::ime_preedit("3", 0));
+        assert_eq!(c.preedit, "3");
+        c.set_filterable(false);
+        assert!(c.preedit.is_empty(), "filtering off takes the preview with it");
+    }
+
+    /// Choosing a row moves the browsing to a new level, whose query is empty by definition.
+    #[test]
+    fn choosing_a_row_drops_the_pending_composition() {
+        let mut c = cascader();
+        c.set_filterable(true);
+        c.expand();
+        c.handle_event(&Event::ime_preedit("2", 0));
+
+        let level = c.level_rect(0);
+        c.handle_event(&Event::mouse_press(level.x + 10, level.y + 10, 1));
+        assert!(c.preedit.is_empty(), "the new level has no query, so it has no composition");
+        assert_eq!(c.filter(), "");
     }
 
     #[test]

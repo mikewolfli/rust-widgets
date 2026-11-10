@@ -945,9 +945,14 @@ mod tests {
         // report 0 rather than hand back a handle that would paint into the same canvas.
         assert_eq!(p.create_window("other", 0, 0, 10, 10), 0);
         assert!(!p.supports_multiple_windows());
-        // A child of the real window is still a widget the backend knows and can repaint.
-        let child = p.create_button(window, "child", 0, 0, 10, 10);
-        assert!(p.invalidate_surface(child), "a child the backend knows can be repainted");
+        // # Why there is no child id to repaint
+        //
+        // This block used to create one with `create_button` and assert it was repaintable. Since
+        // BLUE15 Phase B-1 every backend answers `0` for control creation — the library paints its
+        // own controls — so a child is not an id the backend knows, and that assertion had become a
+        // test of a contract that no longer exists. The property it protected is kept by the window
+        // assertion above: the library repaints the **window** to reveal the children drawn into
+        // its frame, which is what [`Platform::invalidate_surface`] documents.
 
         // A widget this backend never made is refused rather than recorded.
         assert!(!p.mount_surface(window, 9_999, rect));

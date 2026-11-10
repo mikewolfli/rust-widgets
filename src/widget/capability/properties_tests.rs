@@ -1801,6 +1801,17 @@ fn editable_text_properties_are_marked_as_user_input() {
         "chip_input",
         "floating_label",
     ] {
+        // The two editors are feature-gated (BLUE31 §1.5): a build without them has no such
+        // control, so demanding its schema would fail on a legitimate configuration.
+        if matches!(control, "markdown_editor" | "code_editor") {
+            let feature_on = match control {
+                "markdown_editor" => cfg!(feature = "markdown-editor"),
+                _ => cfg!(feature = "code-editor"),
+            };
+            if !feature_on {
+                continue;
+            }
+        }
         let schema = factory
             .property_schema(control, "text")
             .unwrap_or_else(|error| panic!("{control} must publish `text`: {error:?}"));

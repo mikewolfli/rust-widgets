@@ -740,6 +740,28 @@ mod tests {
     use super::*;
     use crate::core::Point;
 
+    /// The panel behind the cards is this container's chrome, so it must follow the theme.
+    ///
+    /// The cards themselves are the caller's colours and are data, which is why the census
+    /// records this control in `tools/control_color_exemptions.txt`. That exemption is only honest
+    /// while the *chrome* still follows the appearance, so this test renders the panel with no
+    /// cards: the two documents differing is exactly "the container is not theme-blind".
+    #[test]
+    fn the_panel_chrome_follows_the_appearance_beneath_data_coloured_cards() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let rendered = |appearance| {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut layout = MasonryLayout::new(Rect::new(0, 0, 300, 200));
+            crate::theme::apply_active_theme(&mut layout);
+            crate::widget::svg::render_to_svg(&mut layout)
+        };
+        let light = rendered(crate::theme::AppearanceMode::Light);
+        let dark = rendered(crate::theme::AppearanceMode::Dark);
+        assert_ne!(light, dark, "the panel behind the cards is chrome, not data");
+    }
+
     /// The published name must resolve, and an unpublished one must not.
     #[test]
     fn published_item_clicked_resolves_to_a_signal() {

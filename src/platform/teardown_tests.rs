@@ -21,14 +21,30 @@
 //! The window lifecycle covers the same property the original tests were after:
 //! `destroy` reports existence truthfully, is idempotent, leaks no registration
 //! across churn, and does not disturb ids that were never destroyed.
+//!
+//! # Why each test gets its own host
+//!
+//! [`host`] builds a private instance of the backend this build resolves to. The process-global one
+//! is a `OnceLock` shared by the whole test binary, and a host whose model is one window
+//! (`harmony`, `android`, `wasm`) answers `0` to a second live `create_window` (BLUE28 B28.43), so a
+//! window another test had already opened made these fail with "must create a window" — a false
+//! finding about a correctly behaving backend. See `platform::contract_tests` for the measurement.
 
-use crate::platform::{get_platform, Platform};
+use crate::platform::Platform;
+
+/// A private instance of the backend this host resolves to, initialised.
+fn host() -> Box<dyn Platform> {
+    let platform = crate::platform::runtime::fresh_native_platform();
+    platform.init();
+    platform
+}
 
 /// `destroy_widget` reports existence correctly and is idempotent.
 #[test]
 fn destroy_widget_is_authoritative_and_idempotent() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
+
     let window = Platform::create_window(platform, "teardown", 0, 0, 400, 300);
     assert_ne!(window, 0, "{} must create a window", platform.backend_name());
 
@@ -47,8 +63,9 @@ fn destroy_widget_is_authoritative_and_idempotent() {
 /// handle.
 #[test]
 fn unsupported_and_unknown_ids_report_absence() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
+
     let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
     assert_ne!(window, 0);
 
@@ -67,14 +84,25 @@ fn unsupported_and_unknown_ids_report_absence() {
 /// This is the registry-level guarantee `destroy_widget` exists to provide: after
 /// creating and destroying the same number of windows repeatedly, every destroyed
 /// id must be gone and each fresh `create_window` must still succeed.
+///
+/// # Why the batch follows `supports_multiple_windows`
+///
+/// The property is about *churn*, not concurrency: create and destroy repeatedly, and every fresh
+/// `create_window` must still succeed. A host whose model is one window (`harmony`, `android`,
+/// `wasm`) refuses a second **live** window by design (BLUE28 B28.43), so asking it for forty at
+/// once would test the documented refusal rather than the leak this test exists for, and would fail
+/// on a backend that is behaving correctly. The batch is therefore what the host says it can hold at
+/// once — forty for a window-table backend, one otherwise — and the loop still proves no
+/// registration survives its destroy.
 #[test]
 fn destroy_widget_keeps_widget_set_stable_across_churn() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
 
+    let batch = if platform.supports_multiple_windows() { 40 } else { 1 };
     for round in 0..25 {
-        let mut ids = Vec::with_capacity(40);
-        for _ in 0..40 {
+        let mut ids = Vec::with_capacity(batch);
+        for _ in 0..batch {
             ids.push(Platform::create_window(platform, "churn", 0, 0, 200, 150));
         }
         for id in ids {
@@ -91,8 +119,28 @@ fn destroy_widget_keeps_widget_set_stable_across_churn() {
 /// Destroying one id must not disturb another that is still live.
 #[test]
 fn destroy_widget_does_not_disturb_siblings() {
-    let platform = get_platform();
-    platform.init();
+    let host = host();
+    let platform = host.as_ref();
+
+    // A host that owns one window cannot hold the three this test is about. Its case is answered
+    // with the property that *is* checkable on it: a second live window is refused (BLUE28 B28.43),
+    // and destroying the first frees the slot again — the same "destroy one id, another id's fate is
+    // unchanged" claim, expressed with the one sibling such a host has.
+    if !platform.supports_multiple_windows() {
+        let first = Platform::create_window(platform, "a", 0, 0, 300, 200);
+        assert_ne!(first, 0, "{} must create its one window", platform.backend_name());
+        assert_eq!(
+            Platform::create_window(platform, "b", 0, 0, 300, 200),
+            0,
+            "a single-window host must refuse a second live window, not alias the first"
+        );
+        assert!(Platform::destroy_widget(platform, first), "the first window must still exist");
+        let third = Platform::create_window(platform, "c", 0, 0, 300, 200);
+        assert_ne!(third, 0, "destroying the only window must free the slot for the next one");
+        assert_ne!(third, first, "the freed slot must not hand the destroyed id back");
+        assert!(Platform::destroy_widget(platform, third));
+        return;
+    }
 
     let a = Platform::create_window(platform, "a", 0, 0, 300, 200);
     let b = Platform::create_window(platform, "b", 30, 30, 300, 200);

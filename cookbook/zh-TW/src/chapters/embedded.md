@@ -74,7 +74,7 @@ println!("surface usable: {}", rust_widgets::supports_surfaces());
 | `has_os_runtime()` | `false` | `false` | `true` |
 | `full_widget_set()` | `false` | `false` | `true` |
 | `is_alloc_frugal()` | **`true`** | `false` | `false` |
-| `supports_surfaces()` | `false` | `false` | `true` |
+| `supports_surfaces()` | `false` | `true` | `true` |
 
 這些門控名在 `build.rs` 中統一定義，模組按**意圖**引用，而不是各自重推一遍合取式：
 
@@ -249,8 +249,11 @@ assert_eq!(portable::FAMILY, rust_widgets::core::PlatformFamily::Embedded);
   `declarative_view`（`device_profile && !stripped && !no-declarative-view`）上，
   因此 `mini`/`embedded` 上你能用的是命令式 `add_child` API。理由是分配預算，
   以及這些目標上沒有呼叫方會逐幀重新求值一個視圖。
-- **自繪控制項繪製面**，而且它會說出來：`supports_surfaces()` 回傳 `false`，
-  而不是先掛載再交回一個空白視窗。
+- **自繪控制項繪製面 —— 僅 `mini`。** `mini` 把平台執行期整體編譯去掉，因此
+  `supports_surfaces()` 回傳 `false`，而不是先掛載再交回一個空白視窗。`embedded`
+  不同：它有一個後端（embedded 樁），旁邊沒有工具鏈，繪製面表是控制項唯一通向螢幕的
+  路徑，所以它回傳 `true`（理由記錄在 `platform/stub.rs`）。不要把「裁剪」讀成「沒有
+  繪製面」—— 按檢查清單去問。
 - **平台執行期**（見 §2）。
 
 選單與快速鍵**刻意不受影響** —— 它們的程式碼不帶 `mini` 門控 —— 因此 `mini` 建置最準確的描述是

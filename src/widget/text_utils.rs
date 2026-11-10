@@ -25,6 +25,7 @@
 use core::ops::Range;
 
 use crate::compat::{Cow, String, Vec};
+use crate::core::Rect;
 
 /// The single-character ellipsis used by the shared elision helpers.
 const ELLIPSIS: &str = "\u{2026}";
@@ -430,6 +431,29 @@ pub fn elide_start_to_width<'a>(
     Cow::Owned(candidate)
 }
 
+/// The x at which an inline IME composition starts, clamped into the text box it follows.
+///
+/// # Why this is shared rather than five local spellings
+///
+/// The controls that paint a query and then the uncommitted composition after it (`cascader`,
+/// `tree_find_bar`, `grid_find_bar`, `find_bar`, `emoji_picker`) each derived the anchor themselves,
+/// and each bounded it differently: one clamped to the field's right edge (which put the composition
+/// under the field's trailing chevron), two did not clamp at all (which put it past the control's
+/// edge, where the parent's clip erased a composition the user was still typing), and one anchored
+/// after the elided text but let the composition's own width overflow the band. One rule, stated
+/// once: the composition starts where the text it follows ends, and never outside `text_box`.
+///
+/// `painted_width` is the width of what is **actually drawn**. An elided query is narrower than its
+/// string, so a caller that draws through [`elide_to_width_into`] passes the elided width; a caller
+/// whose renderer elides internally can only pass the un-elided width, and this clamp is then the
+/// bound that keeps the result inside the box.
+///
+pub fn composition_x(painted_width: i32, text_box: Rect) -> i32 {
+    // `min`/`max` rather than `clamp`, which panics when its range is inverted: a caller computing
+    // `text_box` from a zero-width field is a degenerate box, not a programming error.
+    (text_box.x + painted_width).min(text_box.right()).max(text_box.x)
+}
+
 /// Shortens `text` so its measured width fits `max_width`, keeping the head.
 ///
 /// `measure` is the caller's renderer measurement (for example
@@ -484,6 +508,63 @@ pub fn elide_to_width<'a>(
     candidate.push_str(&text[..end]);
     candidate.push('\u{2026}');
     Cow::Owned(candidate)
+}
+
+/// [`elide_to_width`] writing its result into a caller-owned buffer.
+///
+/// Returns `true` when the text did **not** fit and the elided form is in `out`; `false` means it
+/// fits whole and `out` is empty, so the caller should draw `text`. The pair exists because the
+/// `Cow` form has to own a `String` whenever it elides, which is one allocation per drawn label
+/// per frame — measured as `mac_toolbar` allocating in a steady-state frame by
+/// `tests/key_normalization_allocations.rs`. A paint path that keeps `out` between frames pays
+/// nothing: `clear()` keeps the capacity, and the binary-search probes write into the same buffer
+/// they finish in.
+///
+/// The search is identical to [`elide_to_width`]'s — character boundaries only, ellipsis inside the
+/// budget — so the two always agree on the string that is drawn.
+pub fn elide_to_width_into(
+    text: &str,
+    max_width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+    out: &mut String,
+) -> bool {
+    if measure(text) <= max_width {
+        out.clear();
+        return false;
+    }
+    out.clear();
+    if max_width == 0 || measure(ELLIPSIS) > max_width {
+        return true;
+    }
+
+    let char_count = text.chars().count();
+    let mut cursor = CharCursor::new(text);
+    let mut low = 0usize;
+    let mut high = char_count;
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        let end = cursor.byte_index_of(mid);
+        out.clear();
+        out.push_str(&text[..end]);
+        out.push('\u{2026}');
+        if measure(out.as_str()) <= max_width {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    if low == char_count {
+        // Defensive, as in `elide_to_width`: the full text measured wider above, so a fitting
+        // prefix cannot own every character.
+        out.clear();
+        return false;
+    }
+    let end = cursor.byte_index_of(low);
+    out.clear();
+    out.push_str(&text[..end]);
+    out.push('\u{2026}');
+    true
 }
 
 /// Splits `text` into visual lines of at most `max_chars` characters.
@@ -873,6 +954,30 @@ mod tests {
             elide_to_width("\u{4e16}\u{754c}\u{4f60}\u{597d}", 3, &mut measure),
             "\u{4e16}\u{754c}\u{2026}"
         );
+    }
+
+    /// An inline composition follows its text but never leaves the box it belongs to.
+    ///
+    /// # Why the clamp is the assertion
+    ///
+    /// The controls that paint a composition anchored at `text_box.x + query_width` bounded it
+    /// inconsistently — two not at all, so a long query put the composition outside the control,
+    /// where the parent's clip erased text the user was still typing. Three cases matter: a short
+    /// query (the anchor is exactly where the text ends), a long one (it pins to the right edge
+    /// instead of running past it), and a degenerate box (it stays at the box's left edge rather
+    /// than panicking the way an inverted `clamp` would).
+    #[test]
+    fn a_composition_anchor_follows_its_text_and_stays_inside_the_box() {
+        let text_box = Rect::new(10, 0, 100, 20);
+
+        assert_eq!(composition_x(0, text_box), 10, "no text before it: the box's own origin");
+        assert_eq!(composition_x(40, text_box), 50, "the anchor is where the text ends");
+        assert_eq!(composition_x(100, text_box), 110, "exactly filling the box still fits");
+        assert_eq!(composition_x(500, text_box), 110, "a longer query pins to the right edge");
+
+        // A degenerate box (a zero-width field) reports its own origin rather than panicking.
+        let empty = Rect::new(7, 0, 0, 20);
+        assert_eq!(composition_x(30, empty), 7);
     }
 
     /// Wrapping reports byte ranges, preserves explicit newlines, and keeps blank lines.

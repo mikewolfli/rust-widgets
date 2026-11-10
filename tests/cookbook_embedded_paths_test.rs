@@ -57,15 +57,37 @@ fn chapter_profile_queries_resolve_and_are_consistent() {
 }
 
 /// §1 — the chapter says `supports_surfaces()` is the runtime answer to "can I mount
-/// a drawing surface?", and that a stripped profile answers `false`.
+/// a drawing surface?".
+///
+/// # The claim this used to assert, and why it changed
+///
+/// The chapter said every stripped profile answers `false`. That was true when the embedded/unknown
+/// stub inherited the `Platform` trait's defaults; the stub now delegates the surface table over its
+/// `BackendState` and answers `true`, because on a host with no toolkit the surface **is** the
+/// presentation path (`platform/stub.rs` records that reasoning, and the wasm/surface test makes the
+/// same point: a capability flag is a promise, and this one is keepable). The assertion was
+/// therefore failing against correct code — invisibly, because this binary did not compile on
+/// `embedded` (see `designer_autosave.rs`) and no other profile ran it.
+///
+/// What *is* true on every profile is a property of the build rather than of a family name: `mini`
+/// turns `alloc_frugal` on, which compiles the platform runtime out, so its `supports_surfaces()` is
+/// a stub that answers `false`; every other profile has a backend with the surface table and answers
+/// `true`. Pin that, and the chapter's table stays checkable on whichever profile the test compiles
+/// for.
 #[test]
 fn chapter_supports_surfaces_matches_the_profile() {
     let supported = rust_widgets::supports_surfaces();
-    if profile::stripped_widget_set() {
+    if profile::is_alloc_frugal() {
         assert!(
             !supported,
-            "the chapter states a stripped profile reports `false` rather than \
-             mounting a blank surface"
+            "`mini` compiles the platform runtime out, so it must report no surface rather than \
+             a broken one"
+        );
+    } else {
+        assert!(
+            supported,
+            "every profile with a platform backend presents through the surface table, so it must \
+             say so"
         );
     }
 }

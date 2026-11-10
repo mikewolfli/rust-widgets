@@ -99,6 +99,17 @@ def pascal_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", first).lower()
 
 
+# ── The build the report is taken from ─────────────────────────────────────────────────────────
+# The rule this gate judges is "every `WidgetKind` is reachable through the factory", and that can
+# only be answered where the factory is *complete*. `--features desktop` alone leaves out the
+# editor family, whose two capabilities are registered behind `code-editor` / `markdown-editor`
+# (`registration.rs`), so `FindBar` and `MarkdownOutlinePanel` came back as "unconstructible" on a
+# build that simply does not contain them — a false finding about code that is registered. This is
+# the same feature set `ci.yml` uses for the widest table and that
+# `check_control_rendering.sh` uses for its census.
+REACHABILITY_FEATURES = "desktop,code-editor,markdown-editor,builtin-languages"
+
+
 def run_example_self_checks() -> None:
     """Run the reachability example's own tests before trusting its report.
 
@@ -120,7 +131,7 @@ def run_example_self_checks() -> None:
             "--quiet",
             "--no-default-features",
             "--features",
-            "desktop",
+            REACHABILITY_FEATURES,
             "--example",
             "widget_reachability",
         ],
@@ -153,7 +164,7 @@ def load_reachability() -> dict:
             "--quiet",
             "--no-default-features",
             "--features",
-            "desktop",
+            REACHABILITY_FEATURES,
             "--example",
             "widget_reachability",
         ],

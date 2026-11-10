@@ -81,7 +81,7 @@ Verified output on each profile:
 | `has_os_runtime()` | `false` | `false` | `true` |
 | `full_widget_set()` | `false` | `false` | `true` |
 | `is_alloc_frugal()` | **`true`** | `false` | `false` |
-| `supports_surfaces()` | `false` | `false` | `true` |
+| `supports_surfaces()` | `false` | `true` | `true` |
 
 The gate names behind these are declared once in `build.rs`, and modules reference
 them by *intent* rather than re-deriving a conjunction:
@@ -274,8 +274,12 @@ Beyond the memory policy, a stripped profile loses:
   so on `mini`/`embedded` the imperative `add_child` API is what you have. The
   rationale is the allocation budget, plus the fact that no caller re-evaluates a
   view per frame on these targets.
-- **The custom-painted widget surface**, and it says so: `supports_surfaces()`
-  returns `false` rather than mounting a surface and handing back a blank window.
+- **The custom-painted widget surface — on `mini` only.** `mini` compiles the platform
+  runtime out, so `supports_surfaces()` returns `false` rather than mounting a surface and
+  handing back a blank window. `embedded` is different: it has a backend (the embedded
+  stub) and no toolkit beside it, so the surface table is the only path its widgets have
+  to a screen — it answers `true`, and `platform/stub.rs` records why. Do not read
+  "stripped" as "no surface"; ask, as the checklist says.
 - **The platform runtime** (as covered in §2).
 
 Menus and shortcuts are deliberately *not* affected — their code carries no `mini`

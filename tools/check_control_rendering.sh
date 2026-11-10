@@ -73,6 +73,14 @@ cd "$ROOT_DIR"
 
 STEP_BUDGET="${RW_GATE_TIMEOUT:-900}"
 
+# The features the census probe is declared to need (`Cargo.toml`'s `required-features` for
+# `control_rendering_census`): the full widget set, which means the two editors and their
+# lexer. A bare `--features desktop` does **not** satisfy that declaration any more, and the
+# two `cargo run` invocations below silently killed this gate — the assignment took the
+# failing producer's status and `set -e` exited with no message at all. The command is part
+# of the criterion (principle #48), so it is written once here and used by both.
+CENSUS_FEATURES="desktop,code-editor,markdown-editor,builtin-languages"
+
 # Scratch logs live in a private temporary directory, not at fixed `/tmp/rw_*.log` paths. The fixed
 # paths made two concurrent runs of this gate (which `run_all_gates.sh` can start) write the same
 # files, so one run's failure output could be the other's and the `sed` that prints the log could
@@ -138,7 +146,7 @@ done
 
 # Every exempted name must be a control the factory actually publishes, so a
 # renamed control cannot leave a stale exemption behind that excuses nothing.
-FACTORY_NAMES="$(rw_run_bounded "$STEP_BUDGET" cargo run --no-default-features --features desktop \
+FACTORY_NAMES="$(rw_run_bounded "$STEP_BUDGET" cargo run --no-default-features --features "$CENSUS_FEATURES" \
     --example control_rendering_census 2>/dev/null | sed '1d' | grep -v '^checked=' | awk 'NF>0 {print $1}' | sort -u)"
 STALE="$(awk '!/^#/ && NF>0 {print $1}' "$EXEMPT" | sort -u)"
 STALE="$(printf '%s\n' "$STALE" | while read -r name; do
@@ -158,7 +166,7 @@ echo "  PASS  exemptions justified: $(awk '!/^#/ && NF>0' "$EXEMPT" | wc -l)"
 # (someone hardcoding its chrome again) would be waved through. So an exempted
 # control that now differs between appearances is a finding, exactly like a
 # `KNOWN_THEME_BLIND` entry whose control has been fixed.
-CENSUS_JSON="$(rw_run_bounded "$STEP_BUDGET" cargo run --no-default-features --features desktop \
+CENSUS_JSON="$(rw_run_bounded "$STEP_BUDGET" cargo run --no-default-features --features "$CENSUS_FEATURES" \
     --example control_rendering_census 2>/dev/null)"
 NO_LONGER_BLIND="$(awk '!/^#/ && NF>0 {print $1}' "$EXEMPT" | sort -u | while read -r name; do
     [ -z "$name" ] && continue

@@ -284,6 +284,29 @@ fn create_native_platform() -> Box<dyn Platform> {
 // Global platform singleton
 // ---------------------------------------------------------------------------
 
+/// A **fresh** instance of the backend this build resolves to, for tests that open windows.
+///
+/// # Why a second instance rather than the global one
+///
+/// The global backend is a `OnceLock`, so every test in the binary shares one window table. A host
+/// whose model is one window (`harmony`, `android`, `wasm`) can therefore serve exactly one caller:
+/// the second `create_window` answers `0` by design (BLUE28 B28.43), and a test that asks for a
+/// window after any sibling test already opened one reports "this host cannot open a window" — a
+/// false finding about a backend behaving as documented. Measured: `platform::contract_tests` and
+/// `platform::teardown_tests` failed only under `--features full`, where the harmony preview backend
+/// is resolved on a non-OpenHarmony host, while passing when run on their own.
+///
+/// What those tests are about is the **resolution**: which backend this host gets and what it can
+/// do. `create_native_platform` is that resolution, and calling it a second time yields the same
+/// backend type with an empty window table, so each test owns the host it asserts on without the
+/// assertions being weakened. Serialising the tests on one shared host was the alternative and it
+/// cannot work here: tests that mount a window widget (`ControlBackend::create_window` → the
+/// host window) never touch that lock, so a window they leave behind would still be there.
+#[cfg(all(test, not(alloc_frugal)))]
+pub(crate) fn fresh_native_platform() -> Box<dyn Platform> {
+    create_native_platform()
+}
+
 #[cfg(not(alloc_frugal))]
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();
 

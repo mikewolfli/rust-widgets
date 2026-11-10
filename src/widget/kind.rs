@@ -1870,6 +1870,10 @@ impl WidgetKind {
 
 #[cfg(test)]
 mod tests {
+    // Used only by the `widgets_unstripped` test below, so a stripped profile (where the registry
+    // the test needs does not exist) must not import it — that import was an `unused_imports`
+    // warning on `--features embedded`/`mini`, which those profiles compile with `-D warnings`.
+    #[cfg(widgets_unstripped)]
     use super::WidgetKind;
 
     /// Every registered kind must name itself exactly as `Debug` does.
