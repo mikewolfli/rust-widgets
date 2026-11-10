@@ -26,5 +26,5 @@ path = "src/main.rs"
 # exist under the desktop profile (`src/lib.rs`), which is what BLUE31 §2.1 records. It never
 # constructs a widget, so it does not *use* the editor controls — they are compiled only because
 # this dependency keeps `default` features on (the plan's dependency line).
-rust_widgets = { path = "../..", features = ["desktop"] }
+rust_widgets = { version = "4.2.0", path = "../..", features = ["desktop"] }
 serde_json = "1.0"
