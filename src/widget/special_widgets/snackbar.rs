@@ -590,7 +590,12 @@ impl Widget for Snackbar {
     }
 
     fn is_animating(&self) -> bool {
+        // The auto-dismiss clock is a timer like any other: the frame bus only calls `tick`
+        // while this answers `true`, so omitting the pending retirement left `elapsed_ms`
+        // frozen once the reveal settled and the bar never retired under a real host. The
+        // indeterminate sweep is reported the same way.
         self.reveal.is_animating()
+            || (self.visible && self.duration_ms > 0)
             || (self.visible && self.indeterminate && self.progress.is_some())
     }
 
@@ -1162,6 +1167,35 @@ mod tests {
         bar.handle_event(&Event::mouse_move(40, 90));
         bar.handle_event(&Event::mouse_release(40, 90, 1));
         assert!(bar.is_visible(), "a short drag must not dismiss");
+    }
+
+    /// A pending auto-dismiss keeps the animation bus alive after the reveal settles.
+    ///
+    /// The bus only calls `tick` while `is_animating` is true. Reporting only the reveal (and
+    /// the indeterminate sweep) made the bar answer `false` as soon as it had risen, so
+    /// `elapsed_ms` froze and a `set_duration` bar never retired under a real host.
+    #[test]
+    fn a_pending_auto_dismiss_keeps_the_bar_animating() {
+        let mut bar = Snackbar::new(Rect::new(0, 0, 420, 120));
+        bar.set_duration(3000);
+        bar.show("Saved");
+
+        // Let the entrance settle without reaching the dismissal deadline.
+        while bar.is_animating() && bar.elapsed_ms < 1000 {
+            bar.tick(16);
+        }
+        assert!(!bar.reveal.is_animating(), "the reveal has settled");
+        assert!(bar.is_visible());
+        assert!(
+            bar.is_animating(),
+            "the pending auto-dismiss must keep the bus ticking, or the timer stops"
+        );
+
+        // The clock the bus advances now reaches the deadline and retires the bar.
+        while bar.is_animating() {
+            bar.tick(16);
+        }
+        assert!(!bar.is_visible(), "the bar retires itself once the pending timer runs out");
     }
 
     /// The shared stack assigns each overlay a disjoint vertical offset (SP-124).

@@ -1129,8 +1129,7 @@ impl Menu {
 
     /// Appends a pre-built entry.
     ///
-    /// No repaint is requested, so a visible menu does not redraw until
-    /// something else invalidates it.
+    /// Repaints through `touch_items`, so a visible menu shows the appended row at once.
     pub fn add_item(&mut self, item: MenuEntry) {
         self.items.push(item);
         self.touch_items();
@@ -1402,10 +1401,18 @@ impl Menu {
         Some(removed)
     }
 
-    /// Marks the cached row boxes stale. Every mutation of `items` must call this.
+    /// Marks the cached row boxes stale and asks for the frame that shows the new rows.
+    ///
+    /// Every mutation of `items` must call this. The version bump invalidates the derived
+    /// caches; the redraw is the other half — a mutation that only bumped the version left
+    /// the old rows painted until something unrelated damaged the surface.
     fn touch_items(&mut self) {
         self.items_version = self.items_version.wrapping_add(1);
+        // Any mutation can move the row an armed hover timer is pointing at, so the timer
+        // must not survive it and open whatever now occupies that index.
+        self.clear_hover_branch();
         self.sync_panel();
+        self.base.request_redraw();
     }
 
     /// Attaches a flat `MenuPanel` mirroring this menu's top-level rows.
@@ -1850,6 +1857,44 @@ impl Menu {
             self.ensure_hovered_visible();
         }
         self.base.request_redraw();
+    }
+
+    /// Jumps the highlight of `level` to its first or last selectable row.
+    ///
+    /// Unlike [`Self::move_level_hovered`], this is a directional scan from the corresponding
+    /// end rather than an offset: stepping by `count` wraps, so `Home` from the first row used
+    /// to stay put and `End` from it used to land on the last row (and vice versa).
+    pub(super) fn jump_level_hovered(&mut self, level: usize, to_end: bool) -> bool {
+        let Some(count) = self.level_entries(level).map(<[MenuEntry]>::len) else {
+            return false;
+        };
+        if count == 0 {
+            return false;
+        }
+        // Level 0 is the only scrolling list; a nested panel has no window of its own.
+        let mut range = if level == 0 { self.visible_range() } else { 0..count };
+        let found = if to_end {
+            range.rev().find(|index| {
+                self.level_entries(level)
+                    .and_then(|entries| entries.get(*index))
+                    .is_some_and(MenuEntry::is_selectable)
+            })
+        } else {
+            range.find(|index| {
+                self.level_entries(level)
+                    .and_then(|entries| entries.get(*index))
+                    .is_some_and(MenuEntry::is_selectable)
+            })
+        };
+        let Some(index) = found else {
+            return false;
+        };
+        self.set_level_hovered(level, Some(index));
+        if level == 0 {
+            self.ensure_hovered_visible();
+        }
+        self.base.request_redraw();
+        true
     }
 
     /// Moves the highlight of `level` by `delta`, skipping unselectable rows.

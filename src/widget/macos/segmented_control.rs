@@ -194,14 +194,39 @@ impl MacSegmentedControl {
         true
     }
 
-    /// Moves the selection by `delta` segments, clamped at both ends.
+    /// Moves the selection by `delta` segments, skipping disabled segments and stopping at the
+    /// ends.
+    ///
+    /// [`MacSegment::enabled`] says whether a segment can be selected, and the pointer path
+    /// already refuses a disabled segment through [`Self::enabled_segment_at`]. Walking by a
+    /// plain index selected it from the keyboard, so an arrow key and a click disagreed about the
+    /// same segment.
     fn move_selection(&mut self, delta: isize) {
-        if self.segments.is_empty() {
+        if self.segments.is_empty() || delta == 0 {
             return;
         }
+        // Stops at whichever end it reaches without an enabled candidate, so a control whose
+        // remaining segments are all disabled keeps its current selection.
         let last = self.segments.len() as isize - 1;
-        let next = (self.selected_index() as isize + delta).clamp(0, last) as usize;
-        self.set_selected_index(next);
+        let step = delta.signum();
+        let mut candidate = self.selected_index() as isize + step;
+        while (0..=last).contains(&candidate) {
+            if self.is_segment_enabled(candidate as usize) {
+                self.set_selected_index(candidate as usize);
+                return;
+            }
+            candidate += step;
+        }
+    }
+
+    /// The first segment that can be selected, if any.
+    fn first_enabled_segment(&self) -> Option<usize> {
+        (0..self.segments.len()).find(|index| self.is_segment_enabled(*index))
+    }
+
+    /// The last segment that can be selected, if any.
+    fn last_enabled_segment(&self) -> Option<usize> {
+        (0..self.segments.len()).rfind(|index| self.is_segment_enabled(*index))
     }
 
     /// The track the control paints: full width, one segment row tall, centred.
@@ -450,10 +475,14 @@ impl EventHandler for MacSegmentedControl {
                     self.move_selection(1)
                 }
                 Some(crate::shortcut::Key::Home) => {
-                    self.set_selected_index(0);
+                    if let Some(index) = self.first_enabled_segment() {
+                        self.set_selected_index(index);
+                    }
                 }
-                Some(crate::shortcut::Key::End) if !self.segments.is_empty() => {
-                    self.set_selected_index(self.segments.len() - 1);
+                Some(crate::shortcut::Key::End) => {
+                    if let Some(index) = self.last_enabled_segment() {
+                        self.set_selected_index(index);
+                    }
                 }
                 _ => {}
             },
@@ -539,6 +568,47 @@ mod tests {
         control
             .handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
         assert_eq!(control.selected_index(), 1);
+    }
+
+    /// Keyboard navigation skips a disabled segment, the same way a click does.
+    ///
+    /// `move_selection` and Home/End picked by index without consulting `segment_enabled`, while
+    /// the pointer path used `enabled_segment_at` and [`MacSegment::enabled`] documents that a
+    /// disabled segment cannot be selected: `[A, disabled B, C]` selected B from the keyboard and
+    /// emitted `value_changed(1)`.
+    #[test]
+    fn arrow_keys_skip_disabled_segments() {
+        use std::sync::{Arc, Mutex};
+
+        let mut control = sample();
+        control.set_segment_items(vec![
+            MacSegment::new("Day"),
+            MacSegment::new("Week").disabled(),
+            MacSegment::new("Month"),
+        ]);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        control.value_changed.connect({
+            let seen = Arc::clone(&seen);
+            move |index: Arc<usize>| {
+                seen.lock().unwrap().push(*index);
+            }
+        });
+
+        control
+            .handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(control.selected_index(), 2, "the disabled middle segment is skipped");
+        assert_eq!(*seen.lock().unwrap(), vec![2]);
+
+        control.handle_event(&Event::KeyPress { key: crate::event::key_codes::HOME, modifiers: 0 });
+        assert_eq!(control.selected_index(), 0);
+        control.handle_event(&Event::KeyPress { key: crate::event::key_codes::LEFT, modifiers: 0 });
+        assert_eq!(
+            control.selected_index(),
+            0,
+            "there is nothing enabled before the first segment"
+        );
+        control.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
+        assert_eq!(control.selected_index(), 2, "End lands on the last enabled segment");
     }
 
     #[test]

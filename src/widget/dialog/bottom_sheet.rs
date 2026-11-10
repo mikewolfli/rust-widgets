@@ -281,9 +281,25 @@ impl BottomSheet {
         )
     }
 
-    /// The handle's rectangle at rest.
+    /// The panel's rectangle **as drawn**: the resting box displaced by the rise's remaining
+    /// slide and by the drag offset.
+    ///
+    /// The paint and the hit test both read this one box. Using the resting box for input
+    /// while the paint used the travelling one made a mid-slide press miss the handle (and
+    /// treat the visible panel as the overlay).
+    fn drawn_panel_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let sheet_height = self.content_height.min(rect.height);
+        let resting_y = rect.y + rect.height as i32 - sheet_height as i32;
+        let stowed_y = rect.y + rect.height as i32;
+        let drawn_y =
+            resting_y + ((stowed_y - resting_y) as f32 * (1.0 - self.rise.value())) as i32;
+        Rect::new(rect.x, drawn_y + self.drag_offset as i32, rect.width, sheet_height)
+    }
+
+    /// The handle's rectangle at its drawn position.
     fn handle_rect(&self) -> Rect {
-        let panel = self.resting_panel_rect();
+        let panel = self.drawn_panel_rect();
         let width = 32.min(panel.width);
         let height = 5.min(panel.height);
         Rect::new(panel.x + (panel.width as i32 - width as i32) / 2, panel.y + 8, width, height)
@@ -305,8 +321,8 @@ impl BottomSheet {
     /// the panel exactly instead of accumulating rounding error.
     pub fn drag_to(&mut self, y: i32) {
         let Some(drag) = self.drag else { return };
-        let delta = y - drag.origin_y;
-        if delta.abs() >= DRAG_THRESHOLD && !drag.moved {
+        let delta = y.saturating_sub(drag.origin_y);
+        if delta.unsigned_abs() >= DRAG_THRESHOLD.unsigned_abs() && !drag.moved {
             self.drag = Some(SheetDrag { moved: true, ..drag });
         }
         if self.drag.is_some_and(|drag| drag.moved) {
@@ -574,11 +590,8 @@ impl Draw for BottomSheet {
         // and at `rise == 1` it is at its resting position. Interpolating the *y* rather than the
         // height keeps the panel's own shape fixed while it travels, which is what a sheet does --
         // a growing height would read as the content being revealed rather than the panel arriving.
-        let resting_y = rect.y + rect.height as i32 - sheet_height as i32;
-        let stowed_y = rect.y + rect.height as i32;
-        let drawn_y = resting_y + ((stowed_y - resting_y) as f32 * (1.0 - rise)) as i32;
-        let sheet_y = drawn_y + self.drag_offset as i32;
-        let sheet_rect = Rect::new(rect.x, sheet_y, rect.width, sheet_height);
+        let sheet_rect = self.drawn_panel_rect();
+        let sheet_y = sheet_rect.y;
 
         // 2. Draw the sheet panel with rounded top corners
         let sheet_radius = 16;
@@ -640,7 +653,7 @@ impl EventHandler for BottomSheet {
                     self.drag_offset = 0.0;
                     return;
                 }
-                if !self.resting_panel_rect().contains_point(*pos) {
+                if !self.drawn_panel_rect().contains_point(*pos) {
                     self.open = false;
                     self.rise.set_target(0.0);
                     self.set_content_visible(false);
@@ -874,6 +887,7 @@ mod tests {
     fn bottom_sheet_panel_press_does_not_dismiss() {
         let mut sheet = make_sheet();
         sheet.open();
+        while sheet.tick(1000) {}
 
         // A press on the panel body is not an overlay dismissal: the panel is where the user
         // interacts with the sheet's own content.
@@ -906,6 +920,7 @@ mod tests {
     fn dragging_the_handle_far_enough_dismisses() {
         let mut sheet = make_sheet();
         sheet.open();
+        while sheet.tick(1000) {}
         let handle = sheet.handle_rect();
         let grab = Point::new(handle.x + 2, handle.y + 2);
         sheet.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
@@ -924,6 +939,7 @@ mod tests {
     fn a_short_handle_drag_restores_the_panel() {
         let mut sheet = make_sheet();
         sheet.open();
+        while sheet.tick(1000) {}
         let handle = sheet.handle_rect();
         let grab = Point::new(handle.x + 2, handle.y + 2);
         sheet.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
@@ -1050,5 +1066,41 @@ mod tests {
         assert!(!sheet.tick(1000) || true, "one long frame is allowed to finish it");
         while sheet.tick(60) {}
         assert_eq!(sheet.rise_progress(), 0.0, "back to stowed");
+    }
+
+    /// The handle accepts a press where it is *drawn* while the sheet is still rising.
+    ///
+    /// # The defect this pins
+    ///
+    /// Draw placed the panel and handle at `resting_y + slide + drag_offset`, but the press
+    /// path tested the resting `handle_rect`. A visible mid-slide handle therefore missed,
+    /// and the same press fell through to the panel/overlay test.
+    #[test]
+    fn the_drawn_handle_accepts_a_press_mid_slide() {
+        let mut sheet = BottomSheet::new(Rect::new(0, 0, 240, 120));
+        sheet.open();
+        assert!(sheet.tick(16), "the slide is still running");
+        let rise = sheet.rise_progress();
+        assert!(rise > 0.0 && rise < 1.0, "an interior rise is required, got {rise}");
+
+        let drawn = sheet.drawn_panel_rect();
+        let grab = Point::new(drawn.x + drawn.width as i32 / 2, drawn.y + 10);
+        sheet.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+
+        assert!(sheet.is_dragging(), "a press on the drawn handle must start a drag");
+        assert!(sheet.is_open(), "and must not be mistaken for an overlay dismissal");
+    }
+
+    /// A pointer at `i32::MIN` reports a drag delta instead of panicking.
+    #[test]
+    fn drag_to_a_minimum_coordinate_does_not_panic() {
+        let mut sheet = make_sheet();
+        sheet.open();
+        while sheet.tick(1000) {}
+        let handle = sheet.handle_rect();
+        let grab = Point::new(handle.x + 2, handle.y + 2);
+        sheet.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+        sheet.drag_to(i32::MIN);
+        assert_eq!(sheet.drag_offset(), 0.0, "a negative delta is clamped to the resting offset");
     }
 }

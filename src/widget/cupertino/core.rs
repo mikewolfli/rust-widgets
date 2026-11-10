@@ -225,6 +225,12 @@ impl CupertinoAlertDialog {
     /// the labels need. Painting and hit testing both read this one derivation.
     fn button_row_rect(&self) -> crate::core::Rect {
         let panel = self.panel_rect();
+        if panel.height == 0 {
+            // A zero-height panel has no button strip. `clamp(1, 0)` would panic (`clamp`
+            // requires `min <= max`), and the event path reaches this without the draw path's
+            // zero-height guard: a 320x0 dialog plus a release used to abort the process.
+            return crate::core::Rect::new(panel.x, panel.y, panel.width, 0);
+        }
         let row_height = (panel.height / 3).clamp(1, panel.height);
         crate::core::Rect::new(
             panel.x,
@@ -642,8 +648,8 @@ impl EventHandler for CupertinoAlertDialog {
 /// iOS-style slider (BLUE11 R10.21).
 ///
 /// A range slider over a floating-point value. The range and value are plain
-/// `f32`s; nothing here requires `min <= max`, and the current value is not
-/// re-clamped when the bounds change.
+/// `f32`s; nothing here requires `min <= max` (the clamp orders the two ends), and a
+/// bounds change re-clamps the current value through [`CupertinoSlider::set_value`].
 pub struct CupertinoSlider {
     base: BaseWidget,
     value: f32,
@@ -1115,11 +1121,16 @@ mod tests {
             "a held thumb must widen by the documented stretch"
         );
         assert_eq!(held.height, resting.height, "the stretch is sideways only");
-        // It grows around its own centre, so it does not jump left on touch-down.
+        // It grows away from the near edge, which is the one the resting thumb had. Growing around
+        // a centre derived from the *resting* width made a pressed thumb overhang the track at one
+        // end of its travel and stop short at the other.
+        assert_eq!(held.x, resting.x, "the near edge stays put on touch-down");
         assert_eq!(
-            held.x + held.width as i32 / 2,
-            resting.x + resting.width as i32 / 2,
-            "a stretch must not move the thumb's centre"
+            held.x + held.width as i32,
+            resting.x
+                + resting.width as i32
+                + (dimensions::CUPERTINO_SWITCH_PRESS_STRETCH * 2) as i32,
+            "and the far edge moves out by the stretch"
         );
 
         cupertino.handle_event(&Event::MouseRelease { pos: centre, button: 1 });
@@ -1300,6 +1311,24 @@ mod tests {
         // Click on cancel button area (left half of button row)
         dlg.handle_event(&Event::MouseRelease { pos: Point::new(100, 225), button: 1 });
         assert!(fired.load(Ordering::SeqCst));
+    }
+
+    /// A zero-height dialog must not panic on a pointer release.
+    ///
+    /// `button_row_rect` floors the row at one pixel with `clamp(1, panel.height)`, and `clamp`
+    /// asserts `min <= max`; `draw` guarded a zero-height panel but the event path did not, so a
+    /// 320x0 dialog plus a left release aborted the process.
+    #[test]
+    fn a_zero_height_alert_dialog_ignores_a_release_instead_of_panicking() {
+        let mut dlg = CupertinoAlertDialog::new(Rect::new(0, 0, 320, 0));
+        let fired = Arc::new(AtomicBool::new(false));
+        let f = fired.clone();
+        dlg.confirmed.connect(move || {
+            f.store(true, Ordering::SeqCst);
+        });
+
+        dlg.handle_event(&Event::MouseRelease { pos: Point::new(100, 0), button: 1 });
+        assert!(!fired.load(Ordering::SeqCst), "a zero-height panel has no button row");
     }
 
     #[test]

@@ -526,6 +526,10 @@ impl PropertiesPanel {
             self.color_popup = None;
             self.delegate_editor = None;
             self.hovered_entry = None;
+            // The removal shrinks the row list, so an offset derived from the old one can lie
+            // past the new last row. `first_visible_row` would then skip every row and leave a
+            // blank panel whose entries cannot be hovered or clicked.
+            self.scroll_offset = self.scroll_offset.min(self.max_scroll_offset());
             self.base.request_redraw();
         }
         removed
@@ -543,6 +547,9 @@ impl PropertiesPanel {
         self.color_popup = None;
         self.delegate_editor = None;
         self.hovered_entry = None;
+        // With no rows left there is nothing to scroll: a surviving offset made the next
+        // `add_property` paint a row that `first_visible_row` then refused to hit.
+        self.scroll_offset = 0;
         self.base.request_redraw();
     }
 
@@ -582,7 +589,31 @@ impl PropertiesPanel {
         self.filter_text = text.to_string();
         self.scroll_offset = 0;
         self.invalidate_grouping();
+        // An edit or keyboard focus naming an entry the filter just hid must not survive: the
+        // buffer would keep accepting IME text and Enter would commit a value into a row the
+        // user can no longer see. Visibility comes from the same filter the grouping applies.
+        if self.editing.as_ref().is_some_and(|edit| !self.entry_passes_filter(edit.index)) {
+            self.editing = None;
+        }
+        if self.focused_entry.is_some_and(|index| !self.entry_passes_filter(index)) {
+            self.focused_entry = None;
+        }
+        if self.hovered_entry.is_some_and(|index| !self.entry_passes_filter(index)) {
+            self.hovered_entry = None;
+        }
         self.base.request_redraw();
+    }
+
+    /// Whether the entry at `index` passes the current filter text.
+    ///
+    /// One spelling of the rule `grouped_indices` applies, so a state repair after a filter
+    /// change and the painted grouping cannot disagree about what is visible.
+    fn entry_passes_filter(&self, index: usize) -> bool {
+        let Some(entry) = self.properties.get(index) else {
+            return false;
+        };
+        self.filter_text.is_empty()
+            || entry.name.to_lowercase().contains(&self.filter_text.to_lowercase())
     }
 
     /// Returns the current filter text.
@@ -671,7 +702,7 @@ impl PropertiesPanel {
 
     /// Sets the scroll offset.
     pub fn set_scroll_offset(&mut self, offset: i32) {
-        let offset = offset.max(0);
+        let offset = offset.clamp(0, self.max_scroll_offset());
         if self.scroll_offset == offset {
             return;
         }
@@ -682,6 +713,18 @@ impl PropertiesPanel {
     /// Returns the scroll offset.
     pub fn scroll_offset(&self) -> i32 {
         self.scroll_offset
+    }
+
+    /// The largest scroll offset that still fills the content box with rows.
+    ///
+    /// Derived the way `PropertyGrid::max_scroll` is: once the last row's bottom reaches the
+    /// content box's edge, more offset only reveals blank space below the list. It also bounds
+    /// the hit test's `pos.y - content.y + scroll_offset` sum, which overflowed `i32` when a
+    /// programmatic `i32::MAX` offset was stored.
+    fn max_scroll_offset(&self) -> i32 {
+        let visible = (self.content_box().height / ROW_HEIGHT).max(1) as usize;
+        let scrollable = self.visual_row_count().saturating_sub(visible);
+        (scrollable * ROW_HEIGHT as usize).min(i32::MAX as usize) as i32
     }
 
     // ── Description and edit policy ──
@@ -1515,7 +1558,10 @@ impl PropertiesPanel {
         match value {
             PropertyValue::Text(s) => s.clone(),
             PropertyValue::Number(n) => {
-                if *n == n.floor() && n.is_finite() {
+                // `as i64` saturates: formatting 1e300 through it printed i64::MAX (and -1e300
+                // printed i64::MIN). An integer-valued float outside the i64 range keeps its
+                // float spelling instead.
+                if *n == n.floor() && n.is_finite() && n.abs() <= i64::MAX as f64 {
                     format!("{}", *n as i64)
                 } else {
                     format!("{n:.2}")
@@ -2015,6 +2061,13 @@ impl EventHandler for PropertiesPanel {
                 }
             }
             Event::MouseDoubleClick { pos, button: 1 } => {
+                // A disabled panel must not edit values either: the second press of a double
+                // click is delivered separately, but this arm is what toggles a `Bool` and what
+                // opens the by-type editors, so it needs its own gate.
+                if !self.base.is_enabled() {
+                    self.base.handle_event(event);
+                    return;
+                }
                 // A double click while a popup is open is two presses on the popup, not a
                 // second editor request.
                 if self.choice_popup.is_some() || self.color_popup.is_some() {
@@ -2071,9 +2124,7 @@ impl EventHandler for PropertiesPanel {
                 // One notch is one row: the old `* 3` had no row semantics and scrolled a
                 // different distance per host.
                 let step = ROW_HEIGHT as i32 * delta.y.signum();
-                let max =
-                    ((self.visual_row_count().saturating_sub(1)) * ROW_HEIGHT as usize) as i32;
-                self.scroll_offset = (self.scroll_offset - step).clamp(0, max.max(0));
+                self.scroll_offset = (self.scroll_offset - step).clamp(0, self.max_scroll_offset());
                 self.base.request_redraw();
             }
             // IME / keyboard-layout committed text. The previous handler accepted raw key codes
@@ -2082,12 +2133,22 @@ impl EventHandler for PropertiesPanel {
             Event::TextInput { text }
                 if self.editing.is_some() && text.chars().all(|ch| !ch.is_control()) =>
             {
+                // A disabled panel accepts no edit, including committed IME text: a disable
+                // between the click that opened the editor and this event left the buffer live.
+                if !self.base.is_enabled() {
+                    return;
+                }
                 if let Some(edit) = self.editing.as_mut() {
                     edit.insert(text);
                 }
                 self.base.request_redraw();
             }
             Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
+                // The same gate the press arm and `TextInput` apply: Enter must not commit an
+                // editor a disabled panel is holding.
+                if !self.base.is_enabled() {
+                    return;
+                }
                 // An open drop-down owns the keyboard while it is up: arrows move the highlight,
                 // Enter/Space commit it and Escape closes it without changing the value.
                 if self.choice_popup.is_some() {
@@ -2513,6 +2574,11 @@ mod tests {
     #[test]
     fn scrolling_slides_every_row_by_the_same_amount() {
         let mut panel = PropertiesPanel::new(Rect::new(0, 0, 300, 400));
+        // Seed enough rows that a two-row offset is inside `max_scroll_offset`: a panel with
+        // nothing to scroll refuses an offset now, so the geometry below needs a real list.
+        for index in 0..20 {
+            panel.add_property(make_text_property(&format!("p{index}"), "v", Some("General")));
+        }
         let unscrolled = panel.row_rect_for(3);
 
         panel.set_scroll_offset(ROW_HEIGHT as i32 * 2);
@@ -2529,6 +2595,164 @@ mod tests {
         // The first visible row is the one the offset has pushed into the content box, so no
         // row that is entirely above it is ever offered for painting or hitting.
         assert_eq!(panel.first_visible_row(), 2);
+    }
+
+    /// A disabled panel refuses the double-click and keyboard paths, not just the press.
+    ///
+    /// `MousePress` was gated on `is_enabled()`, but `MouseDoubleClick`, `TextInput` and
+    /// `KeyPress` were not: a panel disabled after its editor opened still toggled a `Bool` on a
+    /// double click, still appended IME text, and still committed on Enter.
+    #[test]
+    fn a_disabled_panel_ignores_double_click_and_keyboard_edits() {
+        use crate::event::key_codes::ENTER;
+
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 320, 240));
+        panel.add_property(make_bool_property("Enabled", true, None));
+        panel.add_property(make_text_property("name", "ab", Some("General")));
+        let changes = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&changes);
+        panel.property_changed.connect(move |_: Arc<(String, PropertyValue)>| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        panel.set_enabled(false);
+        let bool_row = panel.row_rect_for(1);
+        panel.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(VALUE_COL_LEFT + 4, bool_row.y + bool_row.height as i32 / 2),
+            button: 1,
+        });
+        assert_eq!(
+            panel.get_property_value("Enabled"),
+            Some(PropertyValue::Bool(true)),
+            "a disabled panel must not toggle on a double click"
+        );
+        assert_eq!(changes.load(Ordering::SeqCst), 0, "and must not emit the change");
+
+        // Open an editor while enabled, then disable it: neither IME text nor Enter may land.
+        panel.set_enabled(true);
+        let text_row = panel.row_rect_for(2);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(VALUE_COL_LEFT + 4, text_row.y + text_row.height as i32 / 2),
+            button: 1,
+            modifiers: 0,
+        });
+        panel.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert_eq!(panel.editing_entry(), Some(1));
+        panel.set_enabled(false);
+        panel.handle_event(&Event::text_input("x"));
+        assert_eq!(panel.edit_cursor(), Some(2), "the buffer must not receive IME text");
+        panel.handle_event(&Event::KeyPress { key: ENTER, modifiers: 0 });
+        assert_eq!(
+            panel.get_property_value("name"),
+            Some(PropertyValue::Text("ab".to_string())),
+            "Enter must not commit an edit on a disabled panel"
+        );
+    }
+
+    /// Rows that disappear must not leave the scroll offset past the new last row.
+    ///
+    /// `clear_properties` kept the offset and `remove_property` never clamped it, while every
+    /// hit test starts from `first_visible_row()`. A list scrolled to the bottom and then
+    /// emptied painted the next added row at a visual row the hit test had already skipped; and
+    /// `set_scroll_offset(i32::MAX)` overflowed the `pos.y + scroll_offset` sum in `MouseMove`.
+    #[test]
+    fn properties_panel_scroll_resets_when_rows_disappear() {
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 300, 400));
+        for index in 0..50 {
+            panel.add_property(make_text_property(&format!("p{index}"), "v", None));
+        }
+
+        // The setter clamps to the rows that are actually scrollable.
+        panel.set_scroll_offset(i32::MAX);
+        assert!(panel.scroll_offset() <= panel.max_scroll_offset());
+        let row = panel.row_rect_for(panel.first_visible_row());
+        panel.handle_event(&Event::MouseMove { pos: Point::new(row.x + 10, row.y + 13) });
+
+        panel.clear_properties();
+        assert_eq!(panel.scroll_offset(), 0, "an emptied list has nothing to scroll");
+        panel.add_property(make_bool_property("flag", true, None));
+        let entry = panel.row_rect_for(1);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(VALUE_COL_LEFT + 4, entry.y + entry.height as i32 / 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(
+            panel.get_property_value("flag"),
+            Some(PropertyValue::Bool(false)),
+            "the only row must stay hoverable and clickable after a clear"
+        );
+
+        // The same repair follows a removal that shrinks the list under the view.
+        for index in 0..50 {
+            panel.add_property(make_text_property(&format!("q{index}"), "v", None));
+        }
+        panel.set_scroll_offset(i32::MAX);
+        for index in 0..50 {
+            panel.remove_property(&format!("q{index}"));
+        }
+        assert!(panel.scroll_offset() <= panel.max_scroll_offset());
+        let entry = panel.row_rect_for(1);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(VALUE_COL_LEFT + 4, entry.y + entry.height as i32 / 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(
+            panel.get_property_value("flag"),
+            Some(PropertyValue::Bool(true)),
+            "the row that remains is still reachable after the removals"
+        );
+    }
+
+    /// A filter that hides the entry being edited drops the edit with it.
+    ///
+    /// `set_filter` rebuilt the grouping but left `editing` / `focused_entry` naming the hidden
+    /// entry, so IME text kept appending to an invisible buffer and Enter committed it.
+    #[test]
+    fn properties_panel_filter_drops_an_edit_it_hides() {
+        use crate::event::key_codes::ENTER;
+
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 320, 240));
+        panel.add_property(make_text_property("name", "ab", Some("General")));
+        panel.add_property(make_text_property("other", "cd", Some("General")));
+        let row = panel.row_rect_for(1);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(VALUE_COL_LEFT + 4, row.y + row.height as i32 / 2),
+            button: 1,
+            modifiers: 0,
+        });
+        panel.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert_eq!(panel.editing_entry(), Some(0));
+
+        panel.set_filter("other");
+        assert_eq!(panel.editing_entry(), None, "the edit named a now-hidden entry");
+        assert_eq!(panel.focused_entry, None);
+        panel.handle_event(&Event::text_input("x"));
+        panel.handle_event(&Event::KeyPress { key: ENTER, modifiers: 0 });
+        assert_eq!(
+            panel.get_property_value("name"),
+            Some(PropertyValue::Text("ab".to_string())),
+            "the hidden buffer must not be committed"
+        );
+    }
+
+    /// An integer-valued float outside the i64 range paints as a float, not as `i64::MAX`.
+    #[test]
+    fn properties_panel_large_numbers_display_as_floats() {
+        assert_eq!(
+            PropertiesPanel::value_display_text(&PropertyValue::Number(1e300)),
+            format!("{:.2}", 1e300)
+        );
+        assert_eq!(
+            PropertiesPanel::value_display_text(&PropertyValue::Number(-1e300)),
+            format!("{:.2}", -1e300)
+        );
+        assert_ne!(
+            PropertiesPanel::value_display_text(&PropertyValue::Number(1e300)),
+            "9223372036854775807",
+            "a saturating i64 cast must not be used for a value that does not fit"
+        );
     }
 
     #[test]

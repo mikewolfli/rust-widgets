@@ -438,6 +438,11 @@ impl VirtualList {
         if row >= self.row_count() {
             return false;
         }
+        // `None` means the view accepts no selection at all (the same contract `ListView` and
+        // `TreeView` honour); a click must not fall through to the single-selection behaviour.
+        if self.selection_mode == SelectionMode::None {
+            return false;
+        }
         let unchanged = self.selection_mode == SelectionMode::Single
             && self.selected_row == Some(row)
             && self.selected_rows.len() == 1
@@ -446,11 +451,7 @@ impl VirtualList {
             return true;
         }
         match self.selection_mode {
-            SelectionMode::None => {
-                self.selected_rows.clear();
-                self.selected_rows.insert(row);
-                self.selection_anchor = Some(row);
-            }
+            SelectionMode::None => {}
             SelectionMode::Single => {
                 self.selected_rows.clear();
                 self.selected_rows.insert(row);
@@ -486,7 +487,9 @@ impl VirtualList {
                 }
             }
         }
-        self.selected_row = Some(row);
+        // A `Ctrl`-toggle can remove the row just clicked; the current row must follow membership
+        // rather than naming a row that is no longer selected (it is painted first in `draw`).
+        self.selected_row = self.selected_rows.contains(&row).then_some(row);
         self.emit_selection();
         if self.selection_scrolls_into_view {
             let _ = self.ensure_visible(row);
@@ -555,7 +558,12 @@ impl VirtualList {
             return;
         }
         self.selection_mode = mode;
-        if mode == SelectionMode::Single || mode == SelectionMode::None {
+        if mode == SelectionMode::None {
+            // A non-selectable view has no current row either; keeping one would keep painting it.
+            self.selected_rows.clear();
+            self.selected_row = None;
+            self.selection_anchor = None;
+        } else if mode == SelectionMode::Single {
             self.selected_rows.clear();
             if let Some(row) = self.selected_row.filter(|row| *row < self.row_count()) {
                 self.selected_rows.insert(row);
@@ -757,11 +765,11 @@ impl VirtualList {
         if self.scroll_row > max_row {
             self.scroll_row = max_row;
         }
-        self.selected_row = self.selected_row.filter(|row| *row <= max_row);
         self.selected_rows.retain(|row| *row <= max_row);
-        if let Some(row) = self.selected_row {
-            self.selected_rows.insert(row);
-        }
+        // The current row is a member of the set; a `Ctrl`-toggle that removed it must not be
+        // resurrected here, and a row that is no longer selected is not the current row.
+        self.selected_row =
+            self.selected_row.filter(|row| *row <= max_row && self.selected_rows.contains(row));
     }
 
     fn visible_capacity(&self) -> usize {
@@ -1244,6 +1252,10 @@ impl crate::event::EventHandler for VirtualList {
                     || crate::shortcut::event_carries_primary(*modifiers))
                     && crate::event::key_codes::ascii_key_code('a').is_some_and(|code| code == *key)
                 {
+                    // Select-all is a selection gesture, so a non-selectable view ignores it.
+                    if self.selection_mode == SelectionMode::None {
+                        return;
+                    }
                     let mut rows: Vec<usize> = (0..self.row_count()).collect();
                     if self.selection_mode == SelectionMode::Single {
                         rows.truncate(1);
@@ -1601,6 +1613,55 @@ mod tests {
         assert_eq!(len2, 2);
 
         assert_eq!(list.overscan(), 0);
+    }
+
+    #[test]
+    fn ctrl_toggle_off_leaves_the_row_deselected() {
+        use crate::shortcut::Modifiers;
+
+        let mut list = VirtualList::new(Rect::new(0, 0, 120, 60));
+        list.set_data_source(Arc::new(StaticSource { rows: 5 }));
+        list.set_selection_mode(SelectionMode::Multi);
+        assert!(list.select_row(2));
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&seen);
+        list.selected_rows_changed.connect(move |rows| {
+            *sink.lock().expect("the test slot locks") = (*rows).clone();
+        });
+
+        assert!(list.select_row_with_modifiers(2, Modifiers::CTRL));
+        assert_eq!(list.selected_rows(), Vec::<usize>::new(), "the toggled row left the set");
+        assert_eq!(list.selected_row(), None, "the current row follows membership");
+        assert_eq!(*seen.lock().expect("the test slot locks"), Vec::<usize>::new());
+
+        // Normalising (which every fetch and event runs) must not resurrect the row.
+        let _ = list.fetch_visible_rows();
+        assert_eq!(list.selected_row(), None);
+        assert_eq!(list.selected_rows(), Vec::<usize>::new());
+        assert_eq!(list.get("selected_row"), Ok(CapabilityValue::Null));
+    }
+
+    #[test]
+    fn none_mode_accepts_no_selection_including_select_all() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 120, 60));
+        list.set_data_source(Arc::new(StaticSource { rows: 5 }));
+        assert!(list.select_row(2));
+
+        list.set_selection_mode(SelectionMode::None);
+        assert_eq!(list.selected_row(), None, "the mode switch clears the current row");
+        assert_eq!(list.selected_rows(), Vec::<usize>::new());
+        assert!(!list.select_row(1), "a non-selectable list refuses a click");
+        assert_eq!(list.selected_row(), None);
+
+        list.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let key = crate::event::key_codes::ascii_key_code('a').expect("`a` is an ASCII key");
+        list.handle_event(&Event::KeyPress {
+            key,
+            modifiers: crate::shortcut::Modifiers::CTRL.bits() as u32,
+        });
+        assert_eq!(list.selected_rows(), Vec::<usize>::new(), "Ctrl+A selects nothing in None");
+        assert_eq!(list.selected_row(), None);
     }
 
     #[test]

@@ -354,7 +354,10 @@ impl DropTarget for Canvas {
         let event = CanvasDropEvent {
             payload: payload.clone(),
             position: pos,
-            model: self.transform.inverse_point(pos),
+            // The stored commands are in the control's own space, which is what `hit_test` maps a
+            // window point into as well; mapping the raw window point put every drop off by the
+            // canvas's own origin.
+            model: self.to_drawing_space(pos),
         };
         // A handler owns the effect decision; without one the drop is a non-destructive copy.
         let effect = match self.drop_handler.as_ref() {
@@ -506,8 +509,15 @@ impl Canvas {
     }
 
     /// Selects the coordinate space snapping uses. The default is [`GridSpace::Screen`].
+    ///
+    /// The space also decides where the painted grid and ruler ticks sit, so a change has to
+    /// request a repaint rather than wait for some later event to happen to cause one.
     pub fn set_grid_space(&mut self, space: GridSpace) {
+        if self.grid_space == space {
+            return;
+        }
         self.grid_space = space;
+        self.base.request_redraw();
     }
 
     /// Applies the canvas grid to `command` in the selected space.

@@ -418,10 +418,7 @@ fn paint_card(
     if card.modal {
         super::draw_modal_scrim_scaled(ctx, base.id(), geometry, base.parent(), reveal);
     }
-    let rect = super::scale_about_centre(
-        geometry,
-        super::REVEAL_MIN_SCALE + (1.0 - super::REVEAL_MIN_SCALE) * reveal,
-    );
+    let rect = revealed_rect(geometry, reveal);
     if rect.width == 0 || rect.height == 0 {
         return (rect, Rc::new(Vec::new()), None);
     }
@@ -706,13 +703,31 @@ impl CardState {
     }
 }
 
+/// The card's painted frame at `reveal`: the geometry scaled about its centre, exactly as the
+/// painter scales it. A zero reveal paints nothing, so it answers an empty rect.
+fn revealed_rect(geometry: Rect, reveal: f32) -> Rect {
+    let reveal = reveal.clamp(0.0, 1.0);
+    if reveal <= 0.0 {
+        return Rect::new(0, 0, 0, 0);
+    }
+    super::scale_about_centre(
+        geometry,
+        super::REVEAL_MIN_SCALE + (1.0 - super::REVEAL_MIN_SCALE) * reveal,
+    )
+}
+
 /// Builds the buttons for a card on the press path, where there is no render context.
+///
+/// `reveal` is the same fraction the painter uses, so the hit rects are the painted ones even
+/// while the card is still growing into place.
 fn measured_buttons(
     geometry: Rect,
     role: &str,
     base: &BaseWidget,
     labels: &[&str],
+    reveal: f32,
 ) -> Rc<Vec<Rect>> {
+    let geometry = revealed_rect(geometry, reveal);
     let font = card_palette(base, role).font;
     // `geometry` is deliberately not a backend size: this is a measurement, and a window-sized
     // backend would allocate and zero two full RGBA buffers on every pointer move (DL2-01).
@@ -801,7 +816,13 @@ impl AlertDialog {
 
     /// The action row's rects.
     fn buttons(&self) -> Rc<Vec<Rect>> {
-        measured_buttons(self.geometry(), "alert_dialog", &self.base, &[self.button_text.as_str()])
+        measured_buttons(
+            self.geometry(),
+            "alert_dialog",
+            &self.base,
+            &[self.button_text.as_str()],
+            self.card.reveal(),
+        )
     }
 
     /// Whether the card dims the page behind it. Defaults to `true`.
@@ -930,20 +951,17 @@ impl AlertDialog {
         if self.card.check_box_text.is_empty() {
             return None;
         }
-        let row_h = BUTTON_HEIGHT.min(self.geometry().height);
+        let rect = revealed_rect(self.geometry(), self.card.reveal());
+        let row_h = BUTTON_HEIGHT.min(rect.height);
         let buttons = self.buttons();
         let row_y = buttons
             .first()
             .map(|first| first.y.saturating_sub(row_h as i32).saturating_sub(4))
-            .unwrap_or_else(|| {
-                self.geometry().y + self.geometry().height as i32
-                    - CARD_PADDING as i32
-                    - row_h as i32
-            });
+            .unwrap_or_else(|| rect.y + rect.height as i32 - CARD_PADDING as i32 - row_h as i32);
         Some(Rect::new(
-            self.geometry().x + CARD_PADDING as i32,
+            rect.x + CARD_PADDING as i32,
             row_y,
-            self.geometry().width.saturating_sub(2 * CARD_PADDING),
+            rect.width.saturating_sub(2 * CARD_PADDING),
             row_h,
         ))
     }
@@ -1199,7 +1217,7 @@ pub struct ConfirmDialog {
 impl ConfirmDialog {
     /// Creates a question titled `title` with "Cancel" / "OK" actions.
     pub fn new(title: &str, message: &str, geometry: Rect) -> Self {
-        Self {
+        let mut dialog = Self {
             base: BaseWidget::new(WidgetKind::ConfirmDialog, geometry, "ConfirmDialog"),
             title: title.to_string(),
             message: message.to_string(),
@@ -1211,7 +1229,11 @@ impl ConfirmDialog {
             rejected: GenericSignal::new(),
             focus_changed: Signal1::new(),
             focus: None,
-        }
+        };
+        // The row is reject/accept, and Enter must agree with the rightmost button: the
+        // confirming action. `CardState` defaults to 0 because the one-action cards need it.
+        dialog.card.default_button = 1;
+        dialog
     }
 
     /// Whether the card dims the page behind it. Defaults to `true`.
@@ -1399,7 +1421,7 @@ impl ConfirmDialog {
     /// The action row's rects, in [`Self::labels`] order.
     fn buttons(&self) -> Rc<Vec<Rect>> {
         let labels = self.labels();
-        measured_buttons(self.geometry(), "confirm_dialog", &self.base, &labels)
+        measured_buttons(self.geometry(), "confirm_dialog", &self.base, &labels, self.card.reveal())
     }
 
     /// The check box row's rect, when a row is installed.
@@ -1407,20 +1429,17 @@ impl ConfirmDialog {
         if self.card.check_box_text.is_empty() {
             return None;
         }
-        let row_h = BUTTON_HEIGHT.min(self.geometry().height);
+        let rect = revealed_rect(self.geometry(), self.card.reveal());
+        let row_h = BUTTON_HEIGHT.min(rect.height);
         let row_y = self
             .buttons()
             .first()
             .map(|first| first.y.saturating_sub(row_h as i32).saturating_sub(4))
-            .unwrap_or_else(|| {
-                self.geometry().y + self.geometry().height as i32
-                    - CARD_PADDING as i32
-                    - row_h as i32
-            });
+            .unwrap_or_else(|| rect.y + rect.height as i32 - CARD_PADDING as i32 - row_h as i32);
         Some(Rect::new(
-            self.geometry().x + CARD_PADDING as i32,
+            rect.x + CARD_PADDING as i32,
             row_y,
-            self.geometry().width.saturating_sub(2 * CARD_PADDING),
+            rect.width.saturating_sub(2 * CARD_PADDING),
             row_h,
         ))
     }
@@ -1893,7 +1912,13 @@ impl AboutDialog {
 
     /// The action row's rects.
     fn buttons(&self) -> Rc<Vec<Rect>> {
-        measured_buttons(self.geometry(), "about_dialog", &self.base, &["Close"])
+        measured_buttons(
+            self.geometry(),
+            "about_dialog",
+            &self.base,
+            &["Close"],
+            self.card.reveal(),
+        )
     }
 
     /// The check box row's rect, when a row is installed.
@@ -1901,20 +1926,17 @@ impl AboutDialog {
         if self.card.check_box_text.is_empty() {
             return None;
         }
-        let row_h = BUTTON_HEIGHT.min(self.geometry().height);
+        let rect = revealed_rect(self.geometry(), self.card.reveal());
+        let row_h = BUTTON_HEIGHT.min(rect.height);
         let row_y = self
             .buttons()
             .first()
             .map(|first| first.y.saturating_sub(row_h as i32).saturating_sub(4))
-            .unwrap_or_else(|| {
-                self.geometry().y + self.geometry().height as i32
-                    - CARD_PADDING as i32
-                    - row_h as i32
-            });
+            .unwrap_or_else(|| rect.y + rect.height as i32 - CARD_PADDING as i32 - row_h as i32);
         Some(Rect::new(
-            self.geometry().x + CARD_PADDING as i32,
+            rect.x + CARD_PADDING as i32,
             row_y,
-            self.geometry().width.saturating_sub(2 * CARD_PADDING),
+            rect.width.saturating_sub(2 * CARD_PADDING),
             row_h,
         ))
     }
@@ -2146,13 +2168,47 @@ mod tests {
 
         let mut confirm = ConfirmDialog::new("t", "m", Rect::new(0, 0, 360, 170));
         confirm.set_default_button(7);
-        assert_eq!(confirm.default_button(), 0, "the confirm row has two actions");
+        assert_eq!(confirm.default_button(), 1, "the confirm row defaults to accept");
         confirm.set_default_button(1);
         assert_eq!(confirm.default_button(), 1, "a real action still takes");
 
         let mut about = AboutDialog::new("a", "1", Rect::new(0, 0, 360, 200));
         about.set_default_button(2);
         assert_eq!(about.default_button(), 0, "the about card paints one action");
+    }
+
+    #[test]
+    fn a_fresh_confirm_dialog_enters_through_the_accept_action() {
+        let mut dialog = ConfirmDialog::new("q", "m", Rect::new(0, 0, 360, 170));
+        let accepted = counter(&dialog.accepted);
+        let rejected = counter(&dialog.rejected);
+        assert_eq!(dialog.default_button(), 1, "the rightmost action is the default");
+
+        dialog.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_revealing_card_is_hit_tested_where_it_is_painted() {
+        let mut dialog = ConfirmDialog::new("q", "m", Rect::new(0, 0, 360, 170));
+        dialog.hide();
+        while dialog.tick(1000) {}
+        dialog.show();
+        assert!(dialog.tick(16));
+        let reveal = dialog.reveal_progress();
+        assert!(reveal > 0.0 && reveal < 1.0, "the card must be mid-reveal: {reveal}");
+
+        let scale = crate::widget::dialog::REVEAL_MIN_SCALE
+            + (1.0 - crate::widget::dialog::REVEAL_MIN_SCALE) * reveal;
+        let painted = crate::widget::dialog::scale_about_centre(dialog.geometry(), scale);
+        for rect in dialog.buttons().iter() {
+            assert!(rect.x >= painted.x, "the hit rect starts inside the painted frame: {rect:?}");
+            assert!(
+                rect.x + rect.width as i32 <= painted.x + painted.width as i32,
+                "the hit rect ends inside the painted frame: {rect:?} vs {painted:?}"
+            );
+        }
     }
 
     /// Records how many times a payload-free signal fired.

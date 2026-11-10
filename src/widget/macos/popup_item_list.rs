@@ -68,7 +68,6 @@ pub struct PopupItemList {
     anchor: PopupAnchor,
     selected_index: Option<usize>,
     hovered_index: Option<usize>,
-    visible: bool,
     /// Emitted with the chosen row's index.
     pub item_activated: Signal1<usize>,
     /// Emitted when the panel closes for any reason.
@@ -78,13 +77,17 @@ pub struct PopupItemList {
 impl PopupItemList {
     /// Creates a hidden list.
     pub fn new(geometry: Rect) -> Self {
+        let mut base = BaseWidget::new(WidgetKind::PopupWindow, geometry, "PopupItemList");
+        // The base flag is the one the runtime hit test and the paint walk read, so the closed
+        // state has to live there: a popup that only cleared a private flag stayed in the hit
+        // test and swallowed every press in its geometry while painting nothing useful.
+        base.hide();
         Self {
-            base: BaseWidget::new(WidgetKind::PopupWindow, geometry, "PopupItemList"),
+            base,
             items: Vec::new(),
             anchor: PopupAnchor::Below,
             selected_index: None,
             hovered_index: None,
-            visible: false,
             item_activated: Signal1::new(),
             dismissed: GenericSignal::new(),
         }
@@ -119,7 +122,7 @@ impl PopupItemList {
 
     /// Whether the panel is open.
     pub fn is_visible(&self) -> bool {
-        self.visible
+        self.base.is_visible()
     }
 
     /// Opens the panel at `point`, anchored according to [`Self::anchor`].
@@ -133,17 +136,17 @@ impl PopupItemList {
             PopupAnchor::Left => Point::new(point.x - rect.width as i32, point.y),
         };
         self.base.set_geometry(Rect::new(origin.x, origin.y, rect.width, rect.height));
-        self.visible = true;
+        self.base.show();
         self.hovered_index = None;
         self.base.request_redraw();
     }
 
     /// Closes the panel, emitting `dismissed`.
     pub fn dismiss(&mut self) {
-        if !self.visible {
+        if !self.base.is_visible() {
             return;
         }
-        self.visible = false;
+        self.base.hide();
         self.hovered_index = None;
         self.base.request_redraw();
         self.dismissed.emit();
@@ -217,10 +220,10 @@ impl Draw for PopupItemList {
         let surface = style.background_color.unwrap_or(Color::rgba(250, 250, 250, 255));
         let accent = ink;
         let font = &role_font(style, 12.0);
-        let opacity = if self.visible { 255 } else { 90 };
+        let opacity = if self.base.is_visible() { 255 } else { 90 };
         context.fill_rounded_rect(rect, 6, surface.with_alpha(opacity));
         context.draw_rounded_rect_stroke(rect, 6, ink.with_alpha(60), 1);
-        if !self.visible {
+        if !self.base.is_visible() {
             return;
         }
         for index in 0..self.items.len() {
@@ -257,7 +260,7 @@ impl Draw for PopupItemList {
 impl EventHandler for PopupItemList {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        if !self.base.is_enabled() || !self.visible {
+        if !self.base.is_enabled() || !self.base.is_visible() {
             return;
         }
         match event {
@@ -307,5 +310,25 @@ mod tests {
         assert!(!list.is_visible());
         list.dismiss();
         assert!(list.selected_index().is_none());
+    }
+
+    /// The closed state lives on `BaseWidget`, which is what the runtime hit test reads.
+    ///
+    /// A private `visible` flag kept the inherent accessor honest while `Widget::is_visible()`
+    /// stayed true, so a dismissed popup still swallowed every press in its geometry (a permanent
+    /// dead zone) and still painted its faded panel.
+    #[test]
+    fn a_dismissed_popup_leaves_the_hit_test_and_returns_when_reopened() {
+        let mut list = PopupItemList::new(Rect::new(0, 0, 160, 0));
+        list.set_items(crate::compat::Vec::from([PopupItem::new("Open")]));
+        list.popup_at(Point::new(10, 20));
+        assert!(Widget::is_visible(&list), "an open popup is a hit target");
+
+        list.dismiss();
+        assert!(!list.is_visible());
+        assert!(!Widget::is_visible(&list), "a dismissed popup is not a hit target");
+
+        list.popup_at(Point::new(10, 20));
+        assert!(Widget::is_visible(&list), "reopening restores the base flag");
     }
 }

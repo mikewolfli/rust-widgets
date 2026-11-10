@@ -106,9 +106,10 @@ impl ValueSpinBox {
         self.step
     }
 
-    /// Sets the step; zero is refused because a step that changes nothing is not a step.
+    /// Sets the step; zero or a negative value is refused, because a step that does not move the
+    /// value upwards is not a step.
     pub fn set_step(&mut self, step: i64) {
-        if step == 0 || self.step == step {
+        if step <= 0 || self.step == step {
             return;
         }
         self.step = step;
@@ -345,6 +346,28 @@ mod tests {
             modifiers: 0,
         });
         assert_eq!(box_.value(), 1);
+    }
+
+    /// A negative step is refused, so the up arrow can never decrement.
+    ///
+    /// `step_by` multiplies the step by the arrow's direction, so `set_step(-5)` made the up
+    /// arrow lower the value -- the arrow and its meaning disagreed.
+    #[test]
+    fn a_negative_step_is_refused() {
+        let mut box_ = ValueSpinBox::new(Rect::new(0, 0, 120, 24));
+        box_.set_range(0, 100);
+        box_.set_value(10);
+
+        box_.set_step(-5);
+        assert_eq!(box_.step(), 1, "the default step survives a negative write");
+
+        let up = box_.up_rect();
+        box_.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(up.center().x, up.center().y),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(box_.value(), 11, "the up arrow always increases the value");
     }
 
     #[test]

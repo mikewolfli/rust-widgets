@@ -713,14 +713,7 @@ impl Widget for SearchBar {
     /// window on the same glyph the inline composition starts from.
     fn input_method_query(&self) -> Option<crate::widget::widget_trait::InputMethodQuery> {
         let rect = self.geometry();
-        let cancel_width = if self.is_active && self.cancel_button_visible {
-            self.cancel_button_width()
-        } else {
-            0
-        };
-        let field_width = rect.width.saturating_sub(cancel_width + 4);
-        let text_left = rect.x + 10 + 14 + 6;
-        let text_width = field_width.saturating_sub((text_left - rect.x) as u32);
+        let (text_left, text_width) = self.value_text_box(rect);
         let font = effective_font(self.style());
         let value_box = Rect::new(text_left, rect.y, text_width.max(1), rect.height);
         let advance = self.prefix_advance(font, self.text.len());
@@ -944,13 +937,9 @@ impl Draw for SearchBar {
             icon_color,
         );
 
-        // Text or placeholder
-        let text_left = icon_left + icon_size as i32 + 6;
-        let text_width = if self.text.is_empty() {
-            field_width.saturating_sub((text_left - rect.x) as u32)
-        } else {
-            field_width.saturating_sub((text_left - rect.x) as u32 + 24)
-        };
+        // Text or placeholder. The horizontal box is one derivation (`value_text_box`), shared with
+        // the caret, the selection band, the IME anchor and the press mapping.
+        let (text_left, text_width) = self.value_text_box(rect);
         // The alignment this control's own value is drawn with. The placeholder shares it, so the
         // field reads as one column whichever state it is in.
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
@@ -1045,12 +1034,7 @@ impl Draw for SearchBar {
                     }
                 } else {
                     context.draw_text_fitted_ellipsis(
-                        Rect::new(
-                            text_left,
-                            text_y,
-                            (rect.width as i32 - (text_left - rect.x) - 12).max(1) as u32,
-                            metrics.height.max(1),
-                        ),
+                        Rect::new(text_left, text_y, text_width, metrics.height.max(1)),
                         &self.text,
                         font,
                         field_ink,
@@ -1216,12 +1200,13 @@ impl SearchBar {
         self.base.request_redraw();
     }
 
-    /// The byte offset a horizontal pixel points at, using the same origin the paint uses.
-    fn byte_index_at_x(&self, x: i32) -> usize {
-        if self.text.is_empty() {
-            return 0;
-        }
-        let rect = self.geometry();
+    /// The horizontal box the value occupies: where the run starts and how much room it has.
+    ///
+    /// One derivation for the paint, the caret, the selection band, the IME anchor and the press
+    /// mapping. The paint reserved 24 px for the clear button while the press mapping did not (and
+    /// the value branch ignored the reserve altogether), so under `Center`/`Right` the glyphs and
+    /// the click target sat up to 24 px apart.
+    fn value_text_box(&self, rect: Rect) -> (i32, u32) {
         let cancel_width = if self.is_active && self.cancel_button_visible {
             self.cancel_button_width()
         } else {
@@ -1229,7 +1214,21 @@ impl SearchBar {
         };
         let field_width = rect.width.saturating_sub(cancel_width + 4);
         let text_left = rect.x + 10 + 14 + 6;
-        let text_width = field_width.saturating_sub((text_left - rect.x) as u32);
+        let text_width = if self.text.is_empty() {
+            field_width.saturating_sub((text_left - rect.x) as u32)
+        } else {
+            field_width.saturating_sub((text_left - rect.x) as u32 + 24)
+        };
+        (text_left, text_width.max(1))
+    }
+
+    /// The byte offset a horizontal pixel points at, using the same origin the paint uses.
+    fn byte_index_at_x(&self, x: i32) -> usize {
+        if self.text.is_empty() {
+            return 0;
+        }
+        let rect = self.geometry();
+        let (text_left, text_width) = self.value_text_box(rect);
         let font = effective_font(self.style());
         let advance = self.prefix_advance(font, self.text.len());
         let value_box = Rect::new(text_left, rect.y, text_width.max(1), rect.height);

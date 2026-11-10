@@ -1456,6 +1456,7 @@ impl ToolBar {
         self.items.clear();
         self.action_links.clear();
         self.overflow_offset = 0;
+        self.close_overflow_popup();
         self.base.request_redraw();
     }
     /// Enables or disables the item at `index`, and repaints.
@@ -1658,10 +1659,15 @@ impl ToolBar {
     }
 
     /// Keeps the overflow offset inside the list after a mutation.
+    ///
+    /// Every caller is an item mutation (or a relayout), and an open popup stores source
+    /// indices that such a mutation invalidates: row 0 that named item 8 would name a
+    /// different command afterwards. Closing here is the one rule every mutation shares.
     fn clamp_overflow(&mut self) {
         let capacity = self.effective_capacity();
         let max_offset = self.items.len().saturating_sub(capacity);
         self.overflow_offset = self.overflow_offset.min(max_offset);
+        self.close_overflow_popup();
     }
 
     /// The overflow button's box, or `None` when everything fits.
@@ -2103,6 +2109,19 @@ impl ToolBar {
         // Items scrolled off the leading edge keep a zero-size band, so the list's
         // indices still address the same item while no hit test can reach a hidden one.
         let start = self.overflow_offset.min(self.items.len());
+        // The overflow boundary is the same one `overflow_menu_indices` uses: everything past
+        // it is reachable from the chevron popup, not from the strip. Leaving those rows with
+        // a real band painted the first hidden item under the chevron (and started hosted
+        // widgets after the strip's own end).
+        //
+        // Vertical strips keep the historical unbounded run: `effective_capacity` measures
+        // the *band*, whose height is capped at `TOOLBAR_HEIGHT`, so applying it here would
+        // truncate a tall column that legitimately stacks past one band height.
+        let end = if horizontal {
+            start.saturating_add(self.effective_capacity()).min(self.items.len())
+        } else {
+            self.items.len()
+        };
         let mut placed = Vec::with_capacity(self.items.len());
         // The offset runs along the strip's main axis; the cross-axis position is the band's origin
         // plus the same inset the layout used as padding, shifted by the current line.
@@ -2126,7 +2145,7 @@ impl ToolBar {
             } else {
                 item.icon_size().unwrap_or(self.icon_size as u32) + dimensions::TOOLBAR_SPACING
             };
-            if index < start {
+            if index < start || index >= end {
                 placed.push(Rect::new(0, 0, 0, 0));
                 offset += step as i32;
                 continue;
@@ -2517,10 +2536,12 @@ impl EventHandler for ToolBar {
                 let reorder_gesture =
                     self.reorder_state.as_ref().map(|state| (state.moved, state.press));
                 if let Some((moved, press)) = reorder_gesture {
-                    if moved
-                        || (pos.x - press.x).abs() >= REORDER_THRESHOLD_PX
-                        || (pos.y - press.y).abs() >= REORDER_THRESHOLD_PX
-                    {
+                    // A legal `i32` pointer can be `i32::MIN`; subtracting it from a positive
+                    // press coordinate overflows before the distance is taken.
+                    let dx = pos.x.saturating_sub(press.x).unsigned_abs();
+                    let dy = pos.y.saturating_sub(press.y).unsigned_abs();
+                    let threshold = REORDER_THRESHOLD_PX.unsigned_abs();
+                    if moved || dx >= threshold || dy >= threshold {
                         if let Some(state) = self.reorder_state.as_mut() {
                             state.moved = true;
                         }
@@ -3556,5 +3577,86 @@ mod label_tests {
         bar.item_mut(1).expect("item 1 exists").set_text("Enregistrer");
         assert_eq!(bar.items()[1].text(), "Enregistrer");
         assert!(bar.item_mut(9).is_none());
+    }
+
+    /// Items past the overflow boundary have no strip band.
+    ///
+    /// # The defect this pins
+    ///
+    /// `compute_item_bands` stopped at the leading edge but gave every remaining item a
+    /// full rect. The first hidden row then painted under the chevron while also appearing
+    /// in its popup, and hosted widgets started after the strip's own end.
+    #[test]
+    fn hidden_tail_items_have_no_band_and_widgets_start_inside_the_strip() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
+        for index in 0..16 {
+            bar.add_action(format!("id{index}"), format!("T{index}"));
+        }
+        bar.add_widget(
+            "hosted",
+            Box::new(crate::widget::Label::new("widget".to_string(), Rect::new(0, 0, 10, 10))),
+        );
+        assert!(bar.is_overflowing());
+
+        let capacity = bar.effective_capacity();
+        let bands = bar.item_bands();
+        assert!(capacity < bar.items().len(), "the fixture must overflow");
+        for (index, band) in bands.iter().enumerate().skip(capacity) {
+            assert_eq!(
+                *band,
+                Rect::new(0, 0, 0, 0),
+                "item {index} is hidden and must have no strip band"
+            );
+        }
+
+        let chevron = bar.overflow_button_rect().expect("overflow has an affordance");
+        let last = bands[capacity - 1];
+        assert!(
+            last.x + last.width as i32 <= chevron.x,
+            "the last visible item must end before the chevron: {last:?} vs {chevron:?}"
+        );
+
+        let _ = crate::widget::svg::render_to_svg(&mut bar);
+        let hosted = bar.widget_bands[0].1;
+        let strip = bar.band_rect();
+        assert!(
+            hosted.x >= strip.x && hosted.x < strip.x + strip.width as i32,
+            "a hosted widget must start inside the strip, not past its end: {hosted:?} vs {strip:?}"
+        );
+    }
+
+    /// Mutating the items closes an open overflow popup instead of leaving stale indices.
+    #[test]
+    fn mutating_items_closes_the_overflow_popup() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
+        for index in 0..16 {
+            bar.add_action(format!("id{index}"), format!("T{index}"));
+        }
+        let chevron = bar.overflow_button_rect().expect("overflow has an affordance");
+        bar.handle_event(&Event::mouse_press(chevron.x + 2, chevron.y + 2, 1));
+        assert!(bar.overflow_popup.is_some(), "the chevron opens the popup");
+
+        bar.remove_item(0);
+        assert!(
+            bar.overflow_popup.is_none(),
+            "a removal invalidates the popup's source indices and must close it"
+        );
+    }
+
+    /// A pointer at `i32::MIN` measures a reorder distance instead of panicking.
+    #[test]
+    fn a_reorder_move_at_a_minimum_coordinate_does_not_panic() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
+        bar.set_editable(true);
+        bar.add_action("a", "A");
+        bar.add_action("b", "B");
+        bar.add_action("c", "C");
+        let band = bar.item_bands()[0];
+        let press = Point::new(band.x + 2, band.y + 2);
+        bar.handle_event(&Event::MousePress { pos: press, button: 1, modifiers: 0 });
+        assert!(bar.reorder_state.is_some(), "an editable press starts a reorder");
+
+        bar.handle_event(&Event::MouseMove { pos: Point::new(i32::MIN, press.y) });
+        assert!(bar.reorder_state.is_some(), "the gesture survives the extreme pointer");
     }
 }

@@ -580,11 +580,6 @@ pub type ActivityIndicator = ProgressBar;
 /// Per-item checkboxes are **not** implied — this is a selectable list.
 #[cfg(full_widgets)]
 pub type CheckListBox = ListBox;
-/// Alias for [`ToolBox`] declared next to the re-export above, so it remains
-/// reachable on a device build whose widget set is stripped.
-/// It is the same control; the alias only carries the `WidgetKind::Toolbox` spelling.
-#[cfg(all(full_widgets, not(widgets_unstripped)))]
-pub type Toolbox = ToolBox;
 /// Alias for [`SpinBox`] intended for floating-point input.
 /// It is the same integer spin box: no decimal support is added by the alias.
 #[cfg(full_widgets)]
@@ -633,3 +628,21 @@ pub type Table = TableWidget;
 /// Alias for [`FreeformShapeWidget`]; the `WidgetKind::FreeformShape` spelling.
 #[cfg(full_widgets)]
 pub type FreeformShape = FreeformShapeWidget;
+
+#[cfg(all(test, widgets_unstripped))]
+mod tests {
+    use super::{ToolBox, Toolbox};
+
+    /// The `Toolbox` alias names the same control as the `ToolBox` re-export.
+    ///
+    /// # The dead duplicate this pins
+    ///
+    /// A second alias was declared under `all(full_widgets, not(widgets_unstripped))`, which is
+    /// unsatisfiable: `build.rs` defines `full_widgets` as `has_profile && !is_stripped`, and
+    /// `widgets_unstripped` as `!is_stripped`, so the former implies the latter. The alias that
+    /// remains sits beside the re-export and is reachable on every unstripped build.
+    #[test]
+    fn the_toolbox_alias_names_the_reexported_control() {
+        assert_eq!(core::any::TypeId::of::<Toolbox>(), core::any::TypeId::of::<ToolBox>());
+    }
+}

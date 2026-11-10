@@ -336,6 +336,146 @@ ships the DSH skill plugin, which touches no crate code.
     recording in progress when it is disabled.
   - `InplaceEditor`'s `undo` doc now states the implemented contract (a cancelled edit discards its
     own steps), pinned by two more tests.
+- **The parent crate's `widget` tree got its fourth full read: 35 defects closed across the
+  text-entry, display and container families**, with 25 regression tests (9804 → 9829). Highlights:
+  `MaskedEdit` re-sanitises its value through a new mask and clears the selection on `set_text`; its
+  pointer press restarts the caret blink. `AutoCompleteEdit` clamps the caret on undo, refilters on
+  `add_suggestion`/`clear_suggestions`, derives the glyphs, caret, inline hint and `byte_index_at_x`
+  from one alignment-aware origin, and implements the published `CompletionClosePolicy::OnCommit`
+  (`Tab` keeps the list open, `Enter` closes it). `SearchBar` gives `byte_index_at_x` and the IME
+  query the same 24 px clear-button reserve the paint always used. `LineEdit`'s masked `delete`
+  addressed the wrong character: the reversal formatted each raw prefix, but `format` pads every
+  empty cell, so the length comparison was always true and a caret at the second digit deleted the
+  first; `MaskEngine` now answers `raw_index_at_or_after` from its own segment offsets, so
+  `MaskedEdit` and `LineEdit` share one mask semantics, and undo revalidates.
+  - `ScrollBar` repaints on `set_value` (a host write left the thumb at its old position), widens the
+    value span to `i64` before subtracting (a legal `i32::MIN..=i32::MAX` range panicked in debug and
+    reversed in release), saturates the action and wheel arithmetic, retargets the idle fade, sizes
+    the painted thumb from the same length the travel mapping subtracts (it used to cover an arrow
+    cell), and ends a drag on `MouseLeave`. `Slider` drops its press state and announces
+    `slider_released` when disabled, stops announcing `slider_pressed` for a groove page-step, and
+    guards its release; `Meter` clears `dragging` when disabled; `Switch`'s pressed thumb keeps its
+    near edge; `Rating` clears the hover preview when the value or the ceiling moves; `draw_icon_at`
+    draws the `?` placeholder when the fallback table has no geometry for the name.
+  - `ScrollArea` re-clamps its offset on a resize, routes every extent and scroll-to-end through one
+    `inset_viewport` (content margins used to make the true end unreachable), and leaves sticky
+    headers untranslated and out of the content extent. `StackedWidget` syncs page visibility when a
+    transition completes (the outgoing page stayed visible) and remaps the outgoing page when a page
+    is inserted or removed mid-transition. `Carousel` ends a slide when the page list changes and
+    hit-tests the sliding pages at the offsets it paints them at. `Splitter` ends a drag when the
+    orientation changes; `Toolbox` tiles horizontal pages along `x`; `GroupBox::set_title` requests a
+    layout.
+- **The remaining parent-crate families got the same per-file read: 40 more defects closed in
+  `chart_widgets/`, `nav_widgets/`, `media_widgets/` and `misc_widgets/`**, with 41 regression tests
+  (9829 → 9870) and five controls re-snapshotted. Highlights:
+  - **Charts.** A bar chart took its draw window from series 0 and sliced every other series with it,
+    so a ragged `set_series` panicked during paint; `retain(is_finite)` deleted a category slot and
+    shifted every later bar onto its neighbour's datum; the sparkline divided by a zero-span manual
+    range; and the hover band, the y-tick column, the reference line, the radar legend, the heatmap
+    hit test and the pie hit test each disagreed with the painter. `ChartContext` gained
+    `measure_text` (default 0.6 em, adapter delegates to the real renderer) so a y label is
+    right-anchored inside the column its width reserved, and `draw_arc`'s contract is now radians
+    plus a 1 px stroke for both backends (the SVG one used to treat them as degrees and fill a fan).
+  - **Navigation.** Writing `current_page = null` on a `NavigationStack` looped forever, because the
+    pop loop could not remove the root — a UI-thread hang reachable from a property write. `AppBar`
+    reserved an overflow slot unconditionally, so the 80 px trailing band could never hold its one
+    48 px action and the bar painted only "…"; it also kept an armed press when disabled and did not
+    request layout for a subtitle. The adaptive scaffold ignored a declared app-bar `bottom` slot, and
+    a bottom bar narrower than its item count divided by zero in its press arm (two sites). Keyboard
+    navigation skipped the per-item enabled gate the pointer path applies; a hiding bar hit-tested the
+    band it had vacated; three pagination setters changed `size_hint` without `request_layout`;
+    `TabView::set_movable(false)` left its insertion marker painted; `AdaptiveScaffold::set_nav_body`
+    stored an ahead-of-its-destination page in the wrong slot; and `AnimatedImage`'s `stop`/`reset`
+    disagreed with `frame_changed`'s contract.
+  - **Misc.** `SegmentedButton`'s selected-end overdraw subtracted the corner radius in `u32` (a
+    debug panic and a control-wide slab in release); `Avatar` painted a fixed 40 px disc while its
+    property, size hint and hit test claimed any diameter; a disabled `DropTarget` still previewed
+    and recorded drops; `MobileDatePicker` wrapped a huge `year_span` into a `clamp` panic, kept
+    `2025-02-29` after a year-range move, and divided by zero at 2 px wide; the barcode scanner
+    reported a whitelisted-out frame as decoded; `DrumColumn::set_items` clamped the selection
+    silently; a successful drop also emitted `zone_exited`; three size-affecting setters skipped
+    `request_layout`; and the QR logo hole covered the finder patterns.
+- **The view, dialog, menu and special-widget families got the same per-file read: 150 defects
+  closed**, with 155 regression tests (9870 → 10025) and one control re-snapshotted.
+  - **Grids and tables.** `DataGrid` painted the overscan rows above the scroll position on top of
+    the first visible row (selection ring and expanded detail included), painted scrolled-off
+    columns outside the control (there is no clip in that `draw`), hit-tested against the source
+    row count while painting the filtered projection, kept filter/sort/hidden state addressing the
+    previous column space after `set_data_source`, and let its own header resize handle ignore
+    `resizable`/`Interactive`; its `selection` cursor was remapped by nobody, so a removed column
+    left the ring on the column that shifted in. `TreeView`/`TreeTable`/`ListView` rebuilt their
+    projections without re-clamping the row scroll (a collapse or a shrinking model left a blank,
+    unclickable body) and `VirtualList` could never deselect a Ctrl-clicked row. `GridTable` stored
+    selection as projected rows, so sorting silently moved the selection to another record.
+    `TableWidget` computed its row offset from the constant height while paint used the delegate's
+    hint, and `VirtualTable` encoded selection as a linear index that a column-count change
+    re-interpreted as a different cell.
+  - **Dialogs and menus.** `FileDialog`'s file-name strip was unsatisfiable dead code (no label, no
+    field, no caret); `ModalBottomSheet` wrapped a negative content height to ~4.29e9 pixels;
+    `BottomSheet` hit-tested the resting handle while painting it mid-slide, so tapping the sheet as
+    it opened dismissed it; `MenuBar::remove_menu` shifted indices without re-keying the menu table;
+    its corner widget was painted but never received input; `ToolButton` and two menu kinds excluded
+    their child panels from the hit area; `DropdownMenu` capped the panel at 200 px while its
+    keyboard window was 240; `Popover` painted a `Box<dyn Widget>` it never forwarded events to.
+    `ConfirmDialog`'s default button was index 0 — Enter executed **Cancel** and Cancel wore the
+    default accent; the find/replace bar kept a private `visible` flag the base widget never saw;
+    `InputDialog` painted one line of a multi-line field (and overflowed `u32` for a huge line
+    count); `Wizard` indexed `steps[current_step]` unclamped; `ProgressDialog` kept a value outside
+    a moved range (a "180%" bar).
+  - **Special widgets.** `Snackbar` and `ToastStack` omitted their pending timers from
+    `is_animating()`, which is the bus's tick gate — the toast never expired and the bar never
+    retired under a real host. `ColorPicker` painted the recent-swatch band over OK/Cancel, so a
+    press on the painted OK committed nothing. `SignaturePad` used the interpolation count as a
+    `Vec` capacity (a tiny `min_point_distance` asked for ~6e10 points) and guarded `clear()` on
+    the committed list, letting `redo()` restore a cleared pad. `Canvas` grid steps above `i32::MAX`
+    became negative and the paint loop ran backwards forever; `ShapeCanvas` ignored a hosted shape's
+    visibility on both paths; `SplitButton` could not be dismissed after being disabled while open;
+    `CommandPalette` typed `C` for `Ctrl+C` before any `TextInput` arrived; `Breadcrumb` painted its
+    overflow marker and popup rows outside their boxes; `TimelineWidget` overflowed `i64` spans.
+- **The last five areas were read too, closing the sweep: 91 defects across the base controls, the
+  top-level widget modules, the overlay/Cupertino/macOS families, the companions and runtime, and the
+  capability contract** (10025 → 10116 tests; no snapshot moved).
+  - **Base controls.** `Button` disabled before cancelling its gesture, so a press latch survived a
+    disable (permanently `Pressed`, the next press silent, auto-repeat resuming); `command("click")`
+    bypassed the enabled gate; a pointer release never claimed an auto-exclusive selection.
+    `RadioButton`/`CheckBox` selected **before** notifying the peer, so the displaced (or chosen)
+    member never emitted its state edge. `Frame` ignored its declared width without a corner radius;
+    wrapped `CheckBox`/`RadioButton` labels were clickable only on their first line; `Label`'s wrapped
+    lines ignored `alignment`; `ToggleButton`'s hint height ignored the font and its disclosure hit
+    rect disagreed with the painted arrow; the default emphasis ring used the contrast colour instead
+    of the theme accent.
+  - **Substrate.** `SearchBox`, `TagInput` and `InplaceEditor` accepted IME input but were missing
+    from `wants_keyboard_focus`, so they could never be focused at all. `hints()` let `size_hint`
+    raise a declared `max_size`. A `RepaintMode::Full` frame repaint bumped the structure epoch, which
+    invalidated the whole tree's metrics cache every frame while one control animated. Disabling left
+    `pressed`/`grabbed`/`hovered` set. Controls that override `handle_event` never recorded interaction
+    state, so their `:hover`/`:pressed` theme entries were unreachable — the runtime now records it for
+    every delivery. `ordered_clamp` turned `NaN` into an upper bound; a zero-width border still painted
+    1 px; `text_subpath_count` counted shape paths as text; save-state restore applied a duplicate key
+    to every match; the census picked a hash-order-dependent dominant colour, leaked the global
+    appearance, and overwrote a host's preset theme.
+  - **Overlay/Cupertino/macOS.** `CupertinoSnackBar` omitted `closing` from `is_animating()`, so a
+    dismiss before the entrance tick left it stuck off-screen forever. A zero-height alert dialog
+    panicked in `clamp(1, height)`. The macOS popup list kept a private `visible` the runtime hit test
+    could not see, so a dismissed list swallowed every press in its rectangle. A FAB left hidden by
+    `hide_on_scroll` never came back when the mode was switched off, and still accepted clicks. A long
+    window title was centred past its elision budget and painted over the traffic lights; a long back
+    caption escaped its hit area; toolbar overflow was not announced on a resize; keyboard navigation
+    could select a disabled segment; an out-of-range `Some(row)` cleared a source list's selection.
+  - **Companions and runtime.** Five closed hosts kept `is_visible() == true` while painting nothing,
+    swallowing every press in their rectangle; the overlay branch of the hit test broke before
+    `contains_point`, so an open `Button` menu made presses outside it resolve to `None` for the whole
+    window. A tooltip re-showed itself forever after its duration and kept the window from idling; an
+    empty toast queue requested a redraw every frame. Six wheel handlers never claimed their notch, so
+    one notch scrolled both the control and the page behind it; two of them had the sign inverted.
+  - **Capability contract.** The designer manifest wrote a `+` prefix on non-negative integers to
+    distinguish `Int` from `UInt`, which is **not legal JSON** — every manifest with such a default was
+    rejected by `JSON.parse`, serde and `jq`. The protocol is now standard JSON (version 9) with the
+    signedness recovered from the declared `kind`. `swatch.colors` was declared as a scalar `Color`
+    although it carries a list (new `PropertyValueKind::ColorList`); `legend.entries` and
+    `filter_row.conditions` claimed `string-list` but carried mixed tuples (now `records` with real
+    schemas). Range controls reported `Ok` for a value they clamped — property writes now compare the
+    read-back and return `OutOfRange`. `write_property` now enforces the declared `kind`.
 
 ### Added
 

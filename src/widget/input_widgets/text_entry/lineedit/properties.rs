@@ -423,7 +423,7 @@ impl WidgetProperties for LineEdit {
             "clear_button_enabled" => Ok(CapabilityValue::Bool(self.clear_button_enabled())),
             "password_echo_on_edit" => Ok(CapabilityValue::Bool(self.password_echo_on_edit())),
             "drag_enabled" => Ok(CapabilityValue::Bool(self.drag_enabled())),
-            "scroll_x" => Ok(CapabilityValue::Int(self.scroll_x() as i64)),
+            "scroll_x" => Ok(CapabilityValue::UInt(self.scroll_x() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -518,12 +518,17 @@ impl WidgetProperties for LineEdit {
                 Ok(())
             }
             "scroll_x" => {
-                let offset = match value {
-                    CapabilityValue::Int(v) => v as i32,
-                    CapabilityValue::UInt(v) => v as i32,
-                    _ => return Err(CapabilityAccessError::TypeMismatch),
-                };
+                // The stored offset is an `i32` and can never be negative, so an offset that does
+                // not fit is refused rather than narrowed with `as` (which silently turned
+                // `1 << 40` into `0`). The control's own setter then clamps to the text's width,
+                // and a request the control moved is reported by `set` below rather than `Ok`.
+                let offset = expect_usize(value)?;
+                let offset =
+                    i32::try_from(offset).map_err(|_| CapabilityAccessError::OutOfRange)?;
                 self.set_scroll_x(offset);
+                if self.scroll_x() != offset {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
                 Ok(())
             }
             _ => base_property_set(self, name, value),

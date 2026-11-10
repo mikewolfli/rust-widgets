@@ -9,7 +9,8 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 
 use crate::widget::capability::coercion::{
-    expect_bool, expect_text_direction, expect_u32_saturating, expect_usize, text_direction_to_str,
+    confirm_stored_uint, expect_bool, expect_text_direction, expect_u32_in_range, expect_usize,
+    text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -1901,12 +1902,26 @@ impl WidgetProperties for TabBar {
                 Ok(())
             }
             "tab_min_width" => {
-                self.set_tab_min_width(expect_u32_saturating(value)?);
-                Ok(())
+                let requested = expect_u32_in_range(value)?;
+                // The setter floors at 1 and raises `tab_max_width` to meet a larger minimum. Both
+                // are sensible for the control's own API, but a *property* write must not report
+                // success for a value that changed, nor silently mutate a sibling property the
+                // caller did not write.
+                if requested < 1 || requested > self.tab_max_width() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_tab_min_width(requested);
+                confirm_stored_uint(self.get("tab_min_width")?, requested)
             }
             "tab_max_width" => {
-                self.set_tab_max_width(expect_u32_saturating(value)?);
-                Ok(())
+                let requested = expect_u32_in_range(value)?;
+                // The setter floors at the current minimum; a write below it would report `Ok`
+                // for a maximum the control did not store.
+                if requested < self.tab_min_width() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_tab_max_width(requested);
+                confirm_stored_uint(self.get("tab_max_width")?, requested)
             }
             "direction" => {
                 self.set_direction(expect_text_direction(value)?);

@@ -438,7 +438,10 @@ impl DataGrid {
     /// Applies every chooser change reported since the last poll.
     ///
     /// Called from `draw` and `handle_event`, so a chooser click is reflected by the next frame
-    /// without the host forwarding it. Returns whether any grid state changed.
+    /// without the host forwarding it. Returns whether the grid's **painted** state changed: a
+    /// visibility report changes it, while an order-only report is recorded in
+    /// [`Self::column_display_order`] and changes no pixel (the grid paints and hit-tests by
+    /// absolute source index), so it must not claim a change.
     pub fn poll_column_chooser(&mut self) -> bool {
         let Some(binding) = self.column_chooser.as_ref() else {
             return false;
@@ -457,8 +460,6 @@ impl DataGrid {
         }
         if !reported_order.is_empty() && reported_order != self.column_order {
             self.column_order = reported_order;
-            self.base.request_redraw();
-            changed = true;
         }
         changed
     }
@@ -935,5 +936,63 @@ impl DataGrid {
             .collect();
         self.set_filter_expr(expr);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Source {
+        data: Vec<Vec<String>>,
+    }
+
+    impl IncrementalTableDataSource for Source {
+        fn row_count(&self) -> usize {
+            self.data.len()
+        }
+
+        fn column_count(&self) -> usize {
+            self.data.first().map_or(0, Vec::len)
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            self.data.get(row).and_then(|line| line.get(column)).cloned()
+        }
+    }
+
+    /// The chooser's order is recorded by the grid but not applied: the grid paints and
+    /// hit-tests by absolute source index, so an order-only report changes no pixel and must not
+    /// claim one. A visibility report does change pixels and still reports.
+    #[test]
+    fn an_order_only_chooser_report_is_recorded_without_claiming_a_change() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 300, 200));
+        grid.set_data_source(Arc::new(Source {
+            data: (0..4)
+                .map(|row| (0..3).map(|column| format!("{row}:{column}")).collect())
+                .collect(),
+        }));
+        let mut chooser = ColumnChooser::new(Rect::new(0, 0, 220, 260));
+        chooser.set_columns(vec![
+            ColumnSpec::new("A", 100),
+            ColumnSpec::new("B", 100),
+            ColumnSpec::new("C", 100),
+        ]);
+        grid.attach_column_chooser(&chooser);
+        assert_eq!(grid.column_display_order(), vec![0, 1, 2]);
+
+        assert!(chooser.move_column(0, 2));
+        assert!(!grid.poll_column_chooser(), "an order-only report changes no painted state");
+        assert_eq!(
+            grid.column_display_order(),
+            vec![1, 2, 0],
+            "the reported order is still recorded as state"
+        );
+
+        let token = chooser.columns()[1].to_token();
+        assert!(chooser.set_column_visible(&token, false));
+        assert!(grid.poll_column_chooser(), "a visibility change is painted");
+        assert!(grid.is_column_hidden(2), "C was hidden");
+        assert!(!grid.poll_column_chooser(), "the queue is drained");
     }
 }

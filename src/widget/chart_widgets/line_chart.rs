@@ -873,6 +873,11 @@ impl LineChart {
     }
 
     /// Sets manual axis ranges. Pass `None` for any axis to auto-compute.
+    ///
+    /// A non-finite bound is treated as `None`, an inverted pair is ordered, and an equal pair is
+    /// widened — the same defences the auto path (`padded_range`) and `ChartWidget::set_zoom_y`
+    /// apply. Without them a zero span reached `AxisConfig::fraction`, which answers `0.0` for
+    /// every value, collapsing all points onto one pixel and leaving the axis with no ticks.
     pub fn set_axis_range(
         &mut self,
         x_min: Option<f64>,
@@ -880,11 +885,26 @@ impl LineChart {
         y_min: Option<f64>,
         y_max: Option<f64>,
     ) {
+        let (x_min, x_max) = Self::normalise_manual_range(x_min, x_max);
+        let (y_min, y_max) = Self::normalise_manual_range(y_min, y_max);
         self.x_min = x_min;
         self.x_max = x_max;
         self.y_min = y_min;
         self.y_max = y_max;
         self.base.request_redraw();
+    }
+
+    /// Validates one manual axis pair for storage.
+    fn normalise_manual_range(min: Option<f64>, max: Option<f64>) -> (Option<f64>, Option<f64>) {
+        let min = min.filter(|value| value.is_finite());
+        let max = max.filter(|value| value.is_finite());
+        match (min, max) {
+            (Some(min), Some(max)) if min > max => (Some(max), Some(min)),
+            (Some(min), Some(max)) if (max - min) <= f64::EPSILON => {
+                (Some(min - 1.0), Some(max + 1.0))
+            }
+            bounds => bounds,
+        }
     }
 
     /// Returns the current X-axis minimum (manual or auto-computed).
@@ -3050,11 +3070,12 @@ mod tests {
     ///
     /// Observable proof: with labels enabled the engine emits numeric tick
     /// labels for both axes. They are `font8x8` glyph geometry now, so the string is not in the
-    /// document and the check is on where the ink landed. `draw_y_ticks` anchors every label at
-    /// `plot_x - 44 = 20` and `draw_x_ticks` spreads five labels across the plot, each clamped
-    /// inside it — so the y-axis column and the x-axis row are two different bands, and a widget
-    /// that drew neither (or drew one axis only) cannot produce both. The previous hand-rolled
-    /// path drew them too, so this also guards that the migration kept that behaviour.
+    /// document and the check is on where the ink landed. `draw_y_ticks` right-anchors every
+    /// label at `plot_x - 4 = 60` (the ink's *right* edge) and `draw_x_ticks` spreads five labels
+    /// across the plot, each clamped inside it — so the y-axis column and the x-axis row are two
+    /// different bands, and a widget that drew neither (or drew one axis only) cannot produce
+    /// both. The previous hand-rolled path drew them too, so this also guards that the migration
+    /// kept that behaviour.
     ///
     /// Gated on the feature, like `ink_paths` and the module's other `chart`-dependent items:
     /// a build without `chart` compiles this test module and the engine it exercises is absent.
@@ -3072,14 +3093,15 @@ mod tests {
         let svg = render_to_svg(&mut lc);
         let runs = ink_paths(&svg);
 
-        // The Y axis: five labels anchored at box x = 20, and `0.0`/`50.0` are two characters of
-        // ink wide where `25.0` is three. `draw_y_ticks` labels `min_y + span * t`, so the ticks
-        // carry different values and therefore different ink. The anchor is where the glyph **box**
-        // starts; the bitmap face's ink left *is* that edge, but an outline glyph is inset a pixel
-        // or two, so the locator allows `INK_INSET_TOLERANCE` and nothing more.
+        // The Y axis: five labels whose ink *ends* at the plot's leading edge minus 4 px
+        // (`plot_x - 4 = 60`), and `0.0`/`50.0` are two characters of ink wide where `25.0` is
+        // three. `draw_y_ticks` labels `min_y + span * t`, so the ticks carry different values
+        // and therefore different ink. The anchor is the glyph box's right edge; an outline glyph
+        // is inset a pixel or two from it, so the locator allows `INK_INSET_TOLERANCE` and nothing
+        // more.
         let y_axis: Vec<_> = runs
             .iter()
-            .filter(|run| (run.0 - 20).abs() <= INK_INSET_TOLERANCE && run.2 > 20)
+            .filter(|run| (run.2 - 60).abs() <= INK_INSET_TOLERANCE && run.1 < 160)
             .collect();
         assert_eq!(y_axis.len(), 5, "one y-tick label per tick: {y_axis:?}");
         // An outline's ink is the glyph's **real** width, which is narrower than the advance, so the
@@ -3113,6 +3135,31 @@ mod tests {
             x_axis.iter().any(|run| run.0 > 200),
             "the labels are distributed along the axis, not stacked on one tick: {x_axis:?}"
         );
+    }
+
+    /// A manual axis pair is normalised instead of collapsing the plot onto one pixel.
+    ///
+    /// # The defect this pins
+    ///
+    /// `set_axis_range(Some(5.0), Some(5.0), ..)` stored the equal pair verbatim. `AxisConfig::fraction`
+    /// answers `0.0` for a zero span, so every point landed on `plot_x` and `axis_tick_values`
+    /// returned no labels. A non-finite or inverted bound is just as unusable.
+    #[test]
+    fn a_degenerate_manual_axis_range_is_normalised() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
+        lc.set_data(vec![(0.0, 1.0), (1.0, 2.0)]);
+
+        lc.set_axis_range(Some(5.0), Some(5.0), Some(5.0), Some(5.0));
+        let (x_min, x_max) = lc.resolve_x_range();
+        let (y_min, y_max) = lc.resolve_y_range();
+        assert!(x_max > x_min, "an equal x pair is widened: {x_min}..{x_max}");
+        assert!(y_max > y_min, "an equal y pair is widened: {y_min}..{y_max}");
+
+        lc.set_axis_range(Some(10.0), Some(0.0), Some(f64::NAN), Some(100.0));
+        assert_eq!(lc.x_min(), Some(0.0), "an inverted pair is ordered");
+        assert_eq!(lc.x_max(), Some(10.0));
+        assert_eq!(lc.y_min(), None, "a non-finite bound falls back to auto");
+        assert_eq!(lc.y_max(), Some(100.0));
     }
 
     /// Grid toggling must reach the shared engine: enabling it increases the

@@ -1412,11 +1412,12 @@ macro_rules! impl_properties_other {
         /// Palette grid shared by the colour controls (`COMP-01`).
         ///
         /// `colors` is a list of typed colours carried as a `Tuple` of
-        /// `CapabilityValue::Color`; the schema names the element kind because there is no
-        /// dedicated colour-list kind in `PropertyValueKind`.
+        /// `CapabilityValue::Color`; `ColorList` is the list kind that describes that carrier, so
+        /// a read, a write and the derived `set_colors` command all agree that the value is a
+        /// list rather than one colour.
         #[cfg(not(alloc_frugal))]
         pub(crate) const SWATCH_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("colors", PropertyValueKind::Color, true, true),
+            PropertySchema::new("colors", PropertyValueKind::ColorList, true, true),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("cell_size", PropertyValueKind::UInt, true, true),
             PropertySchema::new("columns", PropertyValueKind::UInt, true, true),
@@ -1426,12 +1427,68 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        /// One legend entry as a record (`COMP-07`).
+        ///
+        /// The property used to be declared `StringList` while the control read and wrote a
+        /// `(String, Color, Bool)` tuple per entry, so the declared kind described neither the
+        /// carrier nor the element shapes. A label has no stable id, so the schema keys on it
+        /// without requiring uniqueness — two series may legitimately share a label.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const LEGEND_ENTRY_SCHEMA: crate::widget::capability::RecordSchema =
+            crate::widget::capability::RecordSchema {
+                fields: &[
+                    crate::widget::capability::RecordField::required(
+                        "label",
+                        PropertyValueKind::String,
+                    ),
+                    crate::widget::capability::RecordField::required(
+                        "color",
+                        PropertyValueKind::Color,
+                    ),
+                    crate::widget::capability::RecordField::required(
+                        "visible",
+                        PropertyValueKind::Bool,
+                    ),
+                ],
+                id_field: "label",
+                ids_unique: false,
+                ids_required: false,
+            };
+
+        /// One filter condition as a record (`COMP-05`).
+        ///
+        /// The reader produced a `(UInt, String, String)` tuple but the property was declared
+        /// `StringList`; this schema is the shape both directions actually use. Conditions are
+        /// positional, so the identity field is a declared field the uniqueness rule ignores.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const FILTER_CONDITION_SCHEMA: crate::widget::capability::RecordSchema =
+            crate::widget::capability::RecordSchema {
+                fields: &[
+                    crate::widget::capability::RecordField::required(
+                        "column",
+                        PropertyValueKind::UInt,
+                    ),
+                    crate::widget::capability::RecordField::required(
+                        "operator",
+                        PropertyValueKind::String,
+                    ),
+                    crate::widget::capability::RecordField::required(
+                        "operand",
+                        PropertyValueKind::String,
+                    ),
+                ],
+                id_field: "column",
+                ids_unique: false,
+                ids_required: false,
+            };
+
         /// One filter editor per column (`COMP-05`).
         #[cfg(not(alloc_frugal))]
         pub(crate) const FILTER_ROW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("columns", PropertyValueKind::StringList, true, true),
-            // Each entry is the `[column, operator, operand]` triple the reader produces.
-            PropertySchema::new("conditions", PropertyValueKind::StringList, true, true),
+            // Each entry is a record the schema declares, rather than a `StringList` whose
+            // elements are really `(column, operator, operand)` triples.
+            PropertySchema::records("conditions", true, true, &FILTER_CONDITION_SCHEMA),
             PropertySchema::enumerated(
                 "operator",
                 true,
@@ -1459,8 +1516,8 @@ macro_rules! impl_properties_other {
         /// Series key for charts (`COMP-07`).
         #[cfg(not(alloc_frugal))]
         pub(crate) const LEGEND_PROPERTIES: &[PropertySchema] = &[
-            // Each entry is the `[label, colour, visible]` triple the reader produces.
-            PropertySchema::new("entries", PropertyValueKind::StringList, true, true),
+            // Each entry is a record of `label`/`color`/`visible`, the shape the reader produces.
+            PropertySchema::records("entries", true, true, &LEGEND_ENTRY_SCHEMA),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
             PropertySchema::new("checkable", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated(

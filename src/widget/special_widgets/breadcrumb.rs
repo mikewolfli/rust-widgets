@@ -348,9 +348,10 @@ impl Breadcrumb {
 
     /// Shows the full path even when it is wider than the band.
     ///
-    /// The extra segments are clipped by the band, but they are laid out and hit-testable,
-    /// which is what a host showing its own overflow popup needs them to be. A caller that
-    /// wants the automatic fold back calls [`Self::collapse`].
+    /// The extra segments are laid out past the band, but the paint and [`Self::hit_index`] both
+    /// clamp to the band: only the part inside the band is painted or clickable. A host showing
+    /// its own overflow popup can still read the layout, which is what keeps that use case. A
+    /// caller that wants the automatic fold back calls [`Self::collapse`].
     pub fn expand(&mut self) {
         if self.overflow_expanded {
             return;
@@ -413,23 +414,41 @@ impl Breadcrumb {
         &self.segments[1..self.segments.len() - 1]
     }
 
-    /// The popup's rectangle: one row per hidden segment, anchored under the trail.
+    /// The popup's rectangle: one row per hidden segment that fits, anchored under the trail.
     fn overflow_popup_rect(&self) -> Option<Rect> {
-        let hidden = self.hidden_segments().len();
-        if !self.overflow_open || hidden == 0 {
+        if !self.overflow_open {
+            return None;
+        }
+        let rows = self.overflow_visible_rows();
+        if rows == 0 {
             return None;
         }
         let band = self.band();
         let geometry = self.geometry();
         let top = band.y + band.height as i32;
         let available = (geometry.y + geometry.height as i32 - top).max(0) as u32;
-        if available == 0 {
-            return None;
-        }
-        let rows = hidden.min((available / Self::OVERFLOW_ROW_HEIGHT).max(1) as usize);
         let height = (rows as u32) * Self::OVERFLOW_ROW_HEIGHT + Self::OVERFLOW_PADDING * 2;
         let width = band.width.clamp(80, 240);
         Some(Rect::new(band.x, top, width, height.min(available)))
+    }
+
+    /// How many hidden-segment rows fit below the trail.
+    ///
+    /// One derivation for the popup bounds, the paint loop and the hit test, so a capped popup
+    /// cannot paint or address rows outside itself.
+    fn overflow_visible_rows(&self) -> usize {
+        let hidden = self.hidden_segments().len();
+        if hidden == 0 {
+            return 0;
+        }
+        let band = self.band();
+        let geometry = self.geometry();
+        let top = band.y + band.height as i32;
+        let available = (geometry.y + geometry.height as i32 - top).max(0) as u32;
+        if available == 0 {
+            return 0;
+        }
+        hidden.min((available / Self::OVERFLOW_ROW_HEIGHT).max(1) as usize)
     }
 
     /// The segment index under `pos` while the popup is open.
@@ -443,6 +462,9 @@ impl Breadcrumb {
             return None;
         }
         let row = (offset as u32) / Self::OVERFLOW_ROW_HEIGHT;
+        if (row as usize) >= self.overflow_visible_rows() {
+            return None;
+        }
         let hidden = self.hidden_segments();
         if (row as usize) >= hidden.len() {
             return None;
@@ -453,7 +475,7 @@ impl Breadcrumb {
     /// The rectangle one popup row occupies, for tests and a host that draws its own menu.
     pub fn overflow_row_rect(&self, hidden_index: usize) -> Option<Rect> {
         let popup = self.overflow_popup_rect()?;
-        if hidden_index >= self.hidden_segments().len() {
+        if hidden_index >= self.overflow_visible_rows() {
             return None;
         }
         let y = popup.y
@@ -1033,11 +1055,25 @@ impl Draw for Breadcrumb {
         }
 
         let slots = self.cached_slots();
+        let band_right = band.x + band.width as i32;
         let mut slot_x = band.x;
         for (position, (slot, width)) in slots.iter().enumerate() {
+            if slot_x >= band_right {
+                break;
+            }
             let Some(index) = *slot else {
-                // Collapsed middle: one marker standing in for the hidden segments.
-                let rect = Rect::new(slot_x, band.y, *width as u32, band.height);
+                // Collapsed middle: one marker standing in for the hidden segments. It is clamped
+                // to the band like a segment, so a wide first label cannot paint `…` past the
+                // control where the hit test can never reach it.
+                let visible = (*width).min(band_right - slot_x).max(0) as u32;
+                if visible == 0 {
+                    slot_x += width;
+                    if position + 1 < slots.len() {
+                        slot_x += self.separator_width;
+                    }
+                    continue;
+                }
+                let rect = Rect::new(slot_x, band.y, visible, band.height);
                 let line = context.text_line(rect, font);
                 context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x, line.y, rect.width, line.height),
@@ -1159,8 +1195,61 @@ impl Draw for Breadcrumb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Font;
+    use crate::core::{Color, Font, Size};
+    use crate::render::{
+        PaintBackend, RenderCommand, RenderContext, ShapedText, SoftwarePaintBackend,
+        SoftwareRenderConfig, TextMetrics,
+    };
     use std::sync::{Arc, Mutex};
+
+    /// A backend that records every command in draw order.
+    struct Recorder {
+        commands: Vec<RenderCommand>,
+        inner: SoftwarePaintBackend,
+    }
+
+    impl Recorder {
+        fn new(size: Size) -> Self {
+            Self { commands: Vec::new(), inner: SoftwarePaintBackend::new(size, 1.0) }
+        }
+    }
+
+    impl PaintBackend for Recorder {
+        fn begin_frame(&mut self, clear: Color) {
+            self.inner.begin_frame(clear);
+        }
+        fn end_frame(&mut self) {
+            self.inner.end_frame();
+        }
+        fn execute_command(&mut self, command: &RenderCommand) {
+            self.commands.push(command.clone());
+            self.inner.execute_command(command);
+        }
+        fn size(&self) -> Size {
+            self.inner.size()
+        }
+        fn set_size(&mut self, size: Size) {
+            self.inner.set_size(size);
+        }
+        fn dpi_scale(&self) -> f32 {
+            self.inner.dpi_scale()
+        }
+        fn set_dpi_scale(&mut self, scale: f32) {
+            self.inner.set_dpi_scale(scale);
+        }
+        fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
+            self.inner.measure_text(text, font)
+        }
+        fn shape_text(&self, text: &str, font: &Font) -> crate::compat::Rc<ShapedText> {
+            self.inner.shape_text(text, font)
+        }
+        fn frame_rgba(&self) -> &[u8] {
+            self.inner.frame_rgba()
+        }
+        fn apply_render_config(&mut self, config: SoftwareRenderConfig) {
+            self.inner.apply_render_config(config);
+        }
+    }
 
     fn sample_segments() -> Vec<BreadcrumbSegment> {
         vec![
@@ -1501,5 +1590,93 @@ mod tests {
         let rect = breadcrumb.segment_rect_at(1).expect("the second segment is laid out");
         assert!(breadcrumb.context_menu_event(Point::new(rect.x + 2, rect.y + 2)));
         assert_eq!(*asked.lock().unwrap(), vec!["project".to_string()]);
+    }
+
+    /// A collapsed marker whose slot starts past the band is not painted outside the control.
+    ///
+    /// The segment branch clamped its width to the band; the marker branch did not, so with a
+    /// first label wider than the whole trail it painted `…` beyond the band's right edge —
+    /// where `hit_index`/`overflow_at` can never reach it.
+    #[test]
+    fn an_off_band_marker_is_not_painted_outside_the_trail() {
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 140, 28));
+        breadcrumb.set_segments(vec![
+            BreadcrumbSegment::new("wide", "W".repeat(60)),
+            BreadcrumbSegment::new("middle", "Middle"),
+            BreadcrumbSegment::new("leaf", "Leaf"),
+        ]);
+        let band = breadcrumb.band();
+
+        let mut recorder = Recorder::new(Size::new(140, 28));
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            breadcrumb.draw(&mut context);
+        }
+        recorder.end_frame();
+
+        let stray = recorder.commands.iter().find_map(|command| match command {
+            RenderCommand::DrawText { text, origin, .. } if text.as_ref() == "…" => {
+                (origin.x >= band.x + band.width as i32).then_some(origin.x)
+            }
+            _ => None,
+        });
+        assert!(stray.is_none(), "the collapsed marker painted past the band at x={stray:?}");
+    }
+
+    /// The popup paints, hit-tests and reports only the rows that fit below the trail.
+    ///
+    /// `overflow_popup_rect` capped `rows` to the available height, but the paint loop and
+    /// `overflow_row_at`/`overflow_row_rect` still addressed every hidden segment: rows past
+    /// the popup's bottom edge were painted below it and were clickable there.
+    #[test]
+    fn the_overflow_popup_bounds_its_rows_to_the_room_below_the_trail() {
+        // Height 108 centres the 28 px band at 40, leaving 40 px below it.
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 200, 108));
+        let mut segments = vec![BreadcrumbSegment::new("first", "W".repeat(40))];
+        for index in 0..5 {
+            segments
+                .push(BreadcrumbSegment::new(format!("hidden{index}"), format!("Hidden {index}")));
+        }
+        segments.push(BreadcrumbSegment::new("last", "W".repeat(40)));
+        breadcrumb.set_segments(segments);
+        assert_eq!(breadcrumb.collapsed_count(), 5);
+        breadcrumb.open_overflow();
+
+        let popup = breadcrumb.overflow_popup_rect().expect("the popup is open");
+        let rows = breadcrumb.overflow_visible_rows();
+        assert_eq!(rows, 2, "40 px holds two 18 px rows");
+        assert!(breadcrumb.overflow_row_rect(rows - 1).is_some());
+        assert!(
+            breadcrumb.overflow_row_rect(rows).is_none(),
+            "a row past the popup's cap must not report a rectangle"
+        );
+
+        let beyond = popup.y
+            + Breadcrumb::OVERFLOW_PADDING as i32
+            + rows as i32 * Breadcrumb::OVERFLOW_ROW_HEIGHT as i32
+            + 9;
+        assert_eq!(
+            breadcrumb.overflow_row_at(Point::new(popup.x + 10, beyond)),
+            None,
+            "a press below the popup's bottom edge addresses no hidden segment"
+        );
+
+        // The paint stops at the same cap: the third hidden label is never drawn.
+        let mut recorder = Recorder::new(Size::new(200, 108));
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            breadcrumb.draw(&mut context);
+        }
+        recorder.end_frame();
+        let third = breadcrumb.hidden_segments()[2].label.clone();
+        assert!(
+            !recorder.commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::DrawText { text, .. } if text.as_ref() == third.as_str()
+            )),
+            "the paint must not draw a row the popup did not allocate"
+        );
     }
 }

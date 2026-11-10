@@ -593,24 +593,48 @@ impl ToolBox {
         if count == 0 {
             return;
         }
-        let share = content.height / count;
+        // The open pages tile the box along its **long axis**, which follows the strip's
+        // orientation: a horizontal tool box has a short left strip and a wide content box, so its
+        // pages sit side by side. Always tiling by height stacked them vertically instead.
+        let share = match self.orientation {
+            Orientation::Horizontal => content.width / count,
+            Orientation::Vertical => content.height / count,
+        };
         let mut slot = 0u32;
         for (index, item) in self.items.iter().enumerate() {
             if !item.expanded {
                 continue;
             }
             let offset = slot * share;
-            let height =
-                if slot + 1 == count { content.height.saturating_sub(offset) } else { share };
-            rects.push((
-                index,
-                Rect::new(
-                    content.x,
-                    content.y.saturating_add_unsigned(offset),
-                    content.width,
-                    height,
-                ),
-            ));
+            let rect = match self.orientation {
+                Orientation::Horizontal => {
+                    let width = if slot + 1 == count {
+                        content.width.saturating_sub(offset)
+                    } else {
+                        share
+                    };
+                    Rect::new(
+                        content.x.saturating_add_unsigned(offset),
+                        content.y,
+                        width,
+                        content.height,
+                    )
+                }
+                Orientation::Vertical => {
+                    let height = if slot + 1 == count {
+                        content.height.saturating_sub(offset)
+                    } else {
+                        share
+                    };
+                    Rect::new(
+                        content.x,
+                        content.y.saturating_add_unsigned(offset),
+                        content.width,
+                        height,
+                    )
+                }
+            };
+            rects.push((index, rect));
             slot += 1;
         }
     }
@@ -2404,5 +2428,34 @@ mod tests {
         );
 
         crate::widget::runtime::unregister(id);
+    }
+
+    /// Open pages tile along the toolbar's long axis.
+    ///
+    /// `page_rects_into` always divided `content.height`, so a horizontal toolbox stacked its
+    /// open pages vertically and left the wide content box mostly unused. A horizontal strip
+    /// means a wide content box, so its pages sit side by side along x.
+    #[test]
+    fn horizontal_pages_tile_along_x() {
+        let mut tool_box = ToolBox::new(Rect::new(0, 0, 400, 200));
+        tool_box.set_orientation(Orientation::Horizontal);
+        tool_box.set_mode(ToolBoxMode::NonExclusive);
+        tool_box.add_item("First".to_string(), None);
+        tool_box.add_item("Second".to_string(), None);
+        // The first item opens on add; open the second alongside it.
+        tool_box.set_item_expanded(1, true);
+
+        let content = tool_box.content_rect();
+        let rects = tool_box.page_rects(content);
+        assert_eq!(rects.len(), 2, "both open pages are tiled");
+        let (first_index, first) = rects[0];
+        let (second_index, second) = rects[1];
+        assert_eq!((first_index, second_index), (0, 1));
+
+        assert_ne!(first.x, second.x, "horizontal pages tile side by side along x");
+        assert_eq!(first.y, second.y, "and share the same y band");
+        assert_eq!(first.height, content.height, "each page spans the content height");
+        assert_eq!(second.height, content.height);
+        assert_eq!(first.width + second.width, content.width, "the pages share the width");
     }
 }

@@ -546,6 +546,11 @@ fn value_matches_kind(value: &CapabilityValue, kind: PropertyValueKind) -> bool 
                     CapabilityValue::Float(_) | CapabilityValue::Int(_) | CapabilityValue::UInt(_)
                 ))
         ),
+        PropertyValueKind::ColorList => matches!(
+            value,
+            CapabilityValue::Tuple(items)
+                if items.iter().all(|item| matches!(item, CapabilityValue::Color(_)))
+        ),
         // A field whose declared kind is itself a record list: no control declares one, and
         // accepting any `Records` value here would let an unvalidated nested list through under the
         // name of a field. Refused rather than guessed.
@@ -579,6 +584,12 @@ impl RecordOperation {
 /// Why a record list does not conform to its schema, or why an edit on it was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordViolation {
+    /// A property declares a record list but publishes no schema for it.
+    ///
+    /// Refused rather than treated as an open list: a list whose shape nothing declared cannot be
+    /// checked, and accepting it would be the "unvalidated value under a declared name" the
+    /// property's `record_schema` field exists to prevent.
+    SchemaMissing,
     /// The schema names an identity field it does not declare, so nothing can be keyed on it.
     SchemaHasNoIdField {
         /// The field the schema named.
@@ -659,7 +670,9 @@ impl RecordViolation {
             | Self::EmptyId { index } => Some(*index),
             Self::DuplicateId { second, .. } => Some(*second),
             Self::IndexOutOfRange { index, .. } => Some(*index),
-            Self::SchemaHasNoIdField { .. } | Self::UnknownFieldName { .. } => None,
+            Self::SchemaMissing
+            | Self::SchemaHasNoIdField { .. }
+            | Self::UnknownFieldName { .. } => None,
         }
     }
 }
@@ -667,6 +680,9 @@ impl RecordViolation {
 impl core::fmt::Display for RecordViolation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::SchemaMissing => {
+                write!(f, "the property declares a record list but publishes no record schema")
+            }
             Self::SchemaHasNoIdField { field } => write!(
                 f,
                 "the record schema names `{field}` as its identity field but does not declare it"

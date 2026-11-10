@@ -367,6 +367,9 @@ impl SplitButton {
             return;
         }
         self.row_height = row_height;
+        // A shorter row fits more of the capped panel, so the existing scroll offset can name a
+        // window past the new last row and leave the tail of the menu blank.
+        self.clamp_menu_scroll();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -806,7 +809,14 @@ impl SplitButton {
         {
             return None;
         }
-        let index = ((pos.y - menu.y) / self.row_height as i32) as usize + self.menu_scroll;
+        // Only the rows the paint actually issued are targets: `menu_height` can be a cap that
+        // is not a whole number of rows, so the unpainted remainder at the bottom must not map
+        // to the next action (which would select a row the user cannot see).
+        let visible = ((pos.y - menu.y) / self.row_height.max(1) as i32) as usize;
+        if visible >= self.visible_menu_rows() {
+            return None;
+        }
+        let index = visible + self.menu_scroll;
         (index < self.actions.len()).then_some(index)
     }
 }
@@ -830,13 +840,48 @@ impl Widget for SplitButton {
     /// control's bottom edge — the rows would be painted and unreachable.
     fn contains_point(&self, point: Point) -> bool {
         self.base().contains_point_with_touch_expansion(point)
-            || (self.menu_open && self.menu_rect().contains_point(point))
+            || (self.base().is_enabled()
+                && self.menu_open
+                && self.menu_rect().contains_point(point))
     }
 
     /// The open drop-down is a real popup, so the runtime lets it win the hit test against a
     /// sibling that covers the same pixels and treats an outside press as its dismissal.
     fn has_open_popup(&self) -> bool {
-        self.menu_open
+        self.base().is_enabled() && self.menu_open
+    }
+
+    /// Disabling the control closes an open drop-down **and releases its grab**.
+    ///
+    /// `handle_event` returns before the dismissal arms once the control is disabled, so a menu
+    /// left open by the flag alone could never be closed: it kept the popup grab and its rows
+    /// kept answering `contains_point`, but no press could reach the code that closes it. Clearing
+    /// the transient pointer state is the same requirement the slider and meter document.
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.base.is_enabled() == enabled {
+            return;
+        }
+        if !enabled {
+            self.close_menu();
+            self.hovered_primary = false;
+            self.hovered_arrow = false;
+            self.pressed_primary = false;
+            self.pressed_arrow = false;
+        }
+        self.base_mut().set_enabled(enabled);
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base().id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
+        self.set_state_theme_hook();
+        self.base.request_redraw();
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base().id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
     }
 
     /// Advances the drop-down's open/close reveal; `true` while it still owes frames.
@@ -1447,6 +1492,76 @@ mod tests {
         let menu = button.menu_rect();
         let face = button.face_band();
         assert_eq!(menu.y + menu.height as i32, face.y, "an upward menu ends at the face top");
+    }
+
+    /// A press in a capped menu's unpainted remainder must not select the row below it.
+    ///
+    /// # What this pins
+    ///
+    /// The hit test mapped the whole `menu_rect` to rows while the paint issued only
+    /// `menu_height / row_height` of them. With five actions, `row_height == 22` and a 100 px cap
+    /// the last painted row ended 88 px below the menu's top, yet a press at 95 px resolved to
+    /// index 4 and closed the menu after selecting a row the user could not see.
+    #[test]
+    fn a_press_on_the_unpainted_remainder_does_not_select_the_next_row() {
+        let mut button = SplitButton::new("Run", Rect::new(0, 0, 200, 28));
+        button.set_actions((0..5).map(|i| SplitAction::new(format!("a{i}"), "row")).collect());
+        button.set_max_menu_height(Some(100));
+        button.open_menu();
+        assert_eq!(button.visible_menu_rows(), 4, "only four whole rows fit the cap");
+
+        let menu = button.menu_rect();
+        let last_painted = Point::new(menu.x + 4, menu.y + 4 * 22 - 1);
+        assert_eq!(button.hit_menu_index(last_painted), Some(3));
+
+        let remainder = Point::new(menu.x + 4, menu.y + 95);
+        assert_eq!(button.hit_menu_index(remainder), None, "past the painted rows");
+        button.handle_event(&Event::MousePress { pos: remainder, button: 1, modifiers: 0 });
+        assert!(!button.menu_open(), "the press dismisses rather than selects a hidden row");
+    }
+
+    /// Disabling a split button with its menu open closes the menu and releases the popup grab.
+    ///
+    /// # What this pins
+    ///
+    /// `handle_event` returns before the dismissal arms once the control is disabled, while the
+    /// menu flag, the popup grab and `contains_point` all stayed live — so the popup could never
+    /// be dismissed for the rest of the disabled period.
+    #[test]
+    fn disabling_closes_the_open_menu_and_drops_its_claim_on_the_pointer() {
+        let mut split = SplitButton::new("Run", Rect::new(0, 0, 160, 28));
+        split.set_actions(sample_actions());
+        split.open_menu();
+        let menu = split.menu_rect();
+        let row = Point::new(menu.x + 4, menu.y + 4);
+        assert!(split.has_open_popup());
+        assert!(split.contains_point(row));
+
+        split.set_enabled(false);
+        assert!(!split.menu_open(), "disabling dismisses the drop-down");
+        assert!(!split.has_open_popup(), "and the runtime no longer sees a popup");
+        assert!(!split.contains_point(row), "nor does the dismissed menu claim the pointer");
+    }
+
+    /// A shorter menu row leaves no stale scroll window behind.
+    ///
+    /// # What this pins
+    ///
+    /// `set_row_height` changed the rendered geometry without re-clamping `menu_scroll`. A capped
+    /// menu scrolled to its last window could then fit every row at the new height while still
+    /// starting part-way through the list, leaving the tail of the panel blank.
+    #[test]
+    fn changing_the_row_height_reclamps_the_scrolled_window() {
+        let mut split = SplitButton::new("Run", Rect::new(0, 0, 200, 28));
+        split.set_actions((0..5).map(|i| SplitAction::new(format!("a{i}"), "row")).collect());
+        split.set_row_height(30);
+        split.set_max_menu_height(Some(100));
+        split.open_menu();
+        split.set_menu_scroll(2);
+        assert_eq!(split.menu_scroll(), 2, "three 30 px rows fit the 100 px cap");
+
+        split.set_row_height(10);
+        assert_eq!(split.menu_scroll(), 0, "all five 10 px rows fit the cap now");
     }
 
     #[test]

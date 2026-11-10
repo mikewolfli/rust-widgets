@@ -36,6 +36,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::chart_widgets::charts::AxisConfig;
 use crate::widget::chart_widgets::{BarChart, LineChart};
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -115,6 +116,14 @@ pub struct ChartReferenceLine {
     value_range: Option<(f64, f64)>,
     /// The x-axis range from the attached chart's last paint.
     x_range: Option<(f64, f64)>,
+    /// The value axis' mapping (scale and direction) from the attached chart.
+    ///
+    /// The ranges alone are not enough: a reversed or logarithmic axis places its values
+    /// somewhere other than the linear interpolation of `min..max`, so a line copied from the
+    /// chart's range but not its `AxisConfig` lands on the wrong pixel.
+    value_axis: AxisConfig,
+    /// The x axis' mapping (scale and direction) from the attached chart.
+    x_axis: AxisConfig,
     /// The line index the pointer currently sits on, so a crossing emits once.
     hovered: Option<usize>,
     /// The labels painted for the current line set, keyed by `lines_revision`.
@@ -146,6 +155,8 @@ impl ChartReferenceLine {
             plot_area: None,
             value_range: None,
             x_range: None,
+            value_axis: AxisConfig::default(),
+            x_axis: AxisConfig::default(),
             hovered: None,
             label_cache: RefCell::new(None),
             lines_revision: 0,
@@ -275,6 +286,8 @@ impl ChartReferenceLine {
         self.plot_area = chart.last_plot_area();
         self.value_range = chart.value_range();
         self.x_range = chart.x_range();
+        self.value_axis = chart.y_axis_config();
+        self.x_axis = chart.x_axis_config();
         self.hovered = None;
         self.base.request_redraw();
     }
@@ -289,6 +302,10 @@ impl ChartReferenceLine {
         self.plot_area = chart.last_plot_area();
         self.value_range = chart.value_range();
         self.x_range = chart.category_index_range();
+        self.value_axis = chart.value_axis_config();
+        // The category axis' reversal is already encoded in `category_index_range` (it returns
+        // the pair in descending order), so the linear fraction is the painter's mapping.
+        self.x_axis = AxisConfig::default();
         self.hovered = None;
         self.base.request_redraw();
     }
@@ -307,22 +324,31 @@ impl ChartReferenceLine {
     /// Maps a value on the Y axis to its pixel row, or `None` when it cannot be placed.
     fn value_pixel(&self, value: f64) -> Option<i32> {
         let (min, max) = self.value_range?;
-        if !value.is_finite() || !min.is_finite() || !max.is_finite() || max == min {
+        if !value.is_finite()
+            || !min.is_finite()
+            || !max.is_finite()
+            || (max - min).abs() <= f64::EPSILON
+        {
             return None;
         }
         let plot = self.plot();
-        let fraction = (value - min) / (max - min);
+        // The chart's own fraction, so a reversed or logarithmic value axis is followed.
+        let fraction = self.value_axis.fraction(value, min, max);
         Some(plot.y + (plot.height as f64 * (1.0 - fraction)).round() as i32)
     }
 
     /// Maps a position on the X axis to its pixel column, or `None` when it cannot be placed.
     fn index_pixel(&self, value: f64) -> Option<i32> {
         let (min, max) = self.x_range?;
-        if !value.is_finite() || !min.is_finite() || !max.is_finite() || max == min {
+        if !value.is_finite()
+            || !min.is_finite()
+            || !max.is_finite()
+            || (max - min).abs() <= f64::EPSILON
+        {
             return None;
         }
         let plot = self.plot();
-        let fraction = (value - min) / (max - min);
+        let fraction = self.x_axis.fraction(value, min, max);
         Some(plot.x + (plot.width as f64 * fraction).round() as i32)
     }
 
@@ -757,5 +783,32 @@ mod tests {
         assert_eq!(line.value_range, chart.value_range());
         assert_eq!(line.x_range, chart.x_range());
         assert!(line.plot_area.is_some(), "the chart's paint recorded a plot area");
+    }
+
+    /// A line follows the attached chart's axis mapping, including a reversed value axis.
+    ///
+    /// # The defect this pins
+    ///
+    /// `value_pixel` interpolated `min..max` directly, ignoring the chart's `AxisConfig`. With
+    /// `set_y_reversed(true)` the chart drew 80 near the bottom while the reference line painted
+    /// it near the top. The config is now copied by the attach call and used for the fraction.
+    #[test]
+    fn a_reference_line_follows_the_charts_reversed_value_axis() {
+        let mut chart = LineChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_data(vec![(0.0, 0.0), (10.0, 100.0)]);
+        chart.set_axis_range(None, None, Some(0.0), Some(100.0));
+        chart.set_y_reversed(true);
+        let _ = crate::widget::svg::render_to_svg(&mut chart);
+
+        let mut line = ChartReferenceLine::new(Rect::new(0, 0, 20, 20));
+        line.attach_line_chart(&chart);
+        let plot = chart.last_plot_area().expect("the chart painted a plot");
+        let fraction = chart.y_axis_config().fraction(80.0, 0.0, 100.0);
+        let expected = plot.y + (plot.height as f64 * (1.0 - fraction)).round() as i32;
+        assert_eq!(line.value_pixel(80.0), Some(expected));
+        assert!(
+            expected > plot.y + plot.height as i32 / 2,
+            "80 must sit below the middle when the value axis is reversed"
+        );
     }
 }

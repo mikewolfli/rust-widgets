@@ -425,6 +425,13 @@ impl StatusBar {
             ^ (rect.y as u32 as u64).rotate_left(15)
             ^ (rect.width as u64).rotate_left(27)
             ^ (rect.height as u64).rotate_left(39);
+        // The grip's flag and its derived reserve are inputs to `segment_boxes`, so they
+        // belong in the key: a cached band that predates `set_size_grip_enabled(false)`
+        // kept the child at the old, grip-reserved x and left the message short of the
+        // corner.
+        signature = signature.rotate_left(3)
+            ^ ((self.size_grip_enabled as u64) << 55)
+            ^ ((self.grip_reserve(rect) as u64).rotate_left(43));
         for (index, slot) in self.widgets.iter().enumerate() {
             let hint_width = slot.content.width_hint();
             signature = signature.rotate_left(4)
@@ -722,9 +729,10 @@ impl EventHandler for StatusBar {
         self.base.handle_event(event);
         match event {
             Event::MousePress { pos, button: 1, .. } => {
-                if self
-                    .size_grip_rect(self.geometry())
-                    .is_some_and(|grip| grip.contains_point(*pos))
+                if self.base.is_enabled()
+                    && self
+                        .size_grip_rect(self.geometry())
+                        .is_some_and(|grip| grip.contains_point(*pos))
                 {
                     self.grip_drag = Some((*pos, (0, 0)));
                 }
@@ -733,13 +741,15 @@ impl EventHandler for StatusBar {
                 let Some((origin, _)) = self.grip_drag else {
                     return;
                 };
-                let delta = (pos.x - origin.x, pos.y - origin.y);
+                let delta = (pos.x.saturating_sub(origin.x), pos.y.saturating_sub(origin.y));
                 if let Some((_, last)) = self.grip_drag.as_mut() {
                     *last = delta;
                 }
                 self.size_grip_dragged.emit(delta);
             }
-            Event::MouseRelease { .. } => {
+            // A release outside the control is never delivered, so leaving the strip must
+            // end the gesture too; otherwise the next button-less move keeps dragging.
+            Event::MouseRelease { .. } | Event::MouseLeave { .. } => {
                 self.grip_drag = None;
             }
             _ => {}
@@ -1287,5 +1297,51 @@ mod tests {
         let _svg = crate::widget::svg::render_to_svg(&mut bar);
         assert!(bar.remove_widget(index).is_none(), "removal returns no owned box");
         assert_eq!(bar.widget_count(), 0);
+    }
+
+    /// Toggling the grip re-lays the cached child bands.
+    ///
+    /// # The defect this pins
+    ///
+    /// `slot_signature` hashed the geometry and slots but not `size_grip_enabled`, while the
+    /// band arithmetic reads it through `grip_reserve`. After a cache was filled, disabling
+    /// the grip returned the old bands: the child kept the grip-reserved x and the message
+    /// still stopped short of the corner.
+    #[test]
+    fn disabling_the_grip_relays_out_the_children() {
+        let mut bar = StatusBar::new(Rect::new(0, 0, 240, 24));
+        bar.add_widget(Box::new(crate::widget::Label::new(
+            "child".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )));
+        // Fill the cache with the grip enabled.
+        let before = bar.slot_bands();
+        let before_band = before[0].1;
+
+        bar.set_size_grip_enabled(false);
+        let after = bar.slot_bands();
+        assert!(
+            after[0].1 != before_band,
+            "removing the grip reserve must re-lay the child: {before_band:?} -> {:?}",
+            after[0].1
+        );
+    }
+
+    /// A disabled bar must not arm a grip drag; leaving the strip must end one.
+    #[test]
+    fn the_grip_drag_is_gated_on_enabled_and_cleared_on_leave() {
+        let mut bar = StatusBar::new(Rect::new(0, 0, 800, 24));
+        let grip = bar.size_grip_rect(bar.geometry()).expect("the grip is enabled");
+        let grab = Point::new(grip.x + 1, grip.y + 1);
+
+        bar.set_enabled(false);
+        bar.handle_event(&Event::mouse_press(grab.x, grab.y, 1));
+        assert!(!bar.is_grip_dragging(), "a disabled bar must not start a grip drag");
+
+        bar.set_enabled(true);
+        bar.handle_event(&Event::mouse_press(grab.x, grab.y, 1));
+        assert!(bar.is_grip_dragging());
+        bar.handle_event(&Event::MouseLeave { pos: Point::new(-1, -1) });
+        assert!(!bar.is_grip_dragging(), "leaving the strip must end the gesture");
     }
 }

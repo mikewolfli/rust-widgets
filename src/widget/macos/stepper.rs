@@ -321,7 +321,11 @@ impl Widget for MacStepper {
             // `is_animating()` true so the host scheduled frames forever. The release that would
             // have cleared it never arrives while the control is disabled.
             self.holding = false;
-            self.pressed = None;
+            if self.pressed.take().is_some() {
+                // The pressed zone is painted, so clearing it has to repaint: the release that
+                // normally clears and repaints it never arrives while the control is disabled.
+                self.base.request_redraw();
+            }
             self.held_ms = 0;
             self.repeats_done = 0;
             return false;
@@ -652,6 +656,33 @@ mod tests {
             modifiers: 0,
         });
         assert_eq!(stepper.value(), 0);
+    }
+
+    /// Disabling a held stepper clears the painted pressed zone and repaints it away.
+    ///
+    /// `tick` cleared `pressed` for a disabled control but asked for no frame, so the zone could
+    /// stay painted with no button held: the release that normally clears and repaints it never
+    /// arrives while the control is disabled.
+    #[test]
+    fn a_disable_mid_hold_repaints_the_pressed_zone_away() {
+        let mut stepper = sample();
+        let up = stepper.zone_rect(StepperZone::Up);
+        stepper.handle_event(&Event::MousePress { pos: up.center(), button: 1, modifiers: 0 });
+        assert_eq!(stepper.pressed, Some(StepperZone::Up));
+
+        stepper.set_enabled(false);
+        let painted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink = Arc::clone(&painted);
+        stepper.base.redraw_requested.connect(move || {
+            sink.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert!(!stepper.tick(16));
+        assert_eq!(stepper.pressed, None);
+        assert!(
+            painted.load(std::sync::atomic::Ordering::SeqCst),
+            "the cleared zone must be repainted"
+        );
     }
 
     #[test]

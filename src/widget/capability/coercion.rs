@@ -30,6 +30,12 @@
 //!   example `1 << 40` becoming `0` for an `i32` property — which silently
 //!   injects a wrong value and can flip range invariants such as
 //!   `minimum <= maximum` (principle #50).
+//! * **A seam that must not lie about the write uses the range-checked narrowers.**
+//!   [`expect_i32_in_range`] and [`expect_u32_in_range`] apply the same type rules
+//!   but answer [`CapabilityAccessError::OutOfRange`] when the magnitude does not
+//!   fit. A property that reports success for a value it did not store is the
+//!   defect those exist to prevent; the saturating helpers stay for callers that
+//!   genuinely want a clamp.
 //! * **Enumerations parse from strings only.** The `expect_*` functions for
 //!   control enums require a string, which is normalised by [`normalize_key`]
 //!   first: underscores, hyphens, and spaces are removed and the result is
@@ -38,9 +44,10 @@
 //! * **Dates and times parse from strings only**, using the same normalisation
 //!   rules as the corresponding `Display` implementations so values round-trip.
 //!
-//! Every rejection is reported as [`CapabilityAccessError::TypeMismatch`]; the
-//! helpers never panic on malformed input and never silently substitute a
-//! default value.
+//! Every type rejection is reported as [`CapabilityAccessError::TypeMismatch`];
+//! the range-checked narrowers above report an out-of-range magnitude as
+//! [`CapabilityAccessError::OutOfRange`] instead. The helpers never panic on
+//! malformed input and never silently substitute a default value.
 //!
 //! Each function with a `*_to_str` counterpart is half of a codec pair: the
 //! parser is the inverse of the formatter, and the pair is kept in this module
@@ -212,7 +219,8 @@ pub fn expect_u32(value: CapabilityValue) -> Result<u32, CapabilityAccessError> 
 /// that fit in `i64` are accepted, while floats and strings are rejected. Only
 /// the magnitude is handled differently: a value below `i32::MIN` becomes
 /// `i32::MIN` and one above `i32::MAX` becomes `i32::MAX` instead of wrapping
-/// with `as`. This is the coercion the property setters use.
+/// with `as`. A property seam that must report the move instead of silently
+/// clamping uses [`expect_i32_in_range`].
 pub fn expect_i32_saturating(value: CapabilityValue) -> Result<i32, CapabilityAccessError> {
     let raw = expect_i64(value)?;
     Ok(raw.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
@@ -245,6 +253,83 @@ pub fn expect_u16_saturating(value: CapabilityValue) -> Result<u16, CapabilityAc
 pub fn expect_u8_saturating(value: CapabilityValue) -> Result<u8, CapabilityAccessError> {
     let raw = expect_usize(value)?;
     Ok(u8::try_from(raw).unwrap_or(u8::MAX))
+}
+
+/// Extracts an `i32`, refusing a magnitude that does not fit.
+///
+/// The non-saturating counterpart of [`expect_i32_saturating`]: the type rules are
+/// [`expect_i64`]'s, and an out-of-range magnitude is
+/// [`CapabilityAccessError::OutOfRange`] rather than the nearest bound. A property seam uses this
+/// when reporting success for a value the control did not store would be a lie.
+pub fn expect_i32_in_range(value: CapabilityValue) -> Result<i32, CapabilityAccessError> {
+    let raw = expect_i64(value)?;
+    i32::try_from(raw).map_err(|_| CapabilityAccessError::OutOfRange)
+}
+
+/// Extracts a `u32`, refusing a magnitude above `u32::MAX`.
+///
+/// The non-saturating counterpart of [`expect_u32_saturating`]. Accepts the same payloads as
+/// [`expect_usize`]; an out-of-range magnitude is [`CapabilityAccessError::OutOfRange`] rather
+/// than `u32::MAX`.
+pub fn expect_u32_in_range(value: CapabilityValue) -> Result<u32, CapabilityAccessError> {
+    let raw = expect_usize(value)?;
+    u32::try_from(raw).map_err(|_| CapabilityAccessError::OutOfRange)
+}
+
+/// Confirms that a property's read-back equals the value a write asked for.
+///
+/// A control that clamps, floors or ignores a value answers `Ok` from its setter (the setter has no
+/// error channel), but the *property* contract must report that the write did not land. This is the
+/// comparison the range-control seams use after calling the setter.
+pub fn confirm_stored_int(
+    actual: CapabilityValue,
+    expected: i32,
+) -> Result<(), CapabilityAccessError> {
+    match actual {
+        CapabilityValue::Int(value) if value == i64::from(expected) => Ok(()),
+        _ => Err(CapabilityAccessError::OutOfRange),
+    }
+}
+
+/// The unsigned counterpart of [`confirm_stored_int`], for a `UInt` property.
+pub fn confirm_stored_uint(
+    actual: CapabilityValue,
+    expected: u32,
+) -> Result<(), CapabilityAccessError> {
+    match actual {
+        CapabilityValue::UInt(value) if value == u64::from(expected) => Ok(()),
+        _ => Err(CapabilityAccessError::OutOfRange),
+    }
+}
+
+/// The float counterpart of [`confirm_stored_int`], for a property that reports a float.
+pub fn confirm_stored_float(
+    actual: CapabilityValue,
+    expected: f64,
+) -> Result<(), CapabilityAccessError> {
+    match actual {
+        CapabilityValue::Float(value) if value == expected => Ok(()),
+        _ => Err(CapabilityAccessError::OutOfRange),
+    }
+}
+
+/// The numeric counterpart of [`confirm_stored_int`], for a property whose carrier depends on
+/// configuration (`Number` reports `Int` in integer mode and `Float` in decimal mode).
+pub fn confirm_stored_number(
+    actual: CapabilityValue,
+    expected: f64,
+) -> Result<(), CapabilityAccessError> {
+    let actual = match actual {
+        CapabilityValue::Int(value) => value as f64,
+        CapabilityValue::UInt(value) => value as f64,
+        CapabilityValue::Float(value) => value,
+        _ => return Err(CapabilityAccessError::OutOfRange),
+    };
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(CapabilityAccessError::OutOfRange)
+    }
 }
 
 /// Extracts an ordered list of strings from a `Tuple` payload.

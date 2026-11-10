@@ -508,15 +508,15 @@ impl EventHandler for Menu {
                     }
                     36 => {
                         // Home/End jump to the ends of the *current* level, which is a
-                        // vertical walk, so they are not mirrored either.
+                        // vertical walk, so they are not mirrored either. They scan from
+                        // the corresponding end rather than stepping by the row count,
+                        // because a count-sized step wraps through zero.
                         let level = self.focus_level();
-                        let count = self.level_entries(level).map_or(0, |entries| entries.len());
-                        self.move_level_hovered(level, -(count as i32));
+                        self.jump_level_hovered(level, false);
                     }
                     35 => {
                         let level = self.focus_level();
-                        let count = self.level_entries(level).map_or(0, |entries| entries.len());
-                        self.move_level_hovered(level, count as i32);
+                        self.jump_level_hovered(level, true);
                     }
                     // Any other key belongs to whoever opened the menu; swallowing it here would
                     // make a menu absorb an application shortcut.

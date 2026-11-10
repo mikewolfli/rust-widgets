@@ -384,12 +384,24 @@ impl SelectionModel {
         self.selected_rows.contains(&row)
     }
     fn normalize(&mut self) {
-        if self.mode == SelectionMode::Single && self.selected_rows.len() > 1 {
-            let last = self.selected_rows.last().copied();
-            self.selected_rows.clear();
-            if let Some(last) = last {
-                self.selected_rows.insert(last);
+        match self.mode {
+            // A non-selectable view holds no selection at all, so a mode switch cannot leave a
+            // painted highlight behind.
+            SelectionMode::None => self.clear(),
+            SelectionMode::Single => {
+                let last = self.selected_rows.last().copied();
+                if self.selected_rows.len() > 1 {
+                    self.selected_rows.clear();
+                    if let Some(last) = last {
+                        self.selected_rows.insert(last);
+                    }
+                }
+                // The current row must name the surviving selection: trimming the set used to leave
+                // it on a row that was no longer selected, so `selected_row()` disagreed with the
+                // painted wash.
+                self.current_row = last;
             }
+            SelectionMode::Multi | SelectionMode::Extended => {}
         }
     }
 }
@@ -1332,7 +1344,9 @@ impl ListView {
         }
         let mut editor = delegate.create_editor(&mut self.base, row, column)?;
         delegate.set_editor_data(editor.as_mut(), row, column);
-        let cell = self.item_rect(row).unwrap_or_else(|| self.base.geometry());
+        // A row scrolled out of the viewport has no painted cell to place the editor over. Falling
+        // back to the control's rectangle covered the whole list with an editor that named nothing.
+        let cell = self.item_rect(row)?;
         delegate.update_editor_geometry(editor.as_mut(), cell);
         self.editing_row = Some(row);
         self.base.request_redraw();
@@ -1647,6 +1661,9 @@ impl Draw for ListView {
         // The row-count state surface is a shared write, drained before painting so the frame
         // that follows a model change already reflects it.
         let _ = self.poll_list_state_host();
+        // The model's `data_changed` only requests a repaint; the row-unit scroll offset and the
+        // row-addressed state still have to be re-clamped against the new count before use.
+        self.normalize_projection_state();
         let rect = self.base.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
@@ -1921,6 +1938,9 @@ impl crate::event::EventHandler for ListView {
         if !self.base.is_enabled() {
             return;
         }
+        // A model can shrink without the view being rebound; `scroll_row` is a line index, so it has
+        // to be re-clamped before a hit test or key navigation reads it.
+        self.normalize_projection_state();
         match event {
             crate::event::Event::MousePress { pos, button, modifiers } if *button == 1 => {
                 self.drag_row = self.row_at_point(*pos);
@@ -2081,6 +2101,91 @@ mod tests {
             "the offset stays inside the new grid: {} of {lines} lines",
             view.scroll_row()
         );
+    }
+
+    #[test]
+    fn a_shrinking_model_reclamps_the_scroll_offset() {
+        struct ShrinkableModel {
+            rows: std::sync::Mutex<usize>,
+            changed: GenericSignal,
+        }
+        impl ListModel for ShrinkableModel {
+            fn row_count(&self) -> usize {
+                *self.rows.lock().expect("the test slot locks")
+            }
+            fn data(&self, row: usize) -> Option<String> {
+                (row < self.row_count()).then(|| std::format!("row {row}"))
+            }
+            fn data_changed_signal(&self) -> Option<&GenericSignal> {
+                Some(&self.changed)
+            }
+        }
+
+        let model = Arc::new(ShrinkableModel {
+            rows: std::sync::Mutex::new(100),
+            changed: GenericSignal::new(),
+        });
+        let mut view = ListView::new(Rect::new(0, 0, 240, 120));
+        view.set_model(model.clone());
+        view.set_scroll_row(80);
+        assert_eq!(view.scroll_row(), 80);
+
+        *model.rows.lock().expect("the test slot locks") = 5;
+        model.changed.emit();
+        // The model's signal only requests a repaint; the paint is where the new count is applied.
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+
+        assert_eq!(view.row_count(), 5);
+        assert_eq!(view.scroll_row(), 4, "the line offset stays inside the shrunk model");
+    }
+
+    /// A mode switch reconciles the current row with the surviving selection.
+    ///
+    /// # The defect this pins
+    ///
+    /// `SelectionModel::normalize` trimmed the set to its last row when switching from
+    /// `Extended` to `Single`, but left `current_row` on the row under the pointer. The painted
+    /// wash followed the set while `selected_row()` (and the emitted signal) named a row that was
+    /// no longer selected. Switching to `None` left the set intact, so a non-selectable view kept
+    /// painting a selection.
+    #[test]
+    fn a_mode_change_reconciles_the_current_row_and_none_clears() {
+        use crate::shortcut::Modifiers;
+
+        let mut view = ListView::new(Rect::new(0, 0, 240, 200));
+        view.set_model(Arc::new(VecListModel::new((0..10).map(|n| n.to_string()).collect())));
+        view.set_selection_mode(SelectionMode::Extended);
+        view.select_row(5);
+        view.select_row_with_modifiers(8, Modifiers::SHIFT);
+        assert_eq!(view.selected_rows(), vec![5, 6, 7, 8]);
+
+        view.set_selection_mode(SelectionMode::Single);
+        assert_eq!(view.selected_rows(), vec![8]);
+        assert_eq!(view.selected_row(), Some(8), "the current row names the survivor");
+
+        view.set_selection_mode(SelectionMode::None);
+        assert!(view.selected_rows().is_empty(), "None holds no selection");
+        assert_eq!(view.selected_row(), None);
+    }
+
+    /// An editor is only placed over a row that is actually painted.
+    #[test]
+    fn begin_edit_refuses_a_row_scrolled_out_of_view() {
+        let mut view = ListView::new(Rect::new(0, 0, 200, 80));
+        view.set_model(Arc::new(VecListModel::new((0..100).map(|n| n.to_string()).collect())));
+        view.set_editor_delegate(Some(Arc::new(EditDelegate)));
+        view.set_scroll_row(50);
+
+        assert!(
+            view.begin_edit(0, 0).is_none(),
+            "row 0 has no painted cell to place an editor over"
+        );
+        assert_eq!(view.editing_row(), None);
+
+        let editor = view.begin_edit(50, 0).expect("the first visible row is painted");
+        assert_eq!(view.editing_row(), Some(50));
+        drop(editor);
+        view.cancel_edit();
     }
 
     #[test]

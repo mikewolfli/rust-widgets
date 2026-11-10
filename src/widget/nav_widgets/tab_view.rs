@@ -406,6 +406,10 @@ impl TabView {
         self.tabs.clear();
         self.badges.clear();
         self.selected_index = 0;
+        // An in-flight drag names a tab that no longer exists; both halves of the gesture go
+        // with the list, so no insertion marker can be painted against an empty strip.
+        self.drag = None;
+        self.drag_preview = None;
         if had_selection {
             self.tab_changed.emit(0);
         }
@@ -509,7 +513,11 @@ impl TabView {
         }
         self.movable = movable;
         if !movable {
+            // `drag` and `drag_preview` are two halves of one gesture: clearing only the
+            // first left the painted insertion marker on screen forever, because
+            // `end_pointer_release` clears the preview only while `drag` is still `Some`.
             self.drag = None;
+            self.drag_preview = None;
         }
         self.base.request_redraw();
     }
@@ -1703,6 +1711,30 @@ mod tests {
         tv.clear_tabs();
         assert_eq!(tv.tab_count(), 0);
         assert_eq!(tv.selected_index().unwrap_or(0), 0);
+    }
+
+    /// Both halves of a drag gesture are cleared when the gesture is abandoned.
+    ///
+    /// `set_movable(false)` used to clear only `drag`, so the 2 px insertion marker kept
+    /// painting: `end_pointer_release` clears the preview only while `drag` is still set.
+    #[test]
+    fn abandoning_a_drag_clears_the_insertion_marker() {
+        let mut tv = make_tab_view();
+        tv.set_movable(true);
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+
+        tv.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert_eq!(tv.drag_preview(), Some(0), "a press on a movable tab starts a preview");
+
+        tv.set_movable(false);
+        assert_eq!(tv.drag_preview(), None, "disabling moves must not leave a marker painted");
+
+        tv.set_movable(true);
+        tv.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert!(tv.drag_preview().is_some());
+        tv.clear_tabs();
+        assert_eq!(tv.drag_preview(), None, "clearing the tabs clears the gesture that named one");
     }
 
     #[test]

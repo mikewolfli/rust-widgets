@@ -32,8 +32,8 @@ use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, Co
 use std::cell::{Ref, RefCell};
 
 use crate::widget::capability::coercion::{
-    expect_bool, expect_f64, expect_horizontal_alignment, expect_string, expect_text_direction,
-    expect_u32, horizontal_alignment_to_str, text_direction_to_str,
+    confirm_stored_number, expect_bool, expect_f64, expect_horizontal_alignment, expect_string,
+    expect_text_direction, expect_u32, horizontal_alignment_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -1818,22 +1818,58 @@ impl WidgetProperties for SpinBox {
                 other => expect_f64(other),
             }
         }
+        // The value the property will report after the control's own rounding. Comparing the
+        // read-back with this — rather than with the raw request — distinguishes "the control
+        // rounded to its configured precision" (accepted) from "the control clamped, floored or
+        // dropped the value" (reported as `OutOfRange`).
+        fn reported(requested: f64, decimals: u32) -> f64 {
+            if decimals == 0 {
+                round_to_i32(requested) as f64
+            } else {
+                requested
+            }
+        }
         match name {
             "minimum" => {
-                self.set_minimum_f64(number(value)?);
-                Ok(())
+                let requested = number(value)?;
+                if !requested.is_finite() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_minimum_f64(requested);
+                confirm_stored_number(self.get("minimum")?, reported(requested, self.decimals()))
             }
             "maximum" => {
-                self.set_maximum_f64(number(value)?);
-                Ok(())
+                let requested = number(value)?;
+                if !requested.is_finite() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_maximum_f64(requested);
+                confirm_stored_number(self.get("maximum")?, reported(requested, self.decimals()))
             }
             "value" => {
-                self.set_value_f64(number(value)?);
-                Ok(())
+                let requested = number(value)?;
+                // A non-finite request has no position in the range, and the setter ignores it;
+                // reporting `Ok` for it was the silent drop this check removes.
+                if !requested.is_finite() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_value_f64(requested);
+                let expected = if self.decimals() == 0 {
+                    round_to_i32(requested) as f64
+                } else {
+                    round_to_decimals(requested, self.decimals())
+                };
+                confirm_stored_number(self.get("value")?, expected)
             }
             "single_step" => {
-                self.set_single_step_f64(number(value)?);
-                Ok(())
+                let requested = number(value)?;
+                if !requested.is_finite() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                let floor = self.smallest_step();
+                let stored = requested.abs().max(floor);
+                self.set_single_step_f64(requested);
+                confirm_stored_number(self.get("single_step")?, reported(stored, self.decimals()))
             }
             "decimals" => {
                 // The declared kind is `UInt`, so read it as one; a negative is a value error, not

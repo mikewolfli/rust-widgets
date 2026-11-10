@@ -66,6 +66,15 @@ fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
     Some((year, month, day))
 }
 
+/// The number of minute slots an `interval`-stepped wheel shows.
+///
+/// `(0..60).step_by(interval)` yields `ceil(60 / interval)` entries (interval 7 gives 0, 7, ...,
+/// 56: nine slots), while stepping used `60 / interval`, one fewer. A step from the last slot
+/// then wrapped onto the second instead of the first, so the wheel skipped 0.
+fn minute_slot_count(interval: u32) -> u32 {
+    60u32.div_ceil(interval.max(1))
+}
+
 /// The order the three date columns are drawn in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DateColumnOrder {
@@ -261,6 +270,10 @@ impl CupertinoDatePicker {
         let clamped =
             self.clamp_to_date_range(self.selected_year, self.selected_month, self.selected_day);
         self.set_selected_date(clamped.0, clamped.1, clamped.2);
+        // The wheels' painted content is a function of the range (the year wheel blanks the
+        // rows outside it), so a range change repaints even when the selected date itself did
+        // not move. `set_selected_date` only repaints on a change.
+        self.base.request_redraw();
     }
 
     /// Returns the current min date constraint.
@@ -331,13 +344,22 @@ impl CupertinoDatePicker {
     }
 
     /// Sets the minute step. Clamped to `1..=30` and applied to the current selection.
+    ///
+    /// Re-applying the step can move the selected minute (59 becomes 56 on a 7-minute step), and
+    /// that is a value change a host must hear about -- the same `time_changed` contract
+    /// [`Self::set_selected_time`] follows for the same write.
     pub fn set_minute_interval(&mut self, interval: u32) {
         let interval = interval.clamp(1, 30);
         if self.minute_interval == interval {
             return;
         }
         self.minute_interval = interval;
-        self.selected_minute = (self.selected_minute / interval) * interval;
+        let minute = (self.selected_minute / interval) * interval;
+        if minute != self.selected_minute {
+            self.selected_minute = minute;
+            self.time_changed.emit((self.selected_hour, minute));
+            self.emit_countdown();
+        }
         self.base.request_redraw();
     }
 
@@ -437,9 +459,12 @@ impl CupertinoDatePicker {
     fn refresh_label_tables(&mut self) {
         if self.minute_key != self.minute_interval {
             self.minute_key = self.minute_interval;
-            let interval = self.minute_interval.max(1) as usize;
-            self.minute_labels =
-                (0..60).step_by(interval).map(|minute| format!("{minute:02}")).collect();
+            let interval = self.minute_interval.max(1);
+            // The label table is the wheel's slot table: `step_time` wraps against this same
+            // count, so the two cannot disagree about how many minutes there are to step through.
+            self.minute_labels = (0..minute_slot_count(interval))
+                .map(|slot| format!("{:02}", slot * interval))
+                .collect();
         }
         if self.hour_labels_24 != self.use_24_hour || self.hour_labels.is_empty() {
             self.hour_labels_24 = self.use_24_hour;
@@ -630,7 +655,7 @@ impl CupertinoDatePicker {
         match column {
             0 => (((hour as i32 + direction).rem_euclid(24)) as u32, minute, second),
             1 => {
-                let slots = (60 / interval).max(1) as i32;
+                let slots = minute_slot_count(interval) as i32;
                 let index = (minute / interval) as i32;
                 let next = (index + direction).rem_euclid(slots) * interval as i32;
                 (hour, next as u32, second)
@@ -1305,7 +1330,7 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
 
@@ -1367,6 +1392,66 @@ mod tests {
 
         picker.set_selected_date(2035, 6, 15);
         assert_eq!(picker.selected_date(), (2030, 12, 31));
+    }
+
+    /// A range change repaints even when the selected date itself did not move.
+    ///
+    /// The wheels paint from the range (the year wheel blanks the rows outside it), but
+    /// `set_date_range` only repainted through `set_selected_date`'s change branch, so narrowing
+    /// the range around the current date left the year wheel painting out-of-range rows until
+    /// something unrelated forced a repaint.
+    #[test]
+    fn narrowing_the_range_repaints_without_moving_the_selection() {
+        let mut picker = make_picker();
+        let date = picker.selected_date();
+        let repainted = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&repainted);
+        picker.base.redraw_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        picker.set_date_range(Some((date.0, 1, 1)), Some((date.0, 12, 31)));
+        assert_eq!(picker.selected_date(), date, "the selection lies inside the new range");
+        assert_eq!(repainted.load(Ordering::SeqCst), 1, "the range change must repaint");
+    }
+
+    /// The minute wheel wraps against the label table's length.
+    ///
+    /// `(0..60).step_by(interval)` paints `ceil(60 / interval)` slots (interval 7 gives 0..56), but
+    /// `step_time` stepped `60 / interval` -- one slot fewer -- so one forward step from 56
+    /// computed `(8 + 1) % 8 = 1` and landed on 7, skipping 0.
+    #[test]
+    fn a_minute_step_wraps_against_the_label_table() {
+        let mut picker = make_picker();
+        picker.set_mode(CupertinoDatePickerMode::Time);
+        picker.set_minute_interval(7);
+        picker.set_selected_time(12, 56);
+
+        picker.apply_step(1, true);
+        assert_eq!(picker.selected_time(), (12, 0), "the last slot wraps to the first");
+        picker.apply_step(1, false);
+        assert_eq!(picker.selected_time(), (12, 56), "and the first wraps back to the last");
+    }
+
+    /// Re-applying the step can move the selected minute, which is a `time_changed` change.
+    ///
+    /// `set_minute_interval` re-clamped the selection (59 becomes 56 on a 7-minute step) without
+    /// emitting, so a host mirroring the value kept showing a minute the wheel no longer showed.
+    #[test]
+    fn a_minute_step_that_moves_the_selection_emits_time_changed() {
+        let mut picker = make_picker();
+        picker.set_mode(CupertinoDatePickerMode::Time);
+        picker.set_selected_time(12, 59);
+
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&seen);
+        picker.time_changed.connect(move |value: Arc<(u32, u32)>| {
+            *sink.lock().unwrap() = Some(*value);
+        });
+
+        picker.set_minute_interval(7);
+        assert_eq!(picker.selected_time(), (12, 56));
+        assert_eq!(*seen.lock().unwrap(), Some((12, 56)), "the forced minute is announced");
     }
 
     #[test]

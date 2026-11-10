@@ -79,11 +79,13 @@ impl Menu {
         // A new open starts at the top level: a cascade left over from the previous open
         // would describe a branch of a menu the user is no longer looking at.
         self.submenu_path.clear();
-        // Pre-select the first actionable entry so keyboard navigation has a
-        // starting point; a menu opened with no selection cannot be driven by
-        // arrow keys without a first press that has no visible effect.
-        self.hovered_index =
-            self.items.iter().position(|item| !item.is_separator() && item.is_enabled());
+        // The previous open's hover timer names a row by index; this open's list may have
+        // moved rows since, so the timer must not survive the reopen.
+        self.clear_hover_branch();
+        // Pre-select the first **selectable** entry so keyboard navigation has a starting
+        // point; a section caption is painted but cannot be chosen, so pointing at one left
+        // the highlight unselectable and Enter did nothing.
+        self.hovered_index = self.items.iter().position(MenuEntry::is_selectable);
         self.show();
         // A menu is a **command surface**, not a decoration: it must be on screen the moment the
         // user asks for it. The reveal still animates on close, but an opening popup that grew

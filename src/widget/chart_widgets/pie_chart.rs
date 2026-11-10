@@ -644,10 +644,16 @@ impl PieChart {
                 return Some(index);
             }
         }
-        self.angle_cache
-            .iter()
-            .rposition(|entry| entry.is_some())
-            .filter(|index| self.slices.get(*index).is_some_and(|slice| slice.visible))
+        // The fallback exists only for the trailing edge of the last painted slice: the loop's
+        // `angle < begin + sweep` can leave an angle a hair past the end due to float rounding.
+        // An angle in the blank region a partial reveal leaves must report nothing, not the last
+        // slice — `rposition` used to return it for every uncovered angle.
+        self.angle_cache.iter().enumerate().rev().find_map(|(index, entry)| {
+            let (start, sweep) = (*entry)?;
+            let begin = start + std::f32::consts::FRAC_PI_2;
+            let visible = self.slices.get(index).is_some_and(|slice| slice.visible);
+            (visible && angle <= begin + sweep + 1.0e-4).then_some(index)
+        })
     }
 
     /// Returns the number of slices.
@@ -2201,5 +2207,33 @@ mod tests {
         pc.set_reveal_progress(0.0);
         pc.ensure_angle_cache();
         assert!(pc.angle_cache.iter().all(Option::is_none), "nothing is drawn at zero");
+    }
+
+    /// A pointer over the blank region a partial reveal leaves reports no slice.
+    ///
+    /// # The defect this pins
+    ///
+    /// `slice_at`'s `rposition` fallback returned the last visible slice for *any* angle no
+    /// cached arc covered, including the unrevealed half of the ring. Only the trailing edge of
+    /// the painted sweep may use the fallback.
+    #[test]
+    fn a_hover_in_the_unrevealed_half_reports_no_slice() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 240, 240));
+        pc.set_slices(vec![
+            PieSlice::new("Alpha", 1.0, Color::PRIMARY),
+            PieSlice::new("Beta", 1.0, Color::rgb(0, 180, 90)),
+        ]);
+        pc.set_reveal_progress(0.5);
+        let center = pc.center().expect("the chart has a centre");
+        let radius = (pc.outer_radius() * 0.5) as i32;
+
+        // Painted: 12 o'clock, the first pixel of the revealed sweep (each slice is scaled by
+        // the reveal, so the painted half runs from 12 o'clock clockwise to 6).
+        let painted = Point::new(center.x, center.y - radius);
+        assert_eq!(pc.slice_at(painted), Some(0), "a point on the painted arc names its slice");
+
+        // Blank: 9 o'clock, in the unrevealed half.
+        let unpainted = Point::new(center.x - radius, center.y);
+        assert_eq!(pc.slice_at(unpainted), None, "nothing is painted on the left half");
     }
 }

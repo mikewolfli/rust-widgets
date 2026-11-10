@@ -7,6 +7,9 @@ use super::*;
 
 impl EventHandler for VirtualTable {
     fn handle_event(&mut self, event: &Event) {
+        // A source change may have invalidated the row/column indices an event addresses, so the
+        // pending repair runs before the event is interpreted.
+        self.drain_data_updates();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;

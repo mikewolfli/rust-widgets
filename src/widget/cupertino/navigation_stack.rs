@@ -11,6 +11,8 @@
 //! The crate already has [`crate::widget::nav_widgets::navigation_stack::NavigationStack`], which
 //! hosts page *widgets* and draws the outgoing/incoming pages. This type is the Cupertino
 //! companion: it carries titles only, because the bar it pairs with renders the transition itself.
+//! It has no frame clock and no `animated` switch, deliberately: a flag here would configure an
+//! animation this type never draws, so the bar's own state is the only transition state.
 //!
 //! Registration surface (out of scope for this file): canonical name `navigation_stack`, kind
 //! [`WidgetKind::NavigationStack`].
@@ -30,7 +32,6 @@ pub struct CupertinoNavigationStack {
     titles: Vec<String>,
     /// Page content slots, parallel to `titles` (CB-001). A title-only page has `None`.
     pages: Vec<Option<Box<dyn Widget>>>,
-    animated: bool,
     /// Emitted with the title that was popped.
     pub popped: Signal1<String>,
     /// Emitted with the title that was pushed (CB-001).
@@ -50,7 +51,6 @@ impl CupertinoNavigationStack {
             ),
             titles: vec![root.into()],
             pages: vec![None],
-            animated: true,
             popped: Signal1::new(),
             pushed: Signal1::new(),
             stack_changed: Signal1::new(),
@@ -65,16 +65,6 @@ impl CupertinoNavigationStack {
     /// The current (top) page's title.
     pub fn current_title(&self) -> &str {
         self.titles.last().map(String::as_str).unwrap_or("")
-    }
-
-    /// Whether pushes and pops animate.
-    pub fn animated(&self) -> bool {
-        self.animated
-    }
-
-    /// Turns transition animation on or off.
-    pub fn set_animated(&mut self, animated: bool) {
-        self.animated = animated;
     }
 
     /// The titles from the root to the top.
@@ -305,5 +295,24 @@ mod tests {
         assert!(stack.pop());
         assert_eq!(*popped.lock().unwrap(), "Detail");
         assert_eq!(stack.current_title(), "Home");
+    }
+
+    /// The paired bar is updated synchronously by a push, with no frame clock to run.
+    ///
+    /// The type used to expose an inert `animated` switch that promised a transition this stack
+    /// never draws; the paired bar owns the transition, so binding the bar is the whole of the
+    /// push's presentation and it must be complete on the same call.
+    #[test]
+    fn binding_a_bar_after_a_push_needs_no_frame_clock() {
+        let mut stack = CupertinoNavigationStack::new(Rect::new(0, 0, 160, 24), "Home");
+        let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 375, 96));
+
+        stack.push("Detail");
+        stack.bind_navigation_bar(&mut bar);
+
+        assert_eq!(bar.title(), "Detail");
+        assert!(bar.is_back_button_visible());
+        assert_eq!(bar.back_button_text(), "Home");
+        assert!(!bar.is_animating(), "the title stack never drives a frame");
     }
 }

@@ -170,6 +170,20 @@ pub struct DropZone {
     ///
     /// See [`DropZoneState`] for why this is not a `hovered` bool.
     state: DropZoneState,
+    /// Whether a drag is currently over the zone.
+    ///
+    /// Kept apart from [`Self::state`], which is a *paint* fact: a `Dropped` confirmation is still
+    /// painted after the pointer has left, so keying "did a drag enter" on the paint state made a
+    /// new drag over a confirming zone silent. This is the fact `zone_entered`/`zone_exited` are
+    /// about.
+    drag_over: bool,
+    /// A leave was reported and has not been announced yet.
+    ///
+    /// `DragCoordinator::finish` reports the leave *before* it commits the drop, so emitting
+    /// `zone_exited` from `report_leave` told a host the drag left "without dropping" and then
+    /// immediately told it the drop succeeded. The leave is held here, cancelled by a commit and
+    /// flushed by the next paint or re-entry when the drag really left.
+    exit_pending: bool,
     /// Emitted with the file-name list when a drag enters the zone.
     pub zone_entered: Signal1<Vec<String>>,
     /// Emitted when a drag leaves the zone without dropping.
@@ -209,6 +223,8 @@ impl DropZone {
             files_text: String::new(),
             files_key: None,
             state: DropZoneState::Idle,
+            drag_over: false,
+            exit_pending: false,
             zone_entered: Signal1::new(),
             zone_exited: Signal1::new(),
             dropped: Signal1::new(),
@@ -284,8 +300,23 @@ impl DropZone {
     ///
     /// A `Dropped` confirmation is cleared too: it describes a commit that has already been reported
     /// through [`Self::payload_dropped`], so leaving it up would keep claiming a drop is happening.
+    /// A call while a drag is over the zone also ends that fact, so the next entry is announced and
+    /// the exit is not lost when the caller drives the zone through `clear_hover` rather than
+    /// [`DropTarget::report_leave`].
     pub fn clear_hover(&mut self) {
+        if self.drag_over {
+            self.drag_over = false;
+            self.exit_pending = true;
+        }
         self.set_state(DropZoneState::Idle);
+    }
+
+    /// Announces a leave that was held back while a drop might still commit.
+    fn flush_pending_exit(&mut self) {
+        if self.exit_pending {
+            self.exit_pending = false;
+            self.zone_exited.emit(Vec::new());
+        }
     }
 
     /// Returns whether `payload` is of a type this zone accepts.
@@ -480,14 +511,22 @@ impl DropZone {
 
 impl DropTarget for DropZone {
     fn can_accept(&self, payload: &DragPayload) -> bool {
-        self.accepts(payload)
+        // A disabled control must refuse at the *preview* too, so the runtime never promises a
+        // drop the commit will decline.
+        self.base.is_enabled() && self.accepts(payload)
     }
 
     fn on_drop(&mut self, payload: &DragPayload, _pos: Point) -> DropEffect {
+        if !self.base.is_enabled() {
+            return DropEffect::None;
+        }
         if !self.can_accept(payload) {
             self.drop_rejected.emit();
             return DropEffect::None;
         }
+        // The gesture ended in a commit, so it did not "leave without dropping".
+        self.drag_over = false;
+        self.exit_pending = false;
         if self.multi_file {
             self.dropped_files.extend(Self::payload_files(payload));
         } else {
@@ -509,19 +548,30 @@ impl DropTarget for DropZone {
     /// lets the coordinator call it through `dyn DropTarget` without downcasting to the
     /// concrete control.
     fn report_hover(&mut self, payload: &DragPayload) {
-        let next =
-            if self.accepts(payload) { DropZoneState::Accepted } else { DropZoneState::Rejected };
-        if self.state == DropZoneState::Idle {
+        if !self.base.is_enabled() {
+            self.drag_over = false;
+            self.exit_pending = false;
+            self.set_state(DropZoneState::Idle);
+            return;
+        }
+        // A re-entry is the next event after a leave whose frame has not painted yet; announce
+        // the old leave before the new entry so the pair stays ordered.
+        self.flush_pending_exit();
+        if !self.drag_over {
+            self.drag_over = true;
             self.zone_entered.emit(Self::payload_files(payload));
         }
+        let next =
+            if self.accepts(payload) { DropZoneState::Accepted } else { DropZoneState::Rejected };
         self.set_state(next);
     }
 
     /// Clears the highlight when the drag leaves without dropping.
+    ///
+    /// The exit is only *announced* for a drag that was really over the zone, and only after the
+    /// drop-or-not question is settled (see [`Self::exit_pending`]); `clear_hover` records that
+    /// leave.
     fn report_leave(&mut self) {
-        if self.state != DropZoneState::Idle {
-            self.zone_exited.emit(Vec::new());
-        }
         self.clear_hover();
     }
 }
@@ -711,6 +761,9 @@ impl EventHandler for DropZone {
 
 impl Draw for DropZone {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A leave that no drop followed is settled by the frame this leave requested. Flushing it
+        // here is what makes "left without dropping" arrive even when the pointer never returns.
+        self.flush_pending_exit();
         let rect = self.geometry();
         // Refreshed before the frame borrows `self` through the style, so the caches need no
         // interior mutability and a static frame does none of this work (K-P16).
@@ -1087,6 +1140,17 @@ mod tests {
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
         assert_eq!(z.dropped_files(), &["a.png".to_string()]);
         z.report_leave();
+        assert_eq!(
+            exited.load(Ordering::SeqCst),
+            0,
+            "the drag dropped, so it did not leave without dropping"
+        );
+
+        // A drag that really leaves is announced: the re-entry flushes the held leave.
+        z.report_hover(&good);
+        assert_eq!(entered.load(Ordering::SeqCst), 2);
+        z.report_leave();
+        z.report_hover(&good);
         assert_eq!(exited.load(Ordering::SeqCst), 1);
 
         let bad = DragPayload::new("application/x-nope", "b.txt");
@@ -1094,6 +1158,95 @@ mod tests {
         assert_eq!(rejected.load(Ordering::SeqCst), 1);
         assert!(z.event_signal_dyn("zone_entered").is_some());
         assert!(z.event_signal_dyn("dropped").is_some());
+    }
+
+    /// A disabled zone neither previews acceptance nor records a committed payload.
+    ///
+    /// `can_accept`, `report_hover` and `on_drop` ignored `is_enabled`, so a press-less drag over a
+    /// disabled control lit it up, then on release appended the files, emitted `dropped` and
+    /// `payload_dropped`, and left the state at `Dropped`. A disabled control must not mutate or
+    /// emit.
+    #[test]
+    fn a_disabled_zone_neither_previews_nor_records_a_drop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut z = zone();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let payload_dropped = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let (d, p, e) = (Arc::clone(&dropped), Arc::clone(&payload_dropped), Arc::clone(&entered));
+        z.dropped.connect(move |_| {
+            d.fetch_add(1, Ordering::SeqCst);
+        });
+        z.payload_dropped.connect(move |_| {
+            p.fetch_add(1, Ordering::SeqCst);
+        });
+        z.zone_entered.connect(move |_| {
+            e.fetch_add(1, Ordering::SeqCst);
+        });
+
+        z.set_enabled(false);
+        let payload = DragPayload::new("text/plain", "doc1").with_label("doc1");
+        assert!(!z.can_accept(&payload), "the preview must refuse a disabled zone");
+        z.report_hover(&payload);
+        assert_eq!(z.state(), DropZoneState::Idle, "a disabled zone does not light up");
+
+        assert_eq!(z.on_drop(&payload, Point::new(0, 0)), DropEffect::None);
+        assert!(z.dropped_files().is_empty(), "a disabled zone records nothing");
+        assert_eq!(
+            (dropped.load(Ordering::SeqCst), payload_dropped.load(Ordering::SeqCst)),
+            (0, 0),
+            "and emits nothing"
+        );
+        assert_eq!(entered.load(Ordering::SeqCst), 0);
+        assert_eq!(z.state(), DropZoneState::Idle);
+    }
+
+    /// A successful drop must not also report that the drag left without dropping.
+    ///
+    /// `DragCoordinator::finish` calls `report_leave` *before* `drop_on`, so the old order emitted
+    /// `zone_exited` and then `dropped`. Keying the pair on a separate "a drag is over me" fact, and
+    /// holding the exit until the commit question is settled, keeps them exclusive — and a new drag
+    /// entering while the `Dropped` confirmation still shows is announced too.
+    #[test]
+    fn a_committed_drop_is_not_an_exit_and_the_next_drag_enters() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut z = zone();
+        let entered = Arc::new(AtomicUsize::new(0));
+        let exited = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let (e, x, d) = (Arc::clone(&entered), Arc::clone(&exited), Arc::clone(&dropped));
+        z.zone_entered.connect(move |_| {
+            e.fetch_add(1, Ordering::SeqCst);
+        });
+        z.zone_exited.connect(move |_| {
+            x.fetch_add(1, Ordering::SeqCst);
+        });
+        z.dropped.connect(move |_| {
+            d.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let payload = DragPayload::new("text/plain", "doc1").with_label("doc1");
+        z.report_hover(&payload);
+        // The coordinator's release order: leave, then commit the drop.
+        z.report_leave();
+        assert_eq!(z.on_drop(&payload, Point::new(4, 4)), DropEffect::Copy);
+        assert_eq!((entered.load(Ordering::SeqCst), exited.load(Ordering::SeqCst)), (1, 0));
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(z.state(), DropZoneState::Dropped);
+
+        // The `Dropped` confirmation is still painted, yet the next drag does enter.
+        z.report_hover(&payload);
+        assert_eq!(entered.load(Ordering::SeqCst), 2, "the confirmation must not mute the entry");
+
+        // A leave with no commit is announced by the frame the leave requested.
+        z.report_leave();
+        assert_eq!(exited.load(Ordering::SeqCst), 0, "held until the drop question settles");
+        let _ = crate::widget::svg::render_to_svg(&mut z);
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
     }
 
     /// The collected names can be emptied or taken, and either way the zone returns to rest

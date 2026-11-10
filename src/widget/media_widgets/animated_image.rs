@@ -395,7 +395,13 @@ impl AnimatedImage {
     /// Stops playback and resets to the first frame.
     pub fn stop(&mut self) {
         self.playing = false;
-        self.current_frame = 0;
+        // `frame_changed` means "the current frame index changed", so a stop that is
+        // already at frame zero must not report a change (the rule `set_current_frame`
+        // follows), and a stop that leaves another frame must.
+        if self.current_frame != 0 {
+            self.current_frame = 0;
+            self.frame_changed.emit(0);
+        }
         self.frame_timer = 0;
         self.loops_completed = 0;
         self.base.request_redraw();
@@ -589,10 +595,14 @@ impl AnimatedImage {
 
     /// Resets the animation to the first frame without stopping.
     pub fn reset(&mut self) {
-        self.current_frame = 0;
+        // Emit only on a real change: resetting an animation already on frame zero does
+        // not change the current frame index, and the signal's contract is exactly that.
+        if self.current_frame != 0 {
+            self.current_frame = 0;
+            self.frame_changed.emit(0);
+        }
         self.frame_timer = 0;
         self.loops_completed = 0;
-        self.frame_changed.emit(0);
         self.base.request_redraw();
     }
 
@@ -1320,6 +1330,39 @@ mod tests {
 
         img.advance_frame();
         assert_eq!(*captured.lock().unwrap(), Some(1));
+    }
+
+    /// `frame_changed` reports a real index change and nothing else.
+    ///
+    /// `stop` used to rewrite the frame to 0 silently, while `reset` announced 0 even when
+    /// it was already there. Both now follow the rule `set_current_frame` already used.
+    #[test]
+    fn stop_and_reset_report_frame_changes_exactly_once() {
+        let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
+        img.load_frames(two_test_frames()).unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        img.frame_changed.connect({
+            let seen = Arc::clone(&seen);
+            move |value: Arc<u32>| {
+                seen.lock().unwrap().push(*value);
+            }
+        });
+
+        img.reset();
+        assert!(seen.lock().unwrap().is_empty(), "resetting frame 0 to frame 0 is no change");
+
+        img.set_current_frame(1);
+        img.stop();
+        assert_eq!(img.current_frame(), 0);
+        assert_eq!(*seen.lock().unwrap(), vec![1, 0], "stop reports the frame it leaves");
+
+        img.stop();
+        assert_eq!(*seen.lock().unwrap(), vec![1, 0], "stopping at frame 0 again is no change");
+
+        img.set_current_frame(1);
+        img.reset();
+        assert_eq!(*seen.lock().unwrap(), vec![1, 0, 1, 0], "reset reports a real change");
     }
 
     #[test]

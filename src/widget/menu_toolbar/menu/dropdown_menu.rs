@@ -25,8 +25,6 @@ use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
-/// Default height of the dropdown list when expanded.
-const DEFAULT_DROPDOWN_HEIGHT: u32 = 200;
 /// Height of each item row in the dropdown list.
 const ITEM_HEIGHT: i32 = 30;
 /// Padding inside the control.
@@ -548,7 +546,8 @@ impl DropdownMenu {
     }
 
     /// Sets the selected item by value. If the value does not match any
-    /// item, the selection is cleared.
+    /// item, the selection is cleared; a value that matches a **disabled** row
+    /// leaves the current selection unchanged.
     ///
     /// The match walks the whole subtree, not just the top level: a value that
     /// lives in a branch's child panel is reachable, and its enabled flag is
@@ -565,9 +564,19 @@ impl DropdownMenu {
             }
             None
         }
-        if is_enabled(&self.items, value) == Some(true) {
-            self.selected_value = Some(value.to_string());
-            self.base.request_redraw();
+        match is_enabled(&self.items, value) {
+            Some(true) => {
+                self.selected_value = Some(value.to_string());
+                self.base.request_redraw();
+            }
+            // Documented above: a value that matches a disabled row keeps the selection.
+            Some(false) => {}
+            None => {
+                if self.selected_value.is_some() {
+                    self.selected_value = None;
+                    self.base.request_redraw();
+                }
+            }
         }
     }
 
@@ -1354,7 +1363,11 @@ impl DropdownMenu {
     fn dropdown_rect(&self) -> Rect {
         let geom = self.geometry();
         let item_count = self.items.len().min(self.max_visible_items());
-        let height = (item_count as u32 * ITEM_HEIGHT as u32).min(DEFAULT_DROPDOWN_HEIGHT);
+        // The panel is exactly as tall as the rows the paint and keyboard paths show. The
+        // old 200 px cap disagreed with the 8-row (240 px) window: the eighth row was
+        // highlighted and activated by the keyboard but clipped out of the panel, and the
+        // seventh was only half painted.
+        let height = item_count as u32 * ITEM_HEIGHT as u32;
         Rect::new(geom.x, geom.y + geom.height as i32, geom.width, height)
     }
 
@@ -2521,7 +2534,11 @@ mod tests {
         assert_eq!(dm.selected_label(), Some("Child".to_string()));
 
         dm.select("missing");
-        assert_eq!(dm.selected_value(), Some("child".to_string()), "a miss leaves the selection");
+        assert_eq!(
+            dm.selected_value(),
+            None,
+            "the documented contract clears a selection that matches no item"
+        );
     }
 
     /// M-012: a child panel flips or clamps instead of running off the surface.
@@ -2542,6 +2559,61 @@ mod tests {
         assert!(
             clamped.y + clamped.height as i32 <= 400,
             "a panel near the bottom is shifted up: {clamped:?}"
+        );
+    }
+
+    /// The panel is tall enough for every row the keyboard window shows.
+    ///
+    /// # The defect this pins
+    ///
+    /// The panel was capped at 200 px while the row window was `max_visible_items()` = 8
+    /// rows of 30 px. `End`/`Down` could highlight row 7, which was clipped out of the
+    /// panel, and row 6 was only half painted.
+    #[test]
+    fn the_panel_holds_every_row_in_the_keyboard_window() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        for index in 0..MAX_VISIBLE_ITEMS {
+            dm.add_item(DropdownItem::new(&format!("v{index}"), &format!("Item {index}")));
+        }
+        dm.expand();
+
+        let drop = dm.dropdown_rect();
+        assert_eq!(
+            drop.height,
+            MAX_VISIBLE_ITEMS as u32 * ITEM_HEIGHT as u32,
+            "the panel is as tall as the rows it paints"
+        );
+        let last = MAX_VISIBLE_ITEMS - 1;
+        let row = dm.item_rect(last);
+        assert!(
+            row.y + row.height as i32 <= drop.y + drop.height as i32,
+            "the last visible row must stay inside the panel: {row:?} vs {drop:?}"
+        );
+        assert_eq!(
+            dm.hit_test_item(Point::new(row.x + 4, row.y + 4)),
+            Some(last),
+            "and the row that is painted is the row that is clickable"
+        );
+    }
+
+    /// `select` clears the selection for an unknown value, exactly as documented.
+    #[test]
+    fn selecting_an_unknown_value_clears_the_selection() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("a", "A"));
+        dm.add_item(DropdownItem::new("b", "B").with_enabled(false));
+
+        dm.select("a");
+        assert_eq!(dm.selected_value(), Some("a".to_string()));
+        dm.select("missing");
+        assert_eq!(dm.selected_value(), None, "an unmatched value clears the selection");
+
+        dm.select("a");
+        dm.select("b");
+        assert_eq!(
+            dm.selected_value(),
+            Some("a".to_string()),
+            "a disabled match leaves the documented selection untouched"
         );
     }
 }

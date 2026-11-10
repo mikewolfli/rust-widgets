@@ -87,9 +87,9 @@ pub struct SwipeToDismiss {
     exit: crate::style::PropertyDriver,
     /// Text displayed in the action background (e.g., "Delete").
     action_text: String,
-    /// Label shown when the row is swiped toward its trailing edge (the default direction).
-    leading_action_text: Option<String>,
     /// Label shown when the row is swiped toward its leading edge.
+    leading_action_text: Option<String>,
+    /// Label shown when the row is swiped toward its trailing edge.
     trailing_action_text: Option<String>,
     /// The spring-back of a failed swipe, in pixels.
     ///

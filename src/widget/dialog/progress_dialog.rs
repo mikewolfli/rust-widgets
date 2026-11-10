@@ -188,28 +188,26 @@ impl ProgressDialog {
     }
     /// Sets the lower bound of the progress range.
     ///
-    /// The new bound is **not** applied to the current value, so the value can
-    /// temporarily sit outside the range until the next
-    /// [`ProgressDialog::set_value`] call clamps it. A `min` above `max` makes
+    /// The stored value is re-clamped into the new range through [`ProgressDialog::set_value`],
+    /// so it cannot report progress the bar is not painting. A `min` above `max` makes
     /// [`ProgressDialog::progress_fraction`] report full progress.
     pub fn set_minimum(&mut self, min: i32) {
         if self.minimum == min {
             return;
         }
         self.minimum = min;
-        self.sync_displayed();
-        self.base.request_redraw();
+        self.reclamp_after_range_change();
     }
-    /// Sets the upper bound of the progress range. As with
-    /// [`ProgressDialog::set_minimum`], the current value is not re-clamped
-    /// until the next `set_value`.
+    /// Sets the upper bound of the progress range.
+    ///
+    /// The stored value is re-clamped into the new range through [`ProgressDialog::set_value`],
+    /// so a lowered maximum cannot leave the fraction above 1.0.
     pub fn set_maximum(&mut self, max: i32) {
         if self.maximum == max {
             return;
         }
         self.maximum = max;
-        self.sync_displayed();
-        self.base.request_redraw();
+        self.reclamp_after_range_change();
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
@@ -219,6 +217,18 @@ impl ProgressDialog {
         }
         self.minimum = min;
         self.maximum = max;
+        self.reclamp_after_range_change();
+    }
+
+    /// Re-establishes the model after a bound moved.
+    ///
+    /// The value is re-clamped through [`ProgressDialog::set_value`], so the signal and the
+    /// completion rule agree with an ordinary write. The eased fraction is then re-derived
+    /// unconditionally: a bound change moves the fraction even when the value itself was
+    /// already inside the new range.
+    fn reclamp_after_range_change(&mut self) {
+        let value = self.value;
+        self.set_value(value);
         self.sync_displayed();
         self.base.request_redraw();
     }
@@ -479,7 +489,11 @@ impl ProgressDialog {
         if range <= 0 {
             return 1.0;
         }
-        (f64::from(self.value) - f64::from(self.minimum)) as f32 / range as f32
+        let fraction = (f64::from(self.value) - f64::from(self.minimum)) as f32 / range as f32;
+        // The draw multiplies the track width by this value, so a fraction outside the unit
+        // interval would paint past the bar (or a negative width). The range writers keep the
+        // value in bounds; this clamp keeps the contract even for a driver mid-animation.
+        fraction.clamp(0.0, 1.0)
     }
 
     /// Submits one animated frame as damage bounded by the painted box plus the shared
@@ -1060,6 +1074,37 @@ mod tests {
         dialog.set_value(99);
         assert_eq!(dialog.value(), 20);
         assert!(!dialog.is_visible());
+    }
+
+    /// A moved bound re-clamps the value, so the bar and its readout stay on the track.
+    ///
+    /// # What this pins
+    ///
+    /// `set_minimum`/`set_maximum`/`set_range` did not touch the value: 90 followed by
+    /// `set_maximum(50)` reported 180% and filled 1.8x the track, and 20 followed by
+    /// `set_minimum(40)` reported -33%.
+    #[test]
+    fn a_range_change_reclamps_the_value_and_the_fraction() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        dialog.set_value(90);
+        dialog.set_maximum(50);
+        assert_eq!(dialog.value(), 50, "the value follows the new ceiling");
+        assert_eq!(dialog.progress_fraction(), 1.0);
+
+        dialog.set_value(20);
+        dialog.set_minimum(40);
+        assert_eq!(dialog.value(), 40, "the value follows the new floor");
+        assert_eq!(dialog.progress_fraction(), 0.0);
+    }
+
+    /// The fraction the draw multiplies the track by is always inside `0..=1`.
+    #[test]
+    fn the_fraction_never_leaves_the_unit_interval() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        dialog.value = 150;
+        assert_eq!(dialog.progress_fraction(), 1.0);
+        dialog.value = -20;
+        assert_eq!(dialog.progress_fraction(), 0.0);
     }
 
     #[test]

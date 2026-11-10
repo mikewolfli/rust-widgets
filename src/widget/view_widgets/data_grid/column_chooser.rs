@@ -37,7 +37,11 @@ pub struct ColumnChooser {
     row_cache: RefCell<Option<(u64, Vec<RowSnapshot>)>>,
     /// Emitted with `(token, visible)` when a column is shown or hidden.
     pub column_visibility_changed: Signal1<(String, bool)>,
-    /// Emitted with the full token order after a move.
+    /// Emitted with the visible columns' token order after a move.
+    ///
+    /// A hidden column is omitted, so the report is a subset of the chooser's column set, not a
+    /// permutation of it; the owning grid records it as state (see
+    /// `DataGrid::column_display_order`) without reordering its painted columns.
     pub column_order_changed: Signal1<Vec<String>>,
     /// Emitted when the chooser is dismissed.
     pub chooser_closed: Signal1<()>,
@@ -102,10 +106,12 @@ impl ColumnChooser {
         if !self.columns.iter().any(|column| column.to_token() == token) {
             return false;
         }
-        if visible {
-            self.hidden.remove(token);
-        } else {
-            self.hidden.insert(token.to_string());
+        let changed =
+            if visible { self.hidden.remove(token) } else { self.hidden.insert(token.to_string()) };
+        // A redundant write ("hide" an already hidden column) changes nothing, so reporting it
+        // would have a connected grid re-apply a state it already holds.
+        if !changed {
+            return true;
         }
         self.column_visibility_changed.emit((token.to_string(), visible));
         self.base.request_redraw();
@@ -133,6 +139,9 @@ impl ColumnChooser {
     }
 
     /// The tokens of the visible columns, in display order.
+    ///
+    /// Hidden columns are omitted, so this is a subset of [`Self::columns`] whenever one is
+    /// hidden; that is exactly what a reorder report carries.
     pub fn visible_tokens(&self) -> Vec<String> {
         self.columns
             .iter()
@@ -294,6 +303,11 @@ impl Draw for ColumnChooser {
 impl crate::event::EventHandler for ColumnChooser {
     fn handle_event(&mut self, event: &crate::event::Event) {
         self.base.handle_event(event);
+        // A disabled chooser is inert, like the find bar and the header: the base still records
+        // the hover/press facts, but no row toggles and no dismissal fires.
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             crate::event::Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.entry_at(*pos) {
@@ -315,6 +329,9 @@ impl crate::event::EventHandler for ColumnChooser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::EventHandler;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     fn chooser() -> ColumnChooser {
         let mut chooser = ColumnChooser::new(Rect::new(0, 0, 220, 260));
@@ -374,5 +391,44 @@ mod tests {
         let filtered = chooser.filtered_columns();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].title, "Owner");
+    }
+
+    /// A redundant visibility write changes nothing, so it must not report a change: a connected
+    /// grid would otherwise re-apply a state it already holds.
+    #[test]
+    fn a_redundant_visibility_write_is_not_reported() {
+        let mut chooser = chooser();
+        let token = chooser.columns()[1].to_token();
+        let emitted = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&emitted);
+        chooser.column_visibility_changed.connect(move |_| {
+            sink.fetch_add(1, Ordering::Relaxed);
+        });
+
+        assert!(chooser.set_column_visible(&token, true), "the column still exists");
+        assert_eq!(emitted.load(Ordering::Relaxed), 0, "it was already visible");
+
+        assert!(chooser.set_column_visible(&token, false));
+        assert_eq!(emitted.load(Ordering::Relaxed), 1);
+        assert!(chooser.set_column_visible(&token, false));
+        assert_eq!(emitted.load(Ordering::Relaxed), 1, "it was already hidden");
+    }
+
+    /// A disabled chooser is inert, like the find bar and the header: the base still records the
+    /// pointer facts, but no row toggles.
+    #[test]
+    fn a_disabled_chooser_ignores_row_clicks() {
+        let mut chooser = chooser();
+        let token = chooser.columns()[0].to_token();
+        assert!(chooser.is_column_visible(&token));
+        chooser.base.set_enabled(false);
+
+        let row = chooser.row_rect(0).expect("the first row exists");
+        chooser.handle_event(&crate::event::Event::MousePress {
+            pos: Point::new(row.x + 4, row.y + 4),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(chooser.is_column_visible(&token), "a disabled chooser does not toggle a row");
     }
 }

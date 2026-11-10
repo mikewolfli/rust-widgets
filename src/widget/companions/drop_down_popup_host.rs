@@ -170,6 +170,8 @@ impl DropDownPopupHost {
     /// The host's `geometry` is the available viewport; the pop-up itself is a rectangle
     /// computed inside it by [`Self::panel_rect`].
     pub fn new(geometry: Rect) -> Self {
+        // The capability table declares this host `visible` by default, so the base flag starts
+        // set; the closed state is expressed by `open` and enforced by `contains_point` below.
         Self {
             base: BaseWidget::new(WidgetKind::Panel, geometry, "DropDownPopupHost"),
             items: Vec::new(),
@@ -192,6 +194,9 @@ impl DropDownPopupHost {
         self.open = true;
         self.scroll_offset = 0.0;
         self.highlighted_index = self.first_enabled();
+        self.base.show();
+        // The open pop-up owns the press that dismisses it (I-127).
+        crate::widget::runtime::set_popup_grab(self.base.id());
         self.base.request_redraw();
     }
 
@@ -200,6 +205,8 @@ impl DropDownPopupHost {
         if self.open || self.highlighted_index.is_some() {
             self.open = false;
             self.highlighted_index = None;
+            self.base.hide();
+            crate::widget::runtime::clear_popup_grab_for(self.base.id());
             self.base.request_redraw();
         }
     }
@@ -543,13 +550,21 @@ impl EventHandler for DropDownPopupHost {
                         }
                     }
                 }
+                // A press that leaves the pop-up open (padding, a disabled row) re-arms the
+                // one-shot grab the runtime consumed while routing the press here.
+                if self.open {
+                    crate::widget::runtime::set_popup_grab(self.base.id());
+                }
             }
             Event::Wheel { delta, .. } => {
                 if delta.y == 0 || self.items.len() <= self.visible_rows() {
                     return;
                 }
+                let before = self.scroll_offset;
                 let step = if delta.y < 0 { 1.0 } else { -1.0 };
                 self.set_scroll_offset(self.scroll_offset.round() + step);
+                // C2-D0: a list already at its end leaves the notch for an outer container.
+                crate::widget::claim_wheel_if_moved(&before, &self.scroll_offset);
             }
             Event::KeyPress { key, .. } => match *key {
                 key_codes::UP => self.move_highlight(Direction::Previous),
@@ -659,6 +674,13 @@ impl Widget for DropDownPopupHost {
             crate::style::EdgeOffsets::all(0),
             Size::new(self.anchor_rect.width.max(POPUP_MIN_WIDTH), rows * POPUP_ROW_HEIGHT),
         )
+    }
+    /// A closed host paints nothing, so it must not accept a press over the viewport it reserves.
+    ///
+    /// Its base flag follows `open` once it has been closed, but the capability table declares a
+    /// freshly constructed host `visible`, so openness is the reliable predicate here.
+    fn contains_point(&self, point: Point) -> bool {
+        self.open && self.base.contains_point_with_touch_expansion(point)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

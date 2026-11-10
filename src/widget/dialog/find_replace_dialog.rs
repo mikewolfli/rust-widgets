@@ -103,8 +103,6 @@ pub struct FindReplaceDialog {
     highlight_all: bool,
     /// Whether a search that reaches the end of the document continues from the top.
     wrap_around: bool,
-    /// Whether the dialog is visible.
-    visible: bool,
 
     // -- Signals --
     /// Emitted when find next is requested, with the find text and the dialog's search options.
@@ -158,7 +156,7 @@ pub struct FindReplaceDialog {
 impl FindReplaceDialog {
     /// Creates a new FindReplaceDialog with the given geometry.
     pub fn new(geometry: Rect) -> Self {
-        Self {
+        let mut dialog = Self {
             base: BaseWidget::new(WidgetKind::FindReplaceDialog, geometry, "FindReplaceDialog"),
             find_text: String::new(),
             replace_text: String::new(),
@@ -167,7 +165,6 @@ impl FindReplaceDialog {
             use_regex: false,
             highlight_all: false,
             wrap_around: true,
-            visible: false,
             find_next_signal: Signal1::new(),
             find_previous_signal: Signal1::new(),
             replace_signal: Signal1::new(),
@@ -182,7 +179,12 @@ impl FindReplaceDialog {
             match_report: None,
             status_cache: RefCell::new(None),
             no_matches_text: crate::compat::String::new(),
-        }
+        };
+        // A find bar is opened on demand, so it starts hidden. The base flag is the only
+        // visibility the draw and event paths read, which is what makes a host's
+        // `show_widget(id)` actually open the bar.
+        dialog.base.hide();
+        dialog
     }
 
     // ── Find text accessors ──
@@ -201,7 +203,16 @@ impl FindReplaceDialog {
         let length = self.find_text.chars().count();
         self.caret[0] = self.caret[0].min(length);
         self.anchor[0] = self.anchor[0].min(length);
+        // The report described the previous query, so it must not survive the edit: the
+        // status line reads it whenever the query is non-empty (DLG-11).
+        self.invalidate_match_report();
         self.base.request_redraw();
+    }
+
+    /// Drops the host's match report and the text formatted from it.
+    fn invalidate_match_report(&mut self) {
+        self.match_report = None;
+        *self.status_cache.borrow_mut() = None;
     }
 
     /// Returns the current replace text.
@@ -336,19 +347,19 @@ impl FindReplaceDialog {
 
     /// Shows the dialog.
     pub fn show(&mut self) {
-        self.visible = true;
+        self.base.show();
         self.base.request_redraw();
     }
 
     /// Hides the dialog.
     pub fn hide(&mut self) {
-        self.visible = false;
+        self.base.hide();
         self.base.request_redraw();
     }
 
     /// Returns whether the dialog is visible.
     pub fn is_visible(&self) -> bool {
-        self.visible
+        self.base.is_visible()
     }
 
     // ── Actions ──
@@ -356,43 +367,32 @@ impl FindReplaceDialog {
     /// Emits `find_next_signal` with the find text and the options in force.
     ///
     /// The options travel with the text because the host is the one that searches -- see the signal's
-    /// own documentation for why a bare `String` was not enough.
+    /// own documentation for why a bare `String` was not enough. Emitting for an empty query too
+    /// keeps the doc and the code on one contract: the host validates the text.
     pub fn find_next(&mut self) {
-        if !self.find_text.is_empty() {
-            let request =
-                SearchRequest { text: self.find_text.clone(), options: self.search_options() };
-            self.find_next_signal.emit(request);
-        }
+        let request =
+            SearchRequest { text: self.find_text.clone(), options: self.search_options() };
+        self.find_next_signal.emit(request);
     }
 
     /// Emits `find_previous_signal` with the find text and the options in force.
     pub fn find_previous(&mut self) {
-        if !self.find_text.is_empty() {
-            let request =
-                SearchRequest { text: self.find_text.clone(), options: self.search_options() };
-            self.find_previous_signal.emit(request);
-        }
+        let request =
+            SearchRequest { text: self.find_text.clone(), options: self.search_options() };
+        self.find_previous_signal.emit(request);
     }
 
     /// Emits `replace_signal` with the replacement text and the options in force.
     pub fn replace(&mut self) {
-        if !self.find_text.is_empty() {
-            let request =
-                SearchRequest { text: self.replace_text.clone(), options: self.search_options() };
-            self.replace_signal.emit(request);
-        }
+        let request =
+            SearchRequest { text: self.replace_text.clone(), options: self.search_options() };
+        self.replace_signal.emit(request);
     }
 
     /// Emits `replace_all_signal` with (find_text, replace_text) and the options in force.
     pub fn replace_all(&mut self) {
-        if !self.find_text.is_empty() {
-            let options = self.search_options();
-            self.replace_all_signal.emit((
-                self.find_text.clone(),
-                self.replace_text.clone(),
-                options,
-            ));
-        }
+        let options = self.search_options();
+        self.replace_all_signal.emit((self.find_text.clone(), self.replace_text.clone(), options));
     }
 
     /// The focused field's index.
@@ -413,6 +413,8 @@ impl FindReplaceDialog {
     fn set_field_text(&mut self, index: usize, text: String) {
         if index == 0 {
             self.find_text = text;
+            // The query moved, so any report the host supplied for the old text is stale.
+            self.invalidate_match_report();
         } else {
             self.replace_text = text;
         }
@@ -741,7 +743,7 @@ impl WidgetProperties for FindReplaceDialog {
 
 impl Draw for FindReplaceDialog {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.visible {
+        if !self.base.is_visible() {
             return;
         }
 
@@ -1102,7 +1104,7 @@ impl Draw for FindReplaceDialog {
 
 impl EventHandler for FindReplaceDialog {
     fn handle_event(&mut self, event: &Event) {
-        if !self.visible {
+        if !self.base.is_visible() {
             self.base.handle_event(event);
             return;
         }
@@ -1276,7 +1278,7 @@ impl EventHandler for FindReplaceDialog {
                 match *key {
                     27 => {
                         // Escape
-                        self.visible = false;
+                        self.hide();
                         self.close_signal.emit(());
                         self.base.request_redraw();
                     }
@@ -1425,6 +1427,93 @@ mod tests {
 
         dialog.hide();
         assert!(!dialog.is_visible());
+    }
+
+    /// A host's property write and the control's own paint/event gates must read one flag.
+    ///
+    /// # What this pins
+    ///
+    /// The control kept a private `visible` that only `draw` and `handle_event` read, while the
+    /// `visible` property wrote the base flag. `show_widget(id)` therefore did nothing (the base
+    /// was already visible) and the bar stayed blank; hiding it through the property still painted
+    /// and still took Escape.
+    #[test]
+    fn visibility_is_one_flag_for_the_property_and_the_paint_path() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        assert!(!dialog.is_visible(), "a find bar opens on demand");
+
+        dialog.set("visible", CapabilityValue::Bool(true)).expect("visible is writable");
+        assert!(dialog.is_visible());
+        let shown = render_to_svg(&mut dialog);
+        assert!(shown.contains("data-text"), "a shown bar must paint its labels: {shown}");
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired_clone = Arc::clone(&fired);
+        dialog.close_signal.connect(move |_: Arc<()>| {
+            fired_clone.store(true, Ordering::SeqCst);
+        });
+        dialog.set("visible", CapabilityValue::Bool(false)).expect("visible is writable");
+        assert!(!dialog.is_visible());
+        dialog.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!fired.load(Ordering::SeqCst), "a hidden bar must not take Escape");
+        let hidden = render_to_svg(&mut dialog);
+        assert!(!hidden.contains("data-text"), "a hidden bar must paint nothing: {hidden}");
+    }
+
+    /// A report describes the query it was run for, so editing the query must drop it.
+    ///
+    /// # What this pins
+    ///
+    /// `set_find_text` changed the query but left `match_report` and its formatted cache, and the
+    /// status line paints whenever the query is non-empty -- so the new query showed the old
+    /// "3 / 12" answer.
+    #[test]
+    fn editing_the_query_drops_the_stale_match_report() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        dialog.set_find_text("foo");
+        dialog.set_match_report(Some((3, 12)));
+        assert_eq!(dialog.match_report(), Some((3, 12)));
+
+        dialog.set_find_text("bar");
+        assert_eq!(dialog.match_report(), None, "the old report cannot describe the new query");
+        assert!(dialog.status_cache.borrow().is_none(), "the formatted text must go with it");
+
+        // The control's own editing path changes the query too.
+        dialog.set_match_report(Some((1, 2)));
+        dialog.insert_text("x");
+        assert_eq!(dialog.find_text(), "xbar");
+        assert_eq!(dialog.match_report(), None);
+
+        // A write that does not change the text leaves the report alone.
+        dialog.set_match_report(Some((2, 4)));
+        dialog.set_find_text("xbar");
+        assert_eq!(dialog.match_report(), Some((2, 4)));
+    }
+
+    /// Find/replace requests are emitted even with an empty query; the host validates the text.
+    ///
+    /// # What this pins
+    ///
+    /// The four action methods documented `emit` but silently returned for an empty `find_text`,
+    /// so a host could not tell a dismissed request from one that was never sent.
+    #[test]
+    fn an_empty_query_still_emits_the_action() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        let find_seen = Arc::new(AtomicBool::new(false));
+        let find_clone = Arc::clone(&find_seen);
+        dialog.find_next_signal.connect(move |request: Arc<SearchRequest>| {
+            find_clone.store(request.text.is_empty(), Ordering::SeqCst);
+        });
+        let replace_seen = Arc::new(AtomicBool::new(false));
+        let replace_clone = Arc::clone(&replace_seen);
+        dialog.replace_all_signal.connect(move |payload: Arc<(String, String, SearchOptions)>| {
+            replace_clone.store(payload.0.is_empty(), Ordering::SeqCst);
+        });
+
+        dialog.find_next();
+        dialog.replace_all();
+        assert!(find_seen.load(Ordering::SeqCst), "find_next must report the empty query");
+        assert!(replace_seen.load(Ordering::SeqCst), "replace_all must report the empty query");
     }
 
     #[test]

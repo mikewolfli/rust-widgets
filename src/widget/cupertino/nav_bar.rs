@@ -759,8 +759,12 @@ impl Draw for CupertinoNavigationBar {
                 // title and the arrow; no literal offset, which had moved it with the bar's
                 // height rather than its own line.
                 let label_line = context.text_line(bar_rect, &label_font);
-                context.draw_text(
-                    Point::new(label_x, label_line.y),
+                // The caption is fitted to the space the back area actually claims. A long
+                // caption used to run past the 80 px hit region and under the title slot, so
+                // its tail was painted but unclickable.
+                let budget = (bar_rect.x + BACK_BUTTON_WIDTH as i32 - label_x).max(0) as u32;
+                context.draw_text_fitted_ellipsis(
+                    Rect::new(label_x, label_line.y, budget, label_line.height),
                     &self.back_button_text,
                     &label_font,
                     action,
@@ -1004,6 +1008,29 @@ mod tests {
 
         bar.set_back_button_text("Settings");
         assert_eq!(bar.back_button_text(), "Settings");
+    }
+
+    /// A long back caption is elided to the back hit area, so every painted glyph is clickable.
+    ///
+    /// The caption was drawn at its full width while the hit area stayed the fixed 80 px back
+    /// region: the tail ran under the title slot and could not be clicked.
+    #[test]
+    fn a_long_back_caption_stays_inside_the_back_hit_area() {
+        use crate::widget::svg::text_ink_boxes;
+
+        let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 375, 96));
+        bar.show_back_button(true);
+        bar.set_back_button_text("A very long previous page title that cannot fit");
+
+        let svg = render_to_svg(&mut bar);
+        let boxes = text_ink_boxes(&svg);
+        assert_eq!(boxes.len(), 1, "the caption is the only text on the bar");
+        // `text_ink_boxes` yields `(left, top, right, bottom)`.
+        let (_, _, right, _) = boxes[0];
+        assert!(
+            right <= BACK_BUTTON_WIDTH as i32,
+            "the caption ink ends at {right}, past the {BACK_BUTTON_WIDTH} px hit area"
+        );
     }
 
     #[test]

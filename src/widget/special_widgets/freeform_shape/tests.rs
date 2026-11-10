@@ -469,6 +469,56 @@ fn a_polygon_exposes_vertex_handles_and_supports_add_remove() {
     assert!(!shape.remove_vertex(0), "a polygon never drops below three vertices");
 }
 
+/// A drag that the pointer leaves behind is still one undoable move.
+///
+/// # What this pins
+///
+/// `MouseLeave` cleared `body_drag`/`drag_handle` without calling `record_geometry`, so a move
+/// that had already been applied never entered the history: releasing outside the shape left
+/// `can_undo()` false and the move could not be undone.
+#[test]
+fn leaving_with_a_drag_in_flight_records_the_move_in_history() {
+    let mut shape = FreeformShapeWidget::new(Rect::new(0, 0, 100, 100), ShapePath::Heart);
+    shape.handle_event(&crate::event::Event::MousePress {
+        pos: Point::new(50, 50),
+        button: 1,
+        modifiers: 0,
+    });
+    shape.handle_event(&crate::event::Event::MouseMove { pos: Point::new(70, 80) });
+    assert_eq!(shape.geometry(), Rect::new(20, 30, 100, 100));
+    assert!(!shape.can_undo(), "nothing is recorded while the drag is still in flight");
+
+    shape.handle_event(&crate::event::Event::MouseLeave { pos: Point::new(300, 300) });
+    assert!(shape.can_undo(), "the applied move is recorded when the pointer leaves");
+    assert!(shape.undo());
+    assert_eq!(shape.geometry(), Rect::new(0, 0, 100, 100));
+}
+
+/// Disabling a shape mid-drag drops the gesture instead of resuming it on re-enable.
+///
+/// # What this pins
+///
+/// `handle_event` returns before the release/leave arms while disabled, so the `body_drag` latch
+/// survived a disable→enable round trip and the next `MouseMove` kept dragging with no button held.
+#[test]
+fn disabling_a_shape_drops_the_drag_in_flight() {
+    let mut shape = FreeformShapeWidget::new(Rect::new(0, 0, 100, 100), ShapePath::Heart);
+    shape.handle_event(&crate::event::Event::MousePress {
+        pos: Point::new(50, 50),
+        button: 1,
+        modifiers: 0,
+    });
+    shape.set_enabled(false);
+    shape.set_enabled(true);
+    shape.handle_event(&crate::event::Event::MouseMove { pos: Point::new(300, 300) });
+
+    assert_eq!(
+        shape.geometry(),
+        Rect::new(0, 0, 100, 100),
+        "a re-enabled shape must not continue a drag whose button is no longer held"
+    );
+}
+
 #[test]
 fn dragging_a_vertex_updates_the_polygon() {
     let mut shape = FreeformShapeWidget::new(

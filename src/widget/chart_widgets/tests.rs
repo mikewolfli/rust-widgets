@@ -235,7 +235,10 @@ fn svg_snapshot_line_chart_stable() {
     // measured width (`plot_x + plot_w - label_width`), where clamping the *origin* to the plot's
     // right edge let a `1000.0` label paint past the margin and over the legend column. Only that
     // label moved; the rest of the picture is byte-identical.
-    let expected = 13316797401542142420u64;
+    // Re-pinned again for the y-label fix: `draw_y_ticks` now right-anchors each value at
+    // `plot_x - 4` (using its measured width) instead of starting every label at `plot_x - 44`,
+    // so a wide value no longer paints over the plot. Only the y-tick labels moved.
+    let expected = 1150252596199243596u64;
     assert_eq!(got, expected, "line snapshot hash changed: {got}");
 }
 #[test]
@@ -263,7 +266,8 @@ fn svg_snapshot_bar_chart_stable() {
     // Re-pinned by BLUE23 §93, for the same reason as the line chart's: the engine's chrome is now
     // theme-derived rather than a light-mode literal. See that pin for the full note.
     // Same re-pin as the line chart's snapshot, for the same clamped rightmost axis label.
-    let expected = 7394511860554466859u64;
+    // And the same y-label right-anchor re-pin: only the y-tick labels moved.
+    let expected = 2381268331606270419u64;
     assert_eq!(got, expected, "bar snapshot hash changed: {got}");
 }
 

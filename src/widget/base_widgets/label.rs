@@ -746,10 +746,12 @@ impl Label {
 
     /// Declares the mnemonic character.
     ///
-    /// The first case-insensitive occurrence of the character in the caption is underlined,
-    /// and `Alt` + that key focuses [`Self::buddy`]. A character the caption does not contain
-    /// is still recorded (so a caller can set the binding before the text), but there is then
-    /// nothing to underline.
+    /// The first case-insensitive occurrence of the character in the caption is underlined —
+    /// on the line that contains it, so a wrapped caption underlines the character where it is
+    /// painted rather than only when the whole caption fits one line. Rich-text runs do not paint
+    /// the underline. `Alt` + that key focuses [`Self::buddy`]. A character the caption does not
+    /// contain is still recorded (so a caller can set the binding before the text), but there is
+    /// then nothing to underline.
     pub fn set_mnemonic(&mut self, mnemonic: Option<char>) {
         if self.mnemonic == mnemonic {
             return;
@@ -1185,18 +1187,35 @@ impl Label {
         font: &Font,
         color: Color,
     ) {
+        self.underline_mnemonic_in(context, content, line, &self.text, font, color);
+    }
+
+    /// Underlines the first occurrence of the mnemonic in `text`, inside `content` on `line`.
+    ///
+    /// Taking the line's own string lets the wrapped path underline the word where it was
+    /// actually painted: the character may sit on any wrapped line, and a line's text is a slice
+    /// of the caption with its own advance.
+    fn underline_mnemonic_in(
+        &self,
+        context: &mut RenderContext,
+        content: Rect,
+        line: Rect,
+        text: &str,
+        font: &Font,
+        color: Color,
+    ) {
         let Some(mnemonic) = self.mnemonic else {
             return;
         };
         let Some((start, character)) =
-            self.text.char_indices().find(|(_, c)| c.eq_ignore_ascii_case(&mnemonic))
+            text.char_indices().find(|(_, c)| c.eq_ignore_ascii_case(&mnemonic))
         else {
             return;
         };
         let end = start + character.len_utf8();
-        let prefix = context.measure_text(&self.text[..start], font).width as i32;
-        let glyph = context.measure_text(&self.text[start..end], font).width as i32;
-        let total = context.measure_text(&self.text, font).width as i32;
+        let prefix = context.measure_text(&text[..start], font).width as i32;
+        let glyph = context.measure_text(&text[start..end], font).width as i32;
+        let total = context.measure_text(text, font).width as i32;
         let origin = match self.alignment {
             crate::core::Alignment::Center => content.x + (content.width as i32 - total).max(0) / 2,
             crate::core::Alignment::Right => content.x + content.width as i32 - total,
@@ -1209,6 +1228,19 @@ impl Label {
             color,
             1,
         );
+    }
+
+    /// The horizontal placement of a painted line.
+    ///
+    /// One derivation for the single-line and wrapped paths: the wrapped painter used to pass
+    /// `Left` unconditionally, so `set_alignment(Right)` + `set_word_wrap(true)` hugged the left
+    /// edge while the same caption unwrapped was right-aligned.
+    fn horizontal_alignment(&self) -> HorizontalAlignment {
+        match self.alignment {
+            crate::core::Alignment::Center => HorizontalAlignment::Center,
+            crate::core::Alignment::Right => HorizontalAlignment::Right,
+            _ => HorizontalAlignment::Left,
+        }
     }
 
     /// Paints the wrapped-line table, re-measuring it only when its key changes.
@@ -1252,6 +1284,15 @@ impl Label {
             return;
         };
         let line_height = cache.line_height.max(1);
+        // The mnemonic's first occurrence, and the wrapped line that contains it. Computing it
+        // once keeps the loop's work to a byte-range comparison per line.
+        let mnemonic = self.mnemonic.and_then(|mnemonic| {
+            self.text
+                .char_indices()
+                .find(|(_, c)| c.eq_ignore_ascii_case(&mnemonic))
+                .map(|(start, _)| start)
+        });
+        let horizontal = self.horizontal_alignment();
         let mut y = content.y;
         let bottom = content.y + content.height as i32;
         for line in &cache.lines {
@@ -1265,9 +1306,16 @@ impl Label {
                 &line.text,
                 font,
                 text_color,
-                HorizontalAlignment::Left,
+                horizontal,
                 self.elide_mode,
             );
+            if let Some(start) = mnemonic {
+                if start >= line.start && start < line.end {
+                    self.underline_mnemonic_in(
+                        context, content, band, &line.text, font, text_color,
+                    );
+                }
+            }
             y += line_height as i32;
         }
     }
@@ -1845,11 +1893,7 @@ impl Draw for Label {
                 // Only the vertical anchor moves: the horizontal origin above is computed from
                 // the caller's alignment and stays exactly as it was.
                 let line = context.text_line(content, &font);
-                let horizontal = match self.alignment {
-                    crate::core::Alignment::Center => HorizontalAlignment::Center,
-                    crate::core::Alignment::Right => HorizontalAlignment::Right,
-                    _ => HorizontalAlignment::Left,
-                };
+                let horizontal = self.horizontal_alignment();
                 if self.elide_mode == TextElideMode::None {
                     // Historical path: paint at the measured origin and let the renderer clip.
                     // Unchanged so an existing label's pixels do not move.
@@ -2976,5 +3020,51 @@ mod tests {
             palette.background,
         );
         assert_eq!(ink_path_fill(&svg), palette.foreground);
+    }
+
+    /// Wrapping must not force every line to the left edge.
+    ///
+    /// `draw_wrapped` passed `HorizontalAlignment::Left` unconditionally, so a right-aligned
+    /// caption hugged the leading edge as soon as `word_wrap` was on while the same caption
+    /// unwrapped was right-aligned.
+    #[test]
+    fn a_wrapped_label_honours_horizontal_alignment() {
+        let _guard = crate::style::theme_test_guard();
+        let text = "alpha beta gamma delta epsilon zeta eta theta";
+
+        let mut left = Label::new(text.to_string(), Rect::new(0, 0, 120, 80));
+        left.set_word_wrap(true);
+        let left_svg = crate::widget::svg::render_to_svg(&mut left);
+
+        let mut right = Label::new(text.to_string(), Rect::new(0, 0, 120, 80));
+        right.set_word_wrap(true);
+        right.set_alignment(Alignment::Right);
+        let right_svg = crate::widget::svg::render_to_svg(&mut right);
+
+        assert_ne!(
+            left_svg, right_svg,
+            "the wrapped painter must pass the control's own horizontal alignment"
+        );
+    }
+
+    /// The mnemonic underline is painted on the wrapped line that contains the character.
+    ///
+    /// The underline used to exist only on the single-line plain path, so turning on
+    /// `word_wrap` silently dropped it even though `set_mnemonic` documents it.
+    #[test]
+    fn a_mnemonic_underlines_a_wrapped_caption() {
+        let _guard = crate::style::theme_test_guard();
+        let text = "alpha beta gamma delta epsilon zeta eta theta";
+
+        let mut plain = Label::new(text.to_string(), Rect::new(0, 0, 120, 80));
+        plain.set_word_wrap(true);
+        let without = crate::widget::svg::render_to_svg(&mut plain);
+
+        let mut marked = Label::new(text.to_string(), Rect::new(0, 0, 120, 80));
+        marked.set_word_wrap(true);
+        marked.set_mnemonic(Some('g'));
+        let with = crate::widget::svg::render_to_svg(&mut marked);
+
+        assert_ne!(without, with, "a wrapped mnemonic must still paint its underline");
     }
 }

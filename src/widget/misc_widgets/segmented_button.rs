@@ -298,18 +298,27 @@ impl SegmentedButton {
         if !segment.enabled {
             return;
         }
-        if self.allows_multiple {
+        let changed = if self.allows_multiple {
             if let Some(at) = self.selected.iter().position(|sel| *sel == index) {
                 self.selected.remove(at);
             } else {
                 self.selected.push(index);
                 self.selected.sort_unstable();
             }
+            // A toggle always moves the set: it either added or removed `index`.
+            true
+        } else if self.selected.as_slice() == [index] {
+            // Re-pressing the current segment is not a change, and `current_changed`'s contract
+            // says it fires only when the selection moves.
+            false
         } else {
             self.selected.clear();
             self.selected.push(index);
+            true
+        };
+        if changed {
+            self.current_changed.emit(index);
         }
-        self.current_changed.emit(index);
         self.base.request_redraw();
     }
     /// Creates a new SegmentedButton widget with the given geometry.
@@ -889,25 +898,29 @@ impl Draw for SegmentedButton {
                 } else if i == 0 {
                     // First segment: round left corners only
                     context.fill_rounded_rect(seg_rect, corner_radius, bg_color);
-                    // Over-draw right side square
-                    let right_half = Rect::new(
-                        seg_rect.x + corner_radius as i32,
-                        seg_rect.y,
-                        seg_width - corner_radius,
-                        track_rect.height,
-                    );
-                    context.fill_rect(right_half, bg_color);
+                    // Over-draw right side square. A segment narrower than the radius leaves no
+                    // square to overdraw; subtracting in `u32` without the guard wrapped the
+                    // width in release builds and panicked in debug ones.
+                    let square = seg_width.saturating_sub(corner_radius);
+                    if square > 0 {
+                        let right_half = Rect::new(
+                            seg_rect.x + corner_radius as i32,
+                            seg_rect.y,
+                            square,
+                            track_rect.height,
+                        );
+                        context.fill_rect(right_half, bg_color);
+                    }
                 } else if i == seg_count - 1 {
                     // Last segment: round right corners only
                     context.fill_rounded_rect(seg_rect, corner_radius, bg_color);
-                    // Over-draw left side square
-                    let left_half = Rect::new(
-                        seg_rect.x,
-                        seg_rect.y,
-                        seg_width - corner_radius,
-                        track_rect.height,
-                    );
-                    context.fill_rect(left_half, bg_color);
+                    // Over-draw left side square, for the same narrow-segment reason as above.
+                    let square = seg_width.saturating_sub(corner_radius);
+                    if square > 0 {
+                        let left_half =
+                            Rect::new(seg_rect.x, seg_rect.y, square, track_rect.height);
+                        context.fill_rect(left_half, bg_color);
+                    }
                 } else {
                     // Middle segments: fill fully
                     context.fill_rect(seg_rect, bg_color);
@@ -1443,5 +1456,64 @@ mod tests {
         let segment = Segment::new("Long caption").with_tooltip("The full sentence");
         assert_eq!(segment.tooltip(), Some("The full sentence"));
         assert_eq!(Segment::new("Plain").tooltip(), None);
+    }
+
+    /// A segment narrower than the track's corner radius must not underflow the overdraw square.
+    ///
+    /// 200 px split 13 ways gives 15 px segments on a 32 px track, whose radius is 16. The first
+    /// and last selected segments each subtract that radius from the width; doing it in `u32`
+    /// panicked in debug and wrapped in release, painting a ~4e9 px slab west/east of the track.
+    #[test]
+    fn a_narrow_end_segment_does_not_paint_outside_the_track() {
+        for selected in [0usize, 12] {
+            let mut btn = SegmentedButton::new(Rect::new(0, 0, 200, 32));
+            for _ in 0..13 {
+                btn.add_segment(Segment::new("X"));
+            }
+            btn.set_selected_index(Some(selected));
+            let svg = crate::widget::svg::render_to_svg(&mut btn);
+            for element in svg.split("<rect ") {
+                let Some(width) = element.split("width=\"").nth(1) else {
+                    continue;
+                };
+                let width: f64 = width
+                    .split('"')
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .expect("every rect width is numeric");
+                assert!(
+                    width <= 200.0,
+                    "selected {selected} painted a {width} px rect on a 200 px control"
+                );
+            }
+        }
+    }
+
+    /// Re-pressing the selected segment is not a selection change.
+    ///
+    /// `current_changed` is documented as "emitted when the selected segment changes", but the
+    /// click path emitted unconditionally, so a host that reacts to the signal ran a second time
+    /// for a click that changed nothing.
+    #[test]
+    fn re_pressing_the_selected_segment_does_not_emit_a_change() {
+        let mut btn = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        btn.add_segment(Segment::new("Day"));
+        btn.add_segment(Segment::new("Week"));
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&changes);
+        btn.current_changed.connect(move |index| sink.lock().unwrap().push(*index));
+
+        btn.handle_event(&Event::mouse_press(10, 18, 1));
+        btn.handle_event(&Event::mouse_press(10, 18, 1));
+        assert_eq!(btn.selected_index(), Some(0));
+        assert_eq!(
+            changes.lock().unwrap().as_slice(),
+            &[0],
+            "the second press selects the same segment, so it is not a change"
+        );
+
+        // A different segment still reports, so the guard did not silence the signal.
+        btn.handle_event(&Event::mouse_press(200, 18, 1));
+        assert_eq!(changes.lock().unwrap().as_slice(), &[0, 1]);
     }
 }

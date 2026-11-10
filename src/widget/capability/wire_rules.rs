@@ -118,14 +118,40 @@ pub const WIRE_RULES: &[WireRule] = &[
     rule(Some(K::Rect), K::Rect, Direct, "the event's rectangle is already the property's type"),
     rule(Some(K::Enum), K::Enum, Direct, "both sides use the same enumerated token"),
     // ── numeric widening between integer kinds ──
-    rule(Some(K::Int), K::UInt, Direct, "an integer fits an unsigned property in this range"),
-    rule(Some(K::UInt), K::Int, Direct, "an unsigned integer fits a signed property"),
-    rule(Some(K::Int), K::Float, Direct, "an integer is exactly representable as a number"),
+    //
+    // `Int → UInt` is **not** offered. `expect_usize` refuses a negative `Int`, and a negative
+    // integer is a legal value for the source property, so a wire the designer offered could fail
+    // at run time with no way for the user to see it before generation. A project that wants this
+    // must clamp explicitly (a conversion node), which is the decision the tool must not make.
+    rule(
+        Some(K::Int),
+        K::UInt,
+        Rejected(
+            "a signed integer may be negative, and an unsigned property refuses a negative value; \
+             use an explicit clamp",
+        ),
+        "a signed integer may be negative, and an unsigned property refuses a negative value",
+    ),
+    rule(
+        Some(K::UInt),
+        K::Int,
+        Converted,
+        "an unsigned integer fits a signed property up to the signed maximum",
+    ),
+    // Integers are exactly representable up to 2^53; above that the float carrier rounds. The
+    // conversion is defined and does not fail, so it is offered as `Converted` with the caveat
+    // stated rather than as an unconditional `Direct`.
+    rule(
+        Some(K::Int),
+        K::Float,
+        Converted,
+        "an integer converts to a number; above 2^53 the float carrier rounds it",
+    ),
     rule(
         Some(K::UInt),
         K::Float,
-        Direct,
-        "an unsigned integer is exactly representable as a number",
+        Converted,
+        "an unsigned integer converts to a number; above 2^53 the float carrier rounds it",
     ),
     // ── `Number` properties: the control picks the carrier, so both numeric sides fit ──
     //
@@ -288,15 +314,12 @@ fn rejection_reason(
 }
 
 // Convenience re-exports, so the table and the tests do not repeat the enum's path on every line.
-// `Rejected` is named only in tests, so it is imported there rather than left unused here
-// (an unused import in the production namespace trips `-D warnings` on the cross-target gate).
-use WireCompatibility::{Converted, Direct};
+use WireCompatibility::{Converted, Direct, Rejected};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::widget::capability::types::PropertyValueKind as Kind;
-    use WireCompatibility::Rejected;
 
     fn prop(kind: Kind) -> WireTarget {
         WireTarget::Property(kind)
@@ -357,6 +380,33 @@ mod tests {
                 ),
                 other => panic!("{source:?} → Records must be refused, got {other:?}"),
             }
+        }
+    }
+
+    /// The integer-to-integer and integer-to-float rules state the range hazards instead of
+    /// claiming an unconditional fit.
+    ///
+    /// `expect_usize` refuses a negative `Int`, so `Int → UInt` cannot be offered as `Direct`;
+    /// `expect_i64` refuses above the signed maximum, so `UInt → Int` is a conversion with that
+    /// caveat; and `f64` rounds above 2^53, so the float pairs are conversions too.
+    #[test]
+    fn integer_wires_state_their_range_hazards() {
+        assert!(
+            matches!(compatibility(Some(Kind::Int), prop(Kind::UInt)), Rejected(_)),
+            "a negative `Int` cannot reach a `UInt` property, so the wire must be refused"
+        );
+        assert_eq!(compatibility(Some(Kind::UInt), prop(Kind::Int)), Converted);
+        assert_eq!(compatibility(Some(Kind::Int), prop(Kind::Float)), Converted);
+        assert_eq!(compatibility(Some(Kind::UInt), prop(Kind::Float)), Converted);
+
+        // The reason names the actual hazard rather than saying only "incompatible".
+        let verdict = compatibility(Some(Kind::Int), prop(Kind::UInt));
+        match verdict {
+            Rejected(reason) => assert!(
+                reason.contains("negative"),
+                "the rejection must name the signedness hazard, got: {reason}"
+            ),
+            other => panic!("`Int → UInt` must be rejected, got {other:?}"),
         }
     }
 

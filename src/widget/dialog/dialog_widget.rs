@@ -571,17 +571,31 @@ impl Dialog {
     }
 
     /// The title-bar action rectangles, in the same right-to-left order the enum buttons use.
+    ///
+    /// Test-only spelling for the settled frame; production reads `_in` with the painted box.
+    #[cfg(test)]
     fn custom_title_bar_rects(&self) -> Vec<(TitleBarAction, Rect)> {
+        self.custom_title_bar_rects_in(self.frame_rect())
+    }
+
+    /// [`Self::custom_title_bar_rects`] for a specific painted frame.
+    ///
+    /// The hit path and the painter both pass the rectangle the frame is *currently* drawn
+    /// into, so a mark and its target stay together while the open reveal scales it.
+    fn custom_title_bar_rects_in(&self, frame: Rect) -> Vec<(TitleBarAction, Rect)> {
         if self.title.is_empty() || self.title_bar_actions.is_empty() {
             return Vec::new();
         }
-        let frame = self.frame_rect();
         let bar = ControlMetrics::top_band(frame, DIALOG_TITLE_BAR_HEIGHT);
         if bar.height == 0 || bar.width < DIALOG_CLOSE_BUTTON {
             return Vec::new();
         }
         let side = DIALOG_CLOSE_BUTTON.min(bar.height);
-        let mut right = bar.x + bar.width as i32 - side as i32 - 4;
+        // The enum buttons own the trailing edge; the caller-defined actions continue the
+        // same run to their left. Starting both at the same edge overlaid Help and Close,
+        // and the press path (which checks customs first) then made Close unreachable.
+        let reserved = self.title_bar_buttons.len() as i32 * (side as i32 + 4);
+        let mut right = bar.x + bar.width as i32 - side as i32 - 4 - reserved;
         let mut rects = Vec::with_capacity(self.title_bar_actions.len());
         for action in self.title_bar_actions.iter().rev() {
             rects.push((
@@ -680,9 +694,14 @@ impl Dialog {
         let (Some(origin), Some(start)) = (self.resize_origin, self.resize_geometry) else {
             return;
         };
-        let width = (start.width as i32 + (pos.x - origin.x)).max(DIALOG_RESIZE_MIN as i32) as u32;
-        let height =
-            (start.height as i32 + (pos.y - origin.y)).max(DIALOG_RESIZE_MIN as i32) as u32;
+        // `pos` is legal input from anywhere in `i32`; subtracting it from the origin or
+        // adding the delta to the start width must saturate rather than overflow.
+        let width = (start.width as i32)
+            .saturating_add(pos.x.saturating_sub(origin.x))
+            .max(DIALOG_RESIZE_MIN as i32) as u32;
+        let height = (start.height as i32)
+            .saturating_add(pos.y.saturating_sub(origin.y))
+            .max(DIALOG_RESIZE_MIN as i32) as u32;
         self.apply_size(start, width, height);
     }
 
@@ -701,11 +720,18 @@ impl Dialog {
     /// The title-bar buttons and their rectangles, in paint order (right to left).
     ///
     /// Drawing and hit-testing both read this, so a mark and its target cannot drift.
+    ///
+    /// Test-only spelling for the settled frame; production reads `_in` with the painted box.
+    #[cfg(test)]
     fn title_bar_button_rects(&self) -> Vec<(TitleBarButton, Rect)> {
+        self.title_bar_button_rects_in(self.frame_rect())
+    }
+
+    /// [`Self::title_bar_button_rects`] for a specific painted frame.
+    fn title_bar_button_rects_in(&self, frame: Rect) -> Vec<(TitleBarButton, Rect)> {
         if self.title.is_empty() {
             return Vec::new();
         }
-        let frame = self.frame_rect();
         let bar = ControlMetrics::top_band(frame, DIALOG_TITLE_BAR_HEIGHT);
         if bar.height == 0 || bar.width < DIALOG_CLOSE_BUTTON {
             return Vec::new();
@@ -723,6 +749,23 @@ impl Dialog {
             right -= side as i32 + 4;
         }
         rects
+    }
+
+    /// The rectangle the frame is painted into at the current reveal.
+    ///
+    /// `draw` scales the resting frame about its centre; the title-bar hit targets are
+    /// derived from this same box so the painted mark and its target cannot drift during
+    /// the open animation.
+    fn painted_frame_rect(&self) -> Rect {
+        let resting = self.frame_rect();
+        let reveal = self.reveal.value();
+        // A dialog that has never been opened paints nothing; its settled geometry is the
+        // only box there is to hit. During a reveal the painted frame is the scaled one.
+        if reveal <= 0.0 {
+            return resting;
+        }
+        let scale = DIALOG_REVEAL_MIN_SCALE + (1.0 - DIALOG_REVEAL_MIN_SCALE) * reveal;
+        super::scale_about_centre(resting, scale)
     }
 
     /// The title-bar band that starts a move drag.
@@ -968,13 +1011,16 @@ impl EventHandler for Dialog {
         }
         match event {
             Event::MousePress { pos, button: 1, .. } => {
-                for (action, rect) in self.custom_title_bar_rects() {
+                // The same painted frame the draw used, so a mark is clickable where it is
+                // painted even while the reveal is still scaling the dialog.
+                let frame = self.painted_frame_rect();
+                for (action, rect) in self.custom_title_bar_rects_in(frame) {
                     if rect.contains_point(*pos) {
                         self.title_bar_action.emit(action.id);
                         return;
                     }
                 }
-                for (kind, rect) in self.title_bar_button_rects() {
+                for (kind, rect) in self.title_bar_button_rects_in(frame) {
                     if rect.contains_point(*pos) {
                         match kind {
                             TitleBarButton::Close => self.reject(),
@@ -1012,12 +1058,12 @@ impl EventHandler for Dialog {
                 if self.is_resizing() {
                     self.resize_to(*pos);
                 } else if let Some(drag) = self.drag {
-                    let dx = pos.x - drag.origin.x;
-                    let dy = pos.y - drag.origin.y;
+                    let dx = pos.x.saturating_sub(drag.origin.x);
+                    let dy = pos.y.saturating_sub(drag.origin.y);
                     if dx != 0 || dy != 0 {
                         let moved = Rect::new(
-                            drag.origin_rect.x + dx,
-                            drag.origin_rect.y + dy,
+                            drag.origin_rect.x.saturating_add(dx),
+                            drag.origin_rect.y.saturating_add(dy),
                             drag.origin_rect.width,
                             drag.origin_rect.height,
                         );
@@ -1140,8 +1186,7 @@ impl Draw for Dialog {
         // that is in progress: at reveal 1.0 the scale is exactly 1.0, so a settled dialog is
         // pixel-identical to the pre-animation one. This is the whole reason the resting snapshot
         // is unchanged by this feature.
-        let scale = DIALOG_REVEAL_MIN_SCALE + (1.0 - DIALOG_REVEAL_MIN_SCALE) * reveal;
-        let rect = super::scale_about_centre(resting, scale);
+        let rect = self.painted_frame_rect();
         if rect.width == 0 || rect.height == 0 {
             return;
         }
@@ -1259,11 +1304,10 @@ impl Draw for Dialog {
         let title_line = context.text_line(band, title_font);
         // Title-bar buttons occupy the right end of the strip, so a long title elides before
         // them instead of running underneath.
-        let reserved = if self.title_bar_actions.is_empty() {
-            self.title_bar_buttons.len() as u32 * (DIALOG_CLOSE_BUTTON + 4)
-        } else {
-            self.title_bar_actions.len() as u32 * (DIALOG_CLOSE_BUTTON + 4)
-        };
+        // Both sets share one trailing run, so the title must elide before the run's full
+        // width, not before whichever set happens to win the either/or.
+        let reserved = (self.title_bar_buttons.len() + self.title_bar_actions.len()) as u32
+            * (DIALOG_CLOSE_BUTTON + 4);
         let title_width = rect.width.saturating_sub(16).saturating_sub(reserved);
         context.draw_text_fitted_ellipsis(
             Rect::new(rect.x + 8, title_line.y, title_width, title_line.height.max(1)),
@@ -1272,10 +1316,10 @@ impl Draw for Dialog {
             ink,
             HorizontalAlignment::Left,
         );
-        for (action, button) in self.custom_title_bar_rects() {
+        for (action, button) in self.custom_title_bar_rects_in(rect) {
             crate::widget::draw_icon_centered(context, button, button.height, ink, action.icon);
         }
-        for (kind, button) in self.title_bar_button_rects() {
+        for (kind, button) in self.title_bar_button_rects_in(rect) {
             crate::widget::draw_icon_centered(
                 context,
                 button,
@@ -1868,5 +1912,112 @@ mod tests {
             ["OK".to_string(), "Cancel".to_string(), "Apply".to_string()],
             "and the list is the new one"
         );
+    }
+
+    /// Caller actions and enum buttons share one trailing run instead of overlapping.
+    ///
+    /// # The defect this pins
+    ///
+    /// Both sets started at the same trailing edge, so with `set_closable(true)` and a Help
+    /// action the two marks occupied the same box. The press path checked the caller's
+    /// actions first, which made the Close button unreachable.
+    #[test]
+    fn title_bar_actions_and_buttons_do_not_overlap() {
+        let mut d = Dialog::with_title("Both", Rect::new(0, 0, 300, 200));
+        d.set_closable(true);
+        d.set_title_bar_actions(vec![TitleBarAction::new(IconName::Help, "help")]);
+
+        let help = d.custom_title_bar_rects().into_iter().next().expect("a Help action").1;
+        let close = d
+            .title_bar_button_rects()
+            .into_iter()
+            .find(|(button, _)| *button == TitleBarButton::Close)
+            .map(|(_, rect)| rect)
+            .expect("a Close button");
+        assert!(
+            help.x + help.width as i32 <= close.x,
+            "the action run must stop before the enum buttons: {help:?} vs {close:?}"
+        );
+
+        let rejected = Arc::new(AtomicUsize::new(0));
+        let r = Arc::clone(&rejected);
+        d.rejected.connect(move || {
+            r.fetch_add(1, Ordering::SeqCst);
+        });
+        let helped = Arc::new(AtomicUsize::new(0));
+        let h = Arc::clone(&helped);
+        d.help_requested.connect(move || {
+            h.fetch_add(1, Ordering::SeqCst);
+        });
+
+        d.handle_event(&Event::MousePress {
+            pos: Point::new(close.x + 1, close.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(rejected.load(Ordering::SeqCst), 1, "Close must remain reachable");
+        assert_eq!(helped.load(Ordering::SeqCst), 0, "and must not emit the Help action");
+    }
+
+    /// A title-bar mark is clickable where it is painted while the reveal is still running.
+    #[test]
+    fn a_title_bar_mark_is_clickable_at_its_painted_position_during_the_reveal() {
+        let mut d = Dialog::with_title("Reveal", Rect::new(0, 0, 200, 120));
+        d.set_title_bar_buttons(&[TitleBarButton::Help]);
+        d.open();
+        assert!(d.tick(60), "the reveal is still running");
+        let painted = d.painted_frame_rect();
+        assert!(
+            painted.width < d.frame_rect().width,
+            "the frame must be smaller mid-reveal: {painted:?} vs {:?}",
+            d.frame_rect()
+        );
+        let help = d
+            .title_bar_button_rects_in(painted)
+            .into_iter()
+            .find(|(button, _)| *button == TitleBarButton::Help)
+            .map(|(_, rect)| rect)
+            .expect("the painted Help mark has a box");
+
+        let asked = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&asked);
+        d.help_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        d.handle_event(&Event::MousePress {
+            pos: Point::new(help.x + 1, help.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "the painted mark must receive the press");
+    }
+
+    /// Resizing and dragging with an extreme legal pointer must not overflow.
+    #[test]
+    fn an_extreme_pointer_resizes_and_drags_without_panicking() {
+        let mut d = Dialog::with_title("Move", Rect::new(0, 0, 200, 160));
+        d.set_resizable(true);
+        let grip = d.resize_grip_rect().expect("a resizable dialog has a grip");
+        d.handle_event(&Event::MousePress {
+            pos: Point::new(grip.x + 1, grip.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(d.is_resizing());
+        d.resize_to(Point::new(i32::MIN, i32::MIN));
+        assert!(
+            d.geometry().width >= DIALOG_RESIZE_MIN && d.geometry().height >= DIALOG_RESIZE_MIN,
+            "the size stays at the minimum: {:?}",
+            d.geometry()
+        );
+
+        d.handle_event(&Event::MouseRelease { pos: Point::new(0, 0), button: 1 });
+        let bar = d.drag_bar().expect("titled dialogs drag by the bar");
+        d.handle_event(&Event::MousePress {
+            pos: Point::new(bar.x + 2, bar.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        d.handle_event(&Event::MouseMove { pos: Point::new(i32::MIN, i32::MIN) });
     }
 }

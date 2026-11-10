@@ -726,8 +726,26 @@ impl WizardDialog {
     }
 
     /// Returns a mutable reference to the steps.
+    ///
+    /// A caller may shorten this list while `current_step` points into it. Every paint clamps
+    /// the index first, so a truncation cannot index past the surviving steps.
     pub fn steps_mut(&mut self) -> &mut Vec<WizardStep> {
+        self.clamp_current_step();
         &mut self.steps
+    }
+
+    /// The index of the current step, clamped to the steps that exist.
+    fn current_step_index(&self) -> usize {
+        if self.steps.is_empty() {
+            0
+        } else {
+            self.current_step.min(self.steps.len() - 1)
+        }
+    }
+
+    /// Keeps `current_step` addressable after `steps_mut` lets a caller shorten the list.
+    fn clamp_current_step(&mut self) {
+        self.current_step = self.current_step_index();
     }
 
     /// Returns the title of the current step, or an empty string if there are no steps.
@@ -801,6 +819,20 @@ impl WizardDialog {
         (width > 0).then(|| Rect::new(rect.x, rect.y, width, rect.height))
     }
 
+    /// The height the wizard's chrome (step strip plus navigation band) reserves.
+    fn nav_chrome_height(&self, rect: Rect) -> u32 {
+        let step_indicator_height =
+            if self.sidebar_rect(rect).is_some() { 0 } else { Self::STEP_INDICATOR_HEIGHT };
+        step_indicator_height + Self::NAV_BUTTON_HEIGHT + 12
+    }
+
+    /// Whether the frame has room for the navigation band, the same test `draw` makes before it
+    /// paints the row. Hit-testing and focus movement must use it too: a short wizard paints no
+    /// buttons, so there must be no invisible rectangles that still cancel it.
+    fn nav_band_visible(&self, rect: Rect) -> bool {
+        rect.height >= self.nav_chrome_height(rect)
+    }
+
     /// The band the navigation row may occupy: the frame less the sidebar.
     fn nav_area(&self, rect: Rect) -> Rect {
         let width = self.sidebar_width(rect);
@@ -868,7 +900,11 @@ impl WizardDialog {
     /// The same rectangles are painted and hit-tested, so the press, the release and the
     /// picture all agree about which button is under the pointer.
     fn nav_button_at(&self, pos: Point) -> Option<NavAction> {
-        let rect = self.nav_area(self.geometry());
+        let geometry = self.geometry();
+        if !self.nav_band_visible(geometry) {
+            return None;
+        }
+        let rect = self.nav_area(geometry);
         self.nav_slots(rect)
             .iter()
             .copied()
@@ -1009,7 +1045,11 @@ impl WizardDialog {
 
     /// Moves the keyboard focus across the actions that are actually present.
     fn move_focus(&mut self, forward: bool) {
-        let rect = self.nav_area(self.geometry());
+        let geometry = self.geometry();
+        if !self.nav_band_visible(geometry) {
+            return;
+        }
+        let rect = self.nav_area(geometry);
         let slots = self.nav_slots(rect);
         if slots.is_empty() {
             return;
@@ -1188,6 +1228,7 @@ impl WidgetProperties for WizardDialog {
 
 impl Draw for WizardDialog {
     fn draw(&mut self, context: &mut RenderContext) {
+        self.clamp_current_step();
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
@@ -1282,13 +1323,10 @@ impl Draw for WizardDialog {
         let sidebar = self.sidebar_rect(rect);
         let sidebar_width = sidebar.map_or(0, |band| band.width);
         let step_indicator_height = if sidebar.is_some() { 0 } else { Self::STEP_INDICATOR_HEIGHT };
-        let nav_button_height = Self::NAV_BUTTON_HEIGHT;
-        let nav_area_height = nav_button_height + 12; // 12 padding
-        let chrome_height = step_indicator_height + nav_area_height;
-        let has_nav = rect.height >= chrome_height;
+        let has_nav = self.nav_band_visible(rect);
         let content_y = rect.y + step_indicator_height as i32;
         let content_height = if has_nav {
-            rect.height - chrome_height
+            rect.height.saturating_sub(self.nav_chrome_height(rect))
         } else {
             step_indicator_height.min(rect.height)
         };
@@ -1539,7 +1577,8 @@ impl Draw for WizardDialog {
             let well_bottom = content_rect.y + content_rect.height as i32;
             let info_font = role_font(style, 11.0);
             let mut info_cache = self.info_text_cache.borrow_mut();
-            let info_key = (self.current_step, self.steps.len());
+            let step_index = self.current_step_index();
+            let info_key = (step_index, self.steps.len());
             if info_cache.as_ref().is_none_or(|(key, _)| *key != info_key) {
                 let text = format!("Step {} of {}", info_key.0 + 1, info_key.1);
                 *info_cache = Some((info_key, text));
@@ -1549,8 +1588,7 @@ impl Draw for WizardDialog {
             let info_h = info_metrics.height.max(1) as i32;
             // Step title in content area
             let title_font = role_font(style, 16.0).with_bold(true);
-            let title_metrics =
-                context.measure_text(&self.steps[self.current_step].title, &title_font);
+            let title_metrics = context.measure_text(&self.steps[step_index].title, &title_font);
             let title_natural = title_metrics.height.max(1) as i32;
             // The subtitle is a second, smaller line under the title. It reserves its row
             // only when it has text, so a wizard without one lays out exactly as before.
@@ -1576,7 +1614,7 @@ impl Draw for WizardDialog {
             if title_h > 2 {
                 context.draw_text_fitted_ellipsis(
                     Rect::new(rect.x + 12, title_top, rect.width.saturating_sub(24), title_h),
-                    &self.steps[self.current_step].title,
+                    &self.steps[step_index].title,
                     &title_font,
                     ink,
                     HorizontalAlignment::Left,
@@ -1608,7 +1646,7 @@ impl Draw for WizardDialog {
 
                 // Optional label, on the row below the title (and subtitle) and only when
                 // that row is inside the well.
-                if self.steps[self.current_step].optional {
+                if self.steps[step_index].optional {
                     let opt_font = role_font(style, 11.0).with_italic(true);
                     let opt_metrics = context.measure_text("(Optional step)", &opt_font);
                     let opt_top = next_row;
@@ -1867,6 +1905,60 @@ mod tests {
         assert!(wiz.remove_page(0).is_some());
         assert_eq!(wiz.current_step(), 1, "the same page stays current");
         assert_eq!(seen.load(Ordering::SeqCst), 1, "the move is announced once");
+    }
+
+    /// `steps_mut` can shorten the list under `current_step`; the paint must clamp first.
+    ///
+    /// # What this pins
+    ///
+    /// Drawing indexed `self.steps[self.current_step]` guarded only by `!steps.is_empty()`, so
+    /// truncating three steps to one while step 2 was selected panicked with an index out of
+    /// bounds on the next frame.
+    #[test]
+    fn truncating_steps_with_steps_mut_does_not_index_past_the_end() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("one", false);
+        wiz.add_step("two", false);
+        wiz.add_step("three", false);
+        assert!(wiz.go_to_step(2));
+
+        wiz.steps_mut().truncate(1);
+        let svg = crate::widget::svg::render_to_svg(&mut wiz);
+        assert!(svg.starts_with("<svg"), "the shortened wizard still paints");
+        assert_eq!(wiz.current_step(), 0, "the surviving step becomes current");
+    }
+
+    /// A frame too short for the nav band must not have invisible clickable buttons.
+    ///
+    /// # What this pins
+    ///
+    /// `draw` skipped the row when the frame was too short, but `nav_button_at` and `move_focus`
+    /// still used `nav_slots`, so pressing where the row would have been activated Cancel/Back/
+    /// Next (and `canceled` fired) on a wizard that painted no buttons.
+    #[test]
+    fn a_short_wizard_has_no_invisible_navigation_targets() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 60));
+        wiz.add_step("one", false);
+        wiz.add_step("two", false);
+        wiz.add_step("three", false);
+        assert!(wiz.go_to_step(2));
+        assert!(!wiz.nav_band_visible(wiz.geometry()), "60 px cannot hold the nav band");
+
+        let canceled = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&canceled);
+        wiz.canceled.connect(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let hidden = wiz.nav_button_rects(wiz.geometry());
+        let cancel = hidden[0].center();
+        wiz.handle_event(&Event::MousePress { pos: cancel, button: 1, modifiers: 0 });
+        assert_eq!(wiz.pressed_button, None, "an unpainted button cannot be pressed");
+        wiz.handle_event(&Event::MouseRelease { pos: cancel, button: 1 });
+        assert_eq!(canceled.load(Ordering::SeqCst), 0, "an unpainted Cancel must not fire");
+
+        wiz.handle_event(&Event::KeyPress { key: crate::event::key_codes::TAB, modifiers: 0 });
+        assert_eq!(wiz.focused_button, None, "focus cannot move onto an unpainted row");
     }
 
     #[test]

@@ -190,6 +190,8 @@ impl HeaderMenu {
         self.clamp_selection();
         self.sync_context();
         self.base.show();
+        // The open menu owns the press that dismisses it (I-127).
+        crate::widget::runtime::set_popup_grab(self.base.id());
         self.base.request_redraw();
     }
 
@@ -199,6 +201,7 @@ impl HeaderMenu {
             self.open = false;
             self.selected_index = 0;
             self.base.hide();
+            crate::widget::runtime::clear_popup_grab_for(self.base.id());
             self.base.request_redraw();
         }
     }
@@ -490,6 +493,11 @@ impl EventHandler for HeaderMenu {
                             self.cancel();
                         }
                     }
+                }
+                // A press that leaves the menu open (a press on a disabled or separator row,
+                // or in its padding) re-arms the grab the runtime consumed for this press.
+                if self.open {
+                    crate::widget::runtime::set_popup_grab(self.base.id());
                 }
             }
             Event::KeyPress { key, .. } => match *key {

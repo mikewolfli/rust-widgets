@@ -262,9 +262,43 @@ impl MaskedEdit {
         let (segments, placeholder) = parse_mask(mask);
         self.segments = segments;
         self.placeholder = placeholder;
+        // Re-validated against the new mask: a shorter mask used to leave raw characters that
+        // `display_text` could not show while `raw_text()` and `is_valid()` still counted them.
+        let before = self.raw_text.clone();
+        self.raw_text = self.sanitized_for_mask(&before);
         self.cursor_pos = 0;
+        // The caret moves and the value's meaning changed, so no selection can survive.
+        self.selection_anchor = None;
+        self.dragging_selection = false;
+        // The completion edge belonged to the previous mask.
+        self.completion_announced = false;
         self.update_display_text();
+        if self.raw_text != before {
+            *self.history_target.borrow_mut() = self.raw_text.clone();
+            self.text_changed.emit_lazy(|| self.raw_text.clone());
+        }
         self.base.request_redraw();
+    }
+
+    /// Filters `text` down to the characters the current mask can hold.
+    fn sanitized_for_mask(&self, text: &str) -> String {
+        if self.segments.is_empty() {
+            return text.to_string();
+        }
+        let mut out = String::new();
+        let mut chars = text.chars();
+        for seg in &self.segments {
+            if let MaskSegment::Input { kind, case } = seg {
+                for ch in chars.by_ref() {
+                    let ch = apply_case(*case, ch);
+                    if mask_char_matches(*kind, ch) {
+                        out.push(ch);
+                        break;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Returns the current mask pattern.
@@ -312,24 +346,7 @@ impl MaskedEdit {
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
         let before = self.raw_text.clone();
-        self.raw_text = String::new();
-        if self.segments.is_empty() {
-            // No mask: the text is the value, verbatim.
-            self.raw_text = text;
-        } else {
-            let mut chars = text.chars();
-            for seg in &self.segments {
-                if let MaskSegment::Input { kind, case } = seg {
-                    for ch in chars.by_ref() {
-                        let ch = apply_case(*case, ch);
-                        if mask_char_matches(*kind, ch) {
-                            self.raw_text.push(ch);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        self.raw_text = self.sanitized_for_mask(&text);
         self.update_display_text();
         // The caret is a **segment** index (see [`Self::display_to_raw_index`], which iterates the
         // segments by index), not a byte offset into the display string. Assigning
@@ -337,6 +354,10 @@ impl MaskedEdit {
         // separators are multi-byte, so the drawn caret vanished. `segments.len()` is the count of
         // display positions the caret may occupy.
         self.cursor_pos = self.segments.len();
+        // `set_text` replaces the value, so a selection anchored against the old one now covers
+        // characters the user never selected — and the next keystroke would delete the fresh text.
+        self.selection_anchor = None;
+        self.dragging_selection = false;
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.raw_text.clone();
             self.undo_stack.push(Box::new(ValueCommand::new(
@@ -566,6 +587,10 @@ impl MaskedEdit {
     /// pointer does instead of a second copy of it.
     fn press_with_pointer(&mut self, pos: Point, modifiers: u32) {
         self.focused = true;
+        // A pointer press focuses the field, and a focused field's caret blinks: the keyboard path
+        // (`FocusGained`) starts this clock, so the pointer path must too or `tick` never reports a
+        // frame while `is_animating()` says one is due.
+        self.cursor_blink.start();
         let index = self.display_position_at_x(pos.x);
         self.press_at(index, crate::shortcut::Modifiers::from_event_bits(modifiers));
     }
@@ -1541,6 +1566,7 @@ impl EventHandler for MaskedEdit {
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
                 self.focused = true;
+                self.cursor_blink.start();
                 let position = self.display_position_at_x(pos.x);
                 let (start, end) = self.word_display_range(position);
                 self.selection_anchor = Some(start);
@@ -2576,5 +2602,48 @@ mod tests {
         let third = me.raw_chars_cached();
         assert!(!Rc::ptr_eq(&first, &third), "a new value builds a new table");
         assert_eq!(third.as_slice(), "5559999".chars().collect::<Vec<char>>().as_slice());
+    }
+
+    /// Replacing the value drops a selection that belonged to the old one.
+    ///
+    /// An anchor left over from the previous value would cover characters the user never
+    /// selected, and the next keystroke would delete the freshly set text.
+    #[test]
+    fn set_text_clears_the_selection() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 28));
+        me.set_mask("000-0000");
+        me.set_text("5551234");
+        me.select_all();
+        assert!(me.selection_range().is_some(), "select_all anchors a selection");
+
+        me.set_text("999");
+        assert_eq!(me.selection_anchor(), None, "the fresh value carries no selection");
+        assert!(me.selection_range().is_none());
+        assert!(
+            me.cursor_pos() <= me.text().chars().count(),
+            "the caret stays inside the drawn value: {} vs {:?}",
+            me.cursor_pos(),
+            me.text()
+        );
+    }
+
+    /// A pointer press focuses the field, so the caret must blink afterwards.
+    ///
+    /// The keyboard path starts the blink on `FocusGained`; the pointer path focuses the field
+    /// itself, so it has to start the same clock or `tick` never reports an owed frame.
+    #[test]
+    fn a_pointer_press_starts_the_caret_blink() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 48));
+        me.set_mask("000-000");
+        let field = me.field_rect();
+        assert!(!me.tick(16), "an unfocused field owes no frame");
+
+        me.handle_event(&Event::MousePress {
+            pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(me.focused, "a press on the drawn field focuses it");
+        assert!(me.tick(16), "the press starts the caret blink, so a frame is owed");
     }
 }

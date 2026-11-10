@@ -838,11 +838,10 @@ pub(crate) fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
                 if moving || still {
                     still_animating = true;
                 }
-                // Counted *after* the tick, matching the ledger's pre-refactor meaning: a control
-                // that settles on this frame is not reported as still ticking.
-                if still {
-                    ticked += 1;
-                }
+                // Count the advance itself, not the post-tick flag: a control that settles in
+                // this very tick **was** advanced by `delta_ms`, and reporting 0 hid that work
+                // from the ledger. Whether another frame is owed is `still_animating`'s job.
+                ticked += 1;
                 // Submitted even on the settle frame, where `tick` has just placed the value at
                 // its target and both answers are now `false`. That frame is the one that paints
                 // the **finished** state; skipping it left the last drawn frame one step short —

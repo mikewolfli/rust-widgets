@@ -326,9 +326,13 @@ impl EventHandler for ZoomPanController {
                 self.drag_last = None;
             }
             Event::Wheel { delta, .. } if delta.y != 0 => {
+                let before = self.zoom_level;
                 self.zoom_mode = ZoomMode::Free;
                 let factor = if delta.y < 0 { 1.25 } else { 0.8 };
                 self.set_zoom_level(self.zoom_level * factor);
+                // C2-D0: a controller already clamped at its zoom limit has not consumed the
+                // notch, so an enclosing `ScrollArea` still gets to scroll.
+                crate::widget::claim_wheel_if_moved(&before, &self.zoom_level);
             }
             _ => {}
         }

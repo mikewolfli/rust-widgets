@@ -381,8 +381,15 @@ impl Widget for MaterialSnackbar {
     }
 
     /// A running countdown owes a timeout frame, and a slide in flight owes an animation frame.
+    ///
+    /// `closing` is part of the answer even when the slide is already at its off-screen end: the
+    /// completion (hide + `dismissed` + handing the screen to the queue) lives in `tick`, so a
+    /// dismissal that starts before the entrance tick has moved the bar would otherwise never be
+    /// finished -- the frame bus only calls `tick` while this answers `true`.
     fn is_animating(&self) -> bool {
-        self.slide.is_moving() || (self.base.is_visible() && !self.closing && self.duration_ms > 0)
+        self.closing
+            || self.slide.is_moving()
+            || (self.base.is_visible() && !self.closing && self.duration_ms > 0)
     }
 
     /// Resolves a published event name to the control's own signal.
@@ -705,6 +712,32 @@ mod snackbar_tests {
         assert!(dismissed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
+    /// An animated exit that starts before the entrance tick moved the bar must still complete.
+    ///
+    /// `dismiss_animated` used to set `closing` and aim the slide at zero without reporting that
+    /// in `is_animating()`. With the slide already at its off-screen end the frame bus therefore
+    /// never called `tick`, the base stayed visible, `dismissed` never fired, and `show()` then
+    /// no-opped because the base was still visible -- a snackbar stuck off screen forever.
+    #[test]
+    fn an_animated_dismiss_before_the_entrance_tick_still_completes() {
+        let mut snackbar = MaterialSnackbar::new(Rect::new(0, 0, 375, 160));
+        snackbar.set_message("Saved");
+        snackbar.show();
+        snackbar.dismiss_animated();
+
+        let dismissed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let d = dismissed.clone();
+        snackbar.dismissed.connect(move || {
+            d.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert!(snackbar.is_visible(), "the exit starts while still on screen");
+        assert!(snackbar.is_animating(), "a pending exit owes the settle frame");
+        assert!(snackbar.tick(16), "the settle frame runs");
+        assert!(!snackbar.is_visible(), "the completed exit hides the bar");
+        assert!(dismissed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     #[test]
     fn zero_duration_is_permanent_and_the_exit_slides_out() {
         let mut snackbar = MaterialSnackbar::new(Rect::new(0, 0, 375, 160));
@@ -892,6 +925,7 @@ impl MaterialNavigationRail {
         if index >= self.items.len() {
             return false;
         }
+        let previous = self.selected_index;
         self.items.remove(index);
         self.item_icon_sources.remove(index);
         if self.items.is_empty() {
@@ -900,6 +934,12 @@ impl MaterialNavigationRail {
             self.selected_index -= 1;
         } else {
             self.selected_index = self.selected_index.min(self.items.len() - 1);
+        }
+        // Removing a row can move the selection (a row before it shifts the index down, a
+        // shorter list clamps it), and `current_changed` is documented to fire whenever the
+        // selection changes: a host that mirrors the rail would otherwise keep the old index.
+        if self.selected_index != previous {
+            self.current_changed.emit(self.selected_index);
         }
         self.base.request_layout();
         self.base.request_redraw();
@@ -1462,6 +1502,33 @@ mod tests {
         }
         assert_eq!(snack.message(), "second");
         assert!(snack.is_visible(), "the queued message is presented after the exit");
+    }
+
+    /// Removing a row shifts the selection; that is a selection change and is announced.
+    ///
+    /// `remove_item` moved `selected_index` without emitting `current_changed`, so a host that
+    /// mirrors the rail kept the stale index.
+    #[test]
+    fn removing_a_row_before_the_selection_announces_the_new_index() {
+        let mut rail = MaterialNavigationRail::new(Rect::new(0, 0, 80, 400));
+        rail.add_item("home", "Home");
+        rail.add_item("search", "Find");
+        rail.add_item("settings", "Settings");
+        rail.set_selected(1);
+
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let sink = std::sync::Arc::clone(&seen);
+        rail.current_changed.connect(move |index: std::sync::Arc<usize>| {
+            sink.store(*index, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert!(rail.remove_item(0));
+        assert_eq!(rail.selected(), 0, "the selection follows the list");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the shifted index is announced"
+        );
     }
 
     /// CB-003: the label mode selects the painted shape without changing the destinations, and

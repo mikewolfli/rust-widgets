@@ -112,8 +112,14 @@ impl DrumColumn {
         if self.items == items {
             return;
         }
+        let previous = self.selected_index;
         self.items = items;
         self.selected_index = self.selected_index.min(self.max_index());
+        // A shorter list can move the selection even though no gesture did; the doc's only silent
+        // case is an index that survives unchanged, so the clamp has to announce itself.
+        if self.selected_index != previous {
+            self.selection_changed.emit(self.selected_index);
+        }
         self.base.request_redraw();
     }
 
@@ -154,6 +160,8 @@ impl DrumColumn {
             return;
         }
         self.visible_rows = rows;
+        // `size_hint` is `row_height * visible_rows`, so this is a layout input, not only ink.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -169,6 +177,8 @@ impl DrumColumn {
             return;
         }
         self.row_height = height;
+        // The hint is derived from the row height, so the host has to re-run layout.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -735,6 +745,54 @@ mod tests {
         column.set_selected_index(4);
         column.set_items(vec!["only".to_string()]);
         assert_eq!(column.selected_index(), 0);
+    }
+
+    /// Replacing the list announces a selection the clamp had to move.
+    ///
+    /// The doc promises silence only when the index survives; the code clamped it and emitted
+    /// nothing, so a host mirroring the selection kept the old index.
+    #[test]
+    fn shrinking_the_list_announces_the_clamped_selection() {
+        use std::sync::{Arc, Mutex};
+        let mut column = column();
+        column.set_selected_index(4);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        column.selection_changed.connect(move |index| sink.lock().unwrap().push(*index));
+
+        column.set_items(vec!["only".to_string()]);
+        assert_eq!(column.selected_index(), 0);
+        assert_eq!(seen.lock().unwrap().as_slice(), &[0], "the clamp is a selection change");
+
+        // An index that survives is still silent, which is the documented exception.
+        column.set_items(vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(column.selected_index(), 0);
+        assert_eq!(seen.lock().unwrap().as_slice(), &[0]);
+    }
+
+    /// Row metrics are part of `size_hint`, so changing them must request layout.
+    #[test]
+    fn the_size_affecting_setters_request_layout() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut column = column();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&requests);
+        column.base.layout_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        column.set_row_height(44);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        column.set_visible_rows(7);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        assert_eq!(column.size_hint(), Size::new(80, 44 * 7));
+
+        // A same-value write is not a layout change.
+        column.set_row_height(44);
+        column.set_visible_rows(7);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
     }
 
     /// A pointer drag pulls whole rows through the same clamp the wheel uses, and the leftover

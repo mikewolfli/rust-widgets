@@ -76,7 +76,7 @@ pub(crate) enum BlockStart {
 }
 
 /// A stable hash of one preview line, used as the cache key beside its index.
-fn text_hash(text: &str) -> u64 {
+pub(crate) fn text_hash(text: &str) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in text.as_bytes() {
         hash ^= *byte as u64;

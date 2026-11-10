@@ -1788,6 +1788,9 @@ impl WidgetKind {
             | Self::SegmentedButton
             | Self::EditableComboBox
             | Self::SearchBar
+            | Self::SearchBox
+            | Self::TagInput
+            | Self::InplaceEditor
             | Self::ShortcutEditor
             | Self::Stepper
             | Self::Rating
@@ -1867,6 +1870,8 @@ impl WidgetKind {
 
 #[cfg(test)]
 mod tests {
+    use super::WidgetKind;
+
     /// Every registered kind must name itself exactly as `Debug` does.
     ///
     /// [`WidgetKind::css_name`] duplicates the spelling the compiler derives, because deriving
@@ -1893,6 +1898,49 @@ mod tests {
                 format!("{:?}", capability.kind),
                 "{:?} names itself differently from its Debug spelling",
                 capability.kind
+            );
+        }
+    }
+
+    /// Accepting IME input implies taking keyboard focus.
+    ///
+    /// # What this pins
+    ///
+    /// [`WidgetKind::accepts_ime_input`] lists the text-entry family, while
+    /// [`WidgetKind::wants_keyboard_focus`] decides whether the registry and the pointer router
+    /// can give the control focus at all (`Widget::is_focusable` defaults to it). The two tables
+    /// disagreed for `SearchBox`, `TagInput` and `InplaceEditor`: they accepted committed text but
+    /// were never focusable, so a click did not focus them, Tab skipped them, and the IME channel
+    /// could never reach the control that asked for it. The relation is an invariant, not an
+    /// implementation detail: a kind that accepts text but cannot own focus is unreachable by
+    /// construction.
+    ///
+    /// The sweep runs over the registry, which holds every kind a JSON document can produce, and
+    /// additionally names the three kinds that exposed the disagreement so a future edit to the
+    /// table cannot make the check vacuous.
+    #[cfg(widgets_unstripped)]
+    #[test]
+    fn every_ime_accepting_kind_also_wants_keyboard_focus() {
+        let capabilities = crate::widget::WidgetFactory::shared().capabilities();
+        assert!(
+            capabilities.len() > 100,
+            "the registry has {} entries, which would make this check vacuous",
+            capabilities.len()
+        );
+        for capability in capabilities {
+            if capability.kind.accepts_ime_input() {
+                assert!(
+                    capability.kind.wants_keyboard_focus(),
+                    "{:?} accepts IME input but is not focusable, so typing can never reach it",
+                    capability.kind
+                );
+            }
+        }
+        for kind in [WidgetKind::SearchBox, WidgetKind::TagInput, WidgetKind::InplaceEditor] {
+            assert!(kind.accepts_ime_input(), "{kind:?} belongs to the text-entry family");
+            assert!(
+                kind.wants_keyboard_focus(),
+                "{kind:?} must join the tab order to receive typing"
             );
         }
     }

@@ -13,6 +13,7 @@ use crate::widget::capability::types::CapabilityValue;
 use crate::widget::capability::WidgetProperties;
 use crate::widget::special_widgets::toast::Toast;
 use crate::widget::view_widgets::filter_expr::FilterOperator;
+use crate::widget::{BaseWidget, Widget, WidgetKind};
 
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -103,11 +104,13 @@ fn filter_row_live_edit_publishes_and_clear_notifies() {
 fn filter_row_conditions_property_round_trips() {
     let mut row = FilterRow::new(Rect::new(0, 0, 300, 36));
     row.set_columns(vec!["Name".to_string()]);
-    let value = CapabilityValue::Tuple(vec![CapabilityValue::Tuple(vec![
-        CapabilityValue::UInt(0),
-        CapabilityValue::String("greater_than".to_string()),
-        CapabilityValue::String("10".to_string()),
-    ])]);
+    let value = CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+        &crate::widget::capability::FILTER_CONDITION_SCHEMA,
+        vec![crate::widget::capability::RecordValue::new()
+            .with("column", CapabilityValue::UInt(0))
+            .with("operator", CapabilityValue::String("greater_than".to_string()))
+            .with("operand", CapabilityValue::String("10".to_string()))],
+    ));
     row.set("conditions", value).expect("a condition list is writable");
     assert_eq!(row.conditions().len(), 1);
     assert_eq!(row.conditions()[0].operator, FilterOperator::GreaterThan);
@@ -207,11 +210,13 @@ fn legend_properties_round_trip() {
     legend
         .set(
             "entries",
-            CapabilityValue::Tuple(vec![CapabilityValue::Tuple(vec![
-                CapabilityValue::String("A".to_string()),
-                CapabilityValue::Color(Color::BLUE),
-                CapabilityValue::Bool(true),
-            ])]),
+            CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &crate::widget::capability::LEGEND_ENTRY_SCHEMA,
+                vec![crate::widget::capability::RecordValue::new()
+                    .with("label", CapabilityValue::String("A".to_string()))
+                    .with("color", CapabilityValue::Color(Color::BLUE))
+                    .with("visible", CapabilityValue::Bool(true))],
+            )),
         )
         .expect("entry list is writable");
     legend.set("checkable", CapabilityValue::Bool(true)).expect("writable");
@@ -351,4 +356,382 @@ fn toast_host_dismiss_and_properties() {
     assert_eq!(host.anchor(), ToastAnchor::TopRight);
     assert_eq!(host.stacking_direction(), ToastStackingDirection::NewestAtBottom);
     assert_eq!(host.overflow_policy(), ToastOverflowPolicy::DropNewest);
+}
+
+// ── Closed/focus/wheel/popup invariants ─────────────────────────────────────
+
+/// A container that records every wheel the router offers it after the child declines.
+struct WheelProbe {
+    base: BaseWidget,
+    wheels: Arc<AtomicUsize>,
+}
+
+impl WheelProbe {
+    fn new(geometry: Rect) -> (Self, Arc<AtomicUsize>) {
+        let wheels = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                base: BaseWidget::new(WidgetKind::Panel, geometry, "WheelProbe"),
+                wheels: Arc::clone(&wheels),
+            },
+            wheels,
+        )
+    }
+}
+
+impl Widget for WheelProbe {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn accepts_wheel(&self) -> bool {
+        true
+    }
+}
+
+impl EventHandler for WheelProbe {
+    fn handle_event(&mut self, event: &Event) {
+        if matches!(event, Event::Wheel { .. }) {
+            self.wheels.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Mounts `child` under a [`WheelProbe`] and links the parent half through the registry.
+fn mount_under_wheel_probe(
+    child: Box<dyn Widget>,
+) -> (crate::core::ObjectId, crate::core::ObjectId, Arc<AtomicUsize>) {
+    let (probe, wheels) = WheelProbe::new(Rect::new(0, 0, 400, 300));
+    let parent = crate::widget::runtime::register(Box::new(probe)).expect("mount the wheel probe");
+    let child = crate::widget::runtime::register(child).expect("mount the companion");
+    crate::widget::runtime::with_widget_mut(parent, |widget| {
+        widget.base_mut().add_child_linked(child);
+    });
+    (parent, child, wheels)
+}
+
+/// Mounts `popup` under a window so `top_level_window_of` can resolve the grab owner.
+fn mount_popup_in_window(popup: Box<dyn Widget>) -> (crate::core::ObjectId, crate::core::ObjectId) {
+    let popup = crate::widget::runtime::register(popup).expect("mount the popup");
+    let window = crate::widget::runtime::register(Box::new(crate::widget::Window::new(
+        "popup host".to_string(),
+        Rect::new(0, 0, 800, 600),
+    )))
+    .expect("mount the window");
+    crate::widget::runtime::with_widget_mut(window, |widget| {
+        widget.base_mut().add_child_linked(popup);
+    });
+    (window, popup)
+}
+
+/// Opens a popup, asserts it took the grab, then presses far outside and asserts it closed.
+fn assert_popup_owns_outside_press(
+    popup: Box<dyn Widget>,
+    open: impl FnOnce(&mut dyn Widget),
+    still_open: impl Fn(&mut dyn Widget) -> bool,
+) {
+    use crate::widget::runtime::dispatch_pointer_event;
+
+    let (window, id) = mount_popup_in_window(popup);
+    crate::widget::runtime::with_widget_mut(id, open);
+    assert_eq!(
+        crate::widget::runtime::popup_grab(),
+        Some(id),
+        "an open popup must arm the one-shot grab"
+    );
+
+    let point = Point::new(700, 550);
+    assert!(
+        dispatch_pointer_event(window, &Event::mouse_press(point.x, point.y, 1), point),
+        "the outside press must reach the popup instead of falling through the window"
+    );
+    assert!(
+        !crate::widget::runtime::with_widget_mut(id, |widget| still_open(widget)).unwrap_or(true),
+        "the outside press must dismiss the popup"
+    );
+    assert_eq!(crate::widget::runtime::popup_grab(), None, "the dismissal must release the grab");
+
+    crate::widget::runtime::unregister(id);
+    crate::widget::runtime::unregister(window);
+}
+
+/// FINDING 1: a host that paints nothing while closed must not be hit-testable.
+///
+/// The capability table declares these hosts `visible` by default, so a freshly constructed
+/// closed host starts with the base flag set; its own `contains_point` is what keeps the closed
+/// rectangle from swallowing presses. Once toggled, `open`/`close` also keep the base flag in
+/// step, so a closed host is invisible to both halves of the hit rule.
+#[test]
+fn a_closed_host_keeps_its_base_flag_in_step_with_its_open_state() {
+    use crate::widget::Widget;
+
+    let mut palette = CommandPaletteHost::new(Rect::new(240, 120, 480, 320));
+    assert!(palette.base().is_visible(), "the declared default is visible");
+    assert!(!palette.contains_point(Point::new(250, 130)), "a closed palette takes no press");
+    palette.open();
+    assert!(palette.contains_point(Point::new(250, 130)));
+    palette.close();
+    assert!(!palette.base().is_visible());
+    assert!(!palette.contains_point(Point::new(250, 130)));
+
+    let mut menu = MenuPanel::new(Rect::new(0, 0, 180, 100));
+    assert!(!menu.contains_point(Point::new(10, 10)));
+    menu.open();
+    assert!(menu.contains_point(Point::new(10, 10)));
+    menu.close();
+    assert!(!menu.base().is_visible());
+    assert!(!menu.contains_point(Point::new(10, 10)));
+
+    let mut bar = FindReplaceBar::new(Rect::new(0, 0, 400, 32));
+    assert!(!bar.contains_point(Point::new(10, 10)));
+    bar.open();
+    assert!(bar.contains_point(Point::new(10, 10)));
+    bar.close();
+    assert!(!bar.base().is_visible());
+    assert!(!bar.contains_point(Point::new(10, 10)));
+
+    let mut tree_bar = TreeFindBar::new(Rect::new(0, 0, 260, 28));
+    assert!(!tree_bar.contains_point(Point::new(10, 10)));
+    tree_bar.open();
+    assert!(tree_bar.contains_point(Point::new(10, 10)));
+    tree_bar.close();
+    assert!(!tree_bar.base().is_visible());
+    assert!(!tree_bar.contains_point(Point::new(10, 10)));
+
+    let mut popup = DropDownPopupHost::new(Rect::new(0, 0, 200, 200));
+    assert!(!popup.contains_point(Point::new(10, 10)), "a closed host must not take the press");
+    popup.open_at(Rect::new(0, 0, 80, 24));
+    assert!(popup.contains_point(Point::new(10, 10)));
+    popup.close();
+    assert!(!popup.contains_point(Point::new(10, 10)));
+    assert!(!popup.base().is_visible(), "close still keeps the base flag in step");
+}
+
+/// FINDING 3: one hover produces one bubble; expiry must not restart the delay forever.
+#[test]
+fn an_expired_tooltip_stays_hidden_until_the_pointer_returns() {
+    use crate::widget::Widget;
+
+    let mut manager = TooltipManager::new(Rect::new(0, 0, 300, 200));
+    manager.set_delay_ms(0);
+    manager.set_duration_ms(100);
+    manager.register(7, "Saved");
+    manager.note_hover(7);
+
+    assert!(manager.tick(0, 0), "a zero delay shows the bubble on the first tick");
+    assert_eq!(manager.tooltip(), Some("Saved"));
+    assert!(manager.tick(200, 200), "the duration expires the bubble");
+    assert!(manager.tooltip().is_none());
+    assert!(!manager.is_animating(), "an expired hover must not keep the frame bus awake");
+    assert!(!manager.tick(16, 216), "and it must not re-show by itself");
+    assert!(manager.tooltip().is_none());
+}
+
+/// FINDING 4: the documented per-frame `expire_toasts` call must not repaint an empty queue.
+#[test]
+fn an_empty_toast_queue_does_not_request_a_redraw_every_frame() {
+    use crate::widget::runtime::structure_epoch;
+
+    let mut host = ToastHost::new(Rect::new(0, 0, 320, 200));
+    let before = structure_epoch();
+    assert_eq!(host.expire_toasts(0), 0);
+    assert_eq!(structure_epoch(), before, "an empty queue must not request a frame");
+
+    host.push_at(Toast::new(Rect::new(0, 0, 10, 10), "Saved"), 0);
+    let after_push = structure_epoch();
+    assert_eq!(host.expire_toasts(100_000), 1);
+    assert_ne!(structure_epoch(), after_push, "an actual expiry still repaints");
+}
+
+/// FINDING 5: opening a find bar moves the keyboard onto it.
+#[test]
+fn opening_a_find_bar_focuses_the_query() {
+    use crate::widget::capability::coercion::widget_as_mut;
+    use crate::widget::runtime::{
+        clear_focus, focused_widget, register, unregister, with_widget_mut,
+    };
+
+    let id = register(Box::new(FindReplaceBar::new(Rect::new(0, 0, 400, 32))))
+        .expect("mount the find bar");
+    assert!(with_widget_mut(id, |widget| {
+        widget_as_mut::<FindReplaceBar>(widget).is_some_and(|bar| {
+            bar.open();
+            bar.is_open()
+        })
+    })
+    .unwrap_or(false));
+    assert_eq!(focused_widget(), Some(id), "open must focus the query field");
+    clear_focus();
+    unregister(id);
+
+    let id = register(Box::new(TreeFindBar::new(Rect::new(0, 0, 260, 28))))
+        .expect("mount the tree find bar");
+    assert!(
+        with_widget_mut(id, |widget| widget.is_focusable()).unwrap_or(false),
+        "the tree find bar must be reachable by Tab"
+    );
+    assert!(with_widget_mut(id, |widget| {
+        widget_as_mut::<TreeFindBar>(widget).is_some_and(|bar| {
+            bar.open();
+            bar.is_visible()
+        })
+    })
+    .unwrap_or(false));
+    assert_eq!(focused_widget(), Some(id), "open must focus the tree bar's query");
+    clear_focus();
+    unregister(id);
+}
+
+/// FINDINGS 7 + 10: the scrollable companions move toward the start for a positive notch,
+/// and only the notch that actually moved them claims the wheel.
+#[test]
+fn a_scrolling_companion_claims_only_the_wheel_that_moved_it() {
+    use crate::widget::capability::coercion::widget_as_mut;
+    use crate::widget::runtime::{dispatch_wheel_event, unregister, with_widget_mut};
+
+    let wheel = |delta_y: i32| Event::Wheel { delta: Point::new(0, delta_y), modifiers: 0 };
+
+    // LayerPanel: at its first row a positive notch has nowhere to go.
+    let mut layers = LayerPanel::new(Rect::new(0, 0, 200, 100));
+    layers.set_entries((0..10).map(|index| LayerEntry::new(index, format!("L{index}"))).collect());
+    let (parent, id, wheels) = mount_under_wheel_probe(Box::new(layers));
+    assert!(dispatch_wheel_event(id, &wheel(1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1, "a clamped list must leave the notch");
+    assert!(dispatch_wheel_event(id, &wheel(-1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1, "a moved list claims the notch");
+    unregister(id);
+    unregister(parent);
+
+    // PlaylistPanel behaves the same way.
+    let mut playlist = PlaylistPanel::new(Rect::new(0, 0, 240, 100));
+    playlist.set_tracks((0..10).map(|index| format!("/music/{index}.mp3")).collect());
+    let (parent, id, wheels) = mount_under_wheel_probe(Box::new(playlist));
+    assert!(dispatch_wheel_event(id, &wheel(1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1);
+    assert!(dispatch_wheel_event(id, &wheel(-1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1);
+    unregister(id);
+    unregister(parent);
+
+    // MenuPanel.
+    let (parent, id, wheels) =
+        mount_under_wheel_probe(Box::new(MenuPanel::new(Rect::new(0, 0, 200, 100))));
+    with_widget_mut(id, |widget| {
+        let menu = widget_as_mut::<MenuPanel>(widget).expect("menu panel");
+        menu.set_items((0..10).map(|index| MenuPanelItem::new(format!("Row {index}"))).collect());
+        menu.set_max_visible_rows(2);
+        menu.open();
+    });
+    assert!(dispatch_wheel_event(id, &wheel(1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1);
+    assert!(dispatch_wheel_event(id, &wheel(-1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1);
+    with_widget_mut(id, |widget| widget_as_mut::<MenuPanel>(widget).expect("menu").close());
+    unregister(id);
+    unregister(parent);
+
+    // DropDownPopupHost.
+    let (parent, id, wheels) =
+        mount_under_wheel_probe(Box::new(DropDownPopupHost::new(Rect::new(0, 0, 200, 200))));
+    with_widget_mut(id, |widget| {
+        let popup = widget_as_mut::<DropDownPopupHost>(widget).expect("popup");
+        popup.set_items(
+            (0..10)
+                .map(|index| PopupItem::new(format!("id{index}"), format!("Row {index}")))
+                .collect(),
+        );
+        popup.set_max_visible_rows(2);
+        popup.open_at(Rect::new(0, 0, 80, 24));
+    });
+    assert!(dispatch_wheel_event(id, &wheel(1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1);
+    assert!(dispatch_wheel_event(id, &wheel(-1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1);
+    with_widget_mut(id, |widget| {
+        widget_as_mut::<DropDownPopupHost>(widget).expect("popup").close()
+    });
+    unregister(id);
+    unregister(parent);
+
+    // CommandPaletteHost.
+    let (parent, id, wheels) =
+        mount_under_wheel_probe(Box::new(CommandPaletteHost::new(Rect::new(0, 0, 480, 120))));
+    with_widget_mut(id, |widget| {
+        let palette = widget_as_mut::<CommandPaletteHost>(widget).expect("palette");
+        palette.set_entries(
+            (0..10)
+                .map(|index| PaletteEntryRef::new(format!("id{index}"), format!("Row {index}")))
+                .collect(),
+        );
+        palette.open();
+    });
+    assert!(dispatch_wheel_event(id, &wheel(1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1);
+    assert!(dispatch_wheel_event(id, &wheel(-1)));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1);
+    with_widget_mut(id, |widget| {
+        widget_as_mut::<CommandPaletteHost>(widget).expect("palette").close()
+    });
+    unregister(id);
+    unregister(parent);
+}
+
+/// FINDING 7 for the zoom controller: a notch clamped at the zoom limit is not a claim.
+#[test]
+fn a_wheel_that_cannot_zoom_does_not_claim_the_notch() {
+    use crate::widget::capability::coercion::widget_as_mut;
+    use crate::widget::runtime::{dispatch_wheel_event, unregister, with_widget_mut};
+
+    let (parent, id, wheels) =
+        mount_under_wheel_probe(Box::new(ZoomPanController::new(Rect::new(0, 0, 200, 100))));
+    with_widget_mut(id, |widget| {
+        let controller = widget_as_mut::<ZoomPanController>(widget).expect("zoom controller");
+        let max = controller.max_zoom();
+        controller.set_zoom_level(max);
+    });
+
+    // A notch in cannot change a zoom already at its maximum.
+    assert!(dispatch_wheel_event(id, &Event::Wheel { delta: Point::new(0, -1), modifiers: 0 },));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1, "a clamped zoom must leave the notch");
+
+    // A notch out can.
+    assert!(dispatch_wheel_event(id, &Event::Wheel { delta: Point::new(0, 1), modifiers: 0 },));
+    assert_eq!(wheels.load(Ordering::SeqCst), 1, "the zoom that moved claims it");
+
+    unregister(id);
+    unregister(parent);
+}
+
+/// FINDING 13: header menus, drop-down hosts and the palette own the outside press.
+#[test]
+fn every_popup_companion_owns_the_press_that_dismisses_it() {
+    use crate::widget::capability::coercion::widget_as_mut;
+
+    assert_popup_owns_outside_press(
+        Box::new(HeaderMenu::new(Rect::new(0, 0, 200, 120))),
+        |widget| {
+            widget_as_mut::<HeaderMenu>(widget)
+                .expect("header menu")
+                .open_for("name", Rect::new(0, 0, 80, 24));
+        },
+        |widget| widget_as_mut::<HeaderMenu>(widget).expect("header menu").is_open(),
+    );
+
+    assert_popup_owns_outside_press(
+        Box::new(DropDownPopupHost::new(Rect::new(0, 0, 200, 200))),
+        |widget| {
+            widget_as_mut::<DropDownPopupHost>(widget)
+                .expect("popup")
+                .open_at(Rect::new(0, 0, 80, 24));
+        },
+        |widget| widget_as_mut::<DropDownPopupHost>(widget).expect("popup").is_open(),
+    );
+
+    assert_popup_owns_outside_press(
+        Box::new(CommandPaletteHost::new(Rect::new(0, 0, 480, 320))),
+        |widget| widget_as_mut::<CommandPaletteHost>(widget).expect("palette").open(),
+        |widget| widget_as_mut::<CommandPaletteHost>(widget).expect("palette").is_open(),
+    );
 }

@@ -581,6 +581,30 @@ impl TreeTable {
         (x, width)
     }
 
+    /// The part of `column`'s span that is actually painted to the right of the frozen prefix.
+    ///
+    /// A scrolling column that has moved left of the frozen edge still has a raw span there
+    /// (`column_span` is pure arithmetic), and painting it would overwrite the frozen tree column.
+    /// The frozen column keeps its whole span; a scrolling column is clipped and reports `None` when
+    /// nothing of it remains visible.
+    fn visible_column_span(&self, column: usize) -> Option<(i32, u32)> {
+        let (x, width) = self.column_span(column);
+        let frozen = self.frozen_columns();
+        if column < frozen {
+            return Some((x, width));
+        }
+        let rect = self.base.geometry();
+        let frozen_end = rect
+            .x
+            .saturating_add((0..frozen).map(|index| self.column_width_at(index) as i32).sum());
+        let end = x.saturating_add(width as i32);
+        if end <= frozen_end {
+            return None;
+        }
+        let visible_x = x.max(frozen_end);
+        Some((visible_x, (end - visible_x).max(0) as u32))
+    }
+
     /// Returns the node path for visible row.
     pub fn row_path(&self, row: usize) -> Option<&[usize]> {
         self.visible_rows.get(row).map(|visible| visible.path.as_slice())
@@ -902,6 +926,8 @@ impl TreeTable {
             return false;
         }
         self.restore_selection_by_path(previous_path);
+        // A collapse can shrink the projection below the current row-unit offset.
+        self.scroll_row = self.scroll_row.min(self.visible_rows.len().saturating_sub(1));
         if removed > 0 {
             self.projection_changed.emit(self.visible_rows.len());
         }
@@ -946,6 +972,18 @@ impl TreeTable {
         }
     }
 
+    /// Clears the selection and announces the absence.
+    ///
+    /// Repaints: the selected-row wash is painted from `selected_row`.
+    pub fn clear_selection(&mut self) {
+        if self.selected_row.is_none() {
+            return;
+        }
+        self.selected_row = None;
+        self.selection_changed.emit(None);
+        self.base.request_redraw();
+    }
+
     /// Selects a visible row.
     pub fn select_row(&mut self, row: usize) -> bool {
         if row >= self.visible_rows.len() {
@@ -966,11 +1004,24 @@ impl TreeTable {
 
     fn rebuild_projection(&mut self) {
         let previous_selection = self.selected_row;
+        // A row index names the *previous* projection. A rebuild can renumber the same rows
+        // (sorting or collapsing), so hold each addressed record by its path and re-resolve it
+        // afterwards; the raw index would silently name whichever node lands there now.
+        let selected_path = self.selected_path();
+        let editing_path = self.editing.and_then(|(row, column)| {
+            self.visible_rows.get(row).map(|visible| (visible.path.clone(), column))
+        });
+        let hovered_path = self
+            .hovered_row
+            .and_then(|row| self.visible_rows.get(row).map(|visible| visible.path.clone()));
         let mut next = Vec::new();
         let Some(model) = self.model.clone() else {
             self.visible_rows = next;
             self.projection_truncated = false;
             self.selected_row = None;
+            self.hovered_row = None;
+            self.editing = None;
+            self.scroll_row = 0;
             self.projection_changed.emit(0);
             self.announce_selection_change(previous_selection);
             return;
@@ -988,7 +1039,16 @@ impl TreeTable {
 
         self.visible_rows = next;
         self.projection_truncated = truncated;
-        self.selected_row = self.selected_row.filter(|row| *row < self.visible_rows.len());
+        self.selected_row = selected_path
+            .and_then(|path| self.visible_rows.iter().position(|row| row.path == path));
+        self.hovered_row =
+            hovered_path.and_then(|path| self.visible_rows.iter().position(|row| row.path == path));
+        self.editing = editing_path.and_then(|(path, column)| {
+            self.visible_rows.iter().position(|row| row.path == path).map(|row| (row, column))
+        });
+        // A collapse (or a shorter model) can leave the row-unit scroll offset past the end; a paint
+        // starting there shows nothing while the empty caption stays suppressed.
+        self.scroll_row = self.scroll_row.min(self.visible_rows.len().saturating_sub(1));
         self.projection_changed.emit(self.visible_rows.len());
         self.announce_selection_change(previous_selection);
     }
@@ -1141,13 +1201,14 @@ impl TreeTable {
         if row >= self.visible_rows.len() || column >= self.column_count() {
             return None;
         }
+        // A cell scrolled behind the frozen column has no painted rectangle of its own.
+        let (x, width) = self.visible_column_span(column)?;
         let mut editor = delegate.create_editor(&mut self.base, row, column)?;
         delegate.set_editor_data(editor.as_mut(), row, column);
         let rect = self.base.geometry();
         let y = rect.y
             + self.header_offset()
             + (row as i32 - self.scroll_row as i32) * self.row_height as i32;
-        let (x, width) = self.column_span(column);
         delegate.update_editor_geometry(editor.as_mut(), Rect::new(x, y, width, self.row_height));
         self.editing = Some((row, column));
         self.base.request_redraw();
@@ -1457,7 +1518,9 @@ impl TreeTable {
             return None;
         }
         (0..self.column_count()).find(|column| {
-            let (x, width) = self.column_span(*column);
+            let Some((x, width)) = self.visible_column_span(*column) else {
+                return false;
+            };
             pos.x >= x && pos.x < x.saturating_add(width as i32)
         })
     }
@@ -1665,9 +1728,7 @@ impl WidgetProperties for TreeTable {
         match name {
             "selected_row" => match value {
                 CapabilityValue::Null => {
-                    if let Some(selected) = self.selected_row() {
-                        let _ = self.select_row(selected);
-                    }
+                    self.clear_selection();
                     Ok(())
                 }
                 other => {
@@ -1769,6 +1830,10 @@ impl WidgetProperties for TreeTable {
                 self.clear_model();
                 Ok(())
             }
+            "clear_selection" => {
+                self.clear_selection();
+                Ok(())
+            }
             "set_model" | "expand_row" | "collapse_row" | "select_row" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
@@ -1866,7 +1931,9 @@ impl Draw for TreeTable {
             let columns = self.column_count();
             let model_names = self.model.as_ref();
             for col in 0..columns {
-                let (x, width) = self.column_span(col);
+                let Some((x, width)) = self.visible_column_span(col) else {
+                    continue;
+                };
                 if x >= rect.x + rect.width as i32 {
                     break;
                 }
@@ -1935,14 +2002,15 @@ impl Draw for TreeTable {
             }
 
             for col in 0..columns {
-                let (span_x, width) = self.column_span(col);
-                if span_x >= rect.x + rect.width as i32 {
+                let Some((x, width)) = self.visible_column_span(col) else {
+                    continue;
+                };
+                if x >= rect.x + rect.width as i32 {
                     break;
                 }
-                if span_x.saturating_add(width as i32) <= rect.x {
+                if x.saturating_add(width as i32) <= rect.x {
                     continue;
                 }
-                let x = span_x;
 
                 context.draw_rect(Rect::new(x, y, width, self.row_height), cell_border);
 
@@ -3061,5 +3129,175 @@ mod tests {
         drop(editor);
         tree.cancel_edit();
         assert_eq!(tree.editing_cell(), None);
+    }
+
+    /// Writing `Null` to `selected_row` clears the selection and tells subscribers.
+    #[test]
+    fn clearing_the_selection_property_clears_and_announces() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 160));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        assert!(tree.select_row(1));
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Option<usize>>::new()));
+        let sink = Arc::clone(&seen);
+        tree.selection_changed.connect(move |row| {
+            sink.lock().expect("the test slot locks").push(*row);
+        });
+
+        assert_eq!(tree.set("selected_row", CapabilityValue::Null), Ok(()));
+        assert_eq!(tree.selected_row(), None, "Null means no selection, not the same row");
+        assert_eq!(*seen.lock().expect("the test slot locks"), vec![None]);
+
+        // The payload-free command mirrors the property write.
+        assert!(tree.select_row(1));
+        assert_eq!(tree.command("clear_selection"), Ok(()));
+        assert_eq!(tree.selected_row(), None);
+    }
+
+    struct ThreeColumnModel;
+
+    impl TreeTableModel for ThreeColumnModel {
+        fn root_count(&self) -> usize {
+            1
+        }
+        fn child_count(&self, _path: &[usize]) -> usize {
+            0
+        }
+        fn column_count(&self) -> usize {
+            3
+        }
+        fn data(&self, path: &[usize], column: usize) -> Option<String> {
+            Some(std::format!("{}:{}:{column}", path[0], 0))
+        }
+    }
+
+    /// A scrolling column left of `scroll_column` cannot paint over the frozen tree column.
+    ///
+    /// # The defect this pins
+    ///
+    /// `column_span` positions a pre-`scroll_column` column at or left of the frozen edge, which is
+    /// correct arithmetic (it is scrolled out), but the paint loops only skipped spans entirely
+    /// left of `rect.x`. With equal widths column 1 started exactly at `rect.x`, so it painted its
+    /// cells and header title over the frozen column after column 0 had already painted there.
+    #[test]
+    fn scrolled_columns_never_paint_into_the_frozen_column() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 120));
+        tree.set_model(Arc::new(ThreeColumnModel));
+        tree.set_show_header(true);
+        tree.set_column_width(120);
+        tree.set_scroll_column(2);
+
+        let frozen_end = tree.column_span(0).0 + tree.column_width_at(0) as i32;
+        assert!(tree.visible_column_span(1).is_none(), "column 1 is scrolled completely out");
+        for column in tree.frozen_columns()..3 {
+            if let Some((x, _)) = tree.visible_column_span(column) {
+                assert!(x >= frozen_end, "column {column} would overwrite the frozen column");
+            }
+        }
+        assert_eq!(
+            tree.header_column_at(Point::new(frozen_end + 1, 2)),
+            Some(2),
+            "the scrolling region names the first visible scrolling column"
+        );
+
+        tree.set_delegate(Arc::new(EditDelegate));
+        assert!(
+            tree.begin_edit(0, 1).is_none(),
+            "an editor cannot be opened on a cell hidden behind the frozen column"
+        );
+        let editor = tree.begin_edit(0, 2).expect("column 2 is visible");
+        drop(editor);
+        tree.cancel_edit();
+    }
+
+    struct WideTree;
+
+    impl TreeTableModel for WideTree {
+        fn root_count(&self) -> usize {
+            1
+        }
+        fn child_count(&self, path: &[usize]) -> usize {
+            if path == [0] {
+                100
+            } else {
+                0
+            }
+        }
+        fn column_count(&self) -> usize {
+            1
+        }
+        fn data(&self, path: &[usize], _column: usize) -> Option<String> {
+            Some(std::format!("{path:?}"))
+        }
+    }
+
+    /// A full rebuild re-clamps the row-unit scroll offset.
+    #[test]
+    fn collapsing_all_reclamps_a_deep_scroll_offset() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 200));
+        tree.set_model(Arc::new(WideTree));
+        assert!(tree.expand_row(0));
+        assert!(tree.row_count() > 10, "the fixture must have room to scroll");
+
+        tree.set_scroll_row(40);
+        assert_eq!(tree.scroll_row(), 40);
+
+        assert!(tree.collapse_all() > 0);
+        assert_eq!(tree.row_count(), 1);
+        assert_eq!(tree.scroll_row(), 0, "the offset cannot point past the collapsed tree");
+    }
+
+    struct SortableRoots;
+
+    impl TreeTableModel for SortableRoots {
+        fn root_count(&self) -> usize {
+            3
+        }
+        fn child_count(&self, _path: &[usize]) -> usize {
+            0
+        }
+        fn column_count(&self) -> usize {
+            1
+        }
+        fn data(&self, path: &[usize], _column: usize) -> Option<String> {
+            Some(
+                match path[0] {
+                    0 => "charlie",
+                    1 => "alpha",
+                    _ => "bravo",
+                }
+                .to_string(),
+            )
+        }
+    }
+
+    /// A rebuild keeps the selected, hovered and edited records on their model paths.
+    ///
+    /// # The defect this pins
+    ///
+    /// `rebuild_projection` kept `selected_row`/`hovered_row`/`editing` as raw visible indices and
+    /// only filtered them for range. Sorting permutes the projection, so the same index named a
+    /// different node: the highlight, hover wash and open editor all moved to another record while
+    /// the host still believed the original was selected.
+    #[test]
+    fn a_rebuild_keeps_addressed_rows_on_their_paths() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 200));
+        tree.set_model(Arc::new(SortableRoots));
+        assert!(tree.select_row(0));
+        tree.hovered_row = Some(0);
+        tree.set_delegate(Arc::new(EditDelegate));
+        let editor = tree.begin_edit(0, 0).expect("row 0 is painted");
+        assert_eq!(tree.editing_cell(), Some((0, 0)));
+
+        // Ascending order becomes alpha, bravo, charlie: `charlie` (path 0) moves to row 2.
+        tree.set_sort_column(Some(0));
+
+        assert_eq!(tree.row_path(2), Some([0].as_slice()));
+        assert_eq!(tree.selected_row(), Some(2), "the selection followed its path");
+        assert_eq!(tree.hovered_row, Some(2), "the hover wash followed its path");
+        assert_eq!(tree.editing_cell(), Some((2, 0)), "the editor followed its path");
+
+        drop(editor);
+        tree.cancel_edit();
     }
 }

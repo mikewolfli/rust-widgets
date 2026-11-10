@@ -139,6 +139,11 @@ pub fn collect_save_state(
 /// * the entry's version differs from the widget's [`SaveState::state_version`], which is how a
 ///   format change refuses old bytes instead of misreading them.
 ///
+/// A key is applied at most once: [`collect_save_state`] keeps only the first widget that declares
+/// a duplicated key, so restore must consume that key after a successful apply and skip any later
+/// widget that answers to it. Before this, two live widgets keyed `"workspace.split"` both received
+/// the one blob, duplicating state instead of skipping the second.
+///
 /// A widget that answers `false` from [`SaveState::restore_state`] is also left untouched and is
 /// not counted; a malformed payload therefore cannot make the returned count lie.
 #[cfg(not(alloc_frugal))]
@@ -148,10 +153,14 @@ pub fn restore_save_state(
     key_of: impl Fn(ObjectId) -> Option<String>,
 ) -> usize {
     let mut applied = 0;
+    let mut consumed: Vec<String> = Vec::new();
     walk(root, &mut |id| {
         let Some(key) = key_of(id) else {
             return;
         };
+        if consumed.iter().any(|used| used == &key) {
+            return;
+        }
         let Some(entry) = states.iter().find(|entry| entry.key == key) else {
             return;
         };
@@ -167,6 +176,7 @@ pub fn restore_save_state(
         .unwrap_or(false);
         if restored {
             applied += 1;
+            consumed.push(key);
         }
     });
     applied
@@ -372,5 +382,75 @@ mod tests {
         let applied = restore_save_state(fixture.root, &states, fixture.key_of());
         assert_eq!(applied, 0);
         assert_eq!(splitter_ratios(fixture.splitter), vec![0.3, 0.7], "nothing was applied");
+    }
+
+    /// A duplicated key is applied to the first matching widget only.
+    ///
+    /// # The defect this pins
+    ///
+    /// `collect_save_state` keeps the first widget that declares a key and warns about the rest,
+    /// but `restore_save_state` found an entry by key and wrote it into **every** walked widget
+    /// that answered to that key. Two live widgets keyed `"workspace.split"` therefore both
+    /// received the one blob, duplicating state instead of skipping the second. Restore now
+    /// consumes a key after a successful apply.
+    #[test]
+    fn restore_applies_a_duplicate_key_only_once() {
+        let root = register(Box::new(GroupBox::new(Rect::new(0, 0, 400, 300))))
+            .expect("a test thread has a registry");
+        let first = register(Box::new(Splitter::new(Rect::new(0, 0, 200, 200))))
+            .expect("a test thread has a registry");
+        let second = register(Box::new(Splitter::new(Rect::new(0, 0, 200, 200))))
+            .expect("a test thread has a registry");
+        with_widget_mut(root, |parent| {
+            parent.add_child(first);
+            parent.add_child(second);
+        });
+        for id in [first, second] {
+            with_widget_mut(id, |widget| {
+                let splitter = (widget as &mut dyn core::any::Any)
+                    .downcast_mut::<Splitter>()
+                    .expect("splitter");
+                splitter.add_pane(0, 1);
+                splitter.add_pane(0, 1);
+            });
+        }
+        with_widget_mut(first, |widget| {
+            let splitter =
+                (widget as &mut dyn core::any::Any).downcast_mut::<Splitter>().expect("splitter");
+            assert!(splitter.set_ratios(&[0.3, 0.7]));
+        });
+        with_widget_mut(second, |widget| {
+            let splitter =
+                (widget as &mut dyn core::any::Any).downcast_mut::<Splitter>().expect("splitter");
+            assert!(splitter.set_ratios(&[0.6, 0.4]));
+        });
+        let key_of =
+            |id: ObjectId| (id == first || id == second).then(|| "workspace.split".to_string());
+        let states = collect_save_state(root, key_of);
+        assert_eq!(states.len(), 1, "the collector keeps one entry per key");
+
+        with_widget_mut(first, |widget| {
+            let splitter =
+                (widget as &mut dyn core::any::Any).downcast_mut::<Splitter>().expect("splitter");
+            assert!(splitter.set_ratios(&[0.9, 0.1]));
+        });
+        with_widget_mut(second, |widget| {
+            let splitter =
+                (widget as &mut dyn core::any::Any).downcast_mut::<Splitter>().expect("splitter");
+            assert!(splitter.set_ratios(&[0.2, 0.8]));
+        });
+
+        let applied = restore_save_state(root, &states, key_of);
+        assert_eq!(applied, 1, "only the first matching widget consumes the key");
+        assert_eq!(splitter_ratios(first), vec![0.3, 0.7], "the first widget restores");
+        assert_eq!(
+            splitter_ratios(second),
+            vec![0.2, 0.8],
+            "the second widget keeps its own state instead of receiving the same blob"
+        );
+
+        unregister(second);
+        unregister(first);
+        unregister(root);
     }
 }

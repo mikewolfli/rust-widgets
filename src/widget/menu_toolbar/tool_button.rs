@@ -865,8 +865,7 @@ impl Widget for ToolButton {
     /// this override a press on a menu row is rejected by the hit test and never reaches
     /// `hit_test_row`.
     fn contains_point(&self, point: Point) -> bool {
-        self.base().contains_point_with_touch_expansion(point)
-            || (self.menu_open && self.menu_rect().contains_point(point))
+        self.base().contains_point_with_touch_expansion(point) || self.menu_contains(point)
     }
 
     fn has_open_popup(&self) -> bool {
@@ -2246,6 +2245,32 @@ mod tests {
             "the label keeps a box when the strip is gone"
         );
         let _ = down;
+    }
+
+    /// A press inside an open child panel reaches the control's hit test.
+    ///
+    /// # The defect this pins
+    ///
+    /// `contains_point` admitted only the button and the top panel, while `menu_contains`
+    /// (and the paint path) also accept every open child panel. A click on a cascading row
+    /// was therefore rejected by the runtime before `handle_event` saw it.
+    #[test]
+    fn a_child_panel_is_part_of_the_buttons_hit_area() {
+        let mut btn = ToolButton::new("Menu", rect());
+        btn.set_popup_mode(ToolButtonPopupMode::InstantPopup);
+        btn.set_menu(
+            vec![MenuItem::new(1, "Branch").with_submenu(vec![MenuItem::new(2, "Child")])],
+        );
+        btn.open_menu();
+        btn.open_submenu_at(0, 0);
+
+        let panel = btn.submenus.first().expect("the branch opened a child panel").rect;
+        let row = Point::new(panel.x + 4, panel.y + 4);
+        assert!(
+            btn.contains_point(row),
+            "a row in the child panel must reach the control: {panel:?}"
+        );
+        assert!(!btn.contains_point(Point::new(panel.x + panel.width as i32 + 20, panel.y)));
     }
 
     /// The smallest valid PNG: a 2x2 truecolour-with-alpha image whose first pixel is opaque red.

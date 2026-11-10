@@ -450,7 +450,25 @@ impl QueryBuilder {
     pub fn set_fields(&mut self, fields: Vec<FilterField>) {
         self.fields = fields;
         let field_count = self.fields.len();
-        self.rows.retain(|row| row.field < field_count);
+        // Remember where every surviving row lands. The cursor fields below are indices into
+        // `rows`, and retaining the list shifts them: an index that named row 1 can come to name
+        // nothing, or a different row, so it is repaired through the same map.
+        let mut old_to_new = vec![None; self.rows.len()];
+        let mut kept = Vec::with_capacity(self.rows.len());
+        for (old, row) in core::mem::take(&mut self.rows).into_iter().enumerate() {
+            if row.field < field_count {
+                old_to_new[old] = Some(kept.len());
+                kept.push(row);
+            }
+        }
+        self.rows = kept;
+        let remap =
+            |index: Option<usize>| index.and_then(|index| old_to_new.get(index).copied().flatten());
+        self.active_row = remap(self.active_row);
+        self.hovered_row = remap(self.hovered_row);
+        self.drag_row = remap(self.drag_row);
+        self.scroll_offset =
+            self.scroll_offset.min(self.rows.len().saturating_sub(self.visible_row_count()));
         self.base.request_redraw();
     }
 
@@ -567,6 +585,12 @@ impl QueryBuilder {
         self.groups.retain(|group| !removed.contains(&group.id));
         self.rows.retain(|row| !row.group.is_some_and(|group| removed.contains(&group)));
         self.active_row = None;
+        // The removal drops rows, so every other index-carrying field can name one that is gone
+        // (or a different row), and the window can start past the shortened list.
+        self.hovered_row = None;
+        self.drag_row = None;
+        self.scroll_offset =
+            self.scroll_offset.min(self.rows.len().saturating_sub(self.visible_row_count()));
         self.notify_rows_changed();
         self.emit_query();
         true
@@ -641,6 +665,11 @@ impl QueryBuilder {
             Some(hovered) if hovered > index => Some(hovered - 1),
             other => other,
         };
+        // A removal shrinks the list under the view. Without this clamp the first visible row
+        // could be past the new last row, so `draw` painted a header over an empty body and
+        // never reached its "No conditions" hint.
+        self.scroll_offset =
+            self.scroll_offset.min(self.rows.len().saturating_sub(self.visible_row_count()));
         self.emit_query();
         Some(removed)
     }
@@ -1154,7 +1183,14 @@ impl QueryBuilder {
     }
 
     /// The row under `pos`, when the pointer is over one.
+    ///
+    /// A point outside the control's own box names no row, however well its `y` maps. The rows
+    /// used to be hit-tested by their unbounded rectangles, so a press below the builder (or one
+    /// beside it at a row's height) resolved to a row and armed it.
     fn row_at(&self, pos: Point) -> Option<usize> {
+        if !self.base.contains_point_with_touch_expansion(pos) {
+            return None;
+        }
         (0..self.rows.len())
             .find(|index| self.row_rect(*index).is_some_and(|rect| rect.contains_point(pos)))
     }
@@ -1391,7 +1427,9 @@ impl WidgetProperties for QueryBuilder {
                     rows.push(query_row_from_record(record)?);
                 }
                 // A row that names no field would filter on nothing (the rule `add_row`
-                // enforces), so the whole update is refused before anything is replaced.
+                // enforces), and a row naming a group that does not exist would be stored and
+                // painted but skipped by `build_scope`. Both are refused before anything is
+                // replaced.
                 for row in &rows {
                     if row.field >= self.fields.len() {
                         return Err(CapabilityAccessError::ConstraintViolation {
@@ -1402,11 +1440,22 @@ impl WidgetProperties for QueryBuilder {
                             ),
                         });
                     }
+                    if let Some(group) = row.group {
+                        if !self.groups.iter().any(|candidate| candidate.id == group) {
+                            return Err(CapabilityAccessError::ConstraintViolation {
+                                property: crate::compat::String::from("rows"),
+                                reason: crate::compat::format!("group {group} names no group"),
+                            });
+                        }
+                    }
                 }
                 self.rows = rows;
                 // The cursor must not keep naming a row of the replaced list.
                 self.clear_active_row();
                 self.notify_rows_changed();
+                // The write is a query edit like any other. Without this the rows were stored
+                // and painted but absent from `build_query()`, and no subscriber heard of it.
+                self.emit_query();
                 Ok(())
             }
             _ => base_property_set(self, name, value),
@@ -2088,6 +2137,42 @@ mod tests {
         assert!(b.remove_row(0).is_none());
     }
 
+    /// Removing rows clamps the viewport, and removing a group clears every cursor it breaks.
+    ///
+    /// `remove_row` shifted the cursors but never the scroll offset: ten rows at offset 8 cut
+    /// to four left `draw` starting past the end, so it painted a header over a blank body and
+    /// no "No conditions" hint. `remove_group` dropped rows but left the hover and drag naming
+    /// them (and the offset past the shortened list).
+    #[test]
+    fn query_builder_a_shrunken_row_set_keeps_the_view_and_cursor_honest() {
+        let mut b = QueryBuilder::new(Rect::new(0, 0, 360, 100));
+        b.set_fields(fields());
+        for _ in 0..10 {
+            b.add_row(0).expect("a row");
+        }
+        b.set_scroll_offset(8);
+        assert_eq!(b.scroll_offset(), 8);
+
+        for _ in 0..6 {
+            b.remove_row(0).expect("a row");
+        }
+        assert_eq!(b.row_count(), 4);
+        assert_eq!(b.scroll_offset(), 2, "the window cannot start past the last row");
+        assert!(b.row_rect(2).is_some(), "the rows that remain are still painted");
+
+        let group = b.add_group(None).expect("a root group");
+        b.add_row_in_group(0, group).expect("a row in the group");
+        b.set_scroll_offset(3);
+        assert_eq!(b.scroll_offset(), 3);
+        b.hovered_row = Some(1);
+        b.drag_row = Some(1);
+
+        assert!(b.remove_group(group));
+        assert_eq!(b.hovered_row, None, "the hovered row was removed with its group");
+        assert_eq!(b.drag_row, None, "a drag cannot outlive the row it started on");
+        assert_eq!(b.scroll_offset(), 2, "the viewport is clamped to the new row count");
+    }
+
     #[test]
     fn query_builder_set_fields_drops_rows_pointing_past_the_new_list() {
         let mut b = builder();
@@ -2099,6 +2184,42 @@ mod tests {
         // index into a shorter list would address a different column.
         b.set_fields(vec![FilterField::text(0, "A"), FilterField::text(1, "B")]);
         assert_eq!(b.row_count(), 0, "a row on a vanished field is dropped");
+    }
+
+    /// `set_fields` repairs every index-carrying cursor after it drops rows.
+    ///
+    /// The retain changed `rows` in place but left `active_row` / `hovered_row` / `drag_row`
+    /// naming the old positions, so `row_count()` and `active_row()` disagreed: typing went
+    /// nowhere while still claiming a row was active.
+    #[test]
+    fn set_fields_repairs_the_cursor_state_it_leaves_behind() {
+        let mut b = builder();
+        b.add_row(1).expect("a row on Amount");
+        b.add_row(0).expect("a row on Name");
+        let group = b.add_group(None).expect("a root group");
+        b.set_row_group(1, Some(group));
+        b.set_active_row(1);
+        b.hovered_row = Some(1);
+        b.drag_row = Some(1);
+
+        // Only the Name field survives, so the Amount row is dropped and the Name row moves
+        // from index 1 to 0; every cursor must follow the surviving row.
+        b.set_fields(vec![FilterField::text(0, "Name")]);
+        assert_eq!(b.row_count(), 1);
+        assert_eq!(b.active_row(), Some(0), "the cursor follows its surviving row");
+        assert_eq!(b.hovered_row, Some(0));
+        assert_eq!(b.drag_row, Some(0));
+
+        // A cursor naming the dropped row is cleared rather than left past the end.
+        let mut b = builder();
+        b.add_row(0).expect("a row on Name");
+        b.add_row(1).expect("a row on Amount");
+        b.set_active_row(1);
+        b.hovered_row = Some(1);
+        b.set_fields(vec![FilterField::text(0, "Name")]);
+        assert_eq!(b.row_count(), 1);
+        assert_eq!(b.active_row(), None);
+        assert_eq!(b.hovered_row, None);
     }
 
     #[test]
@@ -2570,6 +2691,58 @@ mod tests {
         }
     }
 
+    /// The `rows` write validates every index it stores and announces the query it produced.
+    ///
+    /// The shape check covered `field` only: a row naming a group that does not exist was
+    /// stored and painted, but `build_scope` drops it, so it was silently absent from
+    /// `build_query()`. The write also never called `emit_query`, so no subscriber heard of a
+    /// row list that had changed.
+    #[test]
+    fn the_rows_property_refuses_an_unknown_group_and_emits_the_query() {
+        use crate::widget::capability::{RecordList, RecordValue};
+
+        let mut b = builder();
+        let group = b.add_group(None).expect("a root group");
+        let changes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink = std::sync::Arc::clone(&changes);
+        b.query_changed.connect(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let row_record = |group: Option<usize>| {
+            let mut record = RecordValue::new()
+                .with("field", CapabilityValue::UInt(0))
+                .with("operator", CapabilityValue::String("contains".to_string()))
+                .with("operand", CapabilityValue::String("alpha".to_string()));
+            if let Some(group) = group {
+                record = record.with("group", CapabilityValue::UInt(group as u64));
+            }
+            record
+        };
+
+        let ghost = RecordList::from_items(&QUERY_ROW_SCHEMA, vec![row_record(Some(group + 1))]);
+        assert!(matches!(
+            b.set("rows", CapabilityValue::Records(ghost)),
+            Err(CapabilityAccessError::ConstraintViolation { .. })
+        ));
+        assert_eq!(b.row_count(), 0, "a refused list leaves the builder untouched");
+        assert_eq!(changes.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let valid = RecordList::from_items(&QUERY_ROW_SCHEMA, vec![row_record(Some(group))]);
+        b.set("rows", CapabilityValue::Records(valid)).expect("a declared group is accepted");
+        assert_eq!(b.row_count(), 1);
+        assert_eq!(
+            changes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the write announces the query it produced"
+        );
+        assert_eq!(
+            b.build_query().condition_count(),
+            1,
+            "a row in a declared group is part of the built query"
+        );
+    }
+
     #[test]
     fn filter_conjunction_round_trips_and_toggles() {
         for conjunction in [FilterConjunction::And, FilterConjunction::Or] {
@@ -2621,6 +2794,30 @@ mod tests {
         assert_eq!(b.hovered_row, None);
     }
 
+    /// A point outside the builder's own box names no row.
+    ///
+    /// `row_rect` bounded the index only by `rows.len()` and `scroll_offset`, and `MousePress`
+    /// had no containment guard, so a press at `(10, 200)` below a 360x120 builder resolved to
+    /// a row and set `active_row`.
+    #[test]
+    fn query_builder_a_pointer_outside_the_builder_hits_no_row() {
+        let mut b = QueryBuilder::new(Rect::new(0, 0, 360, 120));
+        b.set_fields(fields());
+        for _ in 0..10 {
+            b.add_row(0).expect("a row");
+        }
+        b.active_row = None;
+        b.handle_event(&Event::mouse_press(10, 200, 1));
+        assert_eq!(b.active_row(), None, "a press below the control must not arm a row");
+
+        let first = b.row_rect(0).expect("row 0");
+        b.handle_event(&Event::mouse_press(5000, first.y + 10, 1));
+        assert_eq!(b.active_row(), None, "nor one beside it");
+
+        b.handle_event(&Event::mouse_move(30, first.y + 10));
+        assert_eq!(b.hovered_row, Some(0), "a point inside still hovers its row");
+    }
+
     /// The hover follows its row through a removal exactly as `active_row` does,
     /// so the highlight never names a row that is gone.
     #[test]
@@ -2663,8 +2860,10 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
+        // Row 1 is only partly inside a 70 px builder, and `row_at` now rejects a point outside
+        // the control: release on the sliver of the row that is inside it.
         b.handle_event(&Event::MouseRelease {
-            pos: Point::new(second.x + 20, second.y + 10),
+            pos: Point::new(second.x + 20, second.y + 2),
             button: 1,
         });
         assert_eq!(

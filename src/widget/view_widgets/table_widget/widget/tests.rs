@@ -1122,3 +1122,309 @@ fn a_model_can_declare_a_column_type() {
     assert_eq!(table.column_type(1), None, "the default answers None");
     assert_eq!(table.column_type(9), None);
 }
+
+// ── Regression tests: composited geometry, selection and window caching ──
+
+/// A delegate that asks for a fixed row height and builds a label editor.
+///
+/// Shared by the composited-offset and editor-geometry tests: both need a delegate that changes
+/// the rows' resolved height, which is exactly what the empty-`row_heights` fast path ignored.
+struct FixedHeightDelegate {
+    height: u32,
+}
+
+impl ItemDelegate for FixedHeightDelegate {
+    fn create_editor(
+        &self,
+        _parent: &mut BaseWidget,
+        _row: usize,
+        _column: usize,
+    ) -> Option<Box<dyn Widget>> {
+        Some(Box::new(crate::widget::base_widgets::label::Label::new(
+            String::new(),
+            Rect::new(0, 0, 40, 16),
+        )))
+    }
+
+    fn set_editor_data(&self, _editor: &mut dyn Widget, _row: usize, _column: usize) {}
+
+    fn get_editor_data(&self, _editor: &dyn Widget, _row: usize, _column: usize) -> Option<String> {
+        None
+    }
+
+    fn size_hint(&self, _row: usize, _column: usize) -> Option<crate::core::Size> {
+        Some(crate::core::Size::new(60, self.height))
+    }
+}
+
+/// Row offsets compose every resolved height, including a delegate's size hint.
+///
+/// The fast path returned `TABLE_ROW_HEIGHT * index` whenever `row_heights` was empty, while
+/// `resolved_row_height` consulted the delegate. A delegate asking for 40 px rows therefore drew
+/// row 1 at the band top when `scroll_row == 1`, but `row_at_point` targeted `20 * 1` and answered
+/// row 0 — the hit test and the paint disagreed. The offset and the hit test must be one geometry.
+#[test]
+fn a_delegate_height_composes_the_row_offset() {
+    let mut table = TableWidget::new(Rect::new(0, 0, 300, 300));
+    table.set_model(Arc::new(TestTableModel::new(6, 2)));
+    table.set_delegate(Arc::new(FixedHeightDelegate { height: 40 }));
+
+    assert_eq!(table.row_offset(1), 40, "the offset composes the delegate's resolved height");
+
+    table.set_scroll_row(1);
+    assert_eq!(table.scroll_row(), 1);
+    let band = table.rows_band();
+    let row = table.row_rect(1).expect("row 1 is visible");
+    assert_eq!(row.y, band.y, "the scrolled-to row begins at the band top");
+    assert_eq!(
+        table.row_at_point(Point::new(row.x + 2, band.y + 5)),
+        Some(1),
+        "a point in the painted row must resolve back to it"
+    );
+
+    let editor = table.begin_edit(1, 0).expect("the delegate builds an editor");
+    let geometry = editor.geometry();
+    assert_eq!(geometry.y, band.y, "the editor sits over the row that is painted");
+    assert_eq!(geometry.height, 40, "and is as tall as the resolved row");
+}
+
+/// The window the source is read through counts the columns the paint loop actually draws.
+///
+/// `visible_column_span` started its cumulative `left` at `horizontal_offset()` while the paint
+/// loop measures every column relative to the scrolled band. The span was therefore short by the
+/// columns inside the first offset pixels: with eight 40 px columns and `scroll_column == 3` the
+/// paint drew columns 3..8 while the window stopped at column 5.
+#[test]
+fn a_scrolled_column_span_covers_every_painted_column() {
+    let mut table = TableWidget::new(Rect::new(0, 0, 200, 160));
+    table.set_data_source(Arc::new(CountingSource::new(3, 8)));
+    table.set_scroll_column(3);
+    let content = ControlMetrics::band_inset(table.base.geometry(), TABLE_INSET);
+    assert_eq!(
+        table.visible_column_span(content.width),
+        5,
+        "columns 3..8 fit the band, so all five must be fetched"
+    );
+}
+
+/// `begin_edit` places the editor over the cell the paint loop draws.
+///
+/// The x was `content.x + sum(widths(0..column))`, which ignored `scroll_column`; with two columns
+/// scrolled away the editor appeared two columns to the right of its cell.
+#[test]
+fn begin_edit_follows_the_horizontal_scroll() {
+    let mut table = TableWidget::new(Rect::new(0, 0, 240, 160));
+    table.set_model(Arc::new(FourColumnModel));
+    table.set_delegate(Arc::new(FixedHeightDelegate { height: 20 }));
+    table.set_scroll_column(2);
+
+    let editor = table.begin_edit(0, 2).expect("the delegate builds an editor");
+    let geometry = editor.geometry();
+    let content = ControlMetrics::band_inset(table.base.geometry(), TABLE_INSET);
+    assert_eq!(
+        geometry.x, content.x,
+        "the first scrolled column starts at the content edge, so its editor does too"
+    );
+    assert_eq!(geometry.width, table.resolved_column_width(2, content.width));
+}
+
+/// Installing a delegate asks for both the layout and a repaint.
+///
+/// The delegate changes the cell ink and, through `size_hint`, the row heights, so storing it and
+/// requesting nothing left the first frame at the old geometry until an unrelated event repainted.
+#[test]
+fn setting_a_delegate_requests_layout_and_redraw() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut table = TableWidget::new(Rect::new(0, 0, 200, 120));
+    let redraws = Arc::new(AtomicUsize::new(0));
+    let layouts = Arc::new(AtomicUsize::new(0));
+    {
+        let sink = Arc::clone(&redraws);
+        table.base.redraw_requested_signal().connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+    {
+        let sink = Arc::clone(&layouts);
+        table.base.layout_requested_signal().connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    table.set_delegate(Arc::new(NoopDelegate));
+    assert_eq!(redraws.load(Ordering::SeqCst), 1, "the cells must be repainted");
+    assert_eq!(layouts.load(Ordering::SeqCst), 1, "and the rows re-measured");
+}
+
+/// A press cannot land in a header the paint loop refuses to draw.
+///
+/// `header_column_at` only checked `header_visible`, while the paint path also requires
+/// `content.height > header.height`. In a 24 px table the header is not drawn, yet a press in the
+/// content resolved through it and fired `section_clicked` instead of addressing the body.
+#[test]
+fn a_press_in_a_band_too_short_for_a_header_is_not_a_header_press() {
+    let mut table = TableWidget::new(Rect::new(0, 0, 240, 24));
+    table.set_model(Arc::new(StaticTableModel));
+    let fired = Arc::new(Mutex::new(None::<usize>));
+    let sink = Arc::clone(&fired);
+    table.section_clicked_signal().connect(move |column: Arc<usize>| {
+        *sink.lock().expect("lock") = Some(*column);
+    });
+
+    let content = ControlMetrics::band_inset(table.base.geometry(), TABLE_INSET);
+    table.handle_event(&Event::MousePress {
+        pos: Point::new(content.x + 10, content.y + 2),
+        button: 1,
+        modifiers: 0,
+    });
+    assert_eq!(*fired.lock().expect("lock"), None, "no header was painted, so none was pressed");
+}
+
+/// A width written through `set_column_width` is also the width the structure publishes.
+///
+/// The setter wrote only the override map, so `columns()[column].width` kept the share recorded
+/// when the structure was materialised, contradicting the field's own contract (and the two other
+/// setters that write both).
+#[test]
+fn set_column_width_updates_the_column_structure() {
+    use crate::widget::view_widgets::data_grid::ColumnSpec;
+
+    let mut table = TableWidget::new(Rect::new(0, 0, 240, 120));
+    table.set_model(Arc::new(StaticTableModel));
+    table.insert_column(0, ColumnSpec::new("A", 50));
+
+    table.set_column_width(0, 300);
+    assert_eq!(table.columns()[0].width, 300, "the structure reports the painted width");
+    assert_eq!(table.column_width(0), Some(300));
+}
+
+/// Host header labels still win after a structural edit materialises the column structure.
+///
+/// `ensure_columns`/`reconcile_columns` copied the model's names into `ColumnSpec::title`, and
+/// `column_title` prefers a non-empty spec title. Any structural edit therefore froze the names
+/// that existed at that moment: a later `set_header_labels` painted the model's old names instead.
+#[test]
+fn host_header_labels_survive_a_structural_edit() {
+    use crate::widget::view_widgets::data_grid::ColumnSpec;
+
+    let model = Arc::new(VecTableModel::with_rows(
+        vec!["Alpha".to_string(), "Beta".to_string()],
+        Vec::new(),
+    ));
+    let mut table = TableWidget::new(Rect::new(0, 0, 240, 120));
+    table.set_model(model);
+    table.insert_column(0, ColumnSpec::new("", 40));
+
+    table.set_header_labels(&["X", "Y", "Z"]);
+    assert_eq!(table.column_title(0).as_deref(), Some("X"));
+    assert_eq!(table.column_title(1).as_deref(), Some("Y"));
+    assert_eq!(table.column_title(2).as_deref(), Some("Z"));
+}
+
+/// `SelectionMode::None` accepts no selection, and switching to it clears what was there.
+///
+/// `select_row` emitted `selection_changed`, moved focus and reported `true` while the selection
+/// model was a documented no-op, so the control painted a focus band for a selection that did not
+/// exist. The mode switch left the old set behind for the same reason.
+#[test]
+fn selecting_in_none_mode_reports_no_selection() {
+    use crate::widget::view_widgets::list_view::SelectionMode;
+
+    let mut table = TableWidget::new(Rect::new(0, 0, 240, 120));
+    table.set_model(Arc::new(TestTableModel::new(5, 2)));
+    assert!(table.select_row(1));
+
+    table.set_selection_mode(SelectionMode::None);
+    assert!(table.selected_rows().is_empty(), "the mode switch clears the selection");
+    assert_eq!(table.focused_row(), None, "and the focus band with it");
+
+    assert!(!table.select_row(3), "None accepts no selection");
+    assert!(!table.select_row_with_modifiers(2, crate::shortcut::Modifiers::NONE));
+    assert!(table.selected_rows().is_empty());
+    assert_eq!(table.focused_row(), None, "and it does not paint a focus band");
+}
+
+/// Keyboard paging reads the validated focus row, not the stale field behind it.
+///
+/// A model without a change signal can shrink under the view. `UP`/`PAGE_UP` subtracted from the
+/// raw `focused_row`, so a focus at row 9 in a 3-row table computed row 8: `select_row(8)` failed,
+/// `set_scroll_row(8)` clamped to 2, and every further key recomputed 8.
+#[test]
+fn a_stale_focus_does_not_send_the_keyboard_past_the_model() {
+    struct ShrinkingModel {
+        rows: std::sync::atomic::AtomicUsize,
+    }
+    impl TableModel for ShrinkingModel {
+        fn row_count(&self) -> usize {
+            self.rows.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn column_count(&self) -> usize {
+            2
+        }
+        fn data(&self, row: usize, _column: usize) -> Option<String> {
+            Some(format!("r{row}"))
+        }
+    }
+
+    let model = Arc::new(ShrinkingModel { rows: std::sync::atomic::AtomicUsize::new(10) });
+    let mut table = TableWidget::new(Rect::new(0, 0, 300, 100));
+    table.set_model(model.clone());
+    table.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+    assert!(table.set_focused_row(9));
+
+    // The model shrinks without a `data_changed` signal, so the raw focus row is now out of range.
+    model.rows.store(3, std::sync::atomic::Ordering::Relaxed);
+    table.handle_event(&Event::KeyPress { key: crate::event::key_codes::UP, modifiers: 0 });
+    assert_eq!(table.focused_row(), Some(0), "UP moves from a row that still exists");
+    assert_eq!(table.scroll_row(), 0, "and does not jump the viewport to a stale clamp");
+
+    model.rows.store(10, std::sync::atomic::Ordering::Relaxed);
+    assert!(table.set_focused_row(9));
+    model.rows.store(3, std::sync::atomic::Ordering::Relaxed);
+    table.handle_event(&Event::KeyPress { key: crate::event::key_codes::PAGE_UP, modifiers: 0 });
+    assert_eq!(table.focused_row(), Some(0), "PAGE_UP reads the same validated row");
+    assert_eq!(table.scroll_row(), 0);
+}
+
+/// A different window origin is a cache miss even when the span returns to the same value.
+///
+/// The cache key XOR-folded `scroll_column` and `needed_columns` into the same bits: column 1 with
+/// two needed columns and column 0 with three both produced key 3. A scroll back to column 0 reused
+/// the window that began at column 1, so column 0 painted blank until the source changed.
+#[test]
+fn a_scroll_column_change_refetches_the_window() {
+    use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+    fn paint(table: &mut TableWidget, backend: &mut SoftwarePaintBackend) {
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(backend);
+            table.draw(&mut context);
+        }
+        backend.end_frame();
+    }
+
+    let mut table = TableWidget::new(Rect::new(0, 0, 240, 120));
+    table.set_data_source(Arc::new(CountingSource::new(4, 3)));
+    let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(240, 120), 1.0);
+
+    paint(&mut table, &mut backend);
+    assert_eq!(table.window_fetches, 1);
+
+    table.set_scroll_column(1);
+    paint(&mut table, &mut backend);
+    assert_eq!(table.window_fetches, 2);
+
+    table.set_scroll_column(0);
+    paint(&mut table, &mut backend);
+    assert_eq!(
+        table.window_fetches, 3,
+        "the origin changed, so the window that began at column 1 cannot be reused"
+    );
+    assert_eq!(
+        table.window_cache.as_ref().map(|window| window.column_start),
+        Some(0),
+        "and the cached window begins where the paint begins"
+    );
+}

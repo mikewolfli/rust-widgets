@@ -101,7 +101,12 @@ impl Toast {
         self.base.request_redraw();
     }
 
-    /// Emits the action, if the toast has one and is showing.
+    /// Emits the action when the toast has one.
+    ///
+    /// A [`Toast`] carries no visibility state of its own — it is a control whose host decides
+    /// whether it is mounted — so this reports the signal even after [`Self::dismiss`]. The
+    /// "is showing" half of the old contract described a state the control does not own; the
+    /// caller is what knows whether forwarding the action still makes sense.
     pub fn trigger_action(&mut self) -> bool {
         if self.action_label.is_none() {
             return false;

@@ -128,27 +128,21 @@ impl ChartContext for SvgChartContext {
         end_angle: f64,
         color: Color,
     ) {
+        // The trait's angles are radians (`-1.57..0.0` is a quarter arc), and the arc is a
+        // stroked polyline exactly as the on-screen adapter paints it. The old form called
+        // `to_radians` on an already-radian angle and emitted a filled fan, so a quarter arc
+        // exported as a ~1.5 degree wedge that vanished next to the widget's rendering.
         let cx = center.x as f64;
         let cy = center.y as f64;
         let r = radius as f64;
         let sweep = end_angle - start_angle;
-        let steps = (sweep.abs().ceil() as u32).clamp(3, 90);
-        let mut pts = Vec::with_capacity(steps as usize + 2);
-        // Start from center, then arc boundary points
-        pts.push(Point::from_f64(cx, cy));
-        for i in 0..=steps {
-            let angle = start_angle + sweep * (i as f64 / steps as f64);
-            let rad = angle.to_radians();
-            pts.push(Point::from_f64(cx + rad.cos() * r, cy + rad.sin() * r));
+        let steps = ((sweep.abs() * r / 2.0).ceil() as i64).clamp(2, 180);
+        let mut points = Vec::with_capacity(steps as usize + 1);
+        for step in 0..=steps {
+            let angle = start_angle + sweep * (step as f64 / steps as f64);
+            points.push(Point::from_f64(cx + angle.cos() * r, cy + angle.sin() * r));
         }
-        let polygon_str: String =
-            pts.iter().map(|p| format!("{:.2},{:.2}", p.x, p.y)).collect::<Vec<_>>().join(" ");
-        self.elements.push(format!(
-            "<polygon points=\"{}\" fill=\"{}\" fill-opacity=\"{:.3}\" stroke=\"none\" />",
-            polygon_str,
-            svg_color_hex(color),
-            svg_alpha(color)
-        ));
+        self.draw_path(&points, 1.0, color);
     }
     fn draw_path(&mut self, points: &[Point], width: f32, color: Color) {
         if points.len() < 2 {
@@ -274,7 +268,7 @@ impl ChartContext for MemoryChartContext {
         _color: Color,
     ) {
         self.commands.push(format!(
-            "arc:{},{}:{}:{}°->{}°",
+            "arc:{},{}:{}:{}rad->{}rad",
             center.x, center.y, radius, start_angle, end_angle
         ));
     }
@@ -301,4 +295,27 @@ fn svg_alpha(color: Color) -> f32 {
 }
 fn svg_escape_text(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `draw_arc` takes radians and strokes the arc, matching the on-screen adapter.
+    ///
+    /// # The defect this pins
+    ///
+    /// The SVG backend called `to_radians` on an already-radian angle and emitted a filled fan:
+    /// `draw_arc(c, r, -1.57, 0.0, color)` exported a ~1.5 degree wedge while the widget painted
+    /// a quarter circle.
+    #[test]
+    fn draw_arc_uses_radians_and_strokes_the_arc() {
+        let mut context = SvgChartContext::new(120, 120);
+        context.draw_arc(Point::new(60, 60), 40.0, -std::f64::consts::FRAC_PI_2, 0.0, Color::BLACK);
+        let svg = context.to_svg_string();
+        assert!(svg.contains("<path"), "the arc is stroked: {svg}");
+        assert!(!svg.contains("<polygon"), "a partial arc is not a filled wedge: {svg}");
+        assert!(svg.contains("M 60.00 20.00"), "-pi/2 starts at 12 o'clock: {svg}");
+        assert!(svg.contains("100.00 60.00"), "0 rad ends at 3 o'clock: {svg}");
+    }
 }

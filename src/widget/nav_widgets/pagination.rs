@@ -354,6 +354,8 @@ impl Pagination {
             self.jump_editing = false;
             self.jump_buffer.clear();
         }
+        // The jump cell contributes to `size_hint`, so the host has to relayout as well.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -379,6 +381,8 @@ impl Pagination {
             self.page_size_menu_open = false;
             self.page_size_hover = None;
         }
+        // The selector cell contributes to `size_hint`, so the host has to relayout as well.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -414,6 +418,9 @@ impl Pagination {
         } else if self.page_size_hover.is_some_and(|index| index >= self.page_size_options.len()) {
             self.page_size_hover = None;
         }
+        // The selector's width feeds `size_hint`, so a new option list can change the
+        // control's implicit size as well as its pixels.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -1890,6 +1897,34 @@ mod tests {
         let mut bar = bar();
         bar.set_page_size_options(vec![0, 50, 10, 50, 0, 20, 10]);
         assert_eq!(bar.page_size_options(), [10, 20, 50].as_slice());
+    }
+
+    /// A trailing cell changes `size_hint`, so showing it (or changing its width) must
+    /// request layout, not merely a repaint.
+    #[test]
+    fn trailing_cell_changes_request_layout() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut bar = bar();
+        let layouts = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&layouts);
+        bar.base.layout_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        bar.set_show_jump_input(true);
+        assert_eq!(layouts.load(Ordering::SeqCst), 1, "the jump cell changes the width hint");
+
+        bar.set_show_page_size_selector(true);
+        assert_eq!(layouts.load(Ordering::SeqCst), 2, "the page-size cell changes the width hint");
+
+        bar.set_page_size_options(vec![10, 20, 50]);
+        assert_eq!(
+            layouts.load(Ordering::SeqCst),
+            3,
+            "a new option list can change the selector's width"
+        );
     }
 
     /// The numbered band, the jump cell and the page-size cell answer different presses.

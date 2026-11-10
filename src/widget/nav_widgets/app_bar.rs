@@ -231,6 +231,9 @@ impl AppBar {
             return;
         }
         self.subtitle = subtitle;
+        // A subtitle adds a line to `size_hint`/`preferred_height`, so the host has to be
+        // told the implicit size changed, not merely that the pixels did.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -394,7 +397,18 @@ impl AppBar {
 
     /// The height of the bottom slot's band, zero when there is no slot.
     fn bottom_height(&self) -> u32 {
-        let wanted = if let Some(widget) = self.bottom.as_deref() {
+        let room = self.geometry().height.saturating_sub(APP_BAR_MIN_HEIGHT);
+        self.bottom_slot_height().min(room)
+    }
+
+    /// The height the bottom slot asks for, before it is clamped to the bar's rectangle.
+    ///
+    /// A host that sizes the bar (such as `AdaptiveScaffold`) needs this value rather than
+    /// [`Self::bottom_height`], because the clamp reads the height the host has not assigned
+    /// yet: deriving the band from the clamped value made a declared (`bottom_id`) slot see
+    /// `room == 0` and never be placed.
+    pub(crate) fn bottom_slot_height(&self) -> u32 {
+        if let Some(widget) = self.bottom.as_deref() {
             widget.size_hint().height
         } else if let Some(id) = self.bottom_id {
             // A declared child lives in the registry, so its hint is one lookup away. The slot is
@@ -402,10 +416,8 @@ impl AppBar {
             // control's own text or font changed.
             crate::widget::runtime::read_widget(id, |widget| widget.size_hint().height).unwrap_or(0)
         } else {
-            return 0;
-        };
-        let room = self.geometry().height.saturating_sub(APP_BAR_MIN_HEIGHT);
-        wanted.min(room)
+            0
+        }
     }
 
     /// The main bar band: the top of the control, without the bottom slot.
@@ -451,7 +463,18 @@ impl AppBar {
                 + 16)
                 .max(APP_BAR_ACTION_MIN_WIDTH);
             let left = cursor - width;
-            if left < band.x + APP_BAR_ACTION_MIN_WIDTH + APP_BAR_ACTION_GAP {
+            // The overflow affordance is a 48 px slot at the band's inner edge, so it has
+            // to be reserved only when there are actions *after* this one that could still
+            // need it. Reserving it unconditionally made the 80 px trailing band unable to
+            // hold even a single 48 px action (its usable width was 28 px), so every action
+            // became an overflow and nothing was pressable. The final action may use the
+            // whole band; an earlier one must leave room for the overflow it might trigger.
+            let inner_limit = if index + 1 < self.actions.len() {
+                band.x + APP_BAR_ACTION_MIN_WIDTH + APP_BAR_ACTION_GAP
+            } else {
+                band.x
+            };
+            if left < inner_limit {
                 overflow =
                     Some(Rect::new(band.x, band.y, APP_BAR_ACTION_MIN_WIDTH as u32, band.height));
                 break;
@@ -576,6 +599,35 @@ impl Widget for AppBar {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Disabling the bar drops any press that is still armed.
+    ///
+    /// `handle_event` returns before the release arm while disabled, so an armed press
+    /// outlived the disable: the pressed overlay kept painting, `widget_state()` stayed
+    /// `Pressed`, and a release after re-enabling committed a click with no press behind it.
+    /// The default body is repeated because an override cannot call it.
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.base.is_enabled() == enabled {
+            return;
+        }
+        if !enabled && self.pressed.take().is_some() {
+            self.base.set_pressed(false);
+        }
+        self.base.set_enabled(enabled);
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base.id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
+        self.set_state_theme_hook();
+        self.base.request_redraw();
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -1563,6 +1615,21 @@ mod tests {
         assert_eq!(bar.get("direction").unwrap().as_str(), Some("rtl"));
     }
 
+    /// One action fits in the trailing band and must be placed, not folded into overflow.
+    ///
+    /// The box derivation reserved a 48 px overflow slot unconditionally, leaving only 28 px
+    /// of the 80 px band for the action itself — so even a single action became "…".
+    #[test]
+    fn a_single_trailing_action_is_placed_not_folded_into_overflow() {
+        let mut bar = make_app_bar();
+        bar.set_actions(vec!["Save".to_string()]);
+
+        let boxes = bar.action_boxes();
+        assert!(boxes.overflow.is_none(), "one action needs no overflow slot");
+        assert_eq!(boxes.boxes.len(), 1, "the action occupies its own box");
+        assert_eq!(boxes.boxes[0].0, 0, "and keeps its action index");
+    }
+
     #[test]
     fn a_crowded_action_list_folds_into_an_overflow_affordance() {
         let mut bar = make_app_bar();
@@ -1572,16 +1639,35 @@ mod tests {
         }
         bar.set_actions(actions);
         assert_eq!(bar.actions().len(), 8);
-        // Tapping the trailing edge activates the first action; the overflow zone reports
-        // separately. Both are reachable through the public signals.
-        let fired = Arc::new(AtomicUsize::new(0));
-        let f = fired.clone();
-        bar.action_index_pressed.connect(move |index: Arc<usize>| {
-            f.store(*index, Ordering::SeqCst);
+        // Eight measured labels cannot share the 80 px band with the overflow slot, so the
+        // overflow affordance is the reachable control and it must actually commit a press.
+        let overflow_rect = bar.action_boxes().overflow.expect("crowded actions overflow");
+        assert!(
+            bar.action_boxes().boxes.is_empty(),
+            "no full-width action fits beside the overflow"
+        );
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let o = overflowed.clone();
+        bar.action_overflow_pressed.connect(move || {
+            o.store(true, Ordering::SeqCst);
         });
-        bar.handle_event(&Event::MousePress { pos: Point::new(370, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(370, 28), button: 1 });
-        assert_eq!(fired.load(Ordering::SeqCst), 0, "the trailing edge is action zero");
+        let index_fired = Arc::new(AtomicUsize::new(usize::MAX));
+        let i = index_fired.clone();
+        bar.action_index_pressed.connect(move |index: Arc<usize>| {
+            i.store(*index, Ordering::SeqCst);
+        });
+        let pos = Point::new(overflow_rect.x + overflow_rect.width as i32 / 2, 28);
+        bar.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert!(
+            overflowed.load(Ordering::SeqCst),
+            "tapping the drawn overflow must open the folded actions"
+        );
+        assert_eq!(
+            index_fired.load(Ordering::SeqCst),
+            usize::MAX,
+            "an action that does not fit must not report its index"
+        );
     }
 
     #[test]
@@ -1624,14 +1710,20 @@ mod tests {
         bar.set_actions(vec!["Save".to_string()]);
         bar.set_action_icon_sources(vec![Some(IconSource::Builtin(IconName::Save))]);
         assert_eq!(bar.action_icon_sources().len(), 1);
-        let fired = Arc::new(AtomicUsize::new(0));
+        // `usize::MAX` distinguishes "no event" from a genuine index-0 press, which is the
+        // vacuous assertion this replaces.
+        let fired = Arc::new(AtomicUsize::new(usize::MAX));
         let sink = fired.clone();
         bar.action_index_pressed.connect(move |index: Arc<usize>| {
             sink.store(*index, Ordering::SeqCst);
         });
         bar.handle_event(&Event::MousePress { pos: Point::new(370, 28), button: 1, modifiers: 0 });
         bar.handle_event(&Event::MouseRelease { pos: Point::new(370, 28), button: 1 });
-        assert_eq!(fired.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "the lone action occupies the trailing edge and must be pressable"
+        );
     }
 
     /// A press paints the armed affordance and reports `Pressed` until the release.
@@ -1657,6 +1749,59 @@ mod tests {
         bar.handle_event(&Event::MouseRelease { pos, button: 1 });
         assert_eq!(bar.widget_state(), WidgetState::Normal);
         assert!(bar.pressed_zone().is_none(), "the release clears the feedback");
+    }
+
+    /// A disable in the middle of a press must drop the armed click.
+    ///
+    /// `handle_event` returns before the release arm while disabled, so without clearing the
+    /// latch the arrow kept its pressed fill and a release after re-enabling committed a click
+    /// that had no press behind it.
+    #[test]
+    fn disabling_an_armed_bar_drops_the_press() {
+        use crate::style::WidgetState;
+        let _guard = crate::style::theme_test_guard();
+        let mut bar = make_app_bar();
+        bar.set_show_back(true);
+        let pos = Point::new(20, 28);
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = fired.clone();
+        bar.back_pressed.connect(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+
+        bar.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(bar.widget_state(), WidgetState::Pressed);
+
+        bar.set_enabled(false);
+        assert_eq!(bar.widget_state(), WidgetState::Disabled);
+        assert!(bar.pressed_zone().is_none(), "the pressed overlay must not survive a disable");
+
+        bar.set_enabled(true);
+        assert_eq!(bar.widget_state(), WidgetState::Normal, "the latch was cleared, not hidden");
+        bar.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "a release with no armed press must not commit back"
+        );
+    }
+
+    /// A subtitle changes `size_hint()`/`preferred_height()`, so it must request layout.
+    #[test]
+    fn a_subtitle_change_requests_layout() {
+        let mut bar = make_app_bar();
+        let layouts = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&layouts);
+        bar.base.layout_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        bar.set_subtitle(Some("Workspace".to_string()));
+        assert_eq!(layouts.load(Ordering::SeqCst), 1, "the second line changes the height hint");
+
+        bar.set_subtitle(None);
+        assert_eq!(layouts.load(Ordering::SeqCst), 2, "removing it changes the hint back");
     }
 
     /// N-001: a subtitle is a second line and the bar's implicit height accounts for it.

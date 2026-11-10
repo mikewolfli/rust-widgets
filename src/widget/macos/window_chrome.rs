@@ -519,10 +519,18 @@ impl Draw for MacWindowChrome {
         if available > 0 && !self.title.is_empty() {
             let mut measure = |text: &str| context.measure_text(text, &font).width;
             let shown: Cow<'_, str> = elide_to_width(&self.title, available, &mut measure);
+            // The elision budget bounds the *width*, but the draw anchors on the bar's centre: a
+            // long title elided to `available` still started half its drawn width left of the
+            // centre, which is under a traffic light. Clamp the centre so the run stays inside
+            // `[leading, bar.right()]`, the band the budget is meant to protect.
+            let half_width = (context.measure_text(shown.as_ref(), &font).width / 2) as i32;
+            let low = leading + half_width;
+            let high = (bar.right() - half_width).max(low);
+            let centre = bar.center().x.clamp(low, high);
             let line = context.text_line(bar, &font);
             let ink = chrome_ink;
             context.draw_text(
-                Point::new(bar.center().x, line.y),
+                Point::new(centre, line.y),
                 shown.as_ref(),
                 &font,
                 ink,
@@ -761,6 +769,29 @@ mod tests {
             .filter(|command| matches!(command, RenderCommand::FillCircle { .. }))
             .count();
         assert_eq!(circles, 3, "all three traffic lights are painted");
+    }
+
+    /// The elision budget protects the leading controls, not just the bar's trailing edge.
+    ///
+    /// The title was elided to `bar.right() - leading` but drawn centred on `bar.center().x`, so
+    /// on a narrow bar a long title painted over the Minimize/Zoom discs -- which still claimed
+    /// those presses.
+    #[test]
+    fn a_long_title_never_paints_over_the_traffic_lights() {
+        use crate::widget::svg::{render_to_svg, text_ink_boxes};
+
+        let mut bar = sample();
+        bar.set_title("A window title long enough to need elision on a narrow bar");
+        let zoom = bar.button_rect(WindowChromeButton::Zoom).expect("the controls are shown");
+
+        let boxes = text_ink_boxes(&render_to_svg(&mut bar));
+        assert_eq!(boxes.len(), 1, "the title is the only text on the bar");
+        let (x, _, _, _) = boxes[0];
+        assert!(
+            x >= zoom.right(),
+            "the title ink starts at {x}, over the controls that end at {}",
+            zoom.right()
+        );
     }
 
     #[test]

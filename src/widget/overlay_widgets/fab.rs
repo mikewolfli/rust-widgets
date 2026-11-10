@@ -201,6 +201,9 @@ impl FAB {
             return;
         }
         self.size_kind = size;
+        // `size_hint` changed, so the host has to lay the control out again: a redraw alone
+        // repainted the new edge inside the old allocation.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -212,6 +215,10 @@ impl FAB {
             return;
         }
         self.extended_label = label;
+        // The label turns the circle into a capsule and changes `size_hint`, so the host has to
+        // lay the control out again: a redraw alone painted the capsule into the old circle's
+        // allocation and elided the label.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -221,11 +228,19 @@ impl FAB {
     }
 
     /// Enables hiding the button while the page scrolls down.
+    ///
+    /// Turning the mode off restores the button: the scroll handler hid it by aiming
+    /// `visibility` at zero, so disabling the mode has to aim it back at one -- otherwise the
+    /// button stayed off screen forever, because `report_scroll` no longer ran to show it again.
     pub fn set_hide_on_scroll(&mut self, hide: bool) {
         if self.hide_on_scroll == hide {
             return;
         }
         self.hide_on_scroll = hide;
+        if !hide {
+            // Re-aim rather than jump, so a button already off screen slides back into its band.
+            self.visibility.set_target(1.0);
+        }
         self.base.request_redraw();
     }
 
@@ -697,6 +712,17 @@ impl EventHandler for FAB {
             return;
         }
 
+        // A button that has scrolled fully away is not on screen, so it must not keep a hit
+        // target: the runtime dispatches by geometry, and a click in the vanished button's old
+        // rect used to reach it. A gesture interrupted by the hide is dropped with it.
+        if self.visibility.value() <= 0.001 {
+            if self.base.is_pressed() {
+                self.base.set_pressed(false);
+                self.sync_press_driver();
+            }
+            return;
+        }
+
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == crate::event::mouse_button::PRIMARY {
@@ -775,7 +801,7 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
 
@@ -1102,6 +1128,57 @@ mod tests {
         fab.report_scroll(-3);
         while fab.tick(16) {}
         assert_eq!(fab.visibility_progress(), 1.0);
+    }
+
+    /// Turning the scroll-hiding mode off restores a button it had hidden, and a button that is
+    /// fully away takes no presses.
+    ///
+    /// `set_hide_on_scroll(false)` used to leave `visibility` aimed at zero while clearing the
+    /// only mode that could aim it back, so the button was invisible forever -- and the runtime
+    /// still delivered clicks in its geometry, which compounded the dead zone.
+    #[test]
+    fn turning_hide_on_scroll_off_restores_a_hidden_fab_and_it_ignores_clicks_while_away() {
+        let mut fab = make_fab();
+        let clicked = Arc::new(AtomicBool::new(false));
+        let sink = clicked.clone();
+        fab.base.clicked.connect(move || sink.store(true, Ordering::SeqCst));
+
+        fab.set_hide_on_scroll(true);
+        fab.report_scroll(1);
+        while fab.tick(16) {}
+        assert_eq!(fab.visibility_progress(), 0.0, "the downward scroll hid it");
+
+        let center = fab.geometry().center();
+        fab.handle_event(&Event::MousePress { pos: center, button: 1, modifiers: 0 });
+        fab.handle_event(&Event::MouseRelease { pos: center, button: 1 });
+        assert!(!clicked.load(Ordering::SeqCst), "a button that is off screen is not a hit target");
+
+        fab.set_hide_on_scroll(false);
+        assert!(fab.is_animating(), "the restore is animated rather than a jump");
+        while fab.tick(16) {}
+        assert_eq!(fab.visibility_progress(), 1.0, "disabling the mode brings the button back");
+    }
+
+    /// The setters that change `size_hint` ask for a new layout, not just a repaint.
+    ///
+    /// A laid-out 56x56 FAB given an extended label used to paint the capsule into its old circle
+    /// allocation (so the label was elided), and a size-class change kept the old edge.
+    #[test]
+    fn the_size_hint_setters_request_a_layout() {
+        let mut fab = make_fab();
+        let requested = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&requested);
+        fab.base.layout_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        fab.set_extended_label(Some("Share"));
+        assert!(fab.size_hint().width > 56, "the capsule is wider than the circle");
+        assert_eq!(requested.load(Ordering::SeqCst), 1, "the wider hint needs a new layout");
+
+        fab.set_size(FabSize::Large);
+        assert_eq!(fab.size_hint().height, FabSize::Large.edge());
+        assert_eq!(requested.load(Ordering::SeqCst), 2, "the taller hint needs a new layout");
     }
 
     #[test]

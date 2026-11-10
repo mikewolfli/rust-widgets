@@ -66,7 +66,8 @@ pub enum CompletionClosePolicy {
     Always,
     /// The list stays open; the host decides when to dismiss it.
     Never,
-    /// The list stays open after an inline completion and closes on an explicit commit.
+    /// The list stays open after an inline completion (Tab, [`AutoCompleteEdit::accept_highlighted`])
+    /// and closes on an explicit commit (Enter, or a press on a row).
     OnCommit,
 }
 
@@ -418,6 +419,10 @@ impl AutoCompleteEdit {
     /// Adds a single suggestion to the suggestion list.
     pub fn add_suggestion(&mut self, suggestion: String) {
         self.suggestions.push(suggestion);
+        // Re-filtered like every other list mutation: a suggestion added while the field already
+        // holds text was otherwise absent from the dropdown (and from the inline hint) until some
+        // other edit happened to re-run the filter.
+        self.filter_suggestions();
         self.base.request_redraw();
     }
 
@@ -449,9 +454,9 @@ impl AutoCompleteEdit {
     /// Removes all suggestions and hides the dropdown.
     pub fn clear_suggestions(&mut self) {
         self.suggestions.clear();
-        self.filtered_suggestions.clear();
-        self.show_dropdown = false;
-        self.selected_suggestion = None;
+        // Routed through the filter so the inline ghost suffix goes with the list; clearing only
+        // the dropdown left `draw` painting a completion for a suggestion that no longer exists.
+        self.filter_suggestions();
         self.base.request_redraw();
     }
 
@@ -494,6 +499,11 @@ impl AutoCompleteEdit {
         self.text = self.history_target.borrow().clone();
         self.restoring_history = false;
         self.text_revision = self.text_revision.wrapping_add(1);
+        // The restored value may be shorter than the one it replaced, and every other edit path
+        // clamps; a caret left past the end made the next `append_committed_text` splice panic in
+        // `String::replace_range`.
+        self.cursor = self.text.len();
+        self.selection_anchor = None;
         self.filter_suggestions();
         self.text_changed.emit_lazy(|| self.text.clone());
         self.base.request_redraw();
@@ -644,7 +654,9 @@ impl AutoCompleteEdit {
         if self.selected_suggestion.is_none() {
             return false;
         }
-        self.select_highlighted();
+        // An inline acceptance, not an explicit commit: `CompletionClosePolicy::OnCommit` keeps the
+        // list open for this one and closes on Enter or a row press.
+        self.select_highlighted(false);
         true
     }
 
@@ -682,7 +694,8 @@ impl AutoCompleteEdit {
                 let idx = (rel_y / item_height).max(0) as usize;
                 if idx < self.filtered_suggestions.len() {
                     self.selected_suggestion = Some(idx);
-                    self.select_highlighted();
+                    // A press on a row is an explicit commit.
+                    self.select_highlighted(true);
                 }
             }
         }
@@ -708,6 +721,27 @@ impl AutoCompleteEdit {
         }
     }
 
+    /// The left edge of the value run, honouring the field's alignment.
+    ///
+    /// The draw pass, the caret, the inline hint and the press mapping all start from this one
+    /// origin. The old paint passed the alignment to `draw_text` with `rect.x + 6` as the *anchor*,
+    /// which centred/right-anchored the run on the field's left padding, while the hit test assumed
+    /// a left origin — so under `Center`/`Right` the glyphs and the click target were up to a box
+    /// width apart.
+    fn value_origin_x(&self, run_width: i32) -> i32 {
+        let rect = self.geometry();
+        const PADDING: i32 = 6;
+        let inner = (rect.width as i32 - PADDING * 2).max(0);
+        let spare = (inner - run_width).max(0);
+        rect.x
+            + PADDING
+            + match self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left) {
+                HorizontalAlignment::Left => 0,
+                HorizontalAlignment::Center => spare / 2,
+                HorizontalAlignment::Right => spare,
+            }
+    }
+
     /// The byte offset a horizontal pixel points at.
     ///
     /// Reads the memoised advance table for the current value instead of building a zero-sized
@@ -717,9 +751,10 @@ impl AutoCompleteEdit {
         if self.text.is_empty() {
             return 0;
         }
-        let rect = self.geometry();
         let font = effective_font(self.style()).clone();
-        let origin = rect.x + 6;
+        // The same origin the glyphs are painted from: the alignment moves the run inside the field
+        // box, so a press has to address the moved run.
+        let origin = self.value_origin_x(self.cached_prefix_advance(&font, self.text.len()));
         let dx = x - origin;
         let mut cache = self.measure_cache.borrow_mut();
         if cache.0 != self.text_revision || cache.1.as_ref() != Some(&font) {
@@ -793,7 +828,11 @@ impl AutoCompleteEdit {
     }
 
     /// Selects the highlighted suggestion and commits it as the current text.
-    fn select_highlighted(&mut self) {
+    /// Applies the highlighted suggestion.
+    ///
+    /// `explicit` distinguishes the two acceptance kinds the close policy talks about: a commit
+    /// (Enter, a press on a row) from an inline acceptance (Tab).
+    fn select_highlighted(&mut self, explicit: bool) {
         if let Some(idx) = self.selected_suggestion {
             if let Some(suggestion) = self.filtered_suggestions.get(idx) {
                 let mut selected = suggestion.clone();
@@ -805,7 +844,12 @@ impl AutoCompleteEdit {
                 }
                 self.set_text(selected.clone());
                 self.suggestion_selected.emit(selected);
-                if self.close_policy != CompletionClosePolicy::Never {
+                let close = match self.close_policy {
+                    CompletionClosePolicy::Always => true,
+                    CompletionClosePolicy::OnCommit => explicit,
+                    CompletionClosePolicy::Never => false,
+                };
+                if close {
                     self.hide_dropdown();
                 }
                 self.base.request_redraw();
@@ -1291,8 +1335,6 @@ impl Draw for AutoCompleteEdit {
         // The **effective font** — the resolved theme/caller font — so the value and the
         // suggestion rows honour the theme body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
-        let padding = 6i32;
-        let text_x = rect.x + padding;
         // The glyph origin is the line box's top edge, so the vertical anchor comes from
         // `text_line` rather than the fixed `padding + 13` that assumed a 13 px face.
         let input_line = context.text_line(rect, font);
@@ -1302,6 +1344,14 @@ impl Draw for AutoCompleteEdit {
         // nothing beyond its chrome (I-04).
         let display_text =
             if self.text.is_empty() { self.placeholder.as_str() } else { &self.text };
+        // The run's left edge comes from `value_origin_x`, the same origin the caret, the inline
+        // hint and the press mapping read; the run is then painted from that edge.
+        let run_width = if self.text.is_empty() {
+            crate::widget::metrics::estimate_text_width(display_text, font, 1.0) as i32
+        } else {
+            self.cached_prefix_advance(font, self.text.len())
+        };
+        let text_x = self.value_origin_x(run_width);
         // Empty field = placeholder: the resolved ink damped toward the fill, so the
         // hint stays legible on either appearance.
         let input_text_color = if self.text.is_empty() {
@@ -1316,7 +1366,9 @@ impl Draw for AutoCompleteEdit {
             display_text,
             font,
             input_text_color,
-            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+            // `text_x` is already the run's left edge (the alignment was applied by
+            // `value_origin_x`), so the anchor is Left.
+            HorizontalAlignment::Left,
         );
 
         // Inline completion: the completed remainder follows the caret, dimmed, so the
@@ -1426,7 +1478,8 @@ impl EventHandler for AutoCompleteEdit {
             Event::KeyPress { key, modifiers } => {
                 if *key == key_codes::ENTER {
                     if self.show_dropdown {
-                        self.select_highlighted();
+                        // Enter commits explicitly, so `OnCommit` closes the list.
+                        self.select_highlighted(true);
                     }
                 } else if *key == 9 {
                     // Tab accepts an inline completion; with no inline hint it accepts the
@@ -1866,5 +1919,66 @@ mod tests {
         edit.set_text("al".to_string());
         assert!(edit.accept_highlighted());
         assert_eq!(edit.text(), "alpine, ");
+    }
+
+    /// Undo clamps the caret to the restored value and drops its selection.
+    ///
+    /// The restored value may be shorter than the one it replaces; leaving the caret past its
+    /// end made the next `append_committed_text` splice panic in `String::replace_range`.
+    #[test]
+    fn an_undo_never_leaves_the_caret_past_the_text() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_suggestions(vec!["alpha".to_string()]);
+        edit.handle_event(&Event::TextInput { text: "alp".to_string() });
+        edit.handle_event(&Event::TextInput { text: "ha".to_string() });
+        assert_eq!(edit.text(), "alpha");
+        assert!(edit.is_showing_dropdown(), "the typed prefix opens the list");
+
+        // Extend the caret back into a selection so the undo has one to clear.
+        edit.handle_event(&Event::KeyPress { key: 37, modifiers: 1 });
+        assert!(edit.selection_range().is_some(), "Shift+Left starts a selection");
+
+        assert!(edit.undo());
+        assert_eq!(edit.text(), "alp", "the undo restores the pre-edit value");
+        assert!(
+            edit.cursor_position() <= edit.text().len(),
+            "the caret must sit inside the restored value"
+        );
+        assert!(edit.selection_range().is_none(), "the restored value carries no selection");
+    }
+
+    /// Clearing the list takes the inline ghost suffix with it.
+    #[test]
+    fn clearing_suggestions_clears_the_inline_hint() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_suggestions(vec!["alpha".to_string()]);
+        edit.set_inline_completion(true);
+        edit.set_text("al");
+        assert_eq!(edit.inline_suffix(), "pha");
+
+        edit.clear_suggestions();
+        assert!(edit.suggestions().is_empty());
+        assert!(!edit.is_showing_dropdown());
+        assert_eq!(edit.inline_suffix(), "", "the hint belonged to a suggestion that is gone");
+    }
+
+    /// `OnCommit` keeps the list for Tab's inline acceptance and closes it for Enter's commit.
+    #[test]
+    fn on_commit_keeps_the_list_open_for_tab_and_closes_it_for_enter() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_suggestions(vec!["alpha".to_string()]);
+        edit.set_close_policy(CompletionClosePolicy::OnCommit);
+        edit.set_text("al");
+        assert!(edit.is_showing_dropdown());
+
+        edit.handle_event(&Event::KeyPress { key: 9, modifiers: 0 }); // Tab
+        assert_eq!(edit.text(), "alpha");
+        assert!(edit.is_showing_dropdown(), "Tab is an inline acceptance, not a commit");
+
+        edit.set_text("al");
+        assert!(edit.is_showing_dropdown(), "the prefix reopens the list");
+        edit.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });
+        assert_eq!(edit.text(), "alpha");
+        assert!(!edit.is_showing_dropdown(), "Enter commits explicitly, so the list closes");
     }
 }

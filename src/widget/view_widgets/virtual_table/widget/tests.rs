@@ -1014,3 +1014,176 @@ fn empty_and_error_captions_are_stored() {
     table.set_empty_text("");
     assert!(table.placeholder().is_empty());
 }
+
+// ── Regression tests: source changes, selection encoding and hit testing ──
+
+/// A source whose row and column counts can change in place and which reports the change.
+struct ShrinkableSource {
+    rows: AtomicUsize,
+    columns: AtomicUsize,
+    changed: GenericSignal,
+}
+
+impl IncrementalTableDataSource for ShrinkableSource {
+    fn row_count(&self) -> usize {
+        self.rows.load(Ordering::Relaxed)
+    }
+
+    fn column_count(&self) -> usize {
+        self.columns.load(Ordering::Relaxed)
+    }
+
+    fn data(&self, row: usize, column: usize) -> Option<String> {
+        Some(format!("{row}:{column}"))
+    }
+
+    fn data_changed_signal(&self) -> Option<&GenericSignal> {
+        Some(&self.changed)
+    }
+}
+
+/// A shrinking source clamps the scroll, repairs the selection and reports the new window.
+///
+/// The `data_changed` handler only advanced the generation and repainted. With `scroll_row == 90`
+/// and a source that dropped to three rows, `fetch_window` returned nothing for the stale origin,
+/// so the body painted blank with no placeholder while `scroll_row` still reported 90.
+#[test]
+fn a_shrinking_source_clamps_the_scroll_and_reports_the_window() {
+    let source = Arc::new(ShrinkableSource {
+        rows: AtomicUsize::new(100),
+        columns: AtomicUsize::new(5),
+        changed: GenericSignal::new(),
+    });
+    let mut table = VirtualTable::new(Rect::new(0, 0, 240, 200));
+    table.set_data_source(source.clone());
+    table.set_scroll_row(90);
+    assert!(table.select_cell(95, 1));
+
+    let emitted = Arc::new(Mutex::new(Vec::<(usize, usize, usize, usize)>::new()));
+    let sink = Arc::clone(&emitted);
+    table.visible_window_changed.connect(move |window| {
+        if let Ok(mut guard) = sink.lock() {
+            guard.push(*window);
+        }
+    });
+    let cleared = Arc::new(Mutex::new(Vec::<Vec<(usize, usize)>>::new()));
+    let sink = Arc::clone(&cleared);
+    table.selection_set_changed.connect(move |cells| {
+        if let Ok(mut guard) = sink.lock() {
+            guard.push((*cells).clone());
+        }
+    });
+
+    source.rows.store(3, Ordering::Relaxed);
+    source.changed.emit();
+
+    // The property read is clamped immediately, without waiting for a frame.
+    assert_eq!(table.scroll_row(), 2, "the scroll is clamped to the surviving rows");
+
+    let window = table.fetch_visible_window();
+    assert!(!window.is_empty(), "the body still has rows to paint");
+    assert_eq!(table.selected_cells(), Vec::new(), "the selected row no longer exists");
+    assert_eq!(
+        *cleared.lock().expect("lock"),
+        vec![Vec::new()],
+        "the host hears that the stale cell left the set"
+    );
+    assert!(
+        emitted.lock().expect("lock").iter().any(|window| window.0 < 3),
+        "the visible window is re-emitted from the new bounds"
+    );
+}
+
+/// The selection is re-encoded when the source's column count changes.
+///
+/// Cells are stored as `row * columns + column`. With five columns, selecting (1, 2) stored 7; when
+/// the source dropped to three columns, index 7 decoded as (2, 1) — a different cell. Clearing the
+/// source likewise left the index behind, so `selected_cells()` was silently empty.
+#[test]
+fn a_column_count_change_keeps_the_selected_cell() {
+    let source = Arc::new(ShrinkableSource {
+        rows: AtomicUsize::new(5),
+        columns: AtomicUsize::new(5),
+        changed: GenericSignal::new(),
+    });
+    let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+    table.set_data_source(source.clone());
+    assert!(table.select_cell(1, 2));
+    assert_eq!(table.selected_cell(), Some((1, 2)));
+
+    source.columns.store(3, Ordering::Relaxed);
+    source.changed.emit();
+
+    assert_eq!(
+        table.selected_cell(),
+        Some((1, 2)),
+        "the index is decoded with the width it was encoded with"
+    );
+    let _ = table.fetch_visible_window();
+    assert_eq!(table.selected_cell(), Some((1, 2)), "and re-encoded against the new width");
+
+    table.clear_data_source();
+    assert!(table.selected_cells().is_empty(), "no source, no cells");
+    assert_eq!(table.selected_cell(), None);
+}
+
+/// A point below the last row names no cell, so no hover stripe is painted there.
+///
+/// `row_at` bounded the local row by the visible grid but never by `row_count`: a three-row source
+/// in a 300 px control answered row 9 for a point 200 px below the last row.
+#[test]
+fn a_point_below_the_last_row_names_no_cell() {
+    let mut table = VirtualTable::new(Rect::new(0, 0, 240, 300));
+    table.set_data_source(Arc::new(ShrinkableSource {
+        rows: AtomicUsize::new(3),
+        columns: AtomicUsize::new(2),
+        changed: GenericSignal::new(),
+    }));
+
+    let rect = table.geometry();
+    let stride = table.row_height() as i32;
+    let first_row = rect.y + 2 + table.header_offset() + 5;
+    assert_eq!(table.row_at(first_row), Some(0));
+
+    let below_last = first_row + 9 * stride;
+    assert_eq!(table.row_at(below_last), None, "empty space below the source's rows is not a row");
+}
+
+/// Switching from Multi to Single reports the cells that survived the trim.
+///
+/// `set_selection_mode` never emitted. `SelectionModel::set_mode` trims a multi-row set to one row
+/// when switching to Single, so the host was left mirroring three cells the control no longer had.
+#[test]
+fn switching_to_single_selection_reports_the_surviving_cell() {
+    use crate::widget::view_widgets::list_view::SelectionMode;
+
+    let mut table = VirtualTable::new(Rect::new(0, 0, 240, 120));
+    table.set_data_source(Arc::new(StaticSource));
+    table.set_selection_mode(SelectionMode::Multi);
+    let ctrl = crate::shortcut::Modifiers::CTRL;
+    assert!(table.select_cell_with_modifiers(0, 0, ctrl));
+    assert!(table.select_cell_with_modifiers(1, 0, ctrl));
+    assert!(table.select_cell_with_modifiers(5, 0, ctrl));
+    assert_eq!(table.selected_cells(), vec![(0, 0), (1, 0), (5, 0)]);
+
+    let single = Arc::new(Mutex::new(Vec::<Option<(usize, usize)>>::new()));
+    let sink = Arc::clone(&single);
+    table.selection_changed.connect(move |cell| {
+        if let Ok(mut guard) = sink.lock() {
+            guard.push(*cell);
+        }
+    });
+    let whole = Arc::new(Mutex::new(Vec::<Vec<(usize, usize)>>::new()));
+    let sink = Arc::clone(&whole);
+    table.selection_set_changed.connect(move |cells| {
+        if let Ok(mut guard) = sink.lock() {
+            guard.push((*cells).clone());
+        }
+    });
+
+    table.set_selection_mode(SelectionMode::Single);
+
+    assert_eq!(table.selected_cells(), vec![(5, 0)], "the last row survives the trim");
+    assert_eq!(*single.lock().expect("lock"), vec![Some((5, 0))]);
+    assert_eq!(*whole.lock().expect("lock"), vec![vec![(5, 0)]]);
+}

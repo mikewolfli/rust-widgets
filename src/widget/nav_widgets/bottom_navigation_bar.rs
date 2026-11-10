@@ -315,6 +315,13 @@ impl BottomNavigationBar {
     /// Out-of-range indices are clamped to the valid range.
     pub fn set_selected_index(&mut self, index: usize) {
         let clamped = if self.items.is_empty() { 0 } else { index.min(self.items.len() - 1) };
+        // A disabled destination is not selectable through any input path (N-04). The pointer
+        // arm already refused it, but the keyboard and property paths funnel through here, so
+        // the gate belongs at this one write point; `step_selection` still skips ahead to the
+        // next enabled destination rather than stopping at a refused one.
+        if !self.is_item_enabled(clamped) {
+            return;
+        }
         if self.selected_index != clamped {
             // The slide resumes from the pill's **fractional** position, not from the tab it left
             // rounded to: a user who clicks tab 3 while the pill is 40% of the way to tab 1 would
@@ -369,12 +376,29 @@ impl BottomNavigationBar {
         self.items.len()
     }
 
+    /// The band the bar actually occupies: its geometry shifted by the hide-on-scroll
+    /// fraction, or `None` while it is fully hidden.
+    ///
+    /// Paint and hit testing both read this one accessor. Drawing used to shift the bar out
+    /// of its rectangle while `item_at` and the press arm tested the unshifted geometry, so a
+    /// click on the vacated strip still selected a tab (and a fully hidden bar was still
+    /// clickable in the band it had left).
+    fn band_rect(&self) -> Option<Rect> {
+        let visibility = self.visibility.value().clamp(0.0, 1.0);
+        if visibility <= 0.001 {
+            return None;
+        }
+        let rect = self.geometry();
+        let hide_shift = ((1.0 - visibility) * rect.height as f32) as i32;
+        Some(Rect::new(rect.x, rect.y + hide_shift, rect.width, rect.height))
+    }
+
     /// The item index under `pos`, when `pos` is on the bar.
     fn item_at(&self, pos: Point) -> Option<usize> {
         if self.items.is_empty() {
             return None;
         }
-        let rect = self.geometry();
+        let rect = self.band_rect()?;
         if !rect.contains_point(pos) {
             return None;
         }
@@ -390,18 +414,25 @@ impl BottomNavigationBar {
         (index < self.items.len()).then_some(index)
     }
 
-    /// Moves the selection by one destination, wrapping at the ends.
+    /// Moves the selection to the next enabled destination, wrapping at the ends.
+    ///
+    /// Disabled items are skipped (N-04), the same rule the sibling
+    /// `NavigationDrawer::step_selection` applies: arrow navigation must visit only
+    /// destinations the user can actually choose, not land on one that is painted disabled
+    /// and emits nothing. When every item is disabled the selection is left alone.
     fn step_selection(&mut self, forward: bool) {
         let len = self.items.len();
         if len == 0 {
             return;
         }
-        let next = if forward {
-            (self.selected_index + 1) % len
-        } else {
-            (self.selected_index + len - 1) % len
-        };
-        self.set_selected_index(next);
+        let mut next = self.selected_index;
+        for _ in 0..len {
+            next = if forward { (next + 1) % len } else { (next + len - 1) % len };
+            if self.is_item_enabled(next) {
+                self.set_selected_index(next);
+                return;
+            }
+        }
     }
 }
 
@@ -511,15 +542,13 @@ impl WidgetProperties for BottomNavigationBar {
 
 impl Draw for BottomNavigationBar {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
         // The hide-on-scroll transition moves the whole bar out of its own band. At rest the
-        // fraction is exactly one, so the shift is zero and the picture is unchanged.
-        let visibility = self.visibility.value().clamp(0.0, 1.0);
-        if visibility <= 0.001 {
+        // fraction is exactly one, so the shift is zero and the picture is unchanged. The
+        // hit test reads the same accessor, so the painted band and the clickable band are
+        // one rectangle.
+        let Some(rect) = self.band_rect() else {
             return;
-        }
-        let hide_shift = ((1.0 - visibility) * rect.height as f32) as i32;
-        let rect = Rect::new(rect.x, rect.y + hide_shift, rect.width, rect.height);
+        };
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
@@ -782,6 +811,11 @@ impl EventHandler for BottomNavigationBar {
         if !self.base.is_enabled() {
             return;
         }
+        // A bar hidden by the scroll transition has vacated its band: no point on screen
+        // belongs to it, so no event may select a destination from the strip it left.
+        let Some(band) = self.band_rect() else {
+            return;
+        };
 
         match event {
             Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
@@ -792,14 +826,18 @@ impl EventHandler for BottomNavigationBar {
                 if item_count == 0 {
                     return;
                 }
-                let rect = self.geometry();
-                if !rect.contains_point(*pos) {
+                if !band.contains_point(*pos) {
                     return;
                 }
 
                 // Determine which tab was clicked based on x coordinate
-                let tab_width = rect.width / item_count as u32;
-                let relative_x = pos.x - rect.x;
+                let tab_width = band.width / item_count as u32;
+                // A bar narrower than its item count has no tab to name; without this guard
+                // the division below panics on the zero tab width.
+                if tab_width == 0 {
+                    return;
+                }
+                let relative_x = pos.x - band.x;
                 if relative_x < 0 {
                     return;
                 }
@@ -847,7 +885,11 @@ impl EventHandler for BottomNavigationBar {
                     }
                     key_codes::ENTER | key_codes::SPACE => {
                         if let Some(index) = self.selected_index() {
-                            self.current_changed.emit(index);
+                            // Mirror the pointer's gate: a disabled destination cannot be
+                            // activated, even if it became selected programmatically.
+                            if self.is_item_enabled(index) {
+                                self.current_changed.emit(index);
+                            }
                         }
                     }
                     _ => self.base.handle_event(event),
@@ -1032,6 +1074,92 @@ mod tests {
         let mut bar = make_bar();
         bar.handle_event(&Event::MousePress { pos: Point::new(500, 100), button: 1, modifiers: 0 });
         assert_eq!(bar.selected_index().unwrap_or(0), 0);
+    }
+
+    /// A bar narrower than its item count has no tab width; a press must not divide by zero.
+    #[test]
+    fn a_bar_narrower_than_its_items_does_not_divide_by_zero() {
+        let mut bar = BottomNavigationBar::new(Rect::new(0, 0, 3, 56));
+        bar.add_item("★", "One");
+        bar.add_item("✉", "Two");
+        bar.add_item("⌂", "Three");
+        bar.add_item("⚙", "Four");
+
+        // 3 / 4 truncates to a zero tab width, which the old press arm divided by.
+        bar.handle_event(&Event::MousePress { pos: Point::new(1, 28), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(1, 28), button: 1 });
+        assert_eq!(bar.selected_index(), Some(0), "no point can name a tab in a zero-width tab");
+    }
+
+    /// Arrow keys skip a disabled destination instead of parking the selection on it.
+    #[test]
+    fn keyboard_navigation_skips_disabled_destinations() {
+        let mut bar = make_bar();
+        assert!(bar.set_item_enabled(1, false));
+        bar.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+
+        bar.handle_event(&Event::KeyPress { key: key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(
+            bar.selected_index(),
+            Some(2),
+            "RIGHT must land on the next enabled destination, not the disabled one"
+        );
+
+        // The disabled destination is not selectable through the programmatic path either.
+        bar.set_selected_index(1);
+        assert_eq!(bar.selected_index(), Some(2));
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = fired.clone();
+        bar.current_changed.connect(move |index: Arc<usize>| {
+            f.store(*index, Ordering::SeqCst);
+        });
+        bar.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });
+        assert_eq!(fired.load(Ordering::SeqCst), 2, "ENTER activates the enabled selection");
+
+        // A destination disabled *after* it was selected cannot be re-activated by ENTER.
+        bar.set_selected_index(1);
+        assert_eq!(bar.selected_index(), Some(2), "the disabled index remains refused");
+        assert!(bar.set_item_enabled(2, false));
+        bar.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            2,
+            "ENTER must not report a selection that is now disabled"
+        );
+    }
+
+    /// The painted band and the clickable band are one rectangle.
+    ///
+    /// The bar slides down out of its band while hiding, but the hit test used the unshifted
+    /// geometry: a click on the vacated strip — or on the reserved band of a fully hidden bar —
+    /// still selected a destination.
+    #[test]
+    fn a_hiding_bar_ignores_the_band_it_vacated() {
+        let mut bar = make_bar();
+        bar.set_hide_on_scroll(true);
+        bar.report_scroll(2);
+
+        // Part-way out: the strip above the shifted band is no longer the bar.
+        while bar.visibility_progress() > 0.5 {
+            if !bar.tick(16) {
+                break;
+            }
+        }
+        let visibility = bar.visibility_progress();
+        assert!(visibility < 1.0, "the bar began to hide");
+        let shift = ((1.0 - visibility) * 56.0) as i32;
+        assert!(shift > 0, "a partial frame moved the band down");
+        bar.handle_event(&Event::MousePress { pos: Point::new(140, 0), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 0), button: 1 });
+        assert_eq!(bar.selected_index(), Some(0), "a click above the shifted band selects nothing");
+
+        // Fully hidden: the reserved band is empty and must ignore clicks entirely.
+        while bar.tick(16) {}
+        assert_eq!(bar.visibility_progress(), 0.0);
+        bar.handle_event(&Event::MousePress { pos: Point::new(140, 28), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 28), button: 1 });
+        assert_eq!(bar.selected_index(), Some(0), "a fully hidden bar accepts no clicks");
     }
 
     #[test]

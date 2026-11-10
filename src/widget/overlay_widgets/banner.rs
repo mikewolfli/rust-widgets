@@ -239,8 +239,10 @@ pub struct Banner {
     hovered_action: Option<usize>,
     /// Emitted with the action's label when an action is activated.
     pub action_clicked: Signal1<String>,
-    /// Emitted when `dismiss()` succeeds. Not emitted for a rejected dismiss, so
-    /// a listener only ever observes acknowledgements that actually happened.
+    /// Emitted whenever the banner starts its collapse: [`Self::dismiss`] when it succeeds, and
+    /// the [`Self::auto_dismiss`] timeout, which expires a notice without a user
+    /// acknowledgement. A rejected dismiss (already dismissed, or not dismissible) does not emit,
+    /// so the signal never reports a collapse that did not start.
     pub dismissed: GenericSignal,
     /// How much of the bar is shown, `0.0` slid out to `1.0` fully in.
     ///
@@ -516,13 +518,25 @@ impl Banner {
         true
     }
 
+    /// The bar's painted rectangle, reveal included.
+    ///
+    /// The paint and the control hit tests share this one derivation: the action capsules used
+    /// to be laid out from the resting geometry while the bar slid, so they were painted (and
+    /// clicked) at a y the bar no longer occupied, over the content below it.
+    fn slid_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let reveal = self.reveal.value().clamp(0.0, 1.0);
+        let slide = ((1.0 - reveal) * rect.height as f32) as i32;
+        Rect::new(rect.x, rect.y - slide, rect.width, rect.height)
+    }
+
     /// The dismiss hit area, or `None` when the control offers no dismiss
     /// affordance or the banner is already dismissed and would draw nothing.
     pub fn dismiss_action_rect(&self) -> Option<Rect> {
         if !self.dismissible || self.is_dismissed {
             return None;
         }
-        let rect = self.geometry();
+        let rect = self.slid_rect();
         if rect.width < DISMISS_SIZE + EDGE_PADDING || rect.height < DISMISS_SIZE {
             return None;
         }
@@ -544,7 +558,7 @@ impl Banner {
         if index >= self.actions.len() {
             return None;
         }
-        let rect = self.geometry();
+        let rect = self.slid_rect();
         let height = DISMISS_SIZE.min(rect.height);
         if height == 0 {
             return None;
@@ -855,13 +869,10 @@ impl Draw for Banner {
         if self.is_dismissed() && reveal <= f32::EPSILON {
             return;
         }
-        let rect = self.base.geometry();
+        let rect = self.slid_rect();
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let reveal = reveal.clamp(0.0, 1.0);
-        let slide = ((1.0 - reveal) * rect.height as f32) as i32;
-        let rect = Rect::new(rect.x, rect.y - slide, rect.width, rect.height);
 
         let style = self.base.style();
         // One role-style read for the whole frame (G-A01); the severity palette helpers take it
@@ -1309,6 +1320,36 @@ mod tests {
         let got = seen.lock().expect("signal sink poisoned").clone();
         assert_eq!(got, vec!["Retry".to_string()]);
         assert!(!banner.is_dismissed(), "activating an action is not a dismissal");
+    }
+
+    /// The action boxes follow the bar while it slides, matching what the paint lays out.
+    ///
+    /// `draw` slid a local `rect` for the face, icon, text and capsules, but `action_rect`
+    /// derived from `self.geometry()`: while the bar slid up, its action capsules and captions
+    /// stayed at the resting y and were painted outside the bar, over the content below, and
+    /// clicks were tested against a box the bar no longer occupied.
+    #[test]
+    fn the_action_boxes_follow_the_bar_while_it_slides() {
+        let mut banner = banner();
+        banner.set_text("Saved");
+        banner.set_actions(vec!["Undo".to_string()]);
+
+        // A fresh banner is fully revealed: the action sits in the resting slot.
+        let resting = banner.action_rect(0).expect("the action exists");
+        assert_eq!(
+            resting.y,
+            banner.geometry().y + (banner.geometry().height as i32 - resting.height as i32) / 2
+        );
+
+        // Re-showing slides it in from its leading edge; at the first frame the bar is one
+        // height above its resting slot, and so is the action that sits on it.
+        banner.show();
+        let sliding = banner.action_rect(0).expect("the action still exists");
+        assert_eq!(
+            resting.y - sliding.y,
+            banner.geometry().height as i32,
+            "the action moved with the bar rather than staying at the resting y"
+        );
     }
 
     /// Each action rect must map to its own action, otherwise the labels and the

@@ -527,17 +527,23 @@ impl SignaturePad {
 
     /// Removes every committed stroke. Emits `changed`.
     pub fn clear(&mut self) {
-        if !self.strokes.is_empty() {
-            self.strokes.clear();
-            self.current = None;
-            // The interval is measured from the last recorded point, so clearing must
-            // forget it too -- otherwise the next stroke's first move is compared
-            // against a moment that belongs to a stroke no longer on the pad.
-            self.last_point_at = None;
-            self.invalidate_ink_cache();
+        // The transient half always goes, even when no stroke was committed: an in-progress
+        // stroke survives a `clear` that is gated on `strokes`, and the next release commits it
+        // onto a pad the reader believes they emptied. The redo stack goes with it — otherwise a
+        // `clear` after `undo` could be undone back into the strokes it just discarded.
+        let had_ink = !self.strokes.is_empty() || self.current.is_some();
+        self.strokes.clear();
+        self.current = None;
+        self.redo_stack.clear();
+        // The interval is measured from the last recorded point, so clearing must
+        // forget it too -- otherwise the next stroke's first move is compared
+        // against a moment that belongs to a stroke no longer on the pad.
+        self.last_point_at = None;
+        self.invalidate_ink_cache();
+        if had_ink {
             self.changed.emit();
-            self.base.request_redraw();
         }
+        self.base.request_redraw();
     }
 
     /// Returns the pen stroke color.
@@ -1163,7 +1169,17 @@ fn interpolation_steps_with_pressure(
     if min_distance <= 0.0 || !distance.is_finite() || !min_distance.is_finite() {
         return Vec::new();
     }
-    let steps = (distance / min_distance).ceil() as usize;
+    // The step count is bounded before it is used as a capacity: a tiny
+    // `min_point_distance` over a long move asks for billions of interpolations, and
+    // `Vec::with_capacity(steps - 1)` aborted the host on a legal input. The cap is far more
+    // samples than a stroke needs (the store is a polyline, not a bitmap) and keeps the
+    // spacing exact for any sane configuration.
+    const MAX_INTERPOLATION_STEPS: usize = 4096;
+    let requested = (distance / min_distance).ceil();
+    if !requested.is_finite() || requested < 2.0 {
+        return Vec::new();
+    }
+    let steps = (requested as usize).min(MAX_INTERPOLATION_STEPS);
     if steps <= 1 {
         return Vec::new();
     }
@@ -1819,5 +1835,54 @@ mod tests {
         p.set_stroke_limit(1);
         assert_eq!(p.stroke_count(), 1);
         assert_eq!(p.strokes()[0].points()[0], Point::new(20, 20));
+    }
+
+    /// A tiny min-point distance cannot ask for billions of interpolations.
+    ///
+    /// # What this pins
+    ///
+    /// The step count was `ceil(distance / min_distance)` used straight as a `Vec` capacity, so
+    /// `set_min_point_distance(1e-9)` over a 60 px move asked for ~6e10 points (or `usize::MAX`
+    /// when the ratio saturated): a capacity-overflow abort on a legal configuration.
+    #[test]
+    fn a_tiny_min_point_distance_is_bounded() {
+        let mut p = pad();
+        p.set_min_point_distance(1e-9);
+        p.handle_event(&Event::mouse_press(0, 0, 1));
+        p.handle_event(&Event::mouse_move(60, 0));
+        p.handle_event(&Event::mouse_release(60, 0, 1));
+
+        assert_eq!(p.stroke_count(), 1, "the move is recorded instead of aborting the host");
+        let points = p.strokes()[0].points().len();
+        // The press and release bound the run, and the cap limits what sits between them.
+        assert!(points <= 4098, "the interpolation is capped, got {points} points");
+    }
+
+    /// `clear` discards the redo history and an in-progress stroke, not only committed ink.
+    ///
+    /// # What this pins
+    ///
+    /// The body was guarded by `if !self.strokes.is_empty()`, so a pad with an undone stroke (or
+    /// a live gesture) kept the redo branch it had just cleared and let the next release commit
+    /// the stroke `clear` was supposed to remove.
+    #[test]
+    fn clear_discards_redo_and_the_in_progress_stroke() {
+        let mut p = pad();
+        p.set_strokes(vec![SignatureStroke::from_points(vec![
+            Point::new(10, 10),
+            Point::new(40, 30),
+        ])]);
+        assert!(p.undo(), "the stroke moves to the redo branch");
+
+        p.clear();
+        assert!(!p.redo(), "a cleared pad cannot be un-cleared");
+        assert_eq!(p.stroke_count(), 0);
+
+        // A stroke that is still being drawn goes with it.
+        p.handle_event(&Event::mouse_press(10, 20, 1));
+        p.handle_event(&Event::mouse_move(50, 20));
+        p.clear();
+        p.handle_event(&Event::mouse_release(50, 20, 1));
+        assert_eq!(p.stroke_count(), 0, "the release does not commit a stroke clear removed");
     }
 }

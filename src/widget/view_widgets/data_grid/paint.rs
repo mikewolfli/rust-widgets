@@ -267,6 +267,11 @@ impl Draw for DataGrid {
         if self.alternating_rows {
             for row_idx in 0..window_view.len() {
                 let global_row = row_origin + row_idx;
+                // Rows above the scroll are the fetch's overscan, not the first visible row; a
+                // wash painted for one of them lands on the top visible row's band.
+                if global_row < self.scroll_row {
+                    continue;
+                }
                 if global_row % 2 == 1 {
                     let y = self.cell_rect(global_row, 0).y;
                     context.fill_rect(
@@ -277,7 +282,14 @@ impl Draw for DataGrid {
             }
         }
         for row_idx in 0..window_view.len() {
-            if self.cell_rect(row_origin + row_idx, 0).y >= cells_bottom {
+            let global_row = row_origin + row_idx;
+            // The fetched window starts `overscan_rows` above the viewport. Those rows have a
+            // negative view offset now, i.e. they lie above the cells box, so they are skipped
+            // rather than smeared over the first visible row (D09-VIEW-01).
+            if global_row < self.scroll_row {
+                continue;
+            }
+            if self.cell_rect(global_row, 0).y >= cells_bottom {
                 break;
             }
             let Some(row) = window_view.row(row_idx) else { continue };
@@ -286,17 +298,23 @@ impl Draw for DataGrid {
                 // Frozen columns are painted by the overdraw pass below, after every scrolling
                 // cell. Skipping them here is what makes that pass the single authority for the
                 // pinned band: painting them twice would also lay their text down twice.
-                if global_column < self.frozen_columns || self.is_column_hidden(global_column) {
+                // The scrolling band begins at the further of the scroll position and the frozen
+                // prefix; fetched columns left of that are overscan (or the frozen-to-scroll gap
+                // a frozen fetch forces) and would otherwise paint outside the control, which
+                // has no clip primitive.
+                if global_column < self.scroll_column.max(self.frozen_columns)
+                    || self.is_column_hidden(global_column)
+                {
                     continue;
                 }
-                let cell_rect = self.cell_rect(row_origin + row_idx, global_column);
+                let cell_rect = self.cell_rect(global_row, global_column);
                 if cell_rect.x >= cells_right {
                     break;
                 }
                 let _ = self.paint_cell_at_rect(
                     context,
                     cell.as_ref(),
-                    row_origin + row_idx,
+                    global_row,
                     global_column,
                     cell_rect,
                     cell_border,
@@ -317,6 +335,9 @@ impl Draw for DataGrid {
             for row_idx in 0..window_view.len() {
                 let Some(row) = window_view.row(row_idx) else { continue };
                 let global_row = row_origin + row_idx;
+                if global_row < self.scroll_row {
+                    continue;
+                }
                 if self.cell_rect(global_row, 0).y >= cells_bottom {
                     break;
                 }
@@ -354,6 +375,9 @@ impl Draw for DataGrid {
         // which keeps a collapsed or off-screen row free of calls.
         for row_idx in 0..window_view.len() {
             let global_row = row_origin + row_idx;
+            if global_row < self.scroll_row {
+                continue;
+            }
             if !self.expanded_detail_rows.contains(&global_row) {
                 continue;
             }
@@ -391,35 +415,46 @@ impl Draw for DataGrid {
         // already selected. Both come from `cell_rect`, the same derivation `cell_at` reads, so a
         // highlighted cell is always a cell that can be hit.
         if let Some((row, column)) = self.hovered_cell {
-            if !self.selection_contains(row, column) {
-                let box_rect = self.cell_rect(row, column);
-                context.draw_rect_stroke(box_rect, accent.with_alpha(120), 1);
-            }
-            // A tooltip is drawn only for the cell under the pointer, so a large model costs
-            // nothing: the callback runs once per frame at most, and only when installed
-            // (V-014).
-            if let Some(text) = self.cell_tooltip(row, column).filter(|text| !text.is_empty()) {
-                let cell = self.cell_rect(row, column);
-                let tip_height = GRID_HEADER_HEIGHT;
-                let tip_y = (cell.y + cell.height as i32 + 2)
-                    .min(cells.y + cells.height as i32 - tip_height as i32)
-                    .max(cells.y);
-                let tip = Rect::new(cell.x, tip_y, cell.width.max(80).min(cells.width), tip_height);
-                context.fill_rect(tip, surface.blend(&ink, 0.06));
-                context.draw_rect(tip, cell_border);
-                let font = effective_font(self.style());
-                context.draw_text_fitted_ellipsis(
-                    context.text_line(tip, font),
-                    &text,
-                    font,
-                    ink,
-                    HorizontalAlignment::Left,
-                );
+            let hovered = self.cell_rect(row, column);
+            if hovered.intersects(&cells) {
+                if !self.selection_contains(row, column) {
+                    context.draw_rect_stroke(hovered, accent.with_alpha(120), 1);
+                }
+                // A tooltip is drawn only for the cell under the pointer, so a large model costs
+                // nothing: the callback runs once per frame at most, and only when installed
+                // (V-014).
+                if let Some(text) = self.cell_tooltip(row, column).filter(|text| !text.is_empty()) {
+                    let tip_height = GRID_HEADER_HEIGHT;
+                    let tip_y = (hovered.y + hovered.height as i32 + 2)
+                        .min(cells.y + cells.height as i32 - tip_height as i32)
+                        .max(cells.y);
+                    let tip = Rect::new(
+                        hovered.x,
+                        tip_y,
+                        hovered.width.max(80).min(cells.width),
+                        tip_height,
+                    );
+                    context.fill_rect(tip, surface.blend(&ink, 0.06));
+                    context.draw_rect(tip, cell_border);
+                    let font = effective_font(self.style());
+                    context.draw_text_fitted_ellipsis(
+                        context.text_line(tip, font),
+                        &text,
+                        font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
         if let Some((row, column)) = self.current_cell.or(self.selection) {
             let box_rect = self.cell_rect(row, column);
-            context.draw_rect_stroke(box_rect, accent, 2);
+            // A cell can be current while it is scrolled out of the viewport. Its box now has a
+            // signed offset, and the render layer has no clip primitive, so paint only a box that
+            // overlaps the cells (the same rule the cell loops apply by construction).
+            if box_rect.intersects(&cells) {
+                context.draw_rect_stroke(box_rect, accent, 2);
+            }
         }
 
         // The divider is the frozen band's **right edge**. That is the same arithmetic
@@ -440,7 +475,8 @@ impl Draw for DataGrid {
         // still be scrolled by wheel/keyboard; the thumbs are the visible affordance that
         // says how much of the model is off-screen.
         if self.show_scrollbars {
-            let total_rows = self.row_count().max(1);
+            // The thumb measures what is painted: the projection's rows, not the source's.
+            let total_rows = self.projected_row_count().max(1);
             let visible_rows = self.visible_row_capacity().max(1).min(total_rows);
             let track = cells.height.max(1);
             let thumb = ((track as u64 * visible_rows as u64) / total_rows as u64)
@@ -629,7 +665,9 @@ impl DataGrid {
         }
         let column = self.column_at_dx(dx)?;
         let row = self.row_at_dy(dy)?;
-        if column >= self.column_count() || row >= self.row_count() {
+        // The paint pass enumerates the projection, so a row past the filtered/sourced list has
+        // no box to hit; the source row count named blank space below the last painted row.
+        if column >= self.column_count() || row >= self.projected_row_count() {
             return None;
         }
         if !self.cell_rect(row, column).contains_point(point) {
@@ -661,5 +699,183 @@ impl DataGrid {
             return None;
         }
         self.column_at_dx(dx).filter(|column| *column < self.column_count())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::EventHandler;
+
+    struct Source {
+        data: Vec<Vec<String>>,
+    }
+
+    impl IncrementalTableDataSource for Source {
+        fn row_count(&self) -> usize {
+            self.data.len()
+        }
+
+        fn column_count(&self) -> usize {
+            self.data.first().map_or(0, Vec::len)
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            self.data.get(row).and_then(|line| line.get(column)).cloned()
+        }
+    }
+
+    fn grid_with(rows: usize, columns: usize, data: Vec<Vec<String>>) -> DataGrid {
+        assert_eq!(data.len(), rows, "the fixture describes every row");
+        assert!(data.iter().all(|row| row.len() == columns), "the fixture describes every column");
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        grid.set_data_source(Arc::new(Source { data }));
+        grid
+    }
+
+    /// A row before the scroll position lies **above** the viewport, so its view offset is signed.
+    ///
+    /// `row_view_offset` clamped `row - scroll_row` to zero, which stacked every leading overscan
+    /// row on the first visible row's band: with 30 rows and `set_scroll_row(8)`, rows 6, 7 and 8
+    /// all painted at the same y, and a selection on row 2 was ringed on row 3's box.
+    #[test]
+    fn rows_above_the_scroll_map_above_the_cells_box() {
+        let data = (0..30).map(|row| vec![format!("{row}:0")]).collect();
+        let mut grid = grid_with(30, 1, data);
+        let cells = grid.cells_box();
+        grid.set_scroll_row(8);
+
+        assert_eq!(grid.row_view_offset(8), 0, "the scroll row is the viewport's first row");
+        assert_eq!(grid.row_view_offset(9), grid.row_height as i32);
+        assert_eq!(
+            grid.row_view_offset(6),
+            -2 * grid.row_height as i32,
+            "the overscan lead is above the viewport, not on its first row"
+        );
+        assert_eq!(grid.cell_rect(6, 0).y, cells.y - 2 * grid.row_height as i32);
+        assert_eq!(grid.cell_rect(8, 0).y, cells.y);
+
+        // An open detail band above the scroll must not invert the accumulation range (which is
+        // what `BTreeSet::range` panics on), and a band between the scroll and the row does
+        // shift its followers down.
+        assert!(grid.toggle_row_detail(6));
+        assert_eq!(
+            grid.row_view_offset(6),
+            -2 * grid.row_height as i32,
+            "a band above the scroll is not accumulated"
+        );
+        assert!(grid.toggle_row_detail(8));
+        assert_eq!(
+            grid.row_view_offset(9),
+            grid.row_height as i32 + grid.detail_height(8) as i32,
+            "a band between the scroll and the row is"
+        );
+    }
+
+    /// The paint pass skips the fetched overscan rows, so their values never land on the first
+    /// visible row's pixels.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn overscan_rows_and_columns_are_not_painted() {
+        // Rows: only the overscan lead (global row 6 at scroll 8) is non-empty, so a pass that
+        // enumerates the whole fetched window paints one text run at the top visible row.
+        let mut data: Vec<Vec<String>> = vec![vec![String::new(); 1]; 30];
+        data[6][0] = "L".to_string();
+        let mut grid = grid_with(30, 1, data);
+        grid.set_scroll_row(8);
+        let rect = grid.geometry();
+        let svg = crate::widget::svg::render_widget_to_svg(&mut grid, rect);
+        assert!(
+            crate::widget::svg::text_ink_boxes(&svg).is_empty(),
+            "a row above the scroll must not paint at the top visible row"
+        );
+
+        // Columns: only the overscan lead (global column 1 at scroll 2) is non-empty.
+        let mut data: Vec<Vec<String>> = vec![vec![String::new(); 8]; 6];
+        data[0][1] = "C".to_string();
+        let mut grid = grid_with(6, 8, data);
+        grid.set_scroll_column(2);
+        assert_eq!(grid.visible_window().2, 1, "the fetch leads the scroll by the overscan");
+        let rect = grid.geometry();
+        let svg = crate::widget::svg::render_widget_to_svg(&mut grid, rect);
+        assert!(
+            crate::widget::svg::text_ink_boxes(&svg).is_empty(),
+            "a column left of the scroll must not paint outside the control"
+        );
+    }
+
+    /// With frozen columns the fetched window starts at column 0, so the columns between the
+    /// frozen band and the scroll position are in the matrix but have a negative x; the scrolling
+    /// pass must skip them instead of painting them left of the cells box.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn columns_between_the_frozen_band_and_the_scroll_are_not_painted() {
+        let mut data: Vec<Vec<String>> = vec![vec![String::new(); 8]; 4];
+        data[0][2] = "G".to_string();
+        let mut grid = grid_with(4, 8, data);
+        grid.set_frozen_columns(2);
+        grid.set_scroll_column(5);
+        assert_eq!(grid.visible_window().2, 0, "a frozen fetch starts at column 0");
+
+        let rect = grid.geometry();
+        let svg = crate::widget::svg::render_widget_to_svg(&mut grid, rect);
+        assert!(
+            crate::widget::svg::text_ink_boxes(&svg).is_empty(),
+            "the frozen-to-scroll gap must not paint left of the grid"
+        );
+    }
+
+    /// A selection that has been scrolled out of the viewport must not draw its ring on the first
+    /// visible row's box.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn a_scrolled_away_selection_does_not_paint_at_the_top_row() {
+        let data = (0..30).map(|row| vec![format!("{row}:0")]).collect();
+        let mut grid = grid_with(30, 1, data);
+        let target = grid.cell_rect(2, 0);
+        let centre =
+            Point::new(target.x + target.width as i32 / 2, target.y + target.height as i32 / 2);
+        grid.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
+        assert_eq!(grid.selection(), Some((2, 0)));
+
+        grid.set_scroll_row(3);
+        let rect = grid.geometry();
+        let svg = crate::widget::svg::render_widget_to_svg(&mut grid, rect);
+        assert_eq!(
+            svg.match_indices("stroke-width=\"2\"").count(),
+            0,
+            "a selection above the viewport has no box to ring"
+        );
+    }
+
+    /// Hit testing asks the projection, not the source: a click below the last filtered row names
+    /// no cell, because nothing was painted there.
+    #[test]
+    fn a_click_below_the_last_projected_row_resolves_to_no_cell() {
+        let data = vec![
+            vec!["alpha".to_string(), "a".to_string()],
+            vec!["beta".to_string(), "b".to_string()],
+            vec!["gamma".to_string(), "c".to_string()],
+            vec!["delta".to_string(), "d".to_string()],
+        ];
+        let mut grid = grid_with(4, 2, data);
+        grid.set_filters(vec![ColumnFilter { column: 0, query: "alph".to_string() }]);
+        // A painted frame builds the projection the hit test reads (the same cache).
+        grid.fetch_visible_cells();
+        assert_eq!(grid.projected_row_count(), 1);
+
+        let first = grid.cell_rect(0, 0);
+        let first_centre =
+            Point::new(first.x + first.width as i32 / 2, first.y + first.height as i32 / 2);
+        assert_eq!(grid.cell_at(first_centre), Some((0, 0)));
+
+        let below = grid.cell_rect(3, 0);
+        let below_centre =
+            Point::new(below.x + below.width as i32 / 2, below.y + below.height as i32 / 2);
+        assert_eq!(
+            grid.cell_at(below_centre),
+            None,
+            "the source has four rows but the projection paints one"
+        );
     }
 }

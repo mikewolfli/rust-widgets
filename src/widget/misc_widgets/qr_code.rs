@@ -1506,7 +1506,12 @@ impl QRCode {
         self.logo?;
         let size = self.matrix.size;
         let requested = if self.logo_modules == 0 { (size / 5).max(5) } else { self.logo_modules };
-        let side = requested.min(size.saturating_sub(8)).max(1);
+        // A finder pattern is `FINDER_SIZE` modules plus its one-module light separator. The hole
+        // is centred, so it must leave that much (twice, in total) outside its own extent; the old
+        // `size - 8` limit left only four modules of margin and a 13-module request on a version 1
+        // symbol covered all three finders, making the symbol unlocatable.
+        let reserved = 2 * (FINDER_SIZE + 1);
+        let side = requested.min(size.saturating_sub(reserved)).max(1);
         if side == 0 {
             return None;
         }
@@ -2210,6 +2215,32 @@ mod tests {
         marked.set_logo(Some(IconSource::Builtin(crate::widget::IconName::Home)));
         let with = crate::widget::svg::render_to_svg(&mut marked);
         assert_ne!(without, with, "the hole and the mark must be visible");
+    }
+
+    /// An oversized logo request must not cover a finder pattern or its separator.
+    ///
+    /// The old clamp left four modules of margin, so `set_logo_size_modules(13)` on a 21x21 symbol
+    /// carved rows/cols 4..=16 and erased the three finders a scanner locates the symbol by.
+    #[test]
+    fn an_oversized_logo_leaves_every_finder_and_separator_intact() {
+        let mut qr = QRCode::new(Rect::new(0, 0, 120, 120));
+        qr.set_version_range(1, 1);
+        qr.set_data("logo");
+        assert_eq!(qr.matrix.size, 21, "version 1 is 21 modules");
+        qr.set_logo(Some(IconSource::Builtin(crate::widget::IconName::Home)));
+        qr.set_logo_size_modules(13);
+
+        let (row, col, side) = qr.logo_hole().expect("a logo carves a hole");
+        assert_eq!((row, col, side), (8, 8, 5), "the hole keeps the finders and separators");
+        assert!(!qr.is_logo_module(6, 6), "top-left finder stays intact");
+        assert!(!qr.is_logo_module(6, 14), "top-right finder stays intact");
+        assert!(!qr.is_logo_module(14, 6), "bottom-left finder stays intact");
+        assert!(qr.is_logo_module(10, 10), "the hole still exists");
+
+        // The automatic fifth-of-the-symbol default still fits a version 1 symbol.
+        qr.set_logo_size_modules(0);
+        let side = qr.logo_hole().expect("the default still carves a hole").2;
+        assert_eq!(side, 5, "version 1 can still carry the default logo");
     }
 
     /// All three finder patterns must be the **same shape**, with a light separator ring.

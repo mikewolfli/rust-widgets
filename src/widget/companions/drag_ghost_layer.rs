@@ -17,7 +17,7 @@
 //! and animate home".
 
 use crate::compat::String;
-use crate::core::{HorizontalAlignment, Point, Rect, Size};
+use crate::core::{HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
 use crate::impl_widget_property_hooks;
@@ -99,6 +99,9 @@ impl DragGhostLayer {
         self.pointer = rect_center(origin);
         self.title = title.into();
         self.active = true;
+        // The proxy travels anywhere in window space, which is usually outside this layer's own
+        // rectangle. Capture is what lets the runtime keep delivering the rest of the gesture.
+        let _ = crate::widget::runtime::capture_pointer(self.registry_id());
         self.base.request_redraw();
     }
 
@@ -138,6 +141,7 @@ impl DragGhostLayer {
             self.pointer = rect_center(self.origin_rect);
         }
         self.active = false;
+        self.release_pointer();
         self.base.request_redraw();
         self.ghost_dropped.emit((point, !inside));
         inside
@@ -155,6 +159,7 @@ impl DragGhostLayer {
         self.ghost_rect = self.origin_rect;
         self.pointer = rect_center(self.origin_rect);
         self.active = false;
+        self.release_pointer();
         self.base.request_redraw();
         self.ghost_cancelled.emit();
         true
@@ -178,6 +183,21 @@ impl DragGhostLayer {
     /// Returns the last pointer position the layer recorded.
     pub fn pointer(&self) -> Point {
         self.pointer
+    }
+
+    /// The id the runtime's capture map knows this layer by.
+    ///
+    /// `BaseWidget::id()` is the object's own id; the registry keys captures by the id returned
+    /// from `register`, so the two are resolved together here.
+    fn registry_id(&self) -> ObjectId {
+        crate::widget::runtime::registry_id_of(self.base.id()).unwrap_or(self.base.id())
+    }
+
+    /// Releases the capture only while this layer still owns it.
+    fn release_pointer(&self) {
+        if crate::widget::runtime::capturing_widget() == Some(self.registry_id()) {
+            let _ = crate::widget::runtime::release_pointer_capture();
+        }
     }
 
     /// Returns the proxy title.
@@ -320,6 +340,11 @@ impl Widget for DragGhostLayer {
             crate::style::EdgeOffsets::all(0),
             Size::new(200, 32),
         )
+    }
+    /// An active drag is an overlay: its card is painted outside this layer's rectangle, so the
+    /// hit test must let it win over whatever occupies the pixels it is dragged across.
+    fn has_open_popup(&self) -> bool {
+        self.active
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -517,6 +542,60 @@ mod tests {
         assert_eq!(layer.opacity(), 0.0);
         layer.set_opacity(f32::NAN);
         assert_eq!(layer.opacity(), DEFAULT_OPACITY);
+    }
+
+    /// FINDING 12: the proxy follows the pointer outside this layer's own rectangle.
+    ///
+    /// `begin` claims the pointer so the runtime keeps delivering the gesture, and the active
+    /// layer reports itself as an overlay so the hit test lets the floating card win.
+    #[test]
+    fn a_drag_captures_the_pointer_and_releases_it_when_it_ends() {
+        use crate::widget::capability::coercion::widget_as_mut;
+        use crate::widget::runtime::{
+            capturing_widget, dispatch_pointer_event, register, release_pointer_capture,
+            unregister, with_widget_mut,
+        };
+
+        release_pointer_capture();
+        // The layer's own rectangle is just the dragged card, so a point outside it proves the
+        // capture (not the layer's geometry) is what keeps the gesture alive.
+        let id = register(Box::new(DragGhostLayer::new(origin()))).expect("mount the ghost layer");
+
+        with_widget_mut(id, |widget| {
+            let ghost = widget_as_mut::<DragGhostLayer>(widget).expect("drag ghost layer");
+            ghost.begin(origin(), "Move");
+            assert!(ghost.has_open_popup(), "an active drag is an overlay");
+        });
+        assert_eq!(capturing_widget(), Some(id), "begin must take pointer capture");
+
+        // A move far outside the card's rectangle still reaches the layer.
+        let outside = Point::new(300, 200);
+        assert!(dispatch_pointer_event(id, &Event::MouseMove { pos: outside }, outside));
+        let moved = with_widget_mut(id, |widget| {
+            widget_as_mut::<DragGhostLayer>(widget).expect("drag ghost layer").pointer()
+        });
+        assert_eq!(moved, Some(outside), "the captured drag follows the pointer off its box");
+
+        with_widget_mut(id, |widget| {
+            let ghost = widget_as_mut::<DragGhostLayer>(widget).expect("drag ghost layer");
+            let _ = ghost.finish();
+            assert!(!ghost.has_open_popup());
+        });
+        assert_eq!(capturing_widget(), None, "finish must release the capture");
+
+        // Cancellation releases it too.
+        with_widget_mut(id, |widget| {
+            let ghost = widget_as_mut::<DragGhostLayer>(widget).expect("drag ghost layer");
+            ghost.begin(origin(), "Move");
+        });
+        assert_eq!(capturing_widget(), Some(id));
+        with_widget_mut(id, |widget| {
+            let ghost = widget_as_mut::<DragGhostLayer>(widget).expect("drag ghost layer");
+            let _ = ghost.cancel();
+        });
+        assert_eq!(capturing_widget(), None, "cancel must release the capture");
+
+        unregister(id);
     }
 
     #[test]

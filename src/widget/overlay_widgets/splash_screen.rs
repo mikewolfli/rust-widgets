@@ -424,11 +424,16 @@ impl Widget for SplashScreen {
             }
             self.fade_out_finished.emit();
         }
-        moving || self.finish_pending
+        moving || self.finish_pending || self.fade_pending
     }
 
+    /// A pending fade owes frames even when the opacity driver already sits at its end.
+    ///
+    /// The completion (hide + `fade_out_finished`) lives in [`Widget::tick`], so a second
+    /// `fade_out()` after the driver settled at `0.0` would otherwise never be finished: the
+    /// frame bus only calls `tick` while this answers `true`.
     fn is_animating(&self) -> bool {
-        self.opacity.is_moving() || self.finish_pending
+        self.opacity.is_moving() || self.finish_pending || self.fade_pending
     }
 
     impl_draw_bridge!();
@@ -886,6 +891,31 @@ mod tests {
             gone.lines().count() < full.lines().count(),
             "and less than the unfaded screen:\nfull={full}\ngone={gone}"
         );
+    }
+
+    /// A second `fade_out` after the driver settled at zero still reports completion.
+    ///
+    /// `fade_out` latched `fade_pending`, but `is_animating()` ignored it: with the opacity
+    /// driver already at its end the frame bus never called `tick`, so `fade_out_finished` never
+    /// fired and `fade_pending` / `hide_when_faded` stayed latched.
+    #[test]
+    fn a_fade_out_after_a_settled_fade_still_reports_completion() {
+        let mut splash = screen(320, 240);
+        splash.fade_out();
+        while splash.tick(1000) {}
+        assert_eq!(splash.opacity(), 0.0);
+
+        let seen = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&seen);
+        splash.fade_out_finished.connect(move || {
+            *sink.lock().expect("lock") += 1;
+        });
+
+        splash.fade_out();
+        assert!(splash.is_animating(), "the pending completion owes a frame");
+        assert!(!splash.tick(16), "the settle frame completes and stops");
+        assert_eq!(*seen.lock().expect("lock"), 1, "the completion is reported");
+        assert!(!splash.is_animating(), "and nothing is left latched");
     }
 
     #[test]

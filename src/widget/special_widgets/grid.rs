@@ -260,11 +260,13 @@ impl GridWidget {
         let page_moved = page != self.page;
         self.page = page;
         self.sync_cells();
+        self.prune_cell_state();
         self.update_cell_dimensions();
         self.invalidate_frame_cache();
         if page_moved {
             self.page_changed.emit(page);
         }
+        self.base.request_layout();
         self.base.request_redraw();
     }
     /// Returns the number of columns.
@@ -279,8 +281,12 @@ impl GridWidget {
         }
         self.columns = columns;
         self.sync_cells();
+        self.prune_cell_state();
         self.update_cell_dimensions();
         self.invalidate_frame_cache();
+        // `size_hint` is derived from the column count, so an auto-layout parent has to be asked to
+        // re-run its layout rather than only to repaint the old rectangle.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -298,6 +304,8 @@ impl GridWidget {
         self.spacing = spacing;
         self.update_cell_dimensions();
         self.invalidate_frame_cache();
+        // The spacing is part of `size_hint` as well as of the painted cells.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -519,6 +527,34 @@ impl GridWidget {
         self.cells.resize_with(self.rows as usize, || vec![String::new(); columns]);
         for cells in &mut self.cells {
             cells.resize_with(columns, String::new);
+        }
+    }
+
+    /// Drops every cell reference that no longer names a cell after the matrix shrinks.
+    ///
+    /// The selection, focus, hover and edit target are indices into the grid. Resizing the model
+    /// without pruning them left `selected_cells()` naming a cell that `set_cell_text` rejects
+    /// with `OutOfRange`, and left the focus ring and hover wash pointing outside the matrix.
+    fn prune_cell_state(&mut self) {
+        let (rows, columns) = (self.rows, self.columns);
+        let in_range = |cell: &(u32, u32)| cell.0 < rows && cell.1 < columns;
+
+        self.selected_cells.retain(|cell| cell.0 < rows && cell.1 < columns);
+        // Focus is relocated rather than cleared: the grid is never smaller than 1x1, so a
+        // keyboard user still has a stop, and clamping is the same rule the arrow keys use.
+        self.focused_cell =
+            self.focused_cell.map(|(row, column)| (row.min(rows - 1), column.min(columns - 1)));
+        // Hover is cleared: the pointer has not moved, so it is no longer over the old cell.
+        if self.hovered_cell.is_some_and(|cell| !in_range(&cell)) {
+            self.hovered_cell = None;
+        }
+        // An edit target that disappeared has nothing to write back to, so the edit is dropped
+        // along with its buffer.
+        if self.editing_cell.is_some_and(|cell| !in_range(&cell)) {
+            self.editing_cell = None;
+            self.edit_buffer.clear();
+            self.edit_caret = 0;
+            self.preedit.clear();
         }
     }
 
@@ -868,9 +904,15 @@ impl GridWidget {
             return;
         }
         self.page_rows = rows_per_page;
+        let previous_page = self.page;
         self.page = 0;
         self.update_cell_dimensions();
         self.invalidate_frame_cache();
+        // `set_page` publishes a page change; resetting the page here is the same observable
+        // change (paging was enabled/disabled or re-sized), and a host mirroring it must hear it.
+        if previous_page != 0 {
+            self.page_changed.emit(0);
+        }
         self.base.request_redraw();
     }
 
@@ -1810,6 +1852,14 @@ impl EventHandler for GridWidget {
             Event::MouseRelease { pos: _, button: 1 } => {
                 self.base.set_mouse_pressed(false);
             }
+            Event::MouseLeave { .. } => {
+                // The hover wash is painted from `hovered_cell`; leaving the control has to drop
+                // it, or the last cell stays lit with no pointer over the grid.
+                if self.hovered_cell.is_some() {
+                    self.hovered_cell = None;
+                    self.base.request_redraw();
+                }
+            }
             Event::ContextMenu { pos } => {
                 if let Some(cell) = self.cell_at(pos) {
                     self.context_menu_requested.emit(cell);
@@ -2241,5 +2291,96 @@ mod tests {
             edited.lock().expect("edited lock poisoned").clone(),
             vec![(0, 0, String::from("Hello"))]
         );
+    }
+
+    /// Shrinking the matrix drops every cell reference that no longer names a cell.
+    ///
+    /// # What this pins
+    ///
+    /// `sync_cells` resized the text but left the selection, focus, hover and edit target alone.
+    /// A selected `(2, 2)` in a grid shrunk to one row survived, and the property route reported
+    /// index 8 while writing 8 back was refused as `OutOfRange`.
+    #[test]
+    fn shrinking_the_matrix_prunes_selection_focus_hover_and_the_edit_target() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 300, 300), 3, 3);
+        grid.set_editable(true);
+        grid.handle_event(&Event::mouse_move(250, 250));
+        grid.select_cell((2, 2));
+        assert!(grid.begin_edit(2, 2));
+        assert_eq!(grid.hovered_cell, Some((2, 2)));
+
+        grid.set_rows(1);
+        assert!(grid.selected_cells().is_empty(), "a row that no longer exists is not selected");
+        assert_eq!(grid.focused_cell, Some((0, 2)), "focus is relocated into the matrix");
+        assert_eq!(grid.hovered_cell, None, "the old hover names no cell");
+        assert_eq!(grid.editing_cell(), None, "the edit target disappeared");
+
+        grid.select_cell((0, 2));
+        grid.set_columns(1);
+        assert!(grid.selected_cells().is_empty(), "the column is gone as well");
+        assert_eq!(grid.focused_cell, Some((0, 0)), "both axes are clamped");
+    }
+
+    /// A dimension or spacing change asks the parent to re-run layout.
+    ///
+    /// # What this pins
+    ///
+    /// All three setters change `size_hint` but only requested a repaint, so an auto-layout
+    /// parent kept the rectangle the old hint produced (`set_columns(4)` never widened the grid).
+    #[test]
+    fn changing_the_dimensions_and_spacing_requests_a_fresh_layout() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 120, 80), 2, 2);
+        let layouts = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&layouts);
+        grid.base().layout_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        grid.set_columns(4);
+        assert_eq!(layouts.load(Ordering::SeqCst), 1);
+        grid.set_rows(4);
+        assert_eq!(layouts.load(Ordering::SeqCst), 2);
+        grid.set_spacing(6);
+        assert_eq!(layouts.load(Ordering::SeqCst), 3);
+    }
+
+    /// Re-configuring paging publishes the page the reset landed on.
+    ///
+    /// # What this pins
+    ///
+    /// `set_page_rows` reset `page` to 0 without emitting `page_changed`, while `set_page` did
+    /// emit it — so a host mirroring the page missed the reset.
+    #[test]
+    fn resetting_the_page_rows_publishes_the_page_change() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 100), 8, 2);
+        grid.set_page_rows(Some(2));
+        grid.set_page(2);
+        assert_eq!(grid.page(), 2);
+
+        let changed = Arc::new(Mutex::new(Vec::<u32>::new()));
+        let sink = Arc::clone(&changed);
+        grid.page_changed.connect(move |page| sink.lock().unwrap().push(*page));
+
+        grid.set_page_rows(Some(4));
+        assert_eq!(grid.page(), 0);
+        assert_eq!(*changed.lock().unwrap(), vec![0], "the reset is published");
+    }
+
+    /// Leaving the grid clears the hover wash.
+    ///
+    /// # What this pins
+    ///
+    /// There was no `MouseLeave` arm, so the last hovered cell stayed lit after the pointer left
+    /// the control.
+    #[test]
+    fn leaving_the_grid_clears_the_hover_wash() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 100), 2, 2);
+        grid.handle_event(&Event::mouse_move(75, 25));
+        assert_eq!(grid.hovered_cell, Some((0, 1)));
+
+        grid.handle_event(&Event::mouse_leave(200, 200));
+        assert_eq!(grid.hovered_cell, None, "the pointer is no longer over a cell");
     }
 }

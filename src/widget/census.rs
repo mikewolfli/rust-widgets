@@ -214,7 +214,15 @@ fn count_ink(frame: &[u8], background: Color) -> AppearanceCensus {
         }
     }
 
-    let dominant = histogram.iter().max_by_key(|(_, count)| **count).map(|(rgba, _)| *rgba);
+    let dominant = histogram
+        .iter()
+        .max_by(|left, right| {
+            // Break equal counts by the colour key so the answer is stable: the registry is a
+            // randomly seeded `std::HashMap` on desktop, and `max_by_key` returns the *last*
+            // equal maximum, which made the dominant column differ between runs of one binary.
+            left.1.cmp(right.1).then_with(|| right.0.cmp(left.0))
+        })
+        .map(|(rgba, _)| *rgba);
     let dominant_count = dominant.map(|rgba| histogram[&rgba]).unwrap_or(0);
 
     AppearanceCensus {
@@ -273,15 +281,51 @@ fn select(appearance: AppearanceMode) {
     global_theme_manager().set_appearance(appearance);
 }
 
+/// Restores the theme that was active when it was captured.
+///
+/// # Why a guard
+///
+/// [`census_all_controls`] switches the global appearance to Light and then Dark to compare the
+/// drawings. That is a measurement, not a user preference, so it must not leak: before this guard
+/// the sweep left the process on Dark, and every control in a light host painted dark afterwards.
+/// Restoring the **theme name** (rather than an appearance) also puts back a host theme that was
+/// the active one, which `set_appearance` might otherwise replace with the first preset of that
+/// appearance.
+struct AppearanceRestore {
+    previous_theme: crate::compat::String,
+}
+
+impl AppearanceRestore {
+    fn capture() -> Self {
+        Self {
+            previous_theme: crate::compat::String::from(
+                global_theme_manager().current_theme_name(),
+            ),
+        }
+    }
+}
+
+impl Drop for AppearanceRestore {
+    fn drop(&mut self) {
+        let _ = global_theme_manager().set_theme(&self.previous_theme);
+    }
+}
+
 /// Registers the built-in light and dark presets so `select` can find them.
 ///
 /// A caller that has already registered themes of its own keeps them; this only
 /// guarantees the two presets exist, which is what makes the light/dark comparison
-/// meaningful in a bare process.
+/// meaningful in a bare process. In particular a host theme registered under
+/// `"default"` or `"dark"` is **not** replaced: registration is skipped when the name is
+/// already present.
 pub fn install_preset_appearances() {
     let mut manager = global_theme_manager();
-    manager.register_theme(crate::theme::Theme::default());
-    manager.register_theme(crate::theme::Theme::dark());
+    if manager.get_theme("default").is_none() {
+        manager.register_theme(crate::theme::Theme::default());
+    }
+    if manager.get_theme("dark").is_none() {
+        manager.register_theme(crate::theme::Theme::dark());
+    }
 }
 
 /// Renders every published control in both appearances.
@@ -299,6 +343,9 @@ pub fn install_preset_appearances() {
 pub fn census_all_controls() -> Vec<ControlCensus> {
     let factory = WidgetFactory::shared();
     let mut results = Vec::new();
+    // Hold the caller's active theme across the sweep and put it back on every exit path; see
+    // [`AppearanceRestore`]. Without this the measurement left the process painting Dark.
+    let _restore = AppearanceRestore::capture();
 
     for name in factory.widget_names() {
         let mut widget = match factory.create(name, CENSUS_RECT, CENSUS_TEXT) {
@@ -445,5 +492,90 @@ mod tests {
                 "{name} is published as constructible but has no constructor"
             );
         }
+    }
+
+    /// An equal-count histogram resolves its dominant colour by key, not by hash order.
+    ///
+    /// # The defect this pins
+    ///
+    /// `dominant` was `HashMap::iter().max_by_key(count)`. The registry is a randomly seeded
+    /// `std::HashMap` on desktop and `max_by_key` returns the last equal maximum, so a control
+    /// painting two colours 50/50 could report a different dominant column — and a different
+    /// [`ControlCensus::differs_between_appearances`] — between runs of the same binary.
+    #[test]
+    fn an_equal_count_histogram_picks_the_same_dominant_colour_every_run() {
+        let frame = Vec::from([
+            255, 0, 0, 255, // red
+            0, 0, 255, 255, // blue
+            255, 0, 0, 255, // red
+            0, 0, 255, 255, // blue
+        ]);
+        let census = count_ink(&frame, Color::TRANSPARENT);
+        assert_eq!(census.non_background, 4, "all four pixels are ink");
+        assert_eq!(
+            census.dominant,
+            Some((0, 0, 255, 255)),
+            "a 50/50 split must resolve to the smaller key on every run"
+        );
+        assert_eq!(census.detail, 2, "the count is unaffected by the tie-break");
+    }
+
+    /// The census puts the caller's theme back when it finishes.
+    ///
+    /// # The defect this pins
+    ///
+    /// `census_all_controls` selected Light and then Dark on the process-wide manager and never
+    /// restored the previous selection, so after a census run every control in a light host painted
+    /// in Dark. The guard restores the active theme **name**, which also preserves a host theme
+    /// that `set_appearance` might otherwise replace.
+    #[test]
+    fn the_census_restores_the_theme_it_started_on() {
+        let _theme_guard = crate::style::theme_test_guard();
+        install_preset_appearances();
+        // Start from a known theme so a test that ran earlier cannot make "previous" already dark.
+        let _ = global_theme_manager().set_theme("default");
+        let previous = crate::compat::String::from(global_theme_manager().current_theme_name());
+        {
+            let _restore = AppearanceRestore::capture();
+            assert!(
+                global_theme_manager().set_appearance(AppearanceMode::Dark),
+                "install_preset_appearances guarantees a dark theme exists"
+            );
+            assert_ne!(
+                global_theme_manager().current_theme_name(),
+                previous.as_str(),
+                "the sweep really switched appearances"
+            );
+        }
+        assert_eq!(
+            global_theme_manager().current_theme_name(),
+            previous.as_str(),
+            "the previous theme must be active again after the sweep"
+        );
+    }
+
+    /// Installing the presets does not replace a host theme registered under a preset name.
+    ///
+    /// # The defect this pins
+    ///
+    /// `install_preset_appearances` registered `"default"` and `"dark"` unconditionally, so a host
+    /// theme registered as `"default"` was silently replaced by the built-in one.
+    #[test]
+    fn installing_presets_does_not_replace_a_host_theme() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let marker = Color::rgb(1, 2, 3);
+        let mut host = crate::theme::Theme::default();
+        host.colors.background = marker;
+        global_theme_manager().register_theme(host);
+        install_preset_appearances();
+        let observed =
+            global_theme_manager().get_theme("default").map(|theme| theme.colors.background);
+        // Restore the built-in preset before asserting, so a failure cannot leak the marker.
+        global_theme_manager().register_theme(crate::theme::Theme::default());
+        assert_eq!(
+            observed,
+            Some(marker),
+            "installing the presets must not overwrite a host theme of the same name"
+        );
     }
 }

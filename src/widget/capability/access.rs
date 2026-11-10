@@ -903,7 +903,7 @@ pub fn default_widget_property_default_value(
             "modified" => CapabilityValue::Bool(false),
             "clear_button_enabled" => CapabilityValue::Bool(false),
             "password_echo_on_edit" => CapabilityValue::Bool(false),
-            "scroll_x" => CapabilityValue::Int(0),
+            "scroll_x" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::ListView => match property_name {
@@ -2826,13 +2826,20 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::FilterRow => match property_name {
-            "columns" | "conditions" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "columns" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            // The empty list of the declared schema, so a dropped binding resets to a value the
+            // property's record check accepts rather than `Null`.
+            "conditions" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::capability::FILTER_CONDITION_SCHEMA,
+            )),
             "operator" => CapabilityValue::String("contains".to_string()),
             "live" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::Legend => match property_name {
-            "entries" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "entries" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::capability::LEGEND_ENTRY_SCHEMA,
+            )),
             "orientation" => CapabilityValue::String("vertical".to_string()),
             "checkable" => CapabilityValue::Bool(false),
             "position" => CapabilityValue::String("top".to_string()),

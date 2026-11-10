@@ -640,6 +640,25 @@ impl Meter {
 }
 
 impl Widget for Meter {
+    /// A disabled meter drops any drag in progress.
+    ///
+    /// Event handling returns before the release/leave arms while disabled, so a disable in the
+    /// middle of a drag left `dragging` set and the next hover moved the needle with no button
+    /// held.
+    fn set_enabled(&mut self, enabled: bool) {
+        if !enabled {
+            self.dragging = false;
+        }
+        self.base_mut().set_enabled(enabled);
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base().id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
+    }
+
     fn base(&self) -> &BaseWidget {
         &self.base
     }

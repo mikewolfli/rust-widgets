@@ -10,8 +10,8 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_i32_saturating, expect_orientation, expect_string, expect_text_direction,
-    orientation_to_str, text_direction_to_str,
+    confirm_stored_int, expect_bool, expect_i32_in_range, expect_orientation, expect_string,
+    expect_text_direction, orientation_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -622,16 +622,19 @@ impl WidgetProperties for ProgressBar {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "minimum" => {
-                self.set_minimum(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_minimum(requested);
+                confirm_stored_int(self.get("minimum")?, requested)
             }
             "maximum" => {
-                self.set_maximum(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_maximum(requested);
+                confirm_stored_int(self.get("maximum")?, requested)
             }
             "value" => {
-                self.set_value(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_value(requested);
+                confirm_stored_int(self.get("value")?, requested)
             }
             "text_visible" => {
                 self.set_text_visible(expect_bool(value)?);

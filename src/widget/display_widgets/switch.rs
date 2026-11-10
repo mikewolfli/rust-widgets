@@ -468,9 +468,11 @@ impl Switch {
         let travel_x = travel_geometry.inset as i32 + (travel_geometry.span as f32 * travel) as i32;
         // The centre travels; the rectangle grows around it. Placing the *left edge* at
         // the travel offset would make a held thumb jump left by its own stretch, which
-        // reads as the control twitching on touch-down rather than responding.
+        // reads as the control twitching on touch-down rather than responding. The centre is
+        // expressed with the **drawn** width: using the resting size made a stretched thumb
+        // overhang the track's inner edge by the stretch at one end and stop short at the other.
         let centre_x =
-            travel_geometry.track_rect.x + travel_x + travel_geometry.thumb_size as i32 / 2;
+            travel_geometry.track_rect.x + travel_x + travel_geometry.drawn_width as i32 / 2;
         let thumb_x = centre_x - travel_geometry.drawn_width as i32 / 2;
         let thumb_y = travel_geometry.track_rect.y + travel_geometry.inset as i32;
         Some(Rect::new(thumb_x, thumb_y, travel_geometry.drawn_width, travel_geometry.thumb_size))
@@ -511,7 +513,7 @@ impl Switch {
         }
         let origin = travel_geometry.track_rect.x
             + travel_geometry.inset as i32
-            + travel_geometry.thumb_size as i32 / 2;
+            + travel_geometry.drawn_width as i32 / 2;
         ((x - origin) as f32 / travel_geometry.span as f32).clamp(0.0, 1.0)
     }
 
@@ -1849,5 +1851,26 @@ mod tests {
         sw.set("thumb_color", CapabilityValue::Null).unwrap();
         assert_eq!(sw.thumb_color(), None, "Null restores the theme-derived thumb");
         assert!(sw.set("thumb_color", CapabilityValue::Bool(true)).is_err());
+    }
+
+    /// A held thumb grows around its own centre, so its near edge does not move.
+    ///
+    /// The stretch used to be measured from the resting size: at the off end a pressed thumb
+    /// overhung the track's inner edge by the stretch, and at the on end it stopped short.
+    #[test]
+    fn the_pressed_thumb_keeps_its_near_edge() {
+        let rect = Rect::new(0, 0, 80, 40);
+        let mut sw = Switch::new(rect);
+        sw.set_switch_geometry(SwitchGeometry::Cupertino);
+        assert!(sw.drawn_shape().press_stretch > 0, "the fixture needs a stretching shape");
+
+        let rest = sw.thumb_rect(rect).expect("a roomy switch has a thumb");
+        let grab = Point::new(rest.x + rest.width as i32 / 2, rest.y + rest.height as i32 / 2);
+        sw.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+        assert!(sw.base.is_pressed(), "the press is held, so the thumb is drawn stretched");
+
+        let held = sw.thumb_rect(rect).expect("a held switch has a thumb");
+        assert!(held.width > rest.width, "the pressed thumb stretches: {held:?} vs {rest:?}");
+        assert_eq!(held.x, rest.x, "the near (left) edge stays put as the thumb grows");
     }
 }

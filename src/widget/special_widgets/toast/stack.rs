@@ -340,8 +340,12 @@ impl ToastStack {
                         *selected = self.toasts.len().saturating_sub(1);
                     }
                 }
-                if self.closing == Some(index) {
-                    self.closing = None;
+                // The in-flight exit is an index into the same vector: a removal before it
+                // shifts it down, and removing the exiting row itself retires the latch.
+                match self.closing {
+                    Some(closing) if closing > index => self.closing = Some(closing - 1),
+                    Some(closing) if closing == index => self.closing = None,
+                    _ => {}
                 }
                 self.toast_expired.emit(item.id);
                 removed += 1;
@@ -372,6 +376,11 @@ impl ToastStack {
         self.shown_at_ms.clear();
         self.selected_index = None;
         self.scroll_offset = 0;
+        // A latched exit names a row in the vector that no longer exists. Leaving it set made
+        // the next tick's flush remove whatever row happened to occupy that index — the toast
+        // pushed right after `clear`.
+        self.closing = None;
+        self.exit.jump_to(true);
         self.action_widths.borrow_mut().clear();
         self.base.request_layout();
         self.base.request_redraw();
@@ -570,9 +579,16 @@ impl ToastStack {
         Rect::new(x, y, width, height.min(rect.height))
     }
 
+    /// The row under `pos`, choosing the one painted last when rows overlap.
+    ///
+    /// A row that is still arriving is painted over the row beneath its seat, and the paint loop
+    /// walks the rows in index order, so the newer row is the ink on top. The search therefore
+    /// runs back-to-front: a forward search returned the covered row, and a press on the visible
+    /// close affordance of the arriving toast dismissed the one underneath it instead.
     fn row_at(&self, pos: Point) -> Option<usize> {
         (self.scroll_offset..self.toasts.len())
-            .find(|&index| self.row_rect(index).contains_point(pos))
+            .rev()
+            .find(|&index| self.visual_row_rect(index).contains_point(pos))
     }
 
     /// The rectangle a toast row is painted at.
@@ -594,6 +610,25 @@ impl ToastStack {
             band.width.saturating_sub(8),
             self.row_height.saturating_sub(4),
         )
+    }
+
+    /// The row's seat plus the reveal/exit offset, shared by the paint and the hit test.
+    ///
+    /// The offset used to be applied only inside the paint loop, so a press on a row that was
+    /// still rising or falling was tested against its seat and landed on the row below (or on
+    /// empty space). One helper keeps the visible row and its click target the same rectangle.
+    pub(crate) fn visual_row_rect(&self, index: usize) -> Rect {
+        let row = self.row_rect(index);
+        // Only the newest row arrives; only `closing` leaves. Both move downward along the
+        // same path, so the offset direction is shared.
+        let offset = if index + 1 == self.toasts.len() && self.reveal.is_animating() {
+            (self.row_height as f32 * (1.0 - self.reveal.value())) as i32
+        } else if self.closing == Some(index) {
+            (self.row_height as f32 * (1.0 - self.exit.value())) as i32
+        } else {
+            0
+        };
+        Rect::new(row.x, row.y + offset, row.width, row.height)
     }
 }
 
@@ -622,7 +657,12 @@ impl Widget for ToastStack {
         crate::core::Size::new(320, 200)
     }
 
-    /// Advances the newest toast's rise-in; `true` while it still owes frames.
+    /// Advances the stack's clock, the newest toast's rise-in, any in-flight exit, and the
+    /// ttl expiry it drives; `true` while it still owes frames.
+    ///
+    /// The clock move and the expiry are part of the same step: `expire_toasts` reads the same
+    /// monotonic milliseconds `push_at` stamps, so a host that drives the stack through this
+    /// method retires toasts without a second timer.
     fn tick(&mut self, delta_ms: u32) -> bool {
         let mut moving = self.reveal.tick(delta_ms);
         self.now_ms = self.now_ms.saturating_add(delta_ms as u64);
@@ -639,7 +679,12 @@ impl Widget for ToastStack {
     }
 
     fn is_animating(&self) -> bool {
-        self.reveal.is_animating() || self.exit.is_animating()
+        // A toast with a ttl is running a timer `tick` advances. Reporting only the reveals
+        // let the bus stop as soon as the row had risen, so `expire_toasts` never ran under a
+        // real host and `toast_expired` never fired.
+        self.reveal.is_animating()
+            || self.exit.is_animating()
+            || self.toasts.iter().any(|toast| toast.ttl_ms > 0)
     }
 
     impl_draw_bridge!();
@@ -825,7 +870,7 @@ impl EventHandler for ToastStack {
         match event {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {
-                    let row = self.row_rect(index);
+                    let row = self.visual_row_rect(index);
                     // The close button occupies the row's trailing corner and runs the same
                     // removal path as the Delete key (SP-72).
                     if self.close_rect_for(row).is_some_and(|close| close.contains_point(*pos)) {
@@ -934,8 +979,9 @@ impl Draw for ToastStack {
         // ── The stack actually painted ──
         //
         // The panel is the bottom-anchored region the rows occupy, not the whole rectangle: a
-        // 240x120 census cell was a 120 px panel behind two 26 px rows. An empty stack paints
-        // nothing, because a stack with no toasts has no bar to show.
+        // 240x120 census cell was a 120 px panel behind two 26 px rows. An empty stack still
+        // paints one row's band (see `stack_band`); a zero-height geometry is the only case that
+        // paints nothing.
         let band = self.stack_band();
         if band.height == 0 {
             return;
@@ -968,20 +1014,8 @@ impl Draw for ToastStack {
             // whole stack rise whenever one is added — the settled toasts would appear to be
             // re-arriving, which says the opposite of what happened. Only the row that was just
             // pushed is still on its way in, so only that one is offset; the rest are at rest by
-            // definition.
-            let is_arriving = index + 1 == self.toasts.len();
-            let row = if is_arriving && self.reveal.is_animating() {
-                // Rises from `row_height` below its seat to its seat, so a tall row travels
-                // proportionally further than a short one rather than a fixed number of pixels.
-                let offset = (self.row_height as f32 * (1.0 - self.reveal.value())) as i32;
-                Rect::new(row.x, row.y + offset, row.width, row.height)
-            } else if self.closing == Some(index) {
-                // Falls back out of its seat along the same path it arrived on.
-                let offset = (self.row_height as f32 * (1.0 - self.exit.value())) as i32;
-                Rect::new(row.x, row.y + offset, row.width, row.height)
-            } else {
-                row
-            };
+            // definition. `visual_row_rect` applies the same offset the hit test reads.
+            let row = self.visual_row_rect(index);
             let bg = if self.selected_index == Some(index) {
                 selected_background
             } else {

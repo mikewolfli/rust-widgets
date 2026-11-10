@@ -448,15 +448,20 @@ impl EventHandler for LayerPanel {
             }
             Event::Wheel { delta, .. } if delta.y != 0 => {
                 let max = self.entries.len().saturating_sub(self.visible_rows().max(1));
+                let before = self.scroll_offset;
+                // `Event::Wheel`'s positive y moves the viewport back toward the start, the
+                // direction every menu companion uses.
                 let next = if delta.y > 0 {
-                    (self.scroll_offset + 1).min(max)
-                } else {
                     self.scroll_offset.saturating_sub(1)
+                } else {
+                    (self.scroll_offset + 1).min(max)
                 };
                 if next != self.scroll_offset {
                     self.scroll_offset = next;
                     self.base.request_redraw();
                 }
+                // C2-D0: a list already at its end lets an outer container take the notch.
+                crate::widget::claim_wheel_if_moved(&before, &self.scroll_offset);
             }
             _ => {}
         }
@@ -807,6 +812,26 @@ mod tests {
         assert_eq!(*toggled.lock().expect("toggled lock"), vec![(2, false)]);
         assert_eq!(panel.selected_layer(), Some(1), "toggling is not selecting");
         assert!(!panel.entries()[1].visible);
+    }
+
+    /// A positive notch moves the viewport back toward the start, the sign every menu
+    /// companion uses for `Event::Wheel`.
+    #[test]
+    fn a_positive_wheel_notch_moves_toward_the_start() {
+        let mut panel = LayerPanel::new(Rect::new(0, 0, 200, 60));
+        panel.set_entries(
+            (0..10).map(|index| LayerEntry::new(index, format!("L{index}"))).collect(),
+        );
+
+        // From the first row, a notch toward the start cannot move.
+        panel.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(panel.scroll_offset, 0);
+
+        // A notch toward the end advances, and the opposite notch returns.
+        panel.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(panel.scroll_offset, 1, "a negative notch advances the list");
+        panel.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(panel.scroll_offset, 0, "a positive notch returns toward the start");
     }
 
     #[test]

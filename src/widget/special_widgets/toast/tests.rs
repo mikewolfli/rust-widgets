@@ -10,7 +10,7 @@
 
 use super::item::{ToastItem, ToastLevel};
 use super::single::Toast;
-use super::stack::ToastStack;
+use super::stack::{ToastStack, ToastStackingDirection};
 use crate::core::{Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::widget::capability::types::CapabilityValue;
@@ -495,6 +495,115 @@ fn a_host_stack_offset_moves_the_rows_without_changing_the_anchor() {
         shifted.contains(shifted_panel),
         "the offset must lift the rows by its own value:\n{shifted}"
     );
+}
+
+/// The ttl clock is part of what keeps the stack animating.
+///
+/// The frame bus only calls `tick` while `is_animating` is true. Reporting only the reveals
+/// made a freshly settled toast answer `false`, so `expire_toasts` stopped running and
+/// `toast_expired` never fired under a real host.
+#[test]
+fn a_ttl_keeps_the_stack_animating_until_the_toast_expires() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 360, 180));
+    stack.push(ToastItem::new("t", "Saved", ToastLevel::Info, 5000));
+
+    // Long enough for the arrival reveal to settle, well short of the ttl.
+    for _ in 0..20 {
+        stack.tick(16);
+    }
+    assert_eq!(stack.toasts().len(), 1);
+    assert!(stack.is_animating(), "a pending ttl must keep the bus ticking");
+
+    for _ in 0..1000 {
+        if stack.toasts().is_empty() {
+            break;
+        }
+        stack.tick(16);
+    }
+    assert!(stack.toasts().is_empty(), "the ttl clock retires the toast");
+}
+
+/// Removing a row before the one that is closing must shift the latch, not retarget it.
+///
+/// With A, B, C and B closing, expiring A left `closing = 1`, which now named C: the flush
+/// removed C and reported *its* dismissal instead of B's.
+#[test]
+fn expiring_a_row_shifts_the_pending_exit_index() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 360, 180));
+    stack.set_animate_exit(true);
+    stack.push_at(ToastItem::new("a", "A", ToastLevel::Info, 1000), 0);
+    stack.push_at(ToastItem::new("b", "B", ToastLevel::Info, 10_000), 0);
+    stack.push_at(ToastItem::new("c", "C", ToastLevel::Info, 10_000), 0);
+
+    assert!(stack.select_index(1));
+    assert!(stack.dismiss_selected(), "B begins its exit");
+
+    let dismissed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&dismissed);
+    stack.toast_dismissed.connect(move |id| sink.lock().unwrap().push(id.to_string()));
+
+    assert_eq!(stack.expire_toasts(1000), 1, "only A is due");
+    assert_eq!(
+        stack.toasts().iter().map(|toast| toast.id.as_str()).collect::<Vec<_>>(),
+        ["b", "c"]
+    );
+
+    assert!(stack.flush_pending_dismissal());
+    assert_eq!(*dismissed.lock().unwrap(), vec!["b".to_string()], "B was closing, not C");
+    assert_eq!(stack.toasts().iter().map(|toast| toast.id.as_str()).collect::<Vec<_>>(), ["c"]);
+}
+
+/// `clear` must retire a latched exit, or the next toast inherits it.
+///
+/// A dismissal left `closing = Some(0)` and the exit reveal mid-flight. Clearing the stack
+/// kept both, so the toast pushed next occupied index 0 and the next tick's flush deleted the
+/// brand-new row and emitted its dismissal.
+#[test]
+fn clear_resets_a_pending_exit_so_the_next_toast_survives() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 360, 180));
+    stack.set_animate_exit(true);
+    stack.push(ToastItem::new("a", "A", ToastLevel::Info, 100_000));
+    assert!(stack.dismiss_selected(), "A begins its exit");
+
+    let dismissed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&dismissed);
+    stack.toast_dismissed.connect(move |id| sink.lock().unwrap().push(id.to_string()));
+
+    stack.clear();
+    stack.push(ToastItem::new("b", "B", ToastLevel::Info, 100_000));
+    for _ in 0..100 {
+        stack.tick(16);
+    }
+
+    assert_eq!(stack.toasts().iter().map(|toast| toast.id.as_str()).collect::<Vec<_>>(), ["b"]);
+    assert!(dismissed.lock().unwrap().is_empty(), "the new toast was never dismissed");
+}
+
+/// A row's click target follows the offset it is painted at.
+///
+/// The paint loop applied the arrival offset but the hit test read the seat, so pressing the
+/// close affordance of a row still rising reached the row below and removed that one instead.
+#[test]
+fn a_rising_rows_close_button_hits_its_painted_position() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 240, 180));
+    stack.set_stacking_direction(ToastStackingDirection::NewestAtTop);
+    stack.push(ToastItem::new("old", "Old", ToastLevel::Info, 100_000));
+    stack.push(ToastItem::new("new", "New", ToastLevel::Info, 100_000));
+    // One frame of the arrival: the newest row is painted below its seat, over the older row.
+    stack.tick(1);
+
+    let dismissed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&dismissed);
+    stack.toast_dismissed.connect(move |id| sink.lock().unwrap().push(id.to_string()));
+
+    let visual = stack.visual_row_rect(1);
+    // The close affordance's centre: 4 px inset, 14 px side, centred in the row.
+    let close_x = visual.x + visual.width as i32 - 11;
+    let close_y = visual.y + visual.height as i32 / 2;
+    stack.handle_event(&Event::mouse_press(close_x, close_y, 1));
+
+    assert_eq!(*dismissed.lock().unwrap(), vec!["new".to_string()]);
+    assert_eq!(stack.toasts().iter().map(|toast| toast.id.as_str()).collect::<Vec<_>>(), ["old"]);
 }
 
 /// The action-label width cache follows the rows: it is cleared with the stack and

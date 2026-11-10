@@ -99,6 +99,16 @@ pub(super) mod keys {
     pub(crate) const RULE: &str = "rule";
     /// The child-kind constraints of a container control (RW-41).
     pub(crate) const CHILDREN: &str = "children";
+    /// Whether a record field is mandatory.
+    pub(crate) const REQUIRED: &str = "required";
+    /// The field list of a record-list property, in the order a designer should offer them.
+    pub(crate) const FIELDS: &str = "fields";
+    /// A record schema's identity field name.
+    pub(crate) const ID_FIELD: &str = "id_field";
+    /// Whether two records in one list may share an id.
+    pub(crate) const IDS_UNIQUE: &str = "ids_unique";
+    /// Whether a record's id must be non-empty.
+    pub(crate) const IDS_REQUIRED: &str = "ids_required";
 }
 
 /// The manifest protocol version this build writes and can read.
@@ -139,7 +149,10 @@ pub(super) mod keys {
 ///   a key it does not know rather than dropping it on re-save.
 /// * `8` — adds `companion_of`, the control(s) a companion is designed to sit beside (RW-107).
 ///   Absent in older documents and read as an empty list, which means "not a companion".
-pub const MANIFEST_PROTOCOL_VERSION: u32 = 8;
+/// * `9` — adds a record property's `fields`/`id_field`/`ids_unique`/`ids_required`, so a
+///   designer can render and validate a record-list default without consulting the control's
+///   capability table. Absent in older documents and read as no schema.
+pub const MANIFEST_PROTOCOL_VERSION: u32 = 9;
 
 /// The oldest protocol version this reader still accepts.
 ///
@@ -169,6 +182,7 @@ pub fn value_kind_token(kind: PropertyValueKind) -> &'static str {
         PropertyValueKind::Records => "records",
         PropertyValueKind::StringList => "string-list",
         PropertyValueKind::NumberList => "number-list",
+        PropertyValueKind::ColorList => "color-list",
     }
 }
 
@@ -191,6 +205,7 @@ pub fn value_kind_from_token(token: &str) -> Option<PropertyValueKind> {
         "records" => Some(PropertyValueKind::Records),
         "string-list" => Some(PropertyValueKind::StringList),
         "number-list" => Some(PropertyValueKind::NumberList),
+        "color-list" => Some(PropertyValueKind::ColorList),
         _ => None,
     }
 }
@@ -246,6 +261,36 @@ pub struct DesignerProperty {
     /// [`Constraint`](crate::widget::capability::Constraint)), so an editor built from them accepts
     /// exactly what the control accepts.
     pub constraints: Vec<DesignerConstraint>,
+    /// The declared shape of one record when the property is a record list.
+    ///
+    /// `None` for every other kind. Without it the manifest can say `"kind": "records"` and
+    /// nothing else, leaving a designer unable to render the fields or validate a hand-edited
+    /// default, so protocol 9 publishes it.
+    pub record_schema: Option<DesignerRecordSchema>,
+}
+
+/// One field of a record-list property's declared schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesignerRecordField {
+    /// The field's name.
+    pub name: String,
+    /// The field's declared value kind.
+    pub kind: PropertyValueKind,
+    /// Whether every record must carry it.
+    pub required: bool,
+}
+
+/// The declared shape of one record of a record-list property.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesignerRecordSchema {
+    /// The fields, in declaration order.
+    pub fields: Vec<DesignerRecordField>,
+    /// The field that carries an item's identity.
+    pub id_field: String,
+    /// Whether two records in one list may share an id.
+    pub ids_unique: bool,
+    /// Whether a record's id must be non-empty.
+    pub ids_required: bool,
 }
 
 /// One constraint as a designer sees it (BLUE26 B26.02).
@@ -582,6 +627,48 @@ impl<'a> JsonReader<'a> {
         Ok(value)
     }
 
+    /// Reads an integer or float, preserving an integer's full width.
+    ///
+    /// [`read_number`](Self::read_number) parses through `f64`, which cannot hold an integer above
+    /// 2^53 exactly. A default is a value the document promises to restore, so it is read through
+    /// `i64`/`u64` instead: `9007199254740993` must come back as itself rather than `…992`.
+    fn read_number_value(&mut self) -> Result<JsonNumber, ManifestParseError> {
+        self.skip_whitespace();
+        let start = self.cursor;
+        while let Some(byte) = self.bytes.get(self.cursor) {
+            if byte.is_ascii_digit() || matches!(byte, b'-' | b'+' | b'.' | b'e' | b'E') {
+                self.cursor += 1;
+            } else {
+                break;
+            }
+        }
+        if start == self.cursor {
+            return self.fail("expected a number");
+        }
+        let Some(text) = core::str::from_utf8(&self.bytes[start..self.cursor]).ok() else {
+            return self.fail("number is not ASCII");
+        };
+        if text.contains('.') || text.contains('e') || text.contains('E') {
+            return match text.parse::<f64>() {
+                Ok(value) => Ok(JsonNumber::Float(value)),
+                Err(_) => self.fail("malformed number"),
+            };
+        }
+        // A leading `+` was this writer's historical `Int` marker. It is accepted so a document
+        // written by an older build still opens; the kind-based recovery below no longer needs it.
+        let digits = text.strip_prefix('+').unwrap_or(text);
+        if digits.starts_with('-') {
+            return match digits.parse::<i64>() {
+                Ok(value) => Ok(JsonNumber::Int(value)),
+                Err(_) => self.fail("integer is out of range"),
+            };
+        }
+        match digits.parse::<u64>() {
+            Ok(value) => Ok(JsonNumber::UInt(value)),
+            Err(_) => self.fail("integer is out of range"),
+        }
+    }
+
     /// Reads an integer or float, reporting whether it had a fractional part.
     fn read_number(&mut self) -> Result<(f64, bool), ManifestParseError> {
         self.skip_whitespace();
@@ -665,6 +752,16 @@ fn utf8_width(first: u8) -> usize {
     }
 }
 
+/// A number token as the writer spelled it.
+///
+/// Integral values keep their exact magnitude; a float goes through `f64`. See
+/// [`JsonReader::read_number_value`].
+enum JsonNumber {
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+}
+
 /// Reads an array of strings.
 fn read_string_array(reader: &mut JsonReader<'_>) -> Result<Vec<String>, ManifestParseError> {
     reader.expect(b'[', "expected `[`")?;
@@ -695,6 +792,10 @@ fn read_property(reader: &mut JsonReader<'_>) -> Result<DesignerProperty, Manife
     let mut constraints = Vec::new();
     let mut default_value = CapabilityValue::Null;
     let mut saw_default = false;
+    let mut fields: Option<Vec<DesignerRecordField>> = None;
+    let mut id_field = String::new();
+    let mut ids_unique = false;
+    let mut ids_required = false;
 
     loop {
         let key = reader.read_key()?;
@@ -719,6 +820,10 @@ fn read_property(reader: &mut JsonReader<'_>) -> Result<DesignerProperty, Manife
                 default_value = read_value(reader)?;
                 saw_default = true;
             }
+            k if k == keys::FIELDS => fields = Some(read_record_fields(reader)?),
+            k if k == keys::ID_FIELD => id_field = reader.read_string()?,
+            k if k == keys::IDS_UNIQUE => ids_unique = reader.read_bool()?,
+            k if k == keys::IDS_REQUIRED => ids_required = reader.read_bool()?,
             // An unknown key is an error rather than a skip: a document this writer did not produce
             // is a document whose round trip cannot be reasoned about.
             other => {
@@ -735,15 +840,90 @@ fn read_property(reader: &mut JsonReader<'_>) -> Result<DesignerProperty, Manife
         break;
     }
 
+    let kind = kind.ok_or(ManifestParseError { detail: "a property has no kind".into() })?;
+    let record_schema =
+        fields.map(|fields| DesignerRecordSchema { fields, id_field, ids_unique, ids_required });
+    // The writer no longer marks `Int` with a leading `+` (RFC 8259 has no such token), so the
+    // declared kind is what separates the two carriers. Normalising here is what keeps
+    // `Int(0)`/`Int(100)` — Slider's own defaults — from reloading as `UInt`.
+    let default_value = if saw_default {
+        normalize_default_value(default_value, kind, record_schema.as_ref())
+    } else {
+        CapabilityValue::Null
+    };
+    if !manifest_default_matches_kind(&default_value, kind) {
+        return Err(ManifestParseError {
+            detail: format!(
+                "property `{}` declares `{}` but its default is not that kind",
+                name.as_deref().unwrap_or(""),
+                value_kind_token(kind)
+            ),
+        });
+    }
+
     Ok(DesignerProperty {
         name: name.ok_or(ManifestParseError { detail: "a property has no name".into() })?,
-        kind: kind.ok_or(ManifestParseError { detail: "a property has no kind".into() })?,
+        kind,
         readable: readable.unwrap_or(false),
         writable: writable.unwrap_or(false),
         tokens,
         constraints,
-        default_value: if saw_default { default_value } else { CapabilityValue::Null },
+        default_value,
+        record_schema,
     })
+}
+
+/// Reads a record schema's field list.
+fn read_record_fields(
+    reader: &mut JsonReader<'_>,
+) -> Result<Vec<DesignerRecordField>, ManifestParseError> {
+    reader.expect(b'[', "expected `[` to start a record field list")?;
+    let mut fields = Vec::new();
+    if reader.peek(b']') {
+        reader.expect(b']', "expected `]`")?;
+        return Ok(fields);
+    }
+    loop {
+        reader.expect(b'{', "expected `{` to start a record field")?;
+        let mut name = None;
+        let mut kind = None;
+        let mut required = false;
+        loop {
+            let key = reader.read_key()?;
+            match key.as_str() {
+                k if k == keys::NAME => name = Some(reader.read_string()?),
+                k if k == keys::KIND => {
+                    let token = reader.read_string()?;
+                    kind = Some(value_kind_from_token(&token).ok_or(ManifestParseError {
+                        detail: format!("unknown record field kind `{token}`"),
+                    })?);
+                }
+                k if k == keys::REQUIRED => required = reader.read_bool()?,
+                other => {
+                    return Err(ManifestParseError {
+                        detail: format!("unexpected key `{other}` in a record field"),
+                    })
+                }
+            }
+            if reader.peek(b',') {
+                reader.expect(b',', "expected `,`")?;
+                continue;
+            }
+            reader.expect(b'}', "expected `}` or `,` in a record field")?;
+            break;
+        }
+        fields.push(DesignerRecordField {
+            name: name.ok_or(ManifestParseError { detail: "a record field has no name".into() })?,
+            kind: kind.ok_or(ManifestParseError { detail: "a record field has no kind".into() })?,
+            required,
+        });
+        if reader.peek(b',') {
+            reader.expect(b',', "expected `,`")?;
+            continue;
+        }
+        reader.expect(b']', "expected `]` or `,` in a record field list")?;
+        return Ok(fields);
+    }
 }
 
 /// Reads a constraint array (BLUE26 B26.02).
@@ -792,7 +972,11 @@ fn read_constraint(reader: &mut JsonReader<'_>) -> Result<DesignerConstraint, Ma
                 if reader.peek(b'n') {
                     reader.read_null()?;
                 } else {
-                    places = Some(reader.read_uint()? as u8);
+                    let raw = reader.read_uint()?;
+                    let count = u8::try_from(raw).map_err(|_| ManifestParseError {
+                        detail: format!("`{raw}` is too large for a decimal-place count"),
+                    })?;
+                    places = Some(count);
                 }
             }
             other => {
@@ -1038,20 +1222,156 @@ fn read_value(reader: &mut JsonReader<'_>) -> Result<CapabilityValue, ManifestPa
         return Ok(CapabilityValue::Tuple(items.into_iter().collect()));
     }
     let leading_plus = reader.peek_leading_plus();
-    let (number, is_float) = reader.read_number()?;
-    if is_float {
-        return Ok(CapabilityValue::Float(number));
+    match reader.read_number_value()? {
+        JsonNumber::Float(number) => Ok(CapabilityValue::Float(number)),
+        JsonNumber::Int(number) => Ok(CapabilityValue::Int(number)),
+        // A non-negative integral value is `Int` only when the old writer's `+` marker says so.
+        // The property's declared kind decides it otherwise — see `normalize_default_value`.
+        JsonNumber::UInt(number) => {
+            if leading_plus {
+                match i64::try_from(number) {
+                    Ok(number) => Ok(CapabilityValue::Int(number)),
+                    Err(_) => reader.fail("an `Int` default does not fit in `i64`"),
+                }
+            } else {
+                Ok(CapabilityValue::UInt(number))
+            }
+        }
     }
-    // An integral number without a fractional part is `Int` when it is negative or carries the
-    // writer's leading `+`, and `UInt` otherwise. The reader must make the same distinction the
-    // writer did, or `Int(100)` — a value `Slider`'s `maximum` genuinely declares — would reload as
-    // `UInt(100)` and the round trip would not be a round trip. The marker is only consulted for a
-    // non-negative integral value: a `-3` is already unambiguous, and requiring a `-` *and* a `+`
-    // would be a marker no writer produces.
-    if number < 0.0 || leading_plus {
-        return Ok(CapabilityValue::Int(number as i64));
+}
+
+/// Recovers the carrier the property's declared kind implies.
+///
+/// The writer emits standard JSON, so a non-negative integer has one spelling for both `Int` and
+/// `UInt`. The declared kind is the fact that separates them. `Number` deliberately keeps whichever
+/// carrier the document spelled: it accepts both by definition, and the byte round trip is stable
+/// either way.
+fn normalize_default_value(
+    value: CapabilityValue,
+    kind: PropertyValueKind,
+    record_schema: Option<&DesignerRecordSchema>,
+) -> CapabilityValue {
+    match (kind, value) {
+        (PropertyValueKind::Int, CapabilityValue::UInt(number)) => match i64::try_from(number) {
+            Ok(number) => CapabilityValue::Int(number),
+            Err(_) => CapabilityValue::UInt(number),
+        },
+        (PropertyValueKind::UInt, CapabilityValue::Int(number)) if number >= 0 => {
+            CapabilityValue::UInt(number as u64)
+        }
+        // An empty record list and an empty scalar list have the same JSON spelling (`[]`), so
+        // the value reader cannot tell them apart. The declared kind is the fact that decides.
+        (PropertyValueKind::Records, CapabilityValue::Tuple(items)) if items.is_empty() => {
+            CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &crate::widget::capability::EMPTY_RECORD_SCHEMA,
+                crate::compat::Vec::new(),
+            ))
+        }
+        (PropertyValueKind::Records, CapabilityValue::Records(list)) => {
+            let Some(schema) = record_schema else {
+                return CapabilityValue::Records(list);
+            };
+            let items = list
+                .items()
+                .iter()
+                .map(|record| {
+                    let mut normalized = crate::widget::capability::RecordValue::new();
+                    for (name, value) in record.fields() {
+                        let field_kind = schema
+                            .fields
+                            .iter()
+                            .find(|field| field.name == *name)
+                            .map(|field| field.kind);
+                        let value = match field_kind {
+                            Some(field_kind) => {
+                                normalize_default_value(value.clone(), field_kind, None)
+                            }
+                            None => value.clone(),
+                        };
+                        normalized = normalized.with(name.clone(), value);
+                    }
+                    normalized
+                })
+                .collect();
+            CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &crate::widget::capability::EMPTY_RECORD_SCHEMA,
+                items,
+            ))
+        }
+        (PropertyValueKind::ColorList, CapabilityValue::Tuple(items)) => {
+            let items = items
+                .into_iter()
+                .map(|item| match item {
+                    CapabilityValue::String(text) => match crate::core::Color::parse_hex(&text) {
+                        Some(color) => CapabilityValue::Color(color),
+                        None => CapabilityValue::String(text),
+                    },
+                    other => other,
+                })
+                .collect();
+            CapabilityValue::Tuple(items)
+        }
+        (_, value) => value,
     }
-    Ok(CapabilityValue::UInt(number as u64))
+}
+
+/// Whether a manifest default is a legal value for the declared kind.
+///
+/// The manifest spells a `Color` and a `Rect` as their wire strings (see [`read_value`]), so a
+/// string default is the documented form for those kinds. Numeric widening is the same one
+/// [`coercion`](super::coercion) defines: an integer fits a float, an in-range unsigned fits a
+/// signed integer, and `Number` accepts both carriers. `Null` is the documented "not set" and is
+/// accepted everywhere.
+fn manifest_default_matches_kind(value: &CapabilityValue, kind: PropertyValueKind) -> bool {
+    if matches!(value, CapabilityValue::Null) {
+        return true;
+    }
+    match kind {
+        PropertyValueKind::Bool => matches!(value, CapabilityValue::Bool(_)),
+        PropertyValueKind::Int => match value {
+            CapabilityValue::Int(_) => true,
+            CapabilityValue::UInt(number) => i64::try_from(*number).is_ok(),
+            _ => false,
+        },
+        PropertyValueKind::UInt => match value {
+            CapabilityValue::UInt(_) => true,
+            CapabilityValue::Int(number) => *number >= 0,
+            _ => false,
+        },
+        PropertyValueKind::Float | PropertyValueKind::Number => matches!(
+            value,
+            CapabilityValue::Float(_) | CapabilityValue::Int(_) | CapabilityValue::UInt(_)
+        ),
+        PropertyValueKind::String | PropertyValueKind::Enum => {
+            matches!(value, CapabilityValue::String(_))
+        }
+        PropertyValueKind::Color | PropertyValueKind::Rect => {
+            matches!(
+                value,
+                CapabilityValue::Color(_) | CapabilityValue::Rect(_) | CapabilityValue::String(_)
+            )
+        }
+        PropertyValueKind::IconSpec => matches!(value, CapabilityValue::IconSpec(_)),
+        PropertyValueKind::Records => matches!(value, CapabilityValue::Records(_)),
+        PropertyValueKind::StringList => matches!(
+            value,
+            CapabilityValue::Tuple(items)
+                if items.iter().all(|item| matches!(item, CapabilityValue::String(_)))
+        ),
+        PropertyValueKind::NumberList => matches!(
+            value,
+            CapabilityValue::Tuple(items)
+                if items.iter().all(|item| matches!(
+                    item,
+                    CapabilityValue::Float(_) | CapabilityValue::Int(_) | CapabilityValue::UInt(_)
+                ))
+        ),
+        PropertyValueKind::ColorList => matches!(
+            value,
+            CapabilityValue::Tuple(items)
+                if items.iter().all(|item| matches!(item, CapabilityValue::Color(_)))
+        ),
+    }
 }
 
 /// Reads a JSON array of scalar values into a `Tuple`.
@@ -1309,6 +1629,13 @@ impl DesignerManifest {
             });
         }
 
+        // A duplicate name makes one entry unreachable by name while the document still exports
+        // both, so a caller that edited one would silently keep the other. Refused here rather
+        // than left for the first name-based lookup to resolve arbitrarily.
+        reject_duplicate_names(&properties, "property", |entry| entry.name.as_str())?;
+        reject_duplicate_names(&events, "event", |entry| entry.name.as_str())?;
+        reject_duplicate_names(&commands, "command", |entry| entry.name.as_str())?;
+
         Ok(Self {
             protocol,
             library,
@@ -1326,6 +1653,42 @@ impl DesignerManifest {
             commands,
             children,
         })
+    }
+}
+
+/// Refuses two entries in one list that carry the same name.
+fn reject_duplicate_names<T, F>(items: &[T], what: &str, name: F) -> Result<(), ManifestParseError>
+where
+    F: Fn(&T) -> &str,
+{
+    for (index, item) in items.iter().enumerate() {
+        if items[..index].iter().any(|earlier| name(earlier) == name(item)) {
+            return Err(ManifestParseError {
+                detail: format!("duplicate {what} name `{}`", name(item)),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Serialises a record schema, so the manifest carries more than the `records` token.
+#[cfg(full_widgets)]
+fn designer_record_schema_from(
+    schema: &crate::widget::capability::RecordSchema,
+) -> DesignerRecordSchema {
+    DesignerRecordSchema {
+        fields: schema
+            .fields
+            .iter()
+            .map(|field| DesignerRecordField {
+                name: String::from(field.name),
+                kind: field.kind,
+                required: field.required,
+            })
+            .collect(),
+        id_field: String::from(schema.id_field),
+        ids_unique: schema.ids_unique,
+        ids_required: schema.ids_required,
     }
 }
 
@@ -1372,6 +1735,7 @@ pub fn designer_manifest(
             writable: schema.writable,
             tokens: schema.accepted_tokens.iter().map(|token| String::from(*token)).collect(),
             constraints: schema.constraints.iter().map(designer_constraint_from).collect(),
+            record_schema: schema.record_schema.map(designer_record_schema_from),
             default_value,
         });
     }
@@ -1392,6 +1756,7 @@ pub fn designer_manifest(
             writable: schema.writable,
             tokens: Vec::new(),
             constraints: Vec::new(),
+            record_schema: None,
             default_value,
         });
     }
@@ -1637,6 +2002,7 @@ mod tests {
                 writable: true,
                 tokens: Vec::new(),
                 constraints: Vec::new(),
+                record_schema: None,
                 default_value: CapabilityValue::Int(42),
             }],
             events: vec![DesignerEvent {
@@ -1735,6 +2101,7 @@ mod tests {
             writable: true,
             tokens: Vec::new(),
             constraints: Vec::new(),
+            record_schema: None,
             default_value: records.clone(),
         });
 
@@ -1783,35 +2150,36 @@ mod tests {
     /// `Color`/`Rect` is the check that the writer did not invent a second representation.
     #[test]
     fn every_value_variant_round_trips() {
-        let cases: [(CapabilityValue, CapabilityValue); 14] = [
-            (CapabilityValue::Null, CapabilityValue::Null),
-            (CapabilityValue::Bool(true), CapabilityValue::Bool(true)),
-            (CapabilityValue::Bool(false), CapabilityValue::Bool(false)),
-            (CapabilityValue::UInt(7), CapabilityValue::UInt(7)),
-            (CapabilityValue::UInt(0), CapabilityValue::UInt(0)),
-            (CapabilityValue::Float(1.5), CapabilityValue::Float(1.5)),
-            (CapabilityValue::Int(-3), CapabilityValue::Int(-3)),
+        let cases: [(PropertyValueKind, CapabilityValue, CapabilityValue); 14] = [
+            (PropertyValueKind::Int, CapabilityValue::Null, CapabilityValue::Null),
+            (PropertyValueKind::Bool, CapabilityValue::Bool(true), CapabilityValue::Bool(true)),
+            (PropertyValueKind::Bool, CapabilityValue::Bool(false), CapabilityValue::Bool(false)),
+            (PropertyValueKind::UInt, CapabilityValue::UInt(7), CapabilityValue::UInt(7)),
+            (PropertyValueKind::UInt, CapabilityValue::UInt(0), CapabilityValue::UInt(0)),
+            (PropertyValueKind::Float, CapabilityValue::Float(1.5), CapabilityValue::Float(1.5)),
+            (PropertyValueKind::Int, CapabilityValue::Int(-3), CapabilityValue::Int(-3)),
             // **The cases that used to lose their kind.** `Int(0)` and `Int(100)` are exactly what
-            // `Slider`'s capability declares for `minimum`/`maximum`, and both were written as bare
-            // numbers, which the reader necessarily took for `UInt`. The round trip was therefore
-            // partial for the two defaults the table actually contains, not for a hypothetical
-            // value — and the old test's only `Int` case was `Int(-3)`, whose sign made it the one
-            // non-negative-free case that happened to work.
-            (CapabilityValue::Int(0), CapabilityValue::Int(0)),
-            (CapabilityValue::Int(100), CapabilityValue::Int(100)),
+            // `Slider`'s capability declares for `minimum`/`maximum`. They are written as ordinary
+            // JSON numbers now, and the declared kind restores `Int`.
+            (PropertyValueKind::Int, CapabilityValue::Int(0), CapabilityValue::Int(0)),
+            (PropertyValueKind::Int, CapabilityValue::Int(100), CapabilityValue::Int(100)),
             (
+                PropertyValueKind::String,
                 CapabilityValue::String(String::from("a \"quoted\" \\ value\nwith a newline")),
                 CapabilityValue::String(String::from("a \"quoted\" \\ value\nwith a newline")),
             ),
             (
+                PropertyValueKind::String,
                 CapabilityValue::String(String::from("Café ☕ Value")),
                 CapabilityValue::String(String::from("Café ☕ Value")),
             ),
             (
+                PropertyValueKind::Color,
                 CapabilityValue::Color(Color::rgba(1, 2, 3, 4)),
                 CapabilityValue::String(String::from("#01020304")),
             ),
             (
+                PropertyValueKind::IconSpec,
                 CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
                     crate::widget::display_widgets::icon::IconName::Info,
                 )),
@@ -1820,6 +2188,7 @@ mod tests {
                 )),
             ),
             (
+                PropertyValueKind::IconSpec,
                 CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
                     id: String::from("project/icons/a\"b\\c"),
                     color_mode: crate::widget::icon_source::IconColorMode::Monochrome,
@@ -1830,8 +2199,9 @@ mod tests {
                 }),
             ),
         ];
-        for (written, expected) in cases {
+        for (kind, written, expected) in cases {
             let mut manifest = sample();
+            manifest.properties[0].kind = kind;
             manifest.properties[0].default_value = written.clone();
             let json = manifest_to_json(&manifest);
             let reloaded = DesignerManifest::from_json(&json)
@@ -1875,35 +2245,71 @@ mod tests {
         }
     }
 
-    /// A non-negative `Int` must not be written in the `UInt` spelling.
+    /// A non-negative `Int` is written as ordinary JSON, and the declared kind restores it.
     ///
-    /// The assertion above proves the *round trip* holds; this proves **how**, so a writer that
-    /// stopped distinguishing the two would be caught here rather than by whichever test happened
-    /// to compare the two kinds first.
+    /// The historical writer prefixed it with `+`, a token RFC 8259 does not allow and every
+    /// conforming parser rejects. The kind in the same object is the fact that distinguishes the
+    /// two carriers, so no marker is needed.
     #[test]
-    fn a_non_negative_int_carries_the_marker_that_distinguishes_it_from_a_uint() {
+    fn a_non_negative_int_is_written_without_a_non_json_marker() {
         let mut manifest = sample();
         manifest.properties[0].default_value = CapabilityValue::Int(100);
         let int_json = manifest_to_json(&manifest);
         assert!(
-            int_json.contains("\"default\":+100") || int_json.contains(": +100"),
-            "a non-negative `Int` must be marked with a leading `+`, or it is indistinguishable
-             from `UInt`: {int_json}"
+            int_json.contains("\"default\": 100"),
+            "a non-negative `Int` must be a standard JSON number: {int_json}"
         );
-
-        manifest.properties[0].default_value = CapabilityValue::UInt(100);
-        let uint_json = manifest_to_json(&manifest);
         assert!(
-            !uint_json.contains("+100"),
-            "`UInt` keeps the bare spelling — the marker is what distinguishes the two: {uint_json}"
+            !int_json.contains(":+100") && !int_json.contains(": +100"),
+            "a leading `+` is not a JSON number token: {int_json}"
         );
-        assert_ne!(int_json, uint_json, "the two kinds must not export identically");
+        let reloaded = DesignerManifest::from_json(&int_json).expect("standard JSON must parse");
+        assert_eq!(
+            reloaded.properties[0].default_value,
+            CapabilityValue::Int(100),
+            "the declared kind must recover `Int` from the bare spelling"
+        );
 
-        // A negative `Int` needs no marker: its sign is already unambiguous.
+        // A negative integer is unambiguous and keeps its sign.
         manifest.properties[0].default_value = CapabilityValue::Int(-100);
         let negative_json = manifest_to_json(&manifest);
-        assert!(negative_json.contains("-100"));
-        assert!(!negative_json.contains("+-100"), "a negative must not also carry the marker");
+        assert!(negative_json.contains("\"default\": -100"));
+        assert!(!negative_json.contains("+-100"));
+    }
+
+    /// The exported document is JSON that a conforming parser accepts.
+    ///
+    /// `capability_manifest_json(&factory, "slider")` is the concrete path the finding named:
+    /// `slider.minimum`/`maximum` are non-negative `Int` defaults, and the old writer emitted
+    /// `"default": +0` / `+100`, which `json.loads` refuses. This test uses the module's own
+    /// parser (the crate deliberately has no serde dependency here) and additionally asserts that
+    /// no number token carries a leading `+`.
+    #[cfg(full_widgets)]
+    #[test]
+    fn an_exported_slider_manifest_is_standard_json() {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let json = capability_manifest_json(&factory, "slider").expect("slider exports");
+        assert!(
+            !json.contains(": +0") && !json.contains(": +100"),
+            "no number token may start with `+`: {json}"
+        );
+        assert!(
+            json.split_whitespace().all(|token| !token.starts_with('+')),
+            "a `+`-prefixed token is not JSON: {json}"
+        );
+        let reloaded = DesignerManifest::from_json(&json).expect("standard JSON must parse");
+        let minimum = reloaded
+            .properties
+            .iter()
+            .find(|property| property.name == "minimum")
+            .expect("slider publishes minimum");
+        assert_eq!(minimum.default_value, CapabilityValue::Int(0));
+        let maximum = reloaded
+            .properties
+            .iter()
+            .find(|property| property.name == "maximum")
+            .expect("slider publishes maximum");
+        assert_eq!(maximum.default_value, CapabilityValue::Int(100));
     }
 
     /// Export → load → export must be a fixed point of the writer.
@@ -2008,6 +2414,7 @@ mod tests {
     #[test]
     fn a_whole_float_keeps_its_fractional_part() {
         let mut manifest = sample();
+        manifest.properties[0].kind = PropertyValueKind::Float;
         manifest.properties[0].default_value = CapabilityValue::Float(1.0);
         let json = manifest_to_json(&manifest);
         assert!(json.contains("1.0"), "a float must be written so it reads back as a float");
@@ -2315,5 +2722,100 @@ mod tests {
         let bad = json.replace("\"rule\": \"range\"", "\"rule\": \"sausage\"");
         assert_ne!(bad, json, "the sentinel must appear");
         assert!(DesignerManifest::from_json(&bad).is_err());
+    }
+
+    /// A record-list property publishes the field list, identity field and id rules.
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_records_property_publishes_its_record_schema() {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let manifest = designer_manifest(&factory, "chip").expect("chip exports");
+        let items = manifest
+            .properties
+            .iter()
+            .find(|property| property.name == "items")
+            .expect("chip publishes items");
+        let schema = items.record_schema.as_ref().expect("items publishes a record schema");
+        assert_eq!(schema.id_field, "id");
+        assert!(schema.ids_unique && schema.ids_required);
+        let names: Vec<&str> = schema.fields.iter().map(|field| field.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["id", "label", "selected", "icon_source", "avatar", "enabled", "closable"]
+        );
+
+        let json = capability_manifest_json(&factory, "chip").expect("chip exports as JSON");
+        assert!(json.contains("\"fields\":"), "the field list must be emitted: {json}");
+        assert!(json.contains("\"id_field\": \"id\""), "the identity field must be emitted");
+
+        let reloaded = DesignerManifest::from_json(&json).expect("the document parses");
+        let restored = reloaded
+            .properties
+            .iter()
+            .find(|property| property.name == "items")
+            .expect("items survives");
+        assert_eq!(restored.record_schema.as_ref(), Some(schema));
+        assert_eq!(
+            manifest_to_json(&reloaded),
+            json,
+            "export -> load -> export must preserve the record schema byte for byte"
+        );
+    }
+
+    /// Two entries with the same name, and a default that contradicts its declared kind, are
+    /// refused rather than loaded and re-exported as if consistent.
+    #[test]
+    fn duplicate_names_and_a_contradictory_default_are_refused() {
+        let duplicate_property = r#"{"control":"x","properties":[
+            {"name":"value","kind":"int"},
+            {"name":"value","kind":"int"}]}"#;
+        assert!(DesignerManifest::from_json(duplicate_property).is_err());
+
+        let duplicate_event = r#"{"control":"x","events":[
+            {"name":"clicked","payload":null,"shape":null},
+            {"name":"clicked","payload":null,"shape":null}]}"#;
+        assert!(DesignerManifest::from_json(duplicate_event).is_err());
+
+        let duplicate_command = r#"{"control":"x","commands":[
+            {"name":"clear","signature":"none","effect":"mutates-control"},
+            {"name":"clear","signature":"none","effect":"mutates-control"}]}"#;
+        assert!(DesignerManifest::from_json(duplicate_command).is_err());
+
+        let contradictory = r#"{"control":"x","properties":[
+            {"name":"value","kind":"int","default":"abc"}]}"#;
+        assert!(
+            DesignerManifest::from_json(contradictory).is_err(),
+            "a string default cannot describe an `int` property"
+        );
+
+        // `Null` is the documented "not set" value and is legal for every kind.
+        let unset = r#"{"control":"x","properties":[
+            {"name":"value","kind":"int","default":null}]}"#;
+        assert!(DesignerManifest::from_json(unset).is_ok());
+    }
+
+    /// A decimal-place count above `u8::MAX` is a parse error, and an integral default above 2^53
+    /// keeps its exact value.
+    #[test]
+    fn a_place_count_does_not_truncate_and_a_large_integer_keeps_its_value() {
+        let mut manifest = sample();
+        manifest.properties[0].constraints = vec![DesignerConstraint {
+            kind: "precision",
+            minimum: None,
+            maximum: None,
+            step: None,
+            places: Some(2),
+        }];
+        let json = manifest_to_json(&manifest);
+        let bad = json.replace("\"places\": 2", "\"places\": 300");
+        assert_ne!(bad, json, "the sentinel must appear");
+        assert!(DesignerManifest::from_json(&bad).is_err(), "300 must not truncate to 44");
+
+        let exact = 9_007_199_254_740_993i64;
+        manifest.properties[0].constraints.clear();
+        manifest.properties[0].default_value = CapabilityValue::Int(exact);
+        let json = manifest_to_json(&manifest);
+        let reloaded = DesignerManifest::from_json(&json).expect("the document parses");
+        assert_eq!(reloaded.properties[0].default_value, CapabilityValue::Int(exact));
     }
 }

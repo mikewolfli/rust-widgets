@@ -184,7 +184,12 @@ pub struct ColorDialog {
     picking_from_screen: bool,
     /// The hue the picker plane is drawn at, in degrees.
     hue: f32,
-    /// The caller's custom colors, drawn after the built-in presets.
+    /// The caller's custom colors.
+    ///
+    /// Stored and published (`custom_colors`/`custom_color_count`) for the host, but **not**
+    /// painted: the strip the dialog draws is [`PRESET_COLORS`], and a custom entry is not
+    /// given a swatch. This field used to claim it was "drawn after the built-in presets", which
+    /// nothing implemented.
     custom_colors: Vec<Color>,
     /// The typed hex text while the hex field is focused.
     hex_input: String,
@@ -593,6 +598,8 @@ impl ColorDialog {
     }
 
     /// Replaces the custom palette and repaints.
+    ///
+    /// The list is recorded for the host; it is not painted (see the field's documentation).
     pub fn set_custom_colors(&mut self, colors: Vec<Color>) {
         if self.custom_colors == colors {
             return;
@@ -602,6 +609,8 @@ impl ColorDialog {
     }
 
     /// Adds a custom color and repaints.
+    ///
+    /// The list is recorded for the host; it is not painted (see the field's documentation).
     pub fn add_custom_color(&mut self, color: Color) {
         if self.custom_colors.contains(&color) {
             return;

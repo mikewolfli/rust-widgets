@@ -237,13 +237,19 @@ fn is_text_path(d: &str) -> bool {
 /// the string laid down — enough to tell `"OK"` from `""`, or to notice that a longer string
 /// produced no more ink than a shorter one (which is what a lost advance looks like).
 ///
+/// The text/shape discrimination is [`is_text_path_element`], the same predicate
+/// [`text_ink_boxes`] and [`first_shape_bounds`] use. Reading every `<path>` counted a control's
+/// chevron or other drawn shape as text, so "did the text change" assertions could move on a
+/// shape edit alone.
+///
 /// A caller that wants "this string was drawn at all" should prefer this to
 /// `svg.contains("OK")`: the string is no longer in the document in any form.
 pub fn text_subpath_count(svg: &str) -> usize {
     svg.lines()
         .filter(|line| line.contains("<path"))
-        .filter_map(|line| attribute_str(line, "d"))
-        .map(|d| d.matches('M').count())
+        .filter_map(|line| attribute_str(line, "d").map(|d| (line, d)))
+        .filter(|(line, d)| is_text_path_element(line, d))
+        .map(|(_, d)| d.matches('M').count())
         .sum()
 }
 
@@ -603,6 +609,29 @@ mod tests {
         // Two identical glyphs a pen apart double the ink. This is the property a lost
         // per-cluster advance would break, and it is invisible to a bounding-box assertion.
         assert_eq!(two, one * 2, "the pen advanced so the second O is a second glyph");
+    }
+
+    /// A control's drawn shape is not counted as text ink.
+    ///
+    /// # The defect this pins
+    ///
+    /// `text_subpath_count` summed `d.matches('M')` over **every** `<path>`, while
+    /// `text_ink_boxes`/`first_shape_bounds` applied `is_text_path_element` (`data-text="1"`).
+    /// A control that painted a chevron and a label therefore reported the shape's subpaths as
+    /// text, so a "did the text change" assertion could move on a shape edit alone.
+    #[test]
+    fn text_subpath_count_ignores_shape_paths() {
+        let svg = concat!(
+            "<svg>\n",
+            "<path d=\"M0 0h10v10h-10z\" data-text=\"1\" fill=\"#000\" />\n",
+            "<path d=\"M0 0 L10 10\" fill=\"#000\" />\n",
+            "</svg>"
+        );
+        assert_eq!(
+            text_subpath_count(svg),
+            1,
+            "only the tagged text run contributes subpaths; the chevron does not"
+        );
     }
 
     /// The readers refuse a document they cannot understand, rather than inventing an answer.

@@ -128,6 +128,10 @@ impl Rating {
         }
         let clamped = rating.clamp(0.0, self.max_rating as f32);
         let whole_before = self.rating();
+        // A programmatic value wins over a preview the pointer left behind: `draw` gives the
+        // preview priority, so without this the row kept painting the old hover instead of the
+        // value the caller just set.
+        self.clear_hover_preview();
         if self.rating != clamped {
             self.rating = clamped;
             let whole_after = self.rating();
@@ -190,6 +194,10 @@ impl Rating {
     pub fn set_max_rating(&mut self, max_rating: u32) {
         let max = max_rating.max(1);
         self.max_rating = max;
+        // A preview beyond the new ceiling no longer names a star that exists.
+        if self.hover_preview.is_some_and(|preview| preview > max) {
+            self.clear_hover_preview();
+        }
         if self.rating > max as f32 {
             let whole_before = self.rating();
             self.rating = max as f32;
@@ -1469,5 +1477,27 @@ mod tests {
         rating.handle_event(&Event::FocusLost);
         let blurred = crate::widget::svg::render_to_svg(&mut rating);
         assert_eq!(resting, blurred, "losing focus restores the resting picture");
+    }
+
+    /// A programmatic value wins over a hover preview the pointer left behind.
+    ///
+    /// `draw` gives `hover_preview` priority over `rating`, so `set_rating` must clear the
+    /// preview: without it the row kept painting the old hover instead of the value just set.
+    #[test]
+    fn set_rating_clears_a_live_hover_preview() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        let row = r.star_row();
+        let mid_y = row.y + row.height as i32 / 2;
+        let third = r.star_cell(2).expect("the third star fits");
+        r.handle_event(&Event::MouseMove { pos: Point::new(third.x + 2, mid_y) });
+        assert_eq!(r.hover_preview(), Some(3), "the pointer is previewing three stars");
+
+        r.set_rating(2);
+        assert_eq!(r.rating(), 2);
+        assert_eq!(
+            r.hover_preview(),
+            None,
+            "a programmatic value clears the stale pointer preview"
+        );
     }
 }

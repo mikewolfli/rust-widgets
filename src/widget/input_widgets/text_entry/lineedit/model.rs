@@ -796,6 +796,10 @@ impl LineEdit {
         let before_selection = self.selection_start;
         self.text = text;
         self.invalidate_text_advances();
+        // Revalidated like every other value mutation (`finish_text_change`, `commit_splice`): the
+        // cached state is what `is_valid()`/`validation_state()` read, so an undo used to leave the
+        // field reporting the pre-undo value's verdict and painting its error decoration.
+        self.revalidate();
         self.cursor_position = self.text.len();
         self.selection_start = None;
         self.modified = true;
@@ -1738,15 +1742,39 @@ impl LineEdit {
             self.modified = true;
         }
     }
+    /// The raw character index the display caret sits *before* in a masked value.
+    ///
+    /// The caret addresses a display position, but editing happens in the raw value with the
+    /// literals removed, so the translation comes from the grammar's own cell offsets
+    /// ([`MaskEngine::raw_index_at_or_after`]). `None` when the caret is at the end of the
+    /// value, because nothing follows it there.
+    fn masked_raw_index_after_caret(&self) -> Option<usize> {
+        let engine = self.mask_engine.as_ref()?;
+        let raw = engine.sanitize(&self.text);
+        let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
+        engine.raw_index_at_or_after(&raw, caret)
+    }
+
     /// Deletes selected text or the character after the caret.
+    ///
+    /// In a masked field the caret addresses a display position, so the character after it is the
+    /// next cell the value holds; a literal separator is never deletable (I-011). This branch used
+    /// to call `raw.pop()`, which is Backspace's rule: Delete removed the *last* character and
+    /// ignored both the caret and the selection.
     pub fn delete(&mut self) {
         if self.mask_engine.is_some() {
-            let mut raw = match self.mask_engine.as_ref() {
+            let Some(index) = self.masked_raw_index_after_caret() else {
+                return;
+            };
+            let raw = match self.mask_engine.as_ref() {
                 Some(engine) => engine.sanitize(&self.text),
                 None => return,
             };
-            raw.pop();
-            self.rewrite_masked(raw);
+            let mut chars: Vec<char> = raw.chars().collect();
+            if index < chars.len() {
+                chars.remove(index);
+                self.rewrite_masked(chars.into_iter().collect());
+            }
             return;
         }
         if let Some(_start) = self.selection_start {
@@ -1971,5 +1999,82 @@ impl LineEdit {
         {
             self.base.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::input_widgets::input_validator::InputValidator;
+
+    /// Delete in a masked field removes the value character after the caret, not the last one.
+    ///
+    /// The old branch called `raw.pop()`, which is Backspace's rule: Delete ignored the caret
+    /// and removed the trailing character.
+    #[test]
+    fn a_masked_delete_removes_the_character_after_the_caret() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        field.set_input_mask(Some("000-000"));
+        field.set_text("123456");
+        assert_eq!(field.text(), "123-456");
+        // The caret sits between '1' and '2', so Delete must take '2' and leave '1'.
+        field.set_cursor_position(1);
+        let before = field.text().to_string();
+
+        field.delete();
+        assert_eq!(
+            field.text().chars().filter(|ch| ch.is_ascii_digit()).count() + 1,
+            before.chars().filter(|ch| ch.is_ascii_digit()).count(),
+            "exactly one value character is removed"
+        );
+        assert_eq!(field.text(), "134-56_", "the second digit goes and the first stays");
+    }
+
+    /// The translation steps over a literal separator to the next *value* cell, and a caret at
+    /// the end has nothing after it.
+    ///
+    /// # The trap this pins
+    ///
+    /// `MaskEngine::format` pads every unfilled cell, so a length comparison cannot locate a
+    /// raw character. The engine's own cell offsets can, and they are what makes a caret that
+    /// sits on the `-` name the digit after it rather than the digit before it.
+    #[test]
+    fn a_masked_delete_skips_literals_and_stops_at_the_end() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        field.set_input_mask(Some("000-000"));
+        field.set_text("123456");
+        assert_eq!(field.text(), "123-456");
+
+        // The caret sits between the `3` and the `-`: the next *value* cell is `4`.
+        field.set_cursor_position(3);
+        field.delete();
+        assert_eq!(field.text(), "123-56_", "the separator is not the thing deleted");
+
+        // A caret at the very end has nothing to its right, so Delete is a no-op.
+        let at_end = field.text().to_string();
+        field.set_cursor_position(at_end.len());
+        field.delete();
+        assert_eq!(field.text(), at_end, "nothing follows the caret at the end");
+    }
+
+    /// Undo revalidates the model, so the cached verdict follows the restored value.
+    ///
+    /// `restore_history_text` recomputes the rule like every other value mutation; without that
+    /// the field kept reporting (and painting) the pre-undo value's verdict.
+    #[test]
+    fn an_undo_revalidates_the_model() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        field.set_validator(Some(InputValidator::Phone));
+        field.insert_str("123");
+        assert_eq!(field.text(), "123");
+        assert!(!field.is_valid(), "three digits are below the phone span");
+
+        assert!(field.undo());
+        assert_eq!(field.text(), "");
+        assert!(
+            field.is_valid(),
+            "an empty value is not an error, so the restored text must say so"
+        );
+        assert_eq!(field.validation_message(), "");
     }
 }

@@ -219,9 +219,11 @@ fn a_chooser_toggle_hides_the_column_in_the_grid() {
     assert!(grid.poll_column_chooser());
     assert!(!grid.is_column_hidden(1), "showing the column restores it");
 
-    // A reorder is reported as source indices as well (V-015).
+    // A reorder is reported as source indices as well (V-015), but the grid paints and hit-tests
+    // by absolute source index: the report is recorded as state without changing a pixel, so it
+    // must not claim a change.
     assert!(chooser.move_column(0, 2));
-    assert!(grid.poll_column_chooser());
+    assert!(!grid.poll_column_chooser(), "an order-only report changes no painted state");
     assert_eq!(grid.column_display_order(), vec![1, 2, 0]);
 
     grid.detach_column_chooser();
@@ -734,7 +736,9 @@ fn visible_window_includes_overscan_and_clamps() {
         data: (0..10).map(|r| (0..6).map(|c| format!("{}:{}", r, c)).collect()).collect(),
     }));
 
-    assert_eq!(grid.visible_window(), (0, 7, 0, 4));
+    // The cells box is 34 px tall (60 minus the 4 px inset and the 22 px title strip), so two
+    // 20 px rows fit; the fetch adds the overscan on both sides.
+    assert_eq!(grid.visible_window(), (0, 6, 0, 4));
 
     grid.set_scroll_row(8);
     grid.set_scroll_column(5);

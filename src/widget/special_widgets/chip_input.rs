@@ -483,18 +483,17 @@ impl EventHandler for ChipInput {
                 if filtered.is_empty() {
                     return;
                 }
-                // A typed separator commits what is before it and starts a new token.
+                // A typed separator commits what is before it and starts a new token. Every
+                // separated piece is a token: only the trailing piece after the last separator
+                // stays in the line, because no separator has ended it yet.
                 if filtered.contains(self.separator) {
                     let mut pieces = filtered.split(self.separator).peekable();
-                    if let Some(first) = pieces.next() {
-                        if !first.is_empty() {
-                            self.insert(first);
-                        }
-                    }
-                    self.commit();
-                    for piece in pieces {
+                    while let Some(piece) = pieces.next() {
                         if !piece.is_empty() {
                             self.insert(piece);
+                        }
+                        if pieces.peek().is_some() {
+                            self.commit();
                         }
                     }
                     return;

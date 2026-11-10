@@ -778,6 +778,18 @@ impl EventHandler for RefreshControl {
         // base untold — the theme's `"refresh_control:hover"` override could not fire.
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            // A disable mid-gesture must drop the gesture. `set_enabled` does not touch the pull
+            // latches, so a control re-enabled later resumed pulling from the stale origin on the
+            // next unrelated move and opened the band (`FAB` and `SwipeToDismiss` clear theirs
+            // the same way). A refresh already in flight is left alone; only the drag goes.
+            let had_origin = self.drag_origin_y.take().is_some();
+            if had_origin || self.state == RefreshState::Dragging {
+                self.state = RefreshState::Idle;
+                self.pull_distance = 0.0;
+                // The drawn distance springs back over the frames that follow.
+                self.settle.set_target(0.0);
+                self.base.request_redraw();
+            }
             return;
         }
         match event {
@@ -1129,6 +1141,30 @@ mod tests {
         let mut rc = make_refresh_control();
         rc.set_enabled(false);
         rc.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 });
+        assert_eq!(rc.refresh_state(), RefreshState::Idle);
+    }
+
+    /// Disabling the control mid-pull drops the gesture, so re-enabling it cannot resume it.
+    ///
+    /// The disabled early return sat in front of the gesture arms without clearing them:
+    /// `drag_origin_y` and the `Dragging` state survived, so the next unrelated `MouseMove` after
+    /// a re-enable pulled from the stale origin and opened the band with no button down.
+    #[test]
+    fn a_disable_mid_pull_drops_the_gesture() {
+        let mut rc = make_refresh_control();
+        rc.handle_event(&Event::MousePress { pos: Point::new(100, 20), button: 1, modifiers: 0 });
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 50) });
+        assert_eq!(rc.refresh_state(), RefreshState::Dragging);
+        assert!(rc.pull_distance() > 0.0);
+
+        rc.set_enabled(false);
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 90) });
+        assert_eq!(rc.refresh_state(), RefreshState::Idle, "the drag was dropped with the disable");
+        assert_eq!(rc.pull_distance(), 0.0);
+
+        rc.set_enabled(true);
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 130) });
+        assert_eq!(rc.pull_distance(), 0.0, "a button-less move must not pull");
         assert_eq!(rc.refresh_state(), RefreshState::Idle);
     }
 

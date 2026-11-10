@@ -418,10 +418,14 @@ fn apply_group_exclusivity(key: &GroupKey, id: ObjectId) {
     }
     let peers: Vec<ObjectId> =
         members(key).into_iter().map(|member| member.id).filter(|member| *member != id).collect();
-    let _ = select(key, id);
+    // Tell the peers **before** recording the selection. A checkable control's effective state is
+    // derived from the group, so once `select` ran a displaced peer already reports `false` and
+    // its `set_checked` sees no edge — its `state_changed`/`toggled` never fired. Asking first lets
+    // the peer read the state it is just now leaving.
     if !peers.is_empty() {
         notify_checked(&peers, false);
     }
+    let _ = select(key, id);
 }
 
 /// Whether the group clears its peers when a member reports a selection.
@@ -799,15 +803,20 @@ impl ButtonGroup {
         if !self.contains(button) {
             return None;
         }
-        let previous = select(&self.key, button);
+        let previous = selected(&self.key).filter(|previous| *previous != button);
         // The chosen member did not run its own toggle, so it has to be told: an external
-        // selection must paint checked and emit its own `state_changed`. Only the displaced peer
-        // was notified before, so `set_checked_button` moved the group's record while the box the
-        // caller selected kept painting unchecked.
+        // selection must paint checked and emit its own `state_changed`. The notice comes
+        // **before** `select` because a member's `is_checked` reads this group: after the move it
+        // already reports checked and `set_checked` would find no edge to announce. The member's
+        // own claim records the selection and displaces the previous one; `select` below still
+        // runs so an unmounted member (whose notice is a documented no-op) gets the record moved.
         notify_checked(&[button], true);
-        if let Some(previous) = previous.filter(|previous| *previous != button) {
+        if let Some(previous) = previous {
+            // Before `select`, so an unmounted target (whose notice is a documented no-op) still
+            // leaves the displaced peer able to read the state it is leaving.
             notify_checked(&[previous], false);
         }
+        let _ = select(&self.key, button);
         previous
     }
 
@@ -967,5 +976,52 @@ mod tests {
         notify_member_event(7, MemberEvent::Toggled(false));
 
         assert_eq!(*crate::compat::lock(&seen), vec![(7, true), (7, false)]);
+    }
+
+    /// A programmatic selection tells the chosen member **before** recording it.
+    ///
+    /// `set_checked_button` selected first and notified second; a radio's `is_checked` derives
+    /// from this registry, so the chosen member already reported checked and emitted no
+    /// `checked_changed(true)`/`selected` — the very signal the doc promises.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn an_external_selection_announces_the_chosen_member() {
+        use crate::compat::{Arc, Box, Mutex, Vec};
+        use crate::widget::base_widgets::radiobutton::RadioButton;
+        use crate::widget::runtime;
+        use crate::widget::Widget;
+
+        clear();
+        let mut group = ButtonGroup::with_id("external-selection");
+        let mut a = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut b = RadioButton::new(Rect::new(0, 24, 80, 20));
+        a.set_group_id(Some("external-selection".into()));
+        b.set_group_id(Some("external-selection".into()));
+        a.set_checked(true);
+
+        let a_events: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let a_sink = Arc::clone(&a_events);
+        a.checked_changed.connect(move |value| {
+            crate::compat::lock(&a_sink).push(*value);
+        });
+        let b_events: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let b_sink = Arc::clone(&b_events);
+        b.checked_changed.connect(move |value| {
+            crate::compat::lock(&b_sink).push(*value);
+        });
+
+        let a_id = a.id();
+        let b_id = b.id();
+        runtime::register_with_id(Box::new(a), a_id).expect("registry");
+        runtime::register_with_id(Box::new(b), b_id).expect("registry");
+        group.add_button(a_id);
+        group.add_button(b_id);
+
+        assert_eq!(group.set_checked_button(b_id), Some(a_id), "the displaced member is reported");
+        assert_eq!(*crate::compat::lock(&b_events), vec![true], "the chosen member announces");
+        assert_eq!(*crate::compat::lock(&a_events), vec![false], "the displaced member announces");
+
+        runtime::unregister(a_id);
+        runtime::unregister(b_id);
     }
 }

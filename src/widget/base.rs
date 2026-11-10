@@ -1494,7 +1494,12 @@ impl BaseWidget {
                 // In `Full` mode a tick keeps the base signal: the animation sweep holds the
                 // registry across `tick`, so the whole-control fallback would re-enter that
                 // borrow. This mirrors the per-widget helpers already used by the display
-                // controls.
+                // controls. The signal is emitted without going through `request_redraw`, whose
+                // `note_structure_changed` would make the metrics cache miss on every animated
+                // frame even though a tick changes pixels, not structure (RD3-02).
+                self.ever_requested_redraw.set(true);
+                self.redraw_requested.emit();
+                return;
             }
         }
         self.request_redraw();
@@ -1682,7 +1687,7 @@ impl BaseWidget {
     /// their arm. They therefore keep a private signal latch (see `Button`'s
     /// `signaled_pressed`) rather than using this flag as their edge — the flag is the
     /// single source for what is *painted*, the latch for what has been *announced*.
-    fn record_interaction_state(&mut self, event: &Event) {
+    pub(crate) fn record_interaction_state(&mut self, event: &Event) {
         match event {
             Event::MouseEnter { .. } => self.hovered = true,
             Event::MouseLeave { .. } => self.hovered = false,
@@ -1912,6 +1917,48 @@ mod tests {
         bw.set_geometry(Rect::new(10, 20, 500, 500));
         assert_eq!(bw.geometry(), Rect::new(10, 20, 120, 30));
         assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 1, "no second repaint");
+    }
+
+    /// A `Full`-mode animation frame keeps the redraw signal without bumping the structure
+    /// epoch.
+    ///
+    /// # The defect this pins
+    ///
+    /// The `Full` arm of `request_frame_repaint` fell through to `request_redraw`, which calls
+    /// `note_structure_changed`. `Full` is the default mode, so hovering a button bumped the
+    /// process-wide structure epoch every frame and the metrics cache — keyed on that epoch —
+    /// missed and recomputed the whole tree each time. A tick changes pixels, not structure.
+    #[test]
+    fn a_full_mode_frame_repaint_does_not_bump_the_structure_epoch() {
+        use crate::widget::runtime::{register, structure_epoch, unregister, with_widget_mut};
+
+        let id = register(Box::new(crate::widget::base_widgets::button::Button::new(
+            crate::compat::String::from("Tick"),
+            Rect::new(0, 0, 40, 20),
+        )))
+        .expect("a test thread has a registry");
+        let before = structure_epoch();
+        let redraws = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = redraws.clone();
+        with_widget_mut(id, |widget| {
+            let base = widget.base();
+            base.redraw_requested_signal().connect(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+            base.request_frame_repaint();
+        });
+
+        assert_eq!(
+            structure_epoch(),
+            before,
+            "an animation frame must not invalidate the structure-keyed metrics cache"
+        );
+        assert_eq!(
+            redraws.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the host still observes the redraw request"
+        );
+        unregister(id);
     }
 
     /// A changed size bound asks layout to run again, and an unchanged one does not.

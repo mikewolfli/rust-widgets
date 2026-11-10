@@ -2393,8 +2393,14 @@ impl ChartWidget {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
-        let (start, end) = self.zoom_bounds();
-        let visible_count = end.saturating_sub(start).max(1);
+        let (window_start, window_end) = self.zoom_bounds();
+        // The zoom window is derived from the **first** series' length. A later, shorter series
+        // would otherwise be sliced past its own end (`range end index N out of range`), so the
+        // slice is clamped per series exactly as `projections` does for the line-style marks.
+        // The slot width still follows the window: the surviving bars keep their categories.
+        let visible_count = window_end.saturating_sub(window_start).max(1);
+        let end = window_end.min(data.len());
+        let start = window_start.min(end);
         let series_total = self.series.len().max(1);
         let slot = (area.right - area.left).max(1) / visible_count as i32;
         let bar_width = (slot / series_total as i32).max(1);
@@ -3859,6 +3865,22 @@ mod issue_2_8_tests {
             key,
             "new data is a new projection"
         );
+    }
+
+    /// A zoom window sized from series 0 must not slice a shorter series past its own end.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw_bar_chart` sliced every series with the window derived from series 0's length, so a
+    /// `[[1, 2, 3], [9]]` bar chart panicked with `range end index 3 out of range for slice of
+    /// length 1`. The line/area/scatter projections already clamped the end per series.
+    #[test]
+    fn a_short_series_under_a_longer_window_is_clamped_instead_of_panicking() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_chart_type(ChartType::Bar);
+        chart.set_series(vec![vec![1.0, 2.0, 3.0], vec![9.0]]);
+        let svg = crate::widget::svg::render_to_svg(&mut chart);
+        assert!(svg.starts_with("<svg"), "the bar chart paints with a shorter second series");
     }
 
     /// Chapter-3 gap 8: a mounted standard legend is the selection path, and its toggle hides

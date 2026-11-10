@@ -46,7 +46,8 @@
 /// Clamps `value` into the range spanned by `a` and `b`, in either order.
 ///
 /// Either bound may be `NaN`; a `NaN` bound is treated as absent. If both are
-/// `NaN` there is no range to clamp to, so `value` is returned unchanged.
+/// `NaN` there is no range to clamp to, so `value` is returned unchanged. A `NaN`
+/// **value** is preserved rather than pinned to a bound, matching `f32::clamp`.
 ///
 /// Never panics, which is the entire point: it replaces `value.clamp(min, max)`
 /// at call sites where `min` and `max` are mutable fields rather than constants.
@@ -64,12 +65,16 @@
 /// assert_eq!(ordered_clamp(5.0, f32::NAN, f32::NAN), 5.0);
 /// ```
 pub fn ordered_clamp(value: f32, a: f32, b: f32) -> f32 {
+    // A NaN value is not a point in any range, and `min`/`max` would silently replace it with
+    // the non-NaN operand — with both bounds finite that pinned an unset value to `high`.
+    // Preserve it, which is also what `f32::clamp` does for a NaN value.
+    if value.is_nan() {
+        return f32::NAN;
+    }
     match (a.is_nan(), b.is_nan()) {
         (false, false) => {
             let low = a.min(b);
             let high = a.max(b);
-            // `value` may itself be NaN; clamp would panic-free return NaN, and so
-            // does this, because `min`/`max` propagate the non-NaN operand.
             value.min(high).max(low)
         }
         // One bound is usable, so treat the range as bounded on that side only.
@@ -90,6 +95,10 @@ pub fn ordered_clamp(value: f32, a: f32, b: f32) -> f32 {
 /// assert_eq!(ordered_clamp_f64(5.0, f64::NAN, f64::NAN), 5.0);
 /// ```
 pub fn ordered_clamp_f64(value: f64, a: f64, b: f64) -> f64 {
+    // See [`ordered_clamp`]: `min`/`max` would replace a NaN value with a bound.
+    if value.is_nan() {
+        return f64::NAN;
+    }
     match (a.is_nan(), b.is_nan()) {
         (false, false) => {
             let low = a.min(b);
@@ -223,6 +232,23 @@ mod tests {
         assert_eq!(ordered_clamp_i64(-20, 10, 0), 0);
         assert_eq!(ordered_clamp_u32(20, 10, 0), 10);
         assert_eq!(ordered_clamp_usize(20, 10, 0), 10);
+    }
+
+    /// A `NaN` value is preserved instead of being pinned to a bound.
+    ///
+    /// # The defect this pins
+    ///
+    /// `value.min(high).max(low)` defers to `f32::min`/`max`, which return the non-NaN operand.
+    /// A control holding an unset (`NaN`) value therefore reported the **maximum** and drew its
+    /// thumb at the end of the track. `clamp` returns `NaN` for a `NaN` value, and so must this
+    /// drop-in replacement, on every arm — including the one-bound cases.
+    #[test]
+    fn a_nan_value_stays_nan_instead_of_pinning_to_a_bound() {
+        assert!(ordered_clamp(f32::NAN, 0.0, 10.0).is_nan());
+        assert!(ordered_clamp(f32::NAN, f32::NAN, 10.0).is_nan());
+        assert!(ordered_clamp(f32::NAN, 0.0, f32::NAN).is_nan());
+        assert!(ordered_clamp_f64(f64::NAN, 0.0, 10.0).is_nan());
+        assert!(ordered_clamp_f64(f64::NAN, f64::NAN, 10.0).is_nan());
     }
 
     /// Infinity as a bound is a legitimate range end, not an error.

@@ -31,7 +31,10 @@ pub use color_picker::ColorPicker;
 pub use command_palette::{CommandEntry, CommandPalette};
 pub use freeform_shape::{FreeformShapeWidget, ShapeCanvas};
 pub use grid::GridWidget;
-pub use markdown_editor::{FindBar, MarkdownEditor, MarkdownOutlinePanel, MarkdownTextChange};
+pub use markdown_editor::{
+    FindBar, MarkdownBlockRender, MarkdownBlockRenderer, MarkdownBlockSpec, MarkdownEditor,
+    MarkdownOutlinePanel, MarkdownTextChange,
+};
 pub use notification_center::{NotificationCenter, NotificationItem, NotificationLevel};
 pub use segmented_control::{SegmentItem, SegmentedControl};
 pub use signature_pad::{SignaturePad, SignatureStroke};

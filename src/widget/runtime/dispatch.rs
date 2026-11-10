@@ -360,6 +360,22 @@ impl DispatchGuard {
     /// and definitely removed after it (or during an unwind).
     pub(crate) fn run(&mut self, mounted: &mut Mounted, event: &Event) {
         mounted.widget.handle_event(event);
+        // Record the interaction facts for the widget the event was actually delivered to.
+        //
+        // # Why the runtime does it, and why after the handler
+        //
+        // A control that overrides `handle_event` without delegating to the base
+        // (`dialog/popup_window.rs`, `display_widgets/tag_group.rs`) would otherwise never update
+        // `hovered`/`pressed`/`grabbed`/`focus_reason`, leaving its `:hover` and `:pressed` theme
+        // entries unreachable and `widget_state()` permanently `Normal`. A control that does
+        // delegate records the same facts a second time; these arms are idempotent.
+        //
+        // The point is **after** the handler, which is where `BaseWidget::handle_event` records
+        // for a delegating control. Recording before it would clear `grabbed` on a release before
+        // the control's own release arm could ask whether the gesture belonged to it — `Button`
+        // guards its activation on the grab, so a pre-recorded release would silently swallow the
+        // click.
+        mounted.widget.base_mut().record_interaction_state(event);
         // A context-menu request is delivered *in addition to* the event's ordinary handling, so a
         // control that starts a selection on a secondary press keeps doing so. The hook lives on
         // `Widget` rather than on `EventHandler` because it answers a question about the control's
@@ -753,4 +769,102 @@ pub fn open_context_menu_for_event(menu_id: ObjectId, event: &Event, viewport: R
         return false;
     }
     open_context_menu(menu_id, *pos, viewport)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Color, Point, Rect};
+    use crate::event::{mouse_button, Event, EventHandler};
+    use crate::render::RenderContext;
+    use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+    /// A control whose handler deliberately does **not** delegate to the base.
+    ///
+    /// This is the shape `PopupWindow` and `TagGroup` have: they replace `handle_event` wholesale,
+    /// so before the runtime recorded the interaction facts themselves, `widget_state()` stayed
+    /// `Normal` and their `:hover`/`:pressed` theme entries were unreachable.
+    struct NonDelegating {
+        base: BaseWidget,
+        seen: usize,
+    }
+
+    impl NonDelegating {
+        fn new() -> Self {
+            Self {
+                base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 100, 40), "NonDelegating"),
+                seen: 0,
+            }
+        }
+    }
+
+    impl Widget for NonDelegating {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        crate::impl_draw_bridge!();
+    }
+
+    impl EventHandler for NonDelegating {
+        fn handle_event(&mut self, _event: &Event) {
+            // Intentionally no `self.base.handle_event(event)`.
+            self.seen += 1;
+        }
+    }
+
+    impl Draw for NonDelegating {
+        fn draw(&mut self, context: &mut RenderContext) {
+            context.fill_rect(self.base.geometry(), Color::TRANSPARENT);
+        }
+    }
+
+    #[test]
+    fn dispatch_records_interaction_state_without_delegation() {
+        let id = register(Box::new(NonDelegating::new())).expect("a test thread has a registry");
+
+        assert!(dispatch_event(id, &Event::MouseEnter { pos: Point::new(5, 5) }));
+        assert_eq!(
+            read_widget(id, |widget| widget.base().is_hovered()),
+            Some(true),
+            "hover must be recorded even though the handler never delegates"
+        );
+
+        assert!(dispatch_event(
+            id,
+            &Event::MousePress {
+                pos: Point::new(5, 5),
+                button: mouse_button::PRIMARY,
+                modifiers: 0,
+            }
+        ));
+        assert_eq!(
+            read_widget(id, |widget| widget.base().is_pressed()),
+            Some(true),
+            "a press must arm the state channel for a non-delegating control"
+        );
+        assert_eq!(
+            read_widget(id, |widget| {
+                (widget as &dyn core::any::Any)
+                    .downcast_ref::<NonDelegating>()
+                    .map(|probe| probe.seen)
+            }),
+            Some(Some(2)),
+            "the handler itself still ran for the enter and the press"
+        );
+
+        assert!(dispatch_event(
+            id,
+            &Event::MouseRelease { pos: Point::new(5, 5), button: mouse_button::PRIMARY }
+        ));
+        assert_eq!(
+            read_widget(id, |widget| widget.base().is_pressed()),
+            Some(false),
+            "the release ends the gesture"
+        );
+
+        unregister(id);
+    }
 }

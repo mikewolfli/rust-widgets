@@ -579,12 +579,31 @@ impl ScrollArea {
 
     /// The largest horizontal scroll offset the content allows.
     fn max_scroll_x(&self) -> i32 {
-        (self.content_size.width as i32 - self.viewport.width as i32).max(0)
+        let (view_w, _) = self.inset_viewport();
+        (self.content_size.width as i32 - view_w as i32).max(0)
     }
 
     /// The largest vertical scroll offset the content allows.
     fn max_scroll_y(&self) -> i32 {
-        (self.content_size.height as i32 - self.viewport.height as i32).max(0)
+        let (_, view_h) = self.inset_viewport();
+        (self.content_size.height as i32 - view_h as i32).max(0)
+    }
+
+    /// The viewport extent the content scrolls inside: the viewport minus the content inset.
+    ///
+    /// [`Self::set_scroll_position`] clamps against this, so bar visibility (the bars carry those
+    /// maxima), and the scroll-to-end helpers, must read it too. Reading the full viewport instead
+    /// made an inset area report no bar for rows that were still unreachable, stop the bar short of
+    /// the last offset, and land `scroll_to_bottom` exactly the inset short of the end.
+    fn inset_viewport(&self) -> (u32, u32) {
+        (
+            self.viewport.width.saturating_sub(
+                self.content_margins.left.saturating_add(self.content_margins.right),
+            ),
+            self.viewport.height.saturating_sub(
+                self.content_margins.top.saturating_add(self.content_margins.bottom),
+            ),
+        )
     }
 
     /// Routes a pointer event to the mounted bars.
@@ -730,6 +749,11 @@ impl ScrollArea {
             let mut stack: Vec<(ObjectId, u32)> = Vec::new();
             for child in self.base.children().to_vec() {
                 if Some(child) == self.corner_widget {
+                    continue;
+                }
+                // A sticky header is chrome pinned over the content, not part of it: translating it
+                // with the scroll unpinned the very thing the region asked to be pinned.
+                if self.sticky_headers.contains(&Some(child)) {
                     continue;
                 }
                 if Some(child) == self.widget {
@@ -958,14 +982,9 @@ impl ScrollArea {
         // deliberately *not* subtracted here: the historical contract clamps against the declared
         // viewport, and changing that would shift every stored scroll position by the bar
         // thickness even for a caller who never set a margin.
-        let view_w =
-            self.viewport.width.saturating_sub(
-                self.content_margins.left.saturating_add(self.content_margins.right),
-            ) as i32;
-        let view_h =
-            self.viewport.height.saturating_sub(
-                self.content_margins.top.saturating_add(self.content_margins.bottom),
-            ) as i32;
+        let (view_w, view_h) = self.inset_viewport();
+        let view_w = view_w as i32;
+        let view_h = view_h as i32;
         let content_w = self.content_size.width as i32;
         let content_h = self.content_size.height as i32;
         let max_x = (content_w - view_w).max(0);
@@ -1069,6 +1088,11 @@ impl ScrollArea {
             let mut height = 0u32;
             for child in self.base.children() {
                 if Some(*child) == self.corner_widget {
+                    continue;
+                }
+                // A pinned header is not scrolling content, so it adds no scroll range; including
+                // it created range past the real content whenever no content root was set.
+                if self.sticky_headers.contains(&Some(*child)) {
                     continue;
                 }
                 let Some(hint) =
@@ -1191,14 +1215,7 @@ impl ScrollArea {
 
     /// Scrolls to the bottom of the content.
     pub fn scroll_to_bottom(&mut self) {
-        if self.content_size.height > self.viewport.height {
-            self.set_scroll_position(
-                self.scroll_position.0,
-                (self.content_size.height - self.viewport.height) as i32,
-            );
-        } else {
-            self.set_scroll_position(self.scroll_position.0, 0);
-        }
+        self.set_scroll_position(self.scroll_position.0, self.max_scroll_y());
     }
 
     /// Scrolls to the left edge of the content.
@@ -1208,21 +1225,14 @@ impl ScrollArea {
 
     /// Scrolls to the right edge of the content.
     pub fn scroll_to_right(&mut self) {
-        if self.content_size.width > self.viewport.width {
-            self.set_scroll_position(
-                (self.content_size.width - self.viewport.width) as i32,
-                self.scroll_position.1,
-            );
-        } else {
-            self.set_scroll_position(0, self.scroll_position.1);
-        }
+        self.set_scroll_position(self.max_scroll_x(), self.scroll_position.1);
     }
     /// Returns whether horizontal scroll bar is visible.
     fn horizontal_scroll_bar_visible(&self) -> bool {
         match self.horizontal_scroll_bar_policy {
             ScrollBarPolicy::AlwaysOn => true,
             ScrollBarPolicy::AlwaysOff => false,
-            ScrollBarPolicy::AsNeeded => self.content_size.width > self.viewport.width,
+            ScrollBarPolicy::AsNeeded => self.content_size.width > self.inset_viewport().0,
         }
     }
     /// Returns whether vertical scroll bar is visible.
@@ -1230,7 +1240,7 @@ impl ScrollArea {
         match self.vertical_scroll_bar_policy {
             ScrollBarPolicy::AlwaysOn => true,
             ScrollBarPolicy::AlwaysOff => false,
-            ScrollBarPolicy::AsNeeded => self.content_size.height > self.viewport.height,
+            ScrollBarPolicy::AsNeeded => self.content_size.height > self.inset_viewport().1,
         }
     }
     /// Re-derives the mounted bars: placement, range, visibility and value.
@@ -1613,6 +1623,10 @@ impl Widget for ScrollArea {
         self.viewport.width = geometry.width;
         self.viewport.height = geometry.height;
         self.update_scroll_bars();
+        // A larger viewport shrinks the scrollable range, and `set_viewport` clamps for exactly this
+        // reason: an offset past the new maximum placed the content above/left of the content box,
+        // where `children_clip` hid it — the whole content could vanish on a resize.
+        self.set_scroll_position(self.scroll_position.0, self.scroll_position.1);
         // A layout positions the scroll area through this entry point. The content lives in
         // the new viewport, so it has to be placed again here rather than only on a scroll.
         self.place_content();
@@ -2874,6 +2888,87 @@ mod tests {
             crate::widget_geometry(id),
             Some((content.x, content.y, content.width, content.height))
         );
+
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// A resize that leaves less content to scroll must re-clamp the stored offset.
+    ///
+    /// `set_geometry` changes the viewport without going through `set_viewport`, so it used to
+    /// keep an offset past the new maximum: the content was then placed above/left of the
+    /// content box, where `children_clip` hid it — the whole content could vanish on a resize.
+    /// A larger viewport is what *shrinks* the scrollable range.
+    #[test]
+    fn a_shrinking_resize_reclamps_the_offset() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 100, 100));
+        area.set_content_size(Size::new(1000, 1000));
+        area.set_scroll_position(900, 900);
+        assert_eq!(area.scroll_position(), (900, 900), "the small viewport allows the offset");
+
+        // The viewport grows to 400x400, so the largest offset falls to 600 on each axis.
+        area.set_geometry(Rect::new(0, 0, 400, 400));
+        assert_eq!(area.viewport(), Rect::new(0, 0, 400, 400));
+        assert_eq!(area.scroll_position(), (600, 600), "the offset is re-clamped on resize");
+        assert_eq!(
+            area.scroll_position(),
+            (area.max_scroll_x(), area.max_scroll_y()),
+            "and lands inside the new range"
+        );
+    }
+
+    /// The scroll-to-end helpers use the same inset viewport the clamp uses.
+    ///
+    /// They used the raw viewport, so an area with content margins stopped exactly the inset
+    /// short of the end — a row that was still reachable by dragging could not be reached by
+    /// `scroll_to_bottom`/`scroll_to_right`.
+    #[test]
+    fn content_margins_are_accounted_for_when_scrolling_to_the_end() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        area.set_content_size(Size::new(1000, 1000));
+        area.set_content_margins(10, 10, 10, 10);
+
+        // The inset box is 180x180, so the true maximum is 1000 - 180, not 1000 - 200.
+        assert_eq!(area.max_scroll_x(), 820);
+        assert_eq!(area.max_scroll_y(), 820);
+
+        area.scroll_to_bottom();
+        assert_eq!(area.scroll_position().1, area.max_scroll_y());
+        assert_eq!(area.scroll_position().1, 820, "the last reachable row is the inset's end");
+
+        area.scroll_to_right();
+        assert_eq!(area.scroll_position().0, area.max_scroll_x());
+        assert_eq!(area.scroll_position(), (820, 820));
+    }
+
+    /// A sticky header is chrome pinned over the content, so scrolling must not translate it.
+    ///
+    /// `refresh_content_tree` collected every child as scrolling content, so the header mounted
+    /// through `set_sticky_header` was translated by the same delta as the rows beneath it —
+    /// unpinning the very thing the region asked to be pinned.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_sticky_header_is_not_scrolled() {
+        use crate::widget::base_widgets::label::Label;
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "header".to_string(),
+            Rect::new(0, 0, 240, 120),
+        )))
+        .expect("the test thread has a widget runtime");
+
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        area.set_content_size(Size::new(200, 600));
+        area.add_sticky_region(0, 400, 24);
+        assert!(area.set_sticky_header(0, Some(id)));
+        // The flat descendant list is what `move_content_children` translates; a pinned header
+        // must not be on it.
+        area.refresh_content_tree();
+
+        let before = crate::widget_geometry(id).expect("the header is mounted");
+        area.set_scroll_position(0, 120);
+        assert_eq!(area.scroll_position(), (0, 120));
+        let after = crate::widget_geometry(id).expect("the header is still mounted");
+        assert_eq!(before, after, "a pinned header is chrome, not scrolling content");
 
         crate::widget::runtime::unregister(id);
     }

@@ -8,9 +8,7 @@
 //! Warning, Error, etc.). Each icon is drawn using basic shapes — lines, circles,
 //! rectangles, and paths — through the render context.
 
-#[cfg(widgets_unstripped)]
-use crate::core::HorizontalAlignment;
-use crate::core::{Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 #[cfg(widgets_unstripped)]
 use crate::event::{Event, EventHandler};
 #[cfg(all(widgets_unstripped, feature = "image"))]
@@ -80,7 +78,36 @@ pub fn draw_icon_at(ctx: &mut RenderContext, rect: Rect, color: Color, name: Ico
         }
         return;
     }
-    draw_fallback_in(ctx, rect, color, name.as_str(), IconTransform::IDENTITY);
+    // The placeholder is part of the contract: a name that neither the data nor the fallback table
+    // knows must degrade the way the widget does, not paint nothing. `draw_fallback_in`'s answer was
+    // discarded here, so a catalogue token with no fallback contours was silently invisible on a
+    // build without `icons`.
+    if !draw_fallback_in(ctx, rect, color, name.as_str(), IconTransform::IDENTITY) {
+        draw_unknown_in(ctx, rect, color);
+    }
+}
+
+/// Draws the question-mark placeholder for a name that has no geometry.
+///
+/// One implementation for the [`Icon`] widget and the inline helper, which is what makes an unknown
+/// name look the same in both — the contract `draw_icon_at` documents.
+fn draw_unknown_in(ctx: &mut RenderContext, rect: Rect, color: Color) {
+    let size = rect.width as i32;
+    if size == 0 || rect.height == 0 {
+        return;
+    }
+    // Built once: the placeholder face is a constant, and a constructor per draw allocated its
+    // family name for a glyph that never changes.
+    static UNKNOWN_FONT: crate::compat::OnceLock<crate::core::Font> =
+        crate::compat::OnceLock::new();
+    let font = UNKNOWN_FONT.get_or_init(|| crate::core::Font::simple("sans-serif", 12.0));
+    ctx.draw_text(
+        Point::new(rect.x + size / 4, rect.y + size * 3 / 4),
+        "?",
+        font,
+        color,
+        HorizontalAlignment::Left,
+    );
 }
 
 /// The resolved, borrowed view of an icon source.
@@ -1520,23 +1547,7 @@ impl Icon {
 
     /// Draws an unknown icon as a question mark.
     fn draw_unknown(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.draw_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Built once: the placeholder face is a constant, and a constructor per draw
-        // allocated its family name for a glyph that never changes.
-        static UNKNOWN_FONT: crate::compat::OnceLock<crate::core::Font> =
-            crate::compat::OnceLock::new();
-        let font = UNKNOWN_FONT.get_or_init(|| crate::core::Font::simple("sans-serif", 12.0));
-        ctx.draw_text(
-            Point::new(cx + s / 4, cy + s * 3 / 4),
-            "?",
-            font,
-            c,
-            HorizontalAlignment::Left,
-        );
+        draw_unknown_in(ctx, self.icon_rect(), self.draw_color());
     }
 }
 

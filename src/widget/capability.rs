@@ -1815,6 +1815,18 @@ impl WidgetFactory {
             return Err(CapabilityAccessError::ReadOnlyProperty);
         }
 
+        // The value's carrier is compared to the declared kind here, before the control sees it.
+        // The schema's own doc promises `TypeMismatch` for a write of another kind; without this
+        // check a `Bool` written to an `Int` property was accepted and then interpreted by the
+        // control's extractor, which is how the two answers could disagree. `Null` and the numeric
+        // widenings are the documented exceptions (see `value_matches_property_kind`).
+        if !crate::widget::capability::types::value_matches_property_kind(
+            &value,
+            property.value_kind,
+        ) {
+            return Err(CapabilityAccessError::TypeMismatch);
+        }
+
         // The schema's constraints are enforced here, before the write reaches the control, so a
         // value outside a declared range is reported with the property name and the refused reason
         // rather than being clamped silently by the control (BLUE26 B26.02). This is the one place

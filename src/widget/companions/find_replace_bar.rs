@@ -118,6 +118,8 @@ pub struct FindReplaceBar {
 impl FindReplaceBar {
     /// Creates a closed bar with empty query and replacement text.
     pub fn new(geometry: Rect) -> Self {
+        // The capability table declares this host `visible` by default; `contains_point` keeps a
+        // closed strip out of the hit test, and `close` also clears the base flag.
         Self {
             base: BaseWidget::new(WidgetKind::SearchBar, geometry, "FindReplaceBar"),
             query: String::new(),
@@ -144,6 +146,11 @@ impl FindReplaceBar {
         }
         self.open = true;
         self.active_field = Some(BarField::Query);
+        self.base.show();
+        // "Focuses the query field" is an observable promise: without this the keys that follow
+        // Ctrl+F stayed with the document behind the strip.
+        let id = crate::widget::runtime::registry_id_of(self.base.id()).unwrap_or(self.base.id());
+        let _ = crate::widget::runtime::focus_widget(id);
         self.base.request_redraw();
     }
 
@@ -157,6 +164,7 @@ impl FindReplaceBar {
         }
         self.open = false;
         self.active_field = None;
+        self.base.hide();
         self.base.request_redraw();
         self.closed.emit();
     }
@@ -565,6 +573,10 @@ impl Draw for FindReplaceBar {
 impl Widget for FindReplaceBar {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    /// A closed strip paints nothing, so it must not accept a press over its rectangle.
+    fn contains_point(&self, point: Point) -> bool {
+        self.open && self.base.contains_point_with_touch_expansion(point)
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);

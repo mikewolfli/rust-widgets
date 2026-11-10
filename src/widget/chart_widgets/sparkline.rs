@@ -352,8 +352,12 @@ impl Sparkline {
     }
 
     /// Sets manual min/max values for the Y range.
-    /// Pass `None` for auto-compute.
+    ///
+    /// Each bound is independent: a `Some` value pins that end of the axis and a `None` lets
+    /// that end auto-compute from the data. A non-finite bound is treated as `None`.
     pub fn set_range(&mut self, min: Option<f64>, max: Option<f64>) {
+        let min = min.filter(|value| value.is_finite());
+        let max = max.filter(|value| value.is_finite());
         if self.min == min && self.max == max {
             return;
         }
@@ -433,21 +437,40 @@ impl Sparkline {
         Some(index)
     }
 
-    /// Resolves the Y range: uses manual if set, otherwise auto-computes.
+    /// Resolves the Y range: each manual bound wins over the auto-computed one.
+    ///
+    /// # Why every bound is validated here
+    ///
+    /// `map_at` divides by `y_max - y_min`. A manual pair whose two bounds are equal (or ordered
+    /// the wrong way) produced `±inf` there, whose `i32` cast saturates and then overflows the
+    /// baseline subtraction. The auto branch already widened a degenerate span; the manual branch
+    /// must do the same, and so must the mixed manual/auto combination.
     fn resolve_y_range(&self) -> (f64, f64) {
-        match (self.min, self.max) {
-            (Some(min), Some(max)) => (min, max),
-            _ => {
-                let (min, max) = match (self.series_min, self.series_max) {
-                    (Some(min), Some(max)) => (min, max),
-                    _ => return (0.0, 1.0),
-                };
+        let auto = match (self.series_min, self.series_max) {
+            (Some(min), Some(max)) => {
                 if (max - min).abs() < f64::EPSILON {
-                    return (min - 1.0, min + 1.0);
+                    (min - 1.0, min + 1.0)
+                } else {
+                    let padding = (max - min) * 0.1;
+                    (min - padding, max + padding)
                 }
-                let padding = (max - min) * 0.1;
-                (min - padding, max + padding)
             }
+            _ => (0.0, 1.0),
+        };
+        let manual_min = self.min.filter(|value| value.is_finite());
+        let manual_max = self.max.filter(|value| value.is_finite());
+        let min = manual_min.unwrap_or(auto.0);
+        let max = manual_max.unwrap_or(auto.1);
+        if max - min > f64::EPSILON {
+            return (min, max);
+        }
+        // The span is zero or inverted. Keep every pinned bound and widen the other end, so a
+        // single manual bound is not silently discarded by the degenerate guard.
+        let auto_span = (auto.1 - auto.0).abs().max(1.0);
+        match (manual_min, manual_max) {
+            (Some(min), None) => (min, min + auto_span),
+            (None, Some(max)) => (max - auto_span, max),
+            _ => (min - 1.0, min + 1.0),
         }
     }
 }
@@ -606,8 +629,11 @@ impl Draw for Sparkline {
         // `Vec<Point>` once per frame. The highlight dot maps the last sample directly.
         let map_at = |i: usize, val: f64| -> Point {
             let px = if n > 1 { x0 + (x1 - x0) * i as i32 / (n - 1) as i32 } else { x0 };
-            let py = y_bottom - ((val - y_min) / (y_max - y_min) * plot_height) as i32;
-            Point::new(px, py.max(y_top))
+            let fraction = (val - y_min) / (y_max - y_min);
+            let py = y_bottom - (fraction * plot_height) as i32;
+            // Clamp into the plot band: a value outside a manual range (or a saturated cast)
+            // must still paint inside the control rather than overflowing the band arithmetic.
+            Point::new(px, py.clamp(y_top.min(y_bottom), y_top.max(y_bottom)))
         };
 
         // ── Area fill ──
@@ -995,5 +1021,41 @@ mod tests {
         let (_, x1, _, _) = sl.plot_extents();
         sl.handle_event(&Event::MousePress { pos: Point::new(x1, 12), button: 1, modifiers: 0 });
         assert!(hit.load(Ordering::SeqCst), "a click on the final sample reports it");
+    }
+
+    /// A degenerate manual range must not divide by zero and overflow the pixel mapping.
+    ///
+    /// # The defect this pins
+    ///
+    /// `set_range(Some(5.0), Some(5.0))` reached `map_at` unchanged, `(1.0 - 5.0) / 0.0` produced
+    /// `-inf`, its `i32` cast saturated, and `y_bottom - i32::MIN` panicked in debug builds.
+    #[test]
+    fn a_degenerate_manual_range_is_widened_and_stays_inside_the_plot() {
+        let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        sl.set_data(vec![1.0, 2.0]);
+        sl.set_range(Some(5.0), Some(5.0));
+        let (min, max) = sl.resolve_y_range();
+        assert!(max > min, "a zero span is widened instead of reaching the divider: {min}..{max}");
+        let (_, _, y_top, y_bottom) = sl.plot_extents();
+        let svg = render_to_svg(&mut sl);
+        assert!(svg.starts_with("<svg"), "the degenerate range still paints");
+        assert!(y_top <= y_bottom, "the plot band has a positive height");
+    }
+
+    /// Each `set_range` bound is independent, as its documentation states.
+    #[test]
+    fn a_single_manual_bound_pins_that_end_of_the_axis() {
+        let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        sl.set_data(vec![1.0, 3.0]);
+
+        sl.set_range(Some(5.0), None);
+        let (min, max) = sl.resolve_y_range();
+        assert_eq!(min, 5.0, "the pinned minimum is honoured on its own");
+        assert!(max > min, "the unpinned maximum is derived from the data");
+
+        sl.set_range(None, Some(10.0));
+        let (min, max) = sl.resolve_y_range();
+        assert_eq!(max, 10.0, "the pinned maximum is honoured on its own");
+        assert!(min < max, "the unpinned minimum is derived from the data");
     }
 }

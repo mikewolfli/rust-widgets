@@ -19,6 +19,12 @@ use crate::render::RenderContext;
 /// non-zero radius strokes a rounded rectangle with the same width — per corner since STY-01, so a
 /// non-uniform fill shape gets the matching outline instead of a silently square one.
 ///
+/// A **zero width paints nothing**. Both paths used to force at least one pixel (the square path
+/// fell back to `draw_rect` and the rounded path to `width.max(1)`), so `set_border_width(0)` with
+/// a border colour still painted a 1 px outline — contradicting the documented "border explicitly
+/// drawn with no thickness" and, because `LineEdit` passed `unwrap_or(0)`, painting a border the
+/// caller had not configured at all.
+///
 /// Public because the `rust-widgets-suites` package paints its controls with the same helper: a
 /// suite that re-implemented the fill/outline pairing would disagree with this crate about the
 /// rounded-corner rule on the first control it moved.
@@ -29,6 +35,9 @@ pub fn stroke_surface_border(
     color: Color,
     width: u32,
 ) {
+    if width == 0 {
+        return;
+    }
     if radii == [0, 0, 0, 0] {
         if width > 1 {
             context.draw_rect_stroke(rect, color, width);
@@ -36,7 +45,7 @@ pub fn stroke_surface_border(
             context.draw_rect(rect, color);
         }
     } else {
-        context.draw_rounded_rect_stroke_corners(rect, radii, color, width.max(1));
+        context.draw_rounded_rect_stroke_corners(rect, radii, color, width);
     }
 }
 
@@ -90,5 +99,48 @@ pub trait Draw {
     /// Defaults to `false` because most widgets map onto a platform control.
     fn uses_custom_drawing(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Size;
+    use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+    /// Counts pixels the helper actually painted onto a transparent surface.
+    fn painted_pixels(radii: [u32; 4], width: u32) -> usize {
+        let mut backend = SoftwarePaintBackend::new(Size::new(24, 24), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            stroke_surface_border(
+                &mut context,
+                Rect::new(2, 2, 20, 20),
+                radii,
+                Color::BLACK,
+                width,
+            );
+        }
+        backend.end_frame();
+        let (pixels, _) = backend.frame_rgba().as_chunks::<4>();
+        pixels.iter().filter(|pixel| pixel[3] != 0).count()
+    }
+
+    /// A border declared with zero thickness paints nothing, on either path.
+    ///
+    /// # The defect this pins
+    ///
+    /// The square path fell through to `draw_rect` (a 1 px stroke) and the rounded path forced
+    /// `width.max(1)`, so `set_border_width(0)` with a border colour still painted a 1 px outline.
+    /// `LineEdit` passes `unwrap_or(0)` for "no width configured", which made the unconfigured
+    /// case paint a border too. The assertion that a width of 1 still paints is the control: it
+    /// proves the probe can see this helper's output rather than passing vacuously.
+    #[test]
+    fn a_zero_width_border_paints_nothing() {
+        assert_eq!(painted_pixels([0, 0, 0, 0], 0), 0, "the square path must paint nothing");
+        assert_eq!(painted_pixels([4, 4, 4, 4], 0), 0, "the rounded path must paint nothing");
+        assert!(painted_pixels([0, 0, 0, 0], 1) > 0, "a 1 px square outline still paints");
+        assert!(painted_pixels([4, 4, 4, 4], 1) > 0, "a 1 px rounded outline still paints");
     }
 }

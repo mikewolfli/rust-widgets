@@ -407,6 +407,9 @@ impl AdaptiveScaffold {
     /// other slot on this control has an id setter, and this one only had the owning `Box` one.
     pub fn set_app_bar_bottom_id(&mut self, widget: Option<ObjectId>) {
         self.app_bar.set_bottom_id(widget);
+        // The slot changes the bar's height, which moves the content band and every child
+        // band derived from it, so a repaint alone would leave the old layout in place.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -432,15 +435,14 @@ impl AdaptiveScaffold {
     /// Assigns the body page shown while `index` is the selected destination.
     ///
     /// Every page stays mounted, which is what gives each destination its own state: switching
-    /// away and back returns to the same widget rather than rebuilding it. The index is clamped
-    /// into the current item range, and the vector is grown to that range so a page added before
-    /// its item still lines up with it.
+    /// away and back returns to the same widget rather than rebuilding it. The page is stored at
+    /// exactly `index`, matching [`Self::set_nav_body_id`]: a page assigned before its destination
+    /// exists must not be clamped onto destination 0.
     pub fn set_nav_body(&mut self, index: usize, widget: Option<Box<dyn Widget>>) {
-        let upper = index.min(self.nav_items.len().saturating_sub(1));
-        if self.nav_bodies.len() <= upper {
-            self.nav_bodies.resize_with(upper + 1, || None);
+        if self.nav_bodies.len() <= index {
+            self.nav_bodies.resize_with(index + 1, || None);
         }
-        self.nav_bodies[upper] = widget;
+        self.nav_bodies[index] = widget;
         self.base.request_redraw();
     }
 
@@ -952,9 +954,10 @@ impl AdaptiveScaffold {
     ///
     /// The band is derived from the bar's own slot rather than fixed at [`APP_BAR_HEIGHT`], so
     /// `set_bottom_widget` (N-08) actually reserves room instead of being drawn over by the body.
+    /// The slot's *asked* height is used, not `AppBar::bottom_height`: that accessor clamps
+    /// against the bar's current rectangle, which is the value this method is computing.
     fn app_bar_height(&self) -> u32 {
-        APP_BAR_HEIGHT
-            + self.app_bar.bottom_widget().map(|widget| widget.size_hint().height).unwrap_or(0)
+        APP_BAR_HEIGHT + self.app_bar.bottom_slot_height()
     }
 
     /// Returns the content area rect (between AppBar and bottom nav, beside the rail).
@@ -1885,6 +1888,11 @@ impl EventHandler for AdaptiveScaffold {
                         // Hit-test bottom nav items
                         let item_count = self.nav_items.len();
                         let tab_width = rect.width / item_count as u32;
+                        // A bar narrower than its item count has no usable tab: the division
+                        // below would panic, and no point can name an item anyway.
+                        if tab_width == 0 {
+                            return;
+                        }
                         let relative_x = pos.x - rect.x;
                         if relative_x >= 0 {
                             let index = (relative_x as u32 / tab_width) as usize;
@@ -2247,6 +2255,84 @@ mod tests {
 
         scaffold.set_bottom_widget(None);
         assert_eq!(scaffold.content_rect(), Rect::new(0, 56, 375, 756));
+    }
+
+    /// A **declared** bottom slot (an id) must reserve room exactly like the owned one.
+    ///
+    /// The scaffold used to add only the `Box` slot's hint, so an id slot left the bar at
+    /// 56 px; `AppBar::bottom_height` then saw `room == 0` and never placed the child. The
+    /// declared slot is now measured through `bottom_slot_height`, and the bar's own draw
+    /// path places it inside the reserved band.
+    #[test]
+    fn a_declared_app_bar_bottom_slot_reserves_room() {
+        use crate::widget::base_widgets::frame::Frame;
+        use crate::widget::metrics::dimensions;
+
+        let mut scaffold = AdaptiveScaffold::new("Home", Rect::new(0, 0, 375, 812));
+        let slot = crate::widget::runtime::register(Box::new(Frame::new(Rect::new(0, 0, 375, 0))))
+            .expect("the runtime mounts the declared slot");
+
+        scaffold.set_app_bar_bottom_id(Some(slot));
+        let height = dimensions::FRAME_DEFAULT_HEIGHT;
+        assert_eq!(
+            scaffold.content_rect().y,
+            (APP_BAR_HEIGHT + height) as i32,
+            "the declared slot must push the body down"
+        );
+
+        let _ = render_to_svg(&mut scaffold);
+        assert_eq!(scaffold.app_bar.geometry().height, APP_BAR_HEIGHT + height);
+        assert_eq!(
+            crate::widget::runtime::geometry_of(slot).map(|band| band.y),
+            Some(APP_BAR_HEIGHT as i32),
+            "the declared slot is placed inside the reserved band"
+        );
+        assert_eq!(
+            crate::widget::runtime::with_widget(slot, |widget| widget.is_visible()),
+            Some(true),
+            "a placed declared slot is shown"
+        );
+
+        let _ = crate::widget::runtime::unregister(slot);
+    }
+
+    /// A page assigned before its destination exists belongs to that destination, not slot 0.
+    #[test]
+    fn a_page_assigned_ahead_of_its_destination_is_stored_at_that_index() {
+        let mut scaffold = AdaptiveScaffold::new("Home", Rect::new(0, 0, 375, 812));
+        scaffold.add_nav_item("★", "Favorites");
+
+        scaffold.set_nav_body(
+            1,
+            Some(Box::new(crate::widget::base_widgets::label::Label::new(
+                "Second".to_string(),
+                Rect::new(0, 0, 10, 10),
+            ))),
+        );
+        assert!(scaffold.nav_body(1).is_some(), "the page belongs to destination 1");
+        assert!(
+            scaffold.nav_body(0).is_none(),
+            "destination 0 must not inherit destination 1's page"
+        );
+    }
+
+    /// A bar narrower than its item count has no tab width; pressing it must not divide by zero.
+    #[test]
+    fn a_narrow_scaffold_bottom_bar_does_not_divide_by_zero() {
+        let mut scaffold = AdaptiveScaffold::new("Home", Rect::new(0, 0, 3, 112));
+        scaffold.add_nav_item("★", "One");
+        scaffold.add_nav_item("✉", "Two");
+        scaffold.add_nav_item("⌂", "Three");
+        scaffold.add_nav_item("⚙", "Four");
+        scaffold.set_show_bottom_nav(true);
+
+        // The bottom band is y 56..112; `3 / 4` truncates to a zero tab width.
+        scaffold.handle_event(&Event::MousePress {
+            pos: Point::new(1, 80),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(scaffold.selected_nav_index(), 0, "no point can name a tab in a zero-width tab");
     }
 
     /// The scaffold used to hold its AppBar privately and drop its signals, so a page

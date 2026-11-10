@@ -7,7 +7,9 @@ use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i32_saturating};
+use crate::widget::capability::coercion::{
+    confirm_stored_float, confirm_stored_int, expect_bool, expect_f64, expect_i32_in_range,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -544,32 +546,43 @@ impl WidgetProperties for Dial {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "minimum" => {
-                self.set_minimum(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_minimum(requested);
+                confirm_stored_int(self.get("minimum")?, requested)
             }
             "maximum" => {
-                self.set_maximum(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_maximum(requested);
+                confirm_stored_int(self.get("maximum")?, requested)
             }
             "value" => {
-                self.set_value(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_value(requested);
+                confirm_stored_int(self.get("value")?, requested)
             }
             "single_step" => {
-                self.set_single_step(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_single_step(requested);
+                confirm_stored_int(self.get("single_step")?, requested)
             }
             "page_step" => {
-                self.set_page_step(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_page_step(requested);
+                confirm_stored_int(self.get("page_step")?, requested)
             }
             "notches_visible" => {
                 self.set_notches_visible(expect_bool(value)?);
                 Ok(())
             }
             "notch_target" => {
-                self.set_notch_target(expect_f64(value)?);
-                Ok(())
+                let requested = expect_f64(value)?;
+                // A non-finite or non-positive target is ignored by the setter, so it would report
+                // `Ok` for a value the control did not store. Refuse it at the seam instead.
+                if !requested.is_finite() || requested <= 0.0 {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_notch_target(requested);
+                confirm_stored_float(self.get("notch_target")?, requested)
             }
             "wrapping" => {
                 self.set_wrapping(expect_bool(value)?);

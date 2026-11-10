@@ -278,6 +278,7 @@ impl SegmentedControl {
         if index >= self.items.len() {
             return None;
         }
+        let previous_id = self.selected_id().map(str::to_string);
         let removed = self.items.remove(index);
         self.scroll_x = 0;
         self.invalidate_layout();
@@ -303,6 +304,13 @@ impl SegmentedControl {
         };
         self.slide_from = self.selected_index.unwrap_or(0);
         self.slide.jump_to(1.0);
+        // The repair above can change which segment is the value (removing the selected one
+        // selects its neighbour, removing one above it shifts the index). That is the same
+        // observable change `set_selected_index` publishes, so a host mirroring the id hears it.
+        let next_id = self.selected_id().map(str::to_string);
+        if previous_id != next_id {
+            self.selection_changed.emit(next_id.unwrap_or_default());
+        }
         self.base.request_layout();
         self.base.request_redraw();
         Some(removed)
@@ -582,8 +590,8 @@ impl SegmentedControl {
             }
             return widths;
         }
-        let total: u32 = desired.iter().sum();
-        if total <= band_width {
+        let total: u64 = desired.iter().map(|width| u64::from(*width)).sum();
+        if total <= u64::from(band_width) {
             // Content is smaller than the track: the extra room stays empty rather than being
             // handed to a short label, which is the whole point of fitting to content.
             return desired.to_vec();
@@ -596,8 +604,8 @@ impl SegmentedControl {
             if index + 1 == count {
                 widths.push(band_width.saturating_sub(consumed).max(1));
             } else {
-                let scaled = ((u64::from(*width) * u64::from(band_width)) / u64::from(total.max(1)))
-                    .max(1) as u32;
+                let scaled =
+                    ((u64::from(*width) * u64::from(band_width)) / total.max(1)).max(1) as u32;
                 consumed = consumed.saturating_add(scaled);
                 widths.push(scaled);
             }
@@ -637,15 +645,18 @@ impl SegmentedControl {
         }
         let desired = if self.size_to_fit { self.desired_segment_widths() } else { Vec::new() };
         let (band, widths, max_scroll) = if self.size_to_fit {
-            let total: u32 = desired.iter().sum();
-            if total <= full.width {
+            // Summed in `u64`: two segments at `u32::MAX` add past `u32` and the debug build
+            // panicked on the layout of a control whose `min_segment_width` was that large.
+            let total: u64 = desired.iter().map(|width| u64::from(*width)).sum();
+            if total <= u64::from(full.width) {
                 // Content smaller than the track: the extra room stays empty rather than being
                 // handed to a short label, which is the whole point of fitting to content.
-                (Rect::new(full.x, full.y, total.max(1), full.height), desired, 0)
+                (Rect::new(full.x, full.y, (total as u32).max(1), full.height), desired, 0)
             } else {
                 // Content overflows: keep every segment at its content width and scroll the bar
                 // horizontally instead of compressing labels past readability (SP-104).
-                (full, desired, (total - full.width) as i32)
+                let max_scroll = (total - u64::from(full.width)).min(i32::MAX as u64) as i32;
+                (full, desired, max_scroll)
             }
         } else {
             (full, self.widths_from_desired(&desired, full.width), 0)
@@ -1387,6 +1398,62 @@ mod tests {
         let _ = control.set_selected_index(2);
         let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["history".to_string()]);
+    }
+
+    /// Removing a segment publishes the identity the repaired selection lands on.
+    ///
+    /// # What this pins
+    ///
+    /// `remove_item` repaired `selected_index`/`selected_set` but emitted nothing, so selecting
+    /// `b` and removing index 1 made `selected_id()` answer `c` silently — a host mirroring
+    /// `selection_changed` kept the removed id.
+    #[test]
+    fn removing_a_segment_publishes_the_repaired_selection() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 300, 30));
+        control.set_items(vec![
+            SegmentItem::new("a", "Alpha"),
+            SegmentItem::new("b", "Beta"),
+            SegmentItem::new("c", "Gamma"),
+        ]);
+        assert!(control.set_selected_index(1));
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        control.selection_changed.connect(move |id: Arc<String>| {
+            sink.lock().unwrap().push((*id).clone());
+        });
+
+        assert!(control.remove_item(1).is_some());
+        assert_eq!(control.selected_id(), Some("c"), "the neighbour becomes the value");
+        assert_eq!(*seen.lock().unwrap(), vec!["c".to_string()]);
+
+        // Removing a segment above the value shifts the index but not the identity.
+        seen.lock().unwrap().clear();
+        assert!(control.remove_item(0).is_some());
+        assert_eq!(control.selected_id(), Some("c"));
+        assert!(seen.lock().unwrap().is_empty(), "an unchanged id is not a selection change");
+
+        // The last removal leaves no value; the empty id is how the string signal says `None`.
+        assert!(control.remove_item(0).is_some());
+        assert_eq!(control.selected_id(), None);
+        assert_eq!(*seen.lock().unwrap(), vec![String::new()]);
+    }
+
+    /// A huge minimum segment width no longer overflows the layout's width sum.
+    ///
+    /// # What this pins
+    ///
+    /// `desired.iter().sum::<u32>()` overflowed for two segments at `u32::MAX`, so the layout of
+    /// a content-fitted control panicked in the next debug build and wrapped in release.
+    #[test]
+    fn a_huge_minimum_segment_width_does_not_overflow_the_layout_sum() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 40));
+        control.set_items(vec![SegmentItem::new("a", "A"), SegmentItem::new("b", "B")]);
+        control.set_size_to_fit(true);
+        control.set_min_segment_width(u32::MAX);
+
+        assert_eq!(control.min_segment_width(), u32::MAX);
+        assert!(control.segment_rect(0).is_some(), "the layout is computed without wrapping");
     }
 
     #[test]

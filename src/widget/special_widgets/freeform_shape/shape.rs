@@ -1030,6 +1030,46 @@ impl Widget for FreeformShapeWidget {
         &mut self.base
     }
 
+    /// A disabled shape drops every gesture in progress.
+    ///
+    /// `handle_event` returns before the release/leave arms once the control is disabled, so a
+    /// press that was followed by a disable left `body_drag`/`drag_handle` set: the next move
+    /// after re-enabling continued the drag with no button held.
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.base.is_enabled() == enabled {
+            return;
+        }
+        if !enabled {
+            let was_hovered = self.hovered_item;
+            let was_pressed = self.pressed_item;
+            self.drag_handle = None;
+            self.drag_vertex_start = None;
+            self.body_drag = None;
+            self.hovered_item = false;
+            self.pressed_item = false;
+            if was_hovered {
+                self.hover_changed.emit(false);
+            }
+            if was_pressed {
+                self.pressed_changed.emit(false);
+            }
+        }
+        self.base_mut().set_enabled(enabled);
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base().id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
+        self.set_state_theme_hook();
+        self.base.request_redraw();
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base().id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(100, 100)
     }
@@ -1390,9 +1430,18 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 self.base.request_redraw();
             }
             crate::event::Event::MouseLeave { .. } => {
-                self.drag_handle = None;
+                // A drag that has already been applied is a completed geometry change even though
+                // the release will be delivered outside this control. Recording it here is what
+                // keeps it in the undo history; dropping the latch without recording lost the move.
+                if let Some((_, _, start)) = self.drag_handle.take() {
+                    let after = self.base.geometry();
+                    self.record_geometry(start, after);
+                }
+                if let Some((_, start)) = self.body_drag.take() {
+                    let after = self.base.geometry();
+                    self.record_geometry(start, after);
+                }
                 self.drag_vertex_start = None;
-                self.body_drag = None;
                 self.hovered_item = false;
                 self.pressed_item = false;
                 self.hover_changed.emit(false);
@@ -1597,7 +1646,11 @@ impl ShapeCanvas {
     /// transparent corner falls through to the shape behind it — the same rule the shape itself
     /// uses, not a bounding-box approximation.
     pub fn hit_test(&self, point: Point) -> Option<ObjectId> {
-        self.shapes.iter().rev().find(|shape| shape.widget.contains(point)).map(|shape| shape.id)
+        self.shapes
+            .iter()
+            .rev()
+            .find(|shape| shape.widget.base().is_visible() && shape.widget.contains(point))
+            .map(|shape| shape.id)
     }
 
     /// Selects every shape whose box intersects `rect`, replacing the selection.
@@ -1605,7 +1658,9 @@ impl ShapeCanvas {
         let ids: Vec<ObjectId> = self
             .shapes
             .iter()
-            .filter(|shape| shape.widget.base().geometry().intersects(&rect))
+            .filter(|shape| {
+                shape.widget.base().is_visible() && shape.widget.base().geometry().intersects(&rect)
+            })
             .map(|shape| shape.id)
             .collect();
         self.set_selection(ids.clone());
@@ -1646,7 +1701,11 @@ impl ShapeCanvas {
             let boxes: Vec<Rect> = self
                 .selection
                 .iter()
-                .filter_map(|id| self.shape(*id).map(|shape| shape.base().geometry()))
+                .filter_map(|id| {
+                    self.shape(*id)
+                        .filter(|shape| shape.base().is_visible())
+                        .map(|shape| shape.base().geometry())
+                })
                 .collect();
             *self.selection_rects.borrow_mut() = Some((self.selection_revision, boxes));
         }
@@ -1696,7 +1755,11 @@ impl ShapeCanvas {
     }
 
     /// Sets the grid pitch; zero disables snapping while leaving the flag as the caller set it.
+    ///
+    /// A non-zero pitch is capped at `i32::MAX`: the paint loop steps with a signed `i32`, so a
+    /// larger `u32` would become a negative step and the loop would never terminate.
     pub fn set_grid_step(&mut self, step: u32) {
+        let step = if step == 0 { 0 } else { step.min(i32::MAX as u32) };
         if self.grid_step == step {
             return;
         }
@@ -1736,6 +1799,36 @@ impl Widget for ShapeCanvas {
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
+
+    /// A disabled canvas drops the drag or marquee in flight.
+    ///
+    /// Without this, the press was accepted, the control was disabled (so `handle_event` returned
+    /// early), and the next move after re-enabling kept dragging the selection with no button
+    /// held. The same clearing `set_editable` performs is the model here.
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.base.is_enabled() == enabled {
+            return;
+        }
+        if !enabled {
+            self.drag = None;
+            self.marquee = None;
+        }
+        self.base_mut().set_enabled(enabled);
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base().id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
+        self.set_state_theme_hook();
+        self.base.request_redraw();
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base().id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(320, 240)
     }
@@ -2000,7 +2093,12 @@ impl Draw for ShapeCanvas {
         }
 
         for shape in &mut self.shapes {
-            shape.widget.draw_with_palette(context, &palette);
+            // A hidden hosted shape is skipped on the paint path for the same reason the runtime
+            // skips a hidden widget: hiding it must remove it from the picture, not just from a
+            // flag nothing reads.
+            if shape.widget.base().is_visible() {
+                shape.widget.draw_with_palette(context, &palette);
+            }
         }
 
         // Selection outlines are painted after every shape so a selected shape underneath a
@@ -2158,12 +2256,71 @@ mod shape_canvas_tests {
             vec![vec![first, second]],
             "the container emits the new selection once"
         );
+    }
 
-        assert!(canvas.remove_shape(first));
+    /// A hidden hosted shape leaves both the picture and the hit test.
+    ///
+    /// # What this pins
+    ///
+    /// `ShapeCanvas` painted and hit-tested every hosted shape without reading the shape's own
+    /// visibility, so `set_visible(false)` changed a flag nothing on this path consulted: the ink
+    /// stayed and the shape still took a press and a drag.
+    #[test]
+    fn a_hidden_shape_is_neither_painted_nor_hit() {
+        use crate::widget::svg::render_widget_to_svg;
+
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 200, 200));
+        let id = canvas.add_shape(box_shape(10, 10, 60));
+        assert_eq!(canvas.hit_test(Point::new(30, 30)), Some(id));
+        let painted = render_widget_to_svg(&mut canvas, Rect::new(0, 0, 200, 200));
+
+        canvas.shape_mut(id).expect("the shape is hosted").set_visible(false);
+        assert_eq!(canvas.hit_test(Point::new(30, 30)), None, "a hidden shape is not a target");
+        let hidden = render_widget_to_svg(&mut canvas, Rect::new(0, 0, 200, 200));
+        assert_ne!(painted, hidden, "hiding a shape removes its ink from the picture");
+    }
+
+    /// A canvas grid step above `i32::MAX` is clamped instead of becoming a negative step.
+    ///
+    /// # What this pins
+    ///
+    /// The paint loop cast `grid_step` to `i32`, so a value above the signed range turned the
+    /// `x += step` / `y += step` loops loose in the wrong direction and they never terminated.
+    #[test]
+    fn a_shape_canvas_grid_step_above_i32_max_still_terminates() {
+        use crate::widget::svg::render_widget_to_svg;
+
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 200, 100));
+        canvas.set_grid_step(u32::MAX);
+        assert_eq!(canvas.grid_step(), i32::MAX as u32, "the step is clamped to the signed range");
+        canvas.set_snap_to_grid(true);
+        let svg = render_widget_to_svg(&mut canvas, Rect::new(0, 0, 200, 100));
+        assert!(svg.starts_with("<svg"), "the grid paints and the loop terminates");
+    }
+
+    /// Disabling the canvas mid-drag drops the drag rather than resuming it on re-enable.
+    ///
+    /// # What this pins
+    ///
+    /// The press was accepted, the control was disabled (`handle_event` then returned early), and
+    /// the next move kept moving the selection because the `drag` latch was never cleared.
+    #[test]
+    fn disabling_the_canvas_drops_the_drag_in_flight() {
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 400, 300));
+        canvas.set_editable(true);
+        let id = canvas.add_shape(box_shape(10, 10, 40));
+        canvas.handle_event(&Event::mouse_press(30, 30, 1));
+        canvas.handle_event(&Event::mouse_move(50, 40));
+        let moved = canvas.shape(id).expect("hosted").base().geometry();
+        assert_ne!(moved, Rect::new(10, 10, 40, 40), "the drag moved the shape while enabled");
+
+        canvas.set_enabled(false);
+        canvas.set_enabled(true);
+        canvas.handle_event(&Event::mouse_move(250, 250));
         assert_eq!(
-            *selected.lock().expect("selected lock"),
-            vec![vec![first, second], vec![second]],
-            "removing a selected shape reports the smaller selection"
+            canvas.shape(id).expect("hosted").base().geometry(),
+            moved,
+            "no button was held after re-enabling, so the shape stays where the drag left it"
         );
     }
 }

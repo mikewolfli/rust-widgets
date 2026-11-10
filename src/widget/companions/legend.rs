@@ -11,7 +11,7 @@ use crate::signal::{EventSignalRef, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use crate::widget::capability::WidgetProperties;
+use crate::widget::capability::{RecordList, RecordValue, WidgetProperties, LEGEND_ENTRY_SCHEMA};
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
@@ -340,34 +340,45 @@ impl Widget for Legend {
     }
 }
 
-/// Encodes one legend entry as `[label, colour, visible]`.
-fn legend_entry_value(entry: &LegendEntry) -> CapabilityValue {
-    CapabilityValue::Tuple(vec![
-        CapabilityValue::String(entry.label.clone()),
-        CapabilityValue::Color(entry.color),
-        CapabilityValue::Bool(entry.visible),
-    ])
+/// Encodes one legend entry as the record its schema declares.
+fn legend_entry_record(entry: &LegendEntry) -> RecordValue {
+    RecordValue::new()
+        .with("label", CapabilityValue::String(entry.label.clone()))
+        .with("color", CapabilityValue::Color(entry.color))
+        .with("visible", CapabilityValue::Bool(entry.visible))
+}
+
+/// Encodes the whole entry list as the record list its property declares.
+fn legend_entries_value(entries: &[LegendEntry]) -> CapabilityValue {
+    CapabilityValue::Records(RecordList::from_items(
+        &LEGEND_ENTRY_SCHEMA,
+        entries.iter().map(legend_entry_record).collect(),
+    ))
 }
 
 /// Decodes the entry-list property.
 fn expect_legend_entries(
     value: CapabilityValue,
 ) -> Result<Vec<LegendEntry>, CapabilityAccessError> {
-    let CapabilityValue::Tuple(items) = value else {
+    let CapabilityValue::Records(list) = value else {
         return Err(CapabilityAccessError::TypeMismatch);
     };
-    let mut entries = Vec::with_capacity(items.len());
-    for item in items {
-        let CapabilityValue::Tuple(parts) = item else {
-            return Err(CapabilityAccessError::TypeMismatch);
-        };
-        if parts.len() != 3 {
-            return Err(CapabilityAccessError::TypeMismatch);
+    list.validate_against(&LEGEND_ENTRY_SCHEMA).map_err(|violation| {
+        CapabilityAccessError::ConstraintViolation {
+            property: crate::compat::String::from("entries"),
+            reason: crate::compat::format!("{violation}"),
         }
-        let mut parts = parts.into_iter();
-        let label = expect_string(parts.next().ok_or(CapabilityAccessError::TypeMismatch)?)?;
-        let color = expect_color(parts.next().ok_or(CapabilityAccessError::TypeMismatch)?)?;
-        let visible = expect_bool(parts.next().ok_or(CapabilityAccessError::TypeMismatch)?)?;
+    })?;
+    let mut entries = Vec::with_capacity(list.len());
+    for record in list.items() {
+        let label = expect_string(
+            record.get("label").cloned().ok_or(CapabilityAccessError::TypeMismatch)?,
+        )?;
+        let color =
+            expect_color(record.get("color").cloned().ok_or(CapabilityAccessError::TypeMismatch)?)?;
+        let visible = expect_bool(
+            record.get("visible").cloned().ok_or(CapabilityAccessError::TypeMismatch)?,
+        )?;
         entries.push(LegendEntry { label, color, visible });
     }
     Ok(entries)
@@ -376,9 +387,7 @@ fn expect_legend_entries(
 impl WidgetProperties for Legend {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "entries" => {
-                Ok(CapabilityValue::Tuple(self.entries.iter().map(legend_entry_value).collect()))
-            }
+            "entries" => Ok(legend_entries_value(&self.entries)),
             "orientation" => Ok(CapabilityValue::String(self.orientation.as_str().to_string())),
             "checkable" => Ok(CapabilityValue::Bool(self.checkable)),
             "position" => Ok(CapabilityValue::String(self.position.as_str().to_string())),

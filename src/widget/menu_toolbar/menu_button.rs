@@ -227,10 +227,54 @@ pub(crate) fn menu_item_rect(panel: Rect, index: usize) -> Rect {
 }
 
 /// The right-hand child panel of a branch row.
+///
+/// The panel hangs to the right of its parent, but is flipped to the parent's leading edge
+/// or clamped inside the display when that would run off the surface — the same rule
+/// `DropdownMenu::child_panel_rect` follows (M-012).
 pub(crate) fn menu_submenu_panel_rect(parent: Rect, anchor_row: Rect, item_count: usize) -> Rect {
+    menu_submenu_panel_rect_in(parent, anchor_row, item_count, submenu_viewport())
+}
+
+/// The placement arithmetic, separated so the clamp can be tested without a display.
+pub(crate) fn menu_submenu_panel_rect_in(
+    parent: Rect,
+    anchor_row: Rect,
+    item_count: usize,
+    viewport: Option<Rect>,
+) -> Rect {
     let width = parent.width.max(DEFAULT_MENU_WIDTH);
     let height = (item_count as u32 * ITEM_HEIGHT as u32).max(1);
-    Rect::new(parent.x + parent.width as i32, anchor_row.y, width, height)
+    let mut x = parent.x + parent.width as i32;
+    let mut y = anchor_row.y;
+    if let Some(viewport) = viewport {
+        let right = viewport.x + viewport.width as i32;
+        let bottom = viewport.y + viewport.height as i32;
+        if x + width as i32 > right {
+            let flipped = parent.x - width as i32;
+            x = if flipped >= viewport.x {
+                flipped
+            } else {
+                (right - width as i32).max(viewport.x)
+            };
+        }
+        x = x.max(viewport.x);
+        if y + height as i32 > bottom {
+            y = (bottom - height as i32).max(viewport.y);
+        }
+        y = y.max(viewport.y);
+    }
+    Rect::new(x, y, width, height)
+}
+
+/// The surface a clipped panel may occupy, or `None` on a host that reports no display.
+fn submenu_viewport() -> Option<Rect> {
+    let displays = crate::platform::platform_facts().displays();
+    displays
+        .iter()
+        .find(|display| display.is_primary)
+        .or_else(|| displays.first())
+        .map(|display| display.work_area)
+        .filter(|area| area.width > 0 && area.height > 0)
 }
 
 /// One open child panel: the rows it shows and the rectangle it occupies.
@@ -2174,5 +2218,32 @@ mod tests {
         mb.close_menu();
         mb.close_menu();
         assert_eq!(hidden.load(Ordering::SeqCst), 1);
+    }
+
+    /// A child panel near a window edge flips or clamps instead of painting off-surface.
+    #[test]
+    fn a_child_panel_is_clamped_and_flipped() {
+        let parent = Rect::new(320, 10, 180, 60);
+        let row = Rect::new(320, 10, 180, ITEM_HEIGHT as u32);
+        let viewport = Rect::new(0, 0, 500, 400);
+
+        let flipped = menu_submenu_panel_rect_in(parent, row, 2, Some(viewport));
+        assert!(flipped.x < parent.x, "the panel flips to the parent's leading edge: {flipped:?}");
+
+        let clamped = menu_submenu_panel_rect_in(
+            parent,
+            Rect::new(320, 380, 180, ITEM_HEIGHT as u32),
+            3,
+            Some(viewport),
+        );
+        assert!(
+            clamped.x >= viewport.x
+                && clamped.x + clamped.width as i32 <= viewport.x + viewport.width as i32,
+            "the panel stays inside the viewport horizontally: {clamped:?}"
+        );
+        assert!(
+            clamped.y + clamped.height as i32 <= viewport.y + viewport.height as i32,
+            "and vertically: {clamped:?}"
+        );
     }
 }

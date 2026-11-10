@@ -11,7 +11,8 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{
-    expect_bool, expect_i32_saturating, expect_orientation, expect_string, orientation_to_str,
+    confirm_stored_int, expect_bool, expect_i32_in_range, expect_orientation, expect_string,
+    orientation_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -1250,6 +1251,30 @@ pub enum SliderAction {
 }
 // Implement Widget trait
 impl Widget for Slider {
+    /// A disabled slider drops any gesture in progress.
+    ///
+    /// Event handling returns before the release/leave arms while disabled, and the runtime delivers
+    /// neither for a gesture that never ended, so the latch survived a disable→enable round trip and
+    /// the next hover dragged the handle with no button held. The default body's focus rule is
+    /// repeated because an override cannot call it.
+    fn set_enabled(&mut self, enabled: bool) {
+        if !enabled && self.mouse_pressed {
+            self.mouse_pressed = false;
+            self.slider_released.emit();
+            if !self.tracking {
+                self.set_value(self.slider_position());
+            }
+        }
+        self.base_mut().set_enabled(enabled);
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base().id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
+    }
+
     /// Resolves the published event names this control emits to their signals.
     ///
     /// | published name | signal | payload |
@@ -1351,24 +1376,29 @@ impl WidgetProperties for Slider {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "minimum" => {
-                self.set_minimum(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_minimum(requested);
+                confirm_stored_int(self.get("minimum")?, requested)
             }
             "maximum" => {
-                self.set_maximum(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_maximum(requested);
+                confirm_stored_int(self.get("maximum")?, requested)
             }
             "value" => {
-                self.set_value(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_value(requested);
+                confirm_stored_int(self.get("value")?, requested)
             }
             "single_step" => {
-                self.set_single_step(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_single_step(requested);
+                confirm_stored_int(self.get("single_step")?, requested)
             }
             "page_step" => {
-                self.set_page_step(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_page_step(requested);
+                confirm_stored_int(self.get("page_step")?, requested)
             }
             "orientation" => {
                 self.set_orientation(expect_orientation(value)?);
@@ -1379,8 +1409,9 @@ impl WidgetProperties for Slider {
                 Ok(())
             }
             "tick_interval" => {
-                self.set_tick_interval(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_tick_interval(requested);
+                confirm_stored_int(self.get("tick_interval")?, requested)
             }
             "tracking" => {
                 self.set_tracking(expect_bool(value)?);
@@ -1394,8 +1425,9 @@ impl WidgetProperties for Slider {
                 Ok(())
             }
             "slider_position" => {
-                self.set_slider_position(expect_i32_saturating(value)?);
-                Ok(())
+                let requested = expect_i32_in_range(value)?;
+                self.set_slider_position(requested);
+                confirm_stored_int(self.get("slider_position")?, requested)
             }
             _ => base_property_set(self, name, value),
         }
@@ -1453,7 +1485,6 @@ impl EventHandler for Slider {
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.mouse_pressed = true;
-                self.slider_pressed.emit();
                 let pixel = match self.orientation {
                     Orientation::Horizontal => pos.x as f32,
                     Orientation::Vertical => pos.y as f32,
@@ -1477,13 +1508,15 @@ impl EventHandler for Slider {
                     self.mouse_pressed = false;
                     return;
                 }
+                // Announced only for a press that actually grabs the handle: a page-step click on
+                // the groove is not a handle press, which is what the signal documents.
+                self.slider_pressed.emit();
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
                 self.mouse_pressed = true;
-                self.slider_pressed.emit();
                 let pixel = match self.orientation {
                     Orientation::Horizontal => pos.x as f32,
                     Orientation::Vertical => pos.y as f32,
@@ -1505,14 +1538,21 @@ impl EventHandler for Slider {
                     self.mouse_pressed = false;
                     return;
                 }
+                // As above: only a handle press is announced.
+                self.slider_pressed.emit();
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
-                self.mouse_pressed = false;
-                self.slider_released.emit();
-                if !self.tracking {
-                    self.set_value(self.slider_position());
+                // Paired with `slider_pressed`: the control's own press tracking decides when this
+                // fires. Without the guard a release that began on another control and landed here
+                // announced a release with no press.
+                if self.mouse_pressed {
+                    self.mouse_pressed = false;
+                    self.slider_released.emit();
+                    if !self.tracking {
+                        self.set_value(self.slider_position());
+                    }
                 }
             }
             // A press whose release lands outside the widget never reaches the arm
@@ -2014,21 +2054,27 @@ mod tests {
         Slider::new(Rect::new(0, 0, 200, 30))
     }
 
-    /// `set` must clamp an out-of-range integer instead of wrapping it with `as`.
+    /// `set` must refuse an integer outside `i32` rather than clamping or wrapping it.
     ///
-    /// Before the coercion helper, `set("minimum", Int(1 << 40))` narrowed through
-    /// `as i32` to `0`, injecting a value unrelated to the request and potentially
-    /// inverting `minimum <= maximum`. The saturating helper keeps the magnitude
-    /// and the existing range invariant.
+    /// The earlier contract accepted the value and saturated it to `i32::MAX`, which reported
+    /// success for a bound the caller never asked for. The property seam now reports `OutOfRange`
+    /// and leaves the control unchanged; the saturating helpers remain for callers that want the
+    /// clamp explicitly.
     #[test]
-    fn set_clamps_an_out_of_range_integer_instead_of_wrapping() {
+    fn set_refuses_an_out_of_range_integer_instead_of_wrapping() {
         let mut slider = make_slider();
-        slider.set("minimum", CapabilityValue::Int(1 << 40)).expect("an integer is accepted");
-        assert_eq!(slider.minimum(), i32::MAX);
+        assert_eq!(
+            slider.set("minimum", CapabilityValue::Int(1 << 40)),
+            Err(CapabilityAccessError::OutOfRange)
+        );
+        assert_eq!(slider.minimum(), 0, "a refused write must not move the bound");
         assert!(slider.minimum() <= slider.maximum());
 
-        slider.set("value", CapabilityValue::Int(-(1 << 40))).expect("an integer is accepted");
-        assert_eq!(slider.value(), slider.minimum());
+        assert_eq!(
+            slider.set("value", CapabilityValue::Int(-(1 << 40))),
+            Err(CapabilityAccessError::OutOfRange)
+        );
+        assert_eq!(slider.value(), 0);
     }
 
     // ── 0. Writing direction (BLUE21 P2-10) ──
@@ -2427,8 +2473,31 @@ mod tests {
         s.slider_pressed.connect(move || {
             p.fetch_add(1, Ordering::SeqCst);
         });
-        s.handle_event(&Event::mouse_press(50, 15, 1));
+        // The signal pairs with `slider_released` and announces a *handle* press, so the press has
+        // to land on the handle; a groove press is the documented page step and announces nothing.
+        let handle = s.handle_rect();
+        s.handle_event(&Event::mouse_press(
+            handle.x + handle.width as i32 / 2,
+            handle.y + handle.height as i32 / 2,
+            1,
+        ));
         assert_eq!(pressed.load(Ordering::SeqCst), 1);
+    }
+
+    /// A groove press is a page step, not a handle press.
+    #[test]
+    fn a_page_step_press_does_not_announce_a_handle_press() {
+        let mut s = make_slider();
+        s.base.set_geometry(Rect::new(0, 0, 200, 30));
+        s.set_value(0);
+        s.set_track_click(SliderTrackClick::Page);
+        let pressed = Arc::new(AtomicUsize::new(0));
+        let p = Arc::clone(&pressed);
+        s.slider_pressed.connect(move || {
+            p.fetch_add(1, Ordering::SeqCst);
+        });
+        s.handle_event(&Event::mouse_press(150, 15, 1));
+        assert_eq!(pressed.load(Ordering::SeqCst), 0, "the pressed page step is not a grab");
     }
 
     #[test]
@@ -2440,9 +2509,17 @@ mod tests {
         s.slider_released.connect(move || {
             r.fetch_add(1, Ordering::SeqCst);
         });
-        s.handle_event(&Event::mouse_press(50, 15, 1));
-        s.handle_event(&Event::mouse_release(50, 15, 1));
+        let handle = s.handle_rect();
+        let point =
+            Point::new(handle.x + handle.width as i32 / 2, handle.y + handle.height as i32 / 2);
+        s.handle_event(&Event::mouse_press(point.x, point.y, 1));
+        s.handle_event(&Event::mouse_release(point.x, point.y, 1));
         assert_eq!(released.load(Ordering::SeqCst), 1);
+
+        // A release with no press on this control is not a handle release: the runtime routes by
+        // hit test, so a press that began elsewhere can end here.
+        s.handle_event(&Event::mouse_release(point.x, point.y, 1));
+        assert_eq!(released.load(Ordering::SeqCst), 1, "an unpaired release announces nothing");
     }
 
     #[test]

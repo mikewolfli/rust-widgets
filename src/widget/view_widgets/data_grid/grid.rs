@@ -302,10 +302,18 @@ impl DataGrid {
         self.scroll_column = 0;
         self.clear_cache();
         self.invalidate_projection_cache();
+        // The description, filter, sort and hidden-column state address columns by absolute
+        // index. A source with a narrower column space can no longer name some of them, and an
+        // out-of-range filter rejects every row (a blank grid that still reports a filter), while
+        // an out-of-range hidden index makes `Stretch` divide by the wrong visible count.
+        let filters_were_pruned = self.prune_column_indexed_state();
         self.clear_selection_units();
         self.current_cell = None;
         self.hovered_cell = None;
         self.normalize_projection_state();
+        if filters_were_pruned {
+            self.filter_changed.emit(self.filter_expr.clone());
+        }
         self.emit_visible_window_changed();
         self.base.request_layout();
         self.base.request_redraw();
@@ -398,7 +406,15 @@ impl DataGrid {
             return;
         }
         self.selection_behavior = behavior;
+        let had_units =
+            self.selection.is_some() || !self.selected_cells.is_empty() || self.all_selected;
         self.clear_selection_units();
+        // Clearing the units is a selection change like any other; the re-shape branch of
+        // `set_selection_mode` reports one, so silently dropping them here made the signal
+        // disagree with the state.
+        if had_units {
+            self.selection_changed.emit(());
+        }
         self.base.request_redraw();
     }
 
@@ -409,7 +425,7 @@ impl DataGrid {
 
     /// Moves keyboard navigation to `(row, column)`, selecting it in single mode.
     pub fn set_current_cell(&mut self, row: usize, column: usize) -> bool {
-        if row >= self.row_count() || column >= self.column_count() {
+        if row >= self.projected_row_count_mut() || column >= self.column_count() {
             return false;
         }
         self.current_cell = Some((row, column));
@@ -428,7 +444,7 @@ impl DataGrid {
     /// scrolling. The cell is scrolled into view with the minimum movement, which keeps the
     /// pointer/keyboard viewport behaviour the grid already had.
     pub fn move_current_cell(&mut self, row: usize, column: usize, extend: bool) -> bool {
-        if row >= self.row_count() || column >= self.column_count() {
+        if row >= self.projected_row_count_mut() || column >= self.column_count() {
             return false;
         }
         if self.selection_mode == crate::widget::view_widgets::list_view::SelectionMode::None {
@@ -891,13 +907,21 @@ impl DataGrid {
 
     /// The top of `row` relative to the first visible row, accumulating every open detail band
     /// between the scroll position and the row (V-009).
+    ///
+    /// The answer is **signed**: the fetched window starts `overscan_rows` above the viewport, so
+    /// a row before `scroll_row` has a negative offset. Clamping the subtraction to zero used to
+    /// map every leading overscan row onto the first visible row's band.
     pub(crate) fn row_view_offset(&self, row: usize) -> i32 {
-        let rows = row.saturating_sub(self.scroll_row) as u64;
-        let mut offset = rows.saturating_mul(self.row_height as u64);
-        for detail_row in self.expanded_detail_rows.range(self.scroll_row..row) {
-            offset = offset.saturating_add(self.detail_height(*detail_row) as u64);
+        let rows = row as i64 - self.scroll_row as i64;
+        let mut offset = rows.saturating_mul(self.row_height as i64);
+        // `BTreeSet::range` panics when the bounds are inverted, so the detail accumulation is
+        // skipped for a row above the scroll (where the open-band range would be `scroll..row`).
+        if row > self.scroll_row {
+            for detail_row in self.expanded_detail_rows.range(self.scroll_row..row) {
+                offset = offset.saturating_add(self.detail_height(*detail_row) as i64);
+            }
         }
-        offset.min(i32::MAX as u64) as i32
+        offset.clamp(i32::MIN as i64, i32::MAX as i64) as i32
     }
 
     /// The projected row whose band contains `dy`, or `None` past the model.
@@ -908,7 +932,9 @@ impl DataGrid {
         let mut row = self.scroll_row;
         let mut top = 0i64;
         let target = dy as i64;
-        let count = self.row_count();
+        // The paint pass enumerates the filtered/sorted projection, so a row past it has no box;
+        // walking to the source row count instead named blank space.
+        let count = self.projected_row_count();
         while row < count {
             let height = self.row_height_at(row) as i64;
             if target < top.saturating_add(height) {
@@ -959,5 +985,111 @@ impl DataGrid {
         }
         self.show_scrollbars = show;
         self.base.request_redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Source {
+        data: Vec<Vec<String>>,
+    }
+
+    impl IncrementalTableDataSource for Source {
+        fn row_count(&self) -> usize {
+            self.data.len()
+        }
+
+        fn column_count(&self) -> usize {
+            self.data.first().map_or(0, Vec::len)
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            self.data.get(row).and_then(|line| line.get(column)).cloned()
+        }
+    }
+
+    fn source(rows: usize, columns: usize) -> Arc<dyn IncrementalTableDataSource> {
+        Arc::new(Source {
+            data: (0..rows)
+                .map(|row| (0..columns).map(|column| format!("{row}:{column}")).collect())
+                .collect(),
+        })
+    }
+
+    fn header(columns: Vec<ColumnSpec>) -> GridViewHeader {
+        let mut header = GridViewHeader::new(Rect::new(0, 0, 360, 22));
+        header.set_columns(columns);
+        header
+    }
+
+    /// Re-binding a narrower source must drop the column-indexed state that can no longer be
+    /// named: a filter on a column the new source lacks otherwise rejected every row (a blank grid
+    /// that still reported a filter), and an out-of-range hidden index made `Stretch` divide by
+    /// the wrong visible count.
+    #[test]
+    fn rebinding_a_narrower_source_drops_out_of_range_column_state() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 600, 300));
+        grid.set_data_source(source(4, 3));
+        grid.set_header(&header(vec![
+            ColumnSpec::new("A", 120),
+            ColumnSpec::new("B", 120),
+            ColumnSpec::new("C", 120),
+        ]));
+        grid.set_filters(vec![ColumnFilter { column: 2, query: "7".to_string() }]);
+        grid.set_sort_specs(vec![SortSpec { column: 2, descending: false }]);
+        grid.set_hidden_columns(vec![2]);
+        grid.set_frozen_columns(2);
+        assert_eq!(grid.column_specs().len(), 3);
+
+        let changed = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&changed);
+        grid.filter_changed.connect(move |_| {
+            sink.fetch_add(1, Ordering::Relaxed);
+        });
+
+        grid.set_data_source(source(4, 2));
+
+        assert!(grid.filter_expr().is_noop(), "the filter named a column that no longer exists");
+        assert!(grid.filters().is_empty(), "and its flat mirror is derived from the same tree");
+        assert!(grid.sort_specs().is_empty(), "the sort named that column too");
+        assert!(grid.hidden_columns().is_empty());
+        assert_eq!(
+            grid.column_specs().len(),
+            2,
+            "the description is clamped to the new column space"
+        );
+        assert!(grid.frozen_columns() <= 2);
+        assert_eq!(
+            changed.load(Ordering::Relaxed),
+            1,
+            "a filter that was actually dropped is reported"
+        );
+        assert_eq!(grid.fetch_visible_cells().len(), 4, "the rebind must not leave the grid blank");
+    }
+
+    /// Clearing the selection units is a selection change and has to be reported, exactly as the
+    /// equivalent branch of `set_selection_mode` does.
+    #[test]
+    fn setting_the_selection_behavior_reports_a_cleared_selection() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 600, 300));
+        grid.set_data_source(source(4, 4));
+        grid.apply_selection_click(1, 1, 0);
+        assert_eq!(grid.selection(), Some((1, 1)));
+
+        let emitted = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&emitted);
+        grid.selection_changed.connect(move |_| {
+            sink.fetch_add(1, Ordering::Relaxed);
+        });
+
+        grid.set_selection_behavior(DataGridSelectionBehavior::Rows);
+        assert_eq!(grid.selection(), None, "the old units are cleared");
+        assert_eq!(emitted.load(Ordering::Relaxed), 1, "and the change is reported");
+
+        // Nothing left to clear: a second change reports nothing.
+        grid.set_selection_behavior(DataGridSelectionBehavior::Cells);
+        assert_eq!(emitted.load(Ordering::Relaxed), 1);
     }
 }

@@ -497,6 +497,13 @@ impl Chip {
         let live: Vec<String> = self.items.iter().map(|item| item.id.clone()).collect();
         self.item_icon_sources.retain(|id, _| live.contains(id));
         self.focused_index = if self.items.is_empty() { None } else { Some(0) };
+        // Every one of these is an index into the *old* list. Keeping them across a replacement
+        // painted the chip at the old hover index as hovered with no pointer, and started the next
+        // shift-selection from an anchor that may name a different chip (or none).
+        self.hovered_index = None;
+        self.selection_anchor = None;
+        self.drag_source = None;
+        self.drag_target = None;
         if !self.multi_select {
             // Keep only first selected chip in single-select mode.
             let mut selected_seen = false;

@@ -569,12 +569,15 @@ impl Tooltip {
         let estimated_width = (glyphs * char_width).ceil() as u32;
         let line_height = (font.size() * 1.4).ceil() as u32;
 
-        let width = (estimated_width + (self.padding as u32) * 2).min(self.max_width);
+        // The hint's horizontal padding is the one `draw` adds to the painted bubble,
+        // `TOOLTIP_PADDING_H` at each end. Using the caller-visible `padding` field here made
+        // the hint four pixels narrower than the frame it describes at the default values.
+        let width = (estimated_width + dimensions::TOOLTIP_PADDING_H * 2).min(self.max_width);
         // Wrapping is the one mode the hint can state honestly as a count: the label breaks
         // at the width cap, so the height is that many lines. Without wrapping the label is
         // one line and elides, which is what the old fixed height described.
         let height = if self.wrap {
-            let line_width = width.saturating_sub((self.padding as u32) * 2).max(1);
+            let line_width = width.saturating_sub(dimensions::TOOLTIP_PADDING_H * 2).max(1);
             let lines = estimated_width.saturating_add(line_width - 1) / line_width;
             line_height.saturating_mul(lines.max(1)).saturating_add((self.padding as u32) * 2)
         } else {
@@ -901,6 +904,11 @@ impl WidgetProperties for Tooltip {
 
 impl EventHandler for Tooltip {
     fn handle_event(&mut self, event: &Event) {
+        // A disabled tooltip is suspended: entering or leaving its anchor must not open the
+        // bubble or start either countdown.
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseEnter { pos: _ } => {
                 if !self.hovering {
@@ -1728,5 +1736,45 @@ mod tests {
             "a wrapped bubble needs more lines: single={single_height}, wrapped={wrapped_height}"
         );
         assert!(wrapped.preferred_size().height > single.preferred_size().height);
+    }
+
+    /// The size hint adds the same horizontal padding the painted bubble does.
+    ///
+    /// # The defect this pins
+    ///
+    /// `preferred_size` used the caller-visible `padding` field while `draw` used
+    /// `TOOLTIP_PADDING_H`, so the hint described a bubble four pixels narrower than the
+    /// one that was painted at the default values.
+    #[test]
+    fn the_size_hint_uses_the_painted_horizontal_padding() {
+        let mut tooltip = Tooltip::new("M", Rect::new(0, 0, 100, 40));
+        tooltip.font_size = 10.0;
+
+        // One glyph at the hint's 0.6 em estimate, plus the paint's padding at both ends.
+        let glyphs = 6;
+        assert_eq!(
+            tooltip.preferred_size().width,
+            glyphs + dimensions::TOOLTIP_PADDING_H * 2,
+            "the hint must reserve the bubble's own edging"
+        );
+    }
+
+    /// A disabled tooltip ignores the hover that would open it.
+    #[test]
+    fn a_disabled_tooltip_does_not_open_on_hover() {
+        let mut tooltip = Tooltip::new("Hint", Rect::new(0, 0, 100, 40));
+        tooltip.set_enabled(false);
+        tooltip.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+        for _ in 0..80 {
+            tooltip.tick(16);
+        }
+        assert!(!tooltip.is_visible(), "a suspended tooltip must not start its show countdown");
+
+        tooltip.set_enabled(true);
+        tooltip.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+        for _ in 0..80 {
+            tooltip.tick(16);
+        }
+        assert!(tooltip.is_visible(), "re-enabling restores the hover behaviour");
     }
 }

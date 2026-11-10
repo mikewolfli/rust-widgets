@@ -140,6 +140,10 @@ impl DataGrid {
             return;
         }
         self.frozen_columns = next;
+        self.clear_cache();
+        // The frozen prefix changes which columns the fetched window must include, exactly like
+        // the width setters, so the window report moves with it.
+        self.emit_visible_window_changed();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -176,6 +180,8 @@ impl DataGrid {
         }
         self.hidden_columns = next;
         self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
+        self.clear_cache();
+        self.emit_visible_window_changed();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -192,6 +198,8 @@ impl DataGrid {
         };
         if changed {
             self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
+            self.clear_cache();
+            self.emit_visible_window_changed();
             self.base.request_layout();
             self.base.request_redraw();
         }
@@ -201,8 +209,10 @@ impl DataGrid {
     /// The column order the attached chooser last reported, as source column indices.
     ///
     /// An empty report returns the natural order. The grid's paint and hit-test paths address
-    /// columns by absolute source index, so this is the reported order as state; it does not
-    /// restate the paint geometry.
+    /// columns by absolute source index, so this is the reported order recorded as **state only**:
+    /// it does not reorder a painted column, and a caller that wants a visual permutation must
+    /// apply it to its own header/source. This is the honest contract the companion wiring
+    /// implements, rather than a second coordinate space the grid does not have.
     pub fn column_display_order(&self) -> Vec<usize> {
         if self.column_order.is_empty() {
             (0..self.column_count()).collect()
@@ -419,6 +429,9 @@ impl DataGrid {
         self.column_width_mode = mode;
         self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
         self.clear_cache();
+        // `Stretch` changes every column's width, so the count of columns the window fetches
+        // changes with the mode; the sibling width setters report this and this one did not.
+        self.emit_visible_window_changed();
         self.base.request_redraw();
     }
 
@@ -585,7 +598,15 @@ impl DataGrid {
     }
 
     /// Whether a header resize handle lies at `point`.
+    ///
+    /// Gated the same way as [`GridViewHeader::resize_handle_at`]: a drag only starts under
+    /// `Interactive` sizing, and only for a section whose spec says it is resizable. The grid's
+    /// own header press is tested here **before** `header_column_at`, so an ungated handle
+    /// swallowed every click within four pixels of a section edge and turned it into a resize.
     pub(crate) fn resize_handle_at(&self, point: Point) -> Option<usize> {
+        if !matches!(self.column_width_mode, ColumnWidthMode::Interactive) {
+            return None;
+        }
         let band = self.header_band();
         if !band.contains_point(point) {
             return None;
@@ -600,7 +621,9 @@ impl DataGrid {
             if x >= band.x + band.width as i32 {
                 break;
             }
-            if (point.x - right).abs() <= 4 {
+            if (point.x - right).abs() <= 4
+                && self.header_columns.get(column).is_none_or(|spec| spec.resizable)
+            {
                 return Some(column);
             }
         }
@@ -835,11 +858,26 @@ impl DataGrid {
                 sort.column += 1;
             }
         }
-        for filter in &mut self.filters {
-            if filter.column >= at {
-                filter.column += 1;
+        // `filter_expr` is what the projection evaluates; the flat `filters` list is derived from
+        // it. Shifting only the mirror left the filter reading the old column space, so the two
+        // described different filters (contradicting `DataGrid::filter_expr`). Transform the tree
+        // and rebuild the mirror from it.
+        self.filter_expr = remap_filter_columns(&self.filter_expr, &|column| {
+            if column >= at {
+                column + 1
+            } else {
+                column
             }
-        }
+        });
+        self.filters = self
+            .filter_expr
+            .conditions()
+            .into_iter()
+            .map(|condition| ColumnFilter {
+                column: condition.column,
+                query: condition.operand.clone(),
+            })
+            .collect();
         for row in &mut self.extra_header_rows {
             if row.len() > at {
                 row.insert(at, String::new());
@@ -865,6 +903,9 @@ impl DataGrid {
                 .iter()
                 .map(|(row, column)| (*row, if *column >= at { column + 1 } else { *column }))
                 .collect();
+            self.selection = self
+                .selection
+                .map(|(row, column)| (row, if column >= at { column + 1 } else { column }));
             self.current_cell = self
                 .current_cell
                 .map(|(row, column)| (row, if column >= at { column + 1 } else { column }));
@@ -920,12 +961,25 @@ impl DataGrid {
                 sort.column -= 1;
             }
         }
-        self.filters.retain(|filter| filter.column != at);
-        for filter in &mut self.filters {
-            if filter.column > at {
-                filter.column -= 1;
+        // Same source of truth as `insert_column`: remove the column from the evaluated tree and
+        // re-derive the mirror, rather than shifting a list nothing evaluates.
+        self.filter_expr = self.filter_expr.without_column(at);
+        self.filter_expr = remap_filter_columns(&self.filter_expr, &|column| {
+            if column > at {
+                column - 1
+            } else {
+                column
             }
-        }
+        });
+        self.filters = self
+            .filter_expr
+            .conditions()
+            .into_iter()
+            .map(|condition| ColumnFilter {
+                column: condition.column,
+                query: condition.operand.clone(),
+            })
+            .collect();
         for row in &mut self.extra_header_rows {
             if row.len() > at {
                 row.remove(at);
@@ -939,12 +993,25 @@ impl DataGrid {
             .collect();
 
         if self.selection_behavior != DataGridSelectionBehavior::Rows {
+            let mut units_dropped = false;
             self.selected_cells = self
                 .selected_cells
                 .iter()
-                .filter(|(_, column)| *column != at)
+                .filter(|(_, column)| {
+                    if *column == at {
+                        units_dropped = true;
+                        false
+                    } else {
+                        true
+                    }
+                })
                 .map(|(row, column)| (*row, if *column > at { column - 1 } else { *column }))
                 .collect();
+            let had_selection = self.selection.is_some();
+            self.selection = self
+                .selection
+                .filter(|(_, column)| *column != at)
+                .map(|(row, column)| (row, if column > at { column - 1 } else { column }));
             self.current_cell = self
                 .current_cell
                 .filter(|(_, column)| *column != at)
@@ -961,6 +1028,12 @@ impl DataGrid {
                 .editing
                 .filter(|(_, column)| *column != at)
                 .map(|(row, column)| (row, if column > at { column - 1 } else { column }));
+            // A unit that named the removed column is gone; the same state change a user gesture
+            // reports through `selection_changed`, so report it rather than leaving observers with
+            // a selection they cannot see.
+            if units_dropped || (had_selection && self.selection.is_none()) {
+                self.selection_changed.emit(());
+            }
         }
         if self.scroll_column > at {
             self.scroll_column -= 1;
@@ -1029,6 +1102,29 @@ impl DataGrid {
     }
 }
 
+/// Rewrites every condition's column index through `remap`, preserving the tree's shape.
+///
+/// A structural column change moves every index-keyed fact at once; a filter that kept its old
+/// indices would evaluate against the wrong column (and, after a shrink, against a column the
+/// source does not have).
+fn remap_filter_columns(expr: &FilterExpr, remap: &dyn Fn(usize) -> usize) -> FilterExpr {
+    match expr {
+        FilterExpr::Predicate(condition) => {
+            let mut condition = condition.clone();
+            condition.column = remap(condition.column);
+            FilterExpr::Predicate(condition)
+        }
+        FilterExpr::And(children) => FilterExpr::and(
+            children.iter().map(|child| remap_filter_columns(child, remap)).collect(),
+        ),
+        FilterExpr::Or(children) => FilterExpr::or(
+            children.iter().map(|child| remap_filter_columns(child, remap)).collect(),
+        ),
+        FilterExpr::Not(inner) => FilterExpr::Not(Box::new(remap_filter_columns(inner, remap))),
+        FilterExpr::MatchAll | FilterExpr::MatchNothing => expr.clone(),
+    }
+}
+
 /// Shifts every key `>= at` in an index-keyed map one column right.
 fn shift_usize_map<V>(map: &mut HashMap<usize, V>, at: usize) {
     if map.is_empty() {
@@ -1054,4 +1150,153 @@ fn unshift_usize_map<V>(map: &mut HashMap<usize, V>, at: usize) {
         shifted.insert(if key > at { key - 1 } else { key }, value);
     }
     *map = shifted;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::EventHandler;
+
+    struct Source {
+        data: Vec<Vec<String>>,
+    }
+
+    impl IncrementalTableDataSource for Source {
+        fn row_count(&self) -> usize {
+            self.data.len()
+        }
+
+        fn column_count(&self) -> usize {
+            self.data.first().map_or(0, Vec::len)
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            self.data.get(row).and_then(|line| line.get(column)).cloned()
+        }
+    }
+
+    fn grid(rows: usize, columns: usize) -> DataGrid {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 600, 300));
+        grid.set_data_source(Arc::new(Source {
+            data: (0..rows)
+                .map(|row| (0..columns).map(|column| format!("{row}:{column}")).collect())
+                .collect(),
+        }));
+        grid
+    }
+
+    /// `selection` is the cursor the focus ring draws, so a structural column change has to move
+    /// it with `selected_cells`; dropping the unit it names has to clear it and report the change.
+    #[test]
+    fn structural_column_changes_move_the_selection_cursor() {
+        let mut grid = grid(4, 4);
+        grid.replace_selection(1, 1);
+        assert_eq!(grid.selection(), Some((1, 1)));
+
+        grid.insert_column(0, ColumnSpec::new("X", 100));
+        assert_eq!(grid.selection(), Some((1, 2)), "the cursor follows its column right");
+        assert!(grid.selected_cells().contains(&(1, 2)));
+
+        grid.remove_column(0);
+        assert_eq!(grid.selection(), Some((1, 1)), "and follows it back left");
+
+        let emitted = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&emitted);
+        grid.selection_changed.connect(move |_| {
+            sink.fetch_add(1, Ordering::Relaxed);
+        });
+        grid.remove_column(1);
+        assert_eq!(grid.selection(), None, "the removed column took the unit with it");
+        assert_eq!(emitted.load(Ordering::Relaxed), 1, "the dropped unit is reported");
+    }
+
+    /// The flat `filters` list is a mirror; `filter_expr` is what the projection evaluates. A
+    /// structural change has to move both, or the grid filters on the old column space.
+    #[test]
+    fn a_filter_follows_the_column_space_across_structural_changes() {
+        let mut grid = grid(4, 4);
+        grid.set_filter_expr(FilterExpr::Predicate(FilterCondition::contains(1, "x")));
+
+        grid.insert_column(0, ColumnSpec::new("X", 100));
+        assert_eq!(grid.filter_expr().conditions()[0].column, 2, "the evaluated tree moved right");
+        assert_eq!(grid.filters()[0].column, 2, "and the mirror agrees with it");
+
+        grid.remove_column(0);
+        assert_eq!(grid.filter_expr().conditions()[0].column, 1, "the evaluated tree moved back");
+        assert_eq!(grid.filters()[0].column, 1);
+
+        grid.remove_column(1);
+        assert!(grid.filter_expr().is_noop(), "removing the filtered column removes the filter");
+        assert!(grid.filters().is_empty());
+    }
+
+    /// The grid's own header press is tested for a resize handle **before** the section hit test,
+    /// so an ungated handle swallowed every near-edge click. It must obey the same rules as
+    /// `GridViewHeader`: interactive sizing, and a section that declares itself resizable.
+    #[test]
+    fn a_resize_drag_requires_interactive_sizing_and_a_resizable_section() {
+        let mut grid = grid(4, 4);
+        let mut header = GridViewHeader::new(Rect::new(0, 0, 480, 22));
+        header.set_columns(vec![
+            ColumnSpec::new("A", 120).with_resizable(true),
+            ColumnSpec::new("B", 120).with_resizable(false),
+            ColumnSpec::new("C", 120).with_resizable(true),
+            ColumnSpec::new("D", 120).with_resizable(true),
+        ]);
+        grid.set_header(&header);
+        // `set_header` maps a fixed header onto interactive widths; reset it so the gate is what
+        // this test observes.
+        grid.set_column_width_mode(ColumnWidthMode::Fixed);
+
+        let band = grid.header_band();
+        let cells = grid.cells_box();
+        let edge_a = Point::new(cells.x + 120, band.y + 4);
+        let edge_b = Point::new(cells.x + 240, band.y + 4);
+        assert_eq!(grid.resize_handle_at(edge_a), None, "fixed sizing has no drag handles");
+
+        grid.set_column_width_mode(ColumnWidthMode::Interactive);
+        assert_eq!(grid.resize_handle_at(edge_a), Some(0), "a resizable section has one");
+        assert_eq!(grid.resize_handle_at(edge_b), None, "a non-resizable section does not");
+
+        // The click falls through to the section instead of starting a drag it cannot finish.
+        let clicked = Arc::new(AtomicU64::new(u64::MAX));
+        let sink = Arc::clone(&clicked);
+        grid.header_clicked.connect(move |column| {
+            sink.store(*column as u64, Ordering::Relaxed);
+        });
+        grid.handle_event(&Event::MousePress { pos: edge_a, button: 1, modifiers: 0 });
+        assert_eq!(grid.resizing_column, Some(0), "interactive mode starts the drag");
+        grid.handle_event(&Event::MouseRelease { pos: edge_a, button: 1 });
+        assert_eq!(grid.resizing_column, None, "the release ends it");
+
+        grid.set_column_width_mode(ColumnWidthMode::Fixed);
+        grid.handle_event(&Event::MousePress { pos: edge_a, button: 1, modifiers: 0 });
+        assert_eq!(grid.resizing_column, None, "fixed mode does not start one");
+        assert_eq!(clicked.load(Ordering::Relaxed), 1, "the header sees the click instead");
+    }
+
+    /// Every setter that changes `visible_window()` reports it, so a host subscribed to the window
+    /// is not left with a stale rectangle.
+    #[test]
+    fn window_affecting_setters_report_the_window() {
+        let mut grid = grid(4, 4);
+        let emitted = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&emitted);
+        grid.visible_window_changed.connect(move |_| {
+            sink.fetch_add(1, Ordering::Relaxed);
+        });
+
+        grid.set_column_width_mode(ColumnWidthMode::Stretch);
+        assert_eq!(emitted.load(Ordering::Relaxed), 1);
+        grid.set_hidden_columns(vec![0]);
+        assert_eq!(emitted.load(Ordering::Relaxed), 2);
+        grid.set_frozen_columns(1);
+        assert_eq!(emitted.load(Ordering::Relaxed), 3);
+        grid.set_column_hidden(2, true);
+        assert_eq!(emitted.load(Ordering::Relaxed), 4);
+
+        // An idempotent call is not a change and reports nothing.
+        grid.set_frozen_columns(1);
+        assert_eq!(emitted.load(Ordering::Relaxed), 4);
+    }
 }

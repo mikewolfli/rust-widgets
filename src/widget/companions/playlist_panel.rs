@@ -133,6 +133,9 @@ impl PlaylistPanel {
                 self.selected = None;
             }
         }
+        // `hovered` is an index into the old queue, so it cannot describe the replacement. A stale
+        // value painted the wrong row as hovered until the next pointer move.
+        self.hovered = None;
         self.clamp_scroll();
         self.rebuild_visible_indices();
         self.base.request_redraw();
@@ -447,15 +450,20 @@ impl EventHandler for PlaylistPanel {
             },
             Event::Wheel { delta, .. } if delta.y != 0 => {
                 let max = self.visible_tracks().len().saturating_sub(self.visible_rows().max(1));
+                let before = self.scroll_offset;
+                // A positive notch moves the viewport back toward the start, matching
+                // `Event::Wheel`'s sign and the menu companions.
                 let next = if delta.y > 0 {
-                    (self.scroll_offset + 1).min(max)
-                } else {
                     self.scroll_offset.saturating_sub(1)
+                } else {
+                    (self.scroll_offset + 1).min(max)
                 };
                 if next != self.scroll_offset {
                     self.scroll_offset = next;
                     self.base.request_redraw();
                 }
+                // C2-D0: a queue already at its end lets an outer container take the notch.
+                crate::widget::claim_wheel_if_moved(&before, &self.scroll_offset);
             }
             _ => {}
         }
@@ -894,5 +902,19 @@ mod tests {
     fn set_tracks_reports_a_missing_payload() {
         let mut panel = panel();
         assert_eq!(panel.command("set_tracks"), Err(CapabilityAccessError::OutOfRange));
+    }
+
+    /// FINDING 14: a hover names a row of the queue it was reported against.
+    ///
+    /// Removing a track shifts every later row, so the stored index either names a different
+    /// track or falls outside the new queue; both painted the wrong row as hovered.
+    #[test]
+    fn replacing_the_queue_drops_a_hover_that_names_an_old_row() {
+        let mut panel = panel();
+        panel.handle_event(&Event::mouse_move(100, 55));
+        assert_eq!(panel.hovered, Some(2), "y = 55 is the third row");
+
+        panel.set_tracks(vec!["/music/two.mp3".to_string(), "/music/three.mp3".to_string()]);
+        assert_eq!(panel.hovered, None, "a hover cannot survive the queue it indexed");
     }
 }

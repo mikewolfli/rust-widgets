@@ -20,8 +20,8 @@ use crate::widget::menu_toolbar::menu_button::{
     draw_menu_panel, menu_item_rect, menu_panel_rect, MenuArrowType, MenuButtonPopup, MenuItem,
 };
 use crate::widget::metrics::{
-    dimensions, effective_font, estimate_text_width, focus_ring_color, ControlMetrics, FocusRing,
-    FOCUS_RING_WIDTH,
+    dimensions, effective_font, estimate_line_height, estimate_text_width, focus_ring_color,
+    ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
 };
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -257,11 +257,15 @@ impl ToggleButton {
             return;
         };
         button_group::register(key.clone(), self.id(), self.geometry(), self.base.is_enabled());
-        if let Some(previous) = button_group::select(&key, self.id()) {
-            if previous != self.id() {
-                button_group::notify_checked(&[previous], false);
-            }
+        // `is_checked` reads the group, so the displaced member is told **before** the selection
+        // moves: told afterwards it already reports `false` and `set_checked(false)` finds no
+        // edge to announce.
+        if let Some(previous) =
+            button_group::selected(&key).filter(|previous| *previous != self.id())
+        {
+            button_group::notify_checked(&[previous], false);
         }
+        button_group::select(&key, self.id());
     }
 
     /// Releases the group's selection when this button holds it.
@@ -496,6 +500,15 @@ impl ToggleButton {
         }
     }
 
+    /// The horizontal room the disclosure arrow and its trailing padding take.
+    ///
+    /// Shared by the painter and [`Self::arrow_rect`] so the segment a click opens the menu from
+    /// is the segment the arrow is drawn in.
+    #[cfg(full_widgets)]
+    fn arrow_trailing(&self) -> i32 {
+        dimensions::BUTTON_PADDING_H as i32 + self.arrow_advance() as i32
+    }
+
     /// The segment of the button that opens the menu directly.
     #[cfg(full_widgets)]
     pub fn arrow_rect(&self) -> Rect {
@@ -503,7 +516,11 @@ impl ToggleButton {
         if self.arrow_type == MenuArrowType::None {
             return geom;
         }
-        let width = geom.width.min(20);
+        // The painted glyph starts at the left edge of the trailing reserve; the whole reserve is
+        // the hit target, so the arrow's surrounding padding is not a dead zone that falls back to
+        // the face's toggle. Deriving the width here (rather than a fixed 20 px) is what keeps a
+        // narrow button's hit segment over its painted arrow.
+        let width = geom.width.min(self.arrow_trailing().max(0) as u32);
         Rect::new(geom.x + geom.width as i32 - width as i32, geom.y, width, geom.height)
     }
 
@@ -663,8 +680,11 @@ impl ToggleButton {
     /// Measures the intrinsic size from scratch; the slow path behind `size_hint`.
     fn measure_hint(&self, font: &Font, icon_advance: u32, arrow_advance: u32) -> Size {
         let label_width = estimate_text_width(self.text(), font, 1.0);
+        // The content height is the font's own line box, as `Button::implicit_size` derives it.
+        // The old `FONT_SIZE_BASE + 4` ignored the effective font, so a 60 px style left the hint
+        // at its 40 px floor while the caption painted 60 px tall and overflowed the band.
         ControlMetrics::implicit_size(
-            Size::new(label_width + icon_advance + arrow_advance, dimensions::FONT_SIZE_BASE + 4),
+            Size::new(label_width + icon_advance + arrow_advance, estimate_line_height(font, 1.0)),
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
             dimensions::BUTTON_MIN,
         )
@@ -783,7 +803,12 @@ impl ToggleButton {
             *elapsed = elapsed.saturating_add(delta_ms);
             if *elapsed >= self.popup_delay_ms {
                 self.press_elapsed = None;
-                self.open_menu();
+                // A disabled control must not open its menu: `set_enabled` clears the timer, but
+                // gating here as well keeps an already-armed timer from firing if the order ever
+                // changes.
+                if self.base.is_enabled() {
+                    self.open_menu();
+                }
             }
             animating = true;
         }
@@ -823,6 +848,14 @@ impl Widget for ToggleButton {
             return;
         }
         self.base.set_enabled(enabled);
+        if !enabled {
+            // A delayed popup is part of the gesture this control has just abandoned: leaving
+            // the timer armed let a disabled button open its menu and kept `is_animating` true.
+            #[cfg(full_widgets)]
+            {
+                self.press_elapsed = None;
+            }
+        }
         self.set_state_theme_hook();
         self.sync_group_registration();
         self.base.request_redraw();
@@ -850,15 +883,17 @@ impl Widget for ToggleButton {
         self.menu_open
     }
 
-    /// A right-click on a button with a menu opens it at the pointer.
+    /// A right-click on a button with a menu opens the attached menu.
+    ///
+    /// The panel is anchored below the button, not at the pointer: this control's menu is a
+    /// drop-down whose place is its own geometry (`menu_rect`). `pos` is the request's position,
+    /// not a panel origin; a caller that wants a true pointer-anchored context menu has the
+    /// `Menu` control for it.
     #[cfg(full_widgets)]
     fn context_menu_event(&mut self, pos: Point) -> bool {
         if self.menu_items.is_empty() {
             return false;
         }
-        // The attached menu anchors below the button; the pointer position is the request's
-        // anchor rather than a panel origin, so the menu is opened at its usual place. A caller
-        // that wants a true context menu has the `Menu` control for it.
         let _ = pos;
         self.open_menu();
         true
@@ -1386,7 +1421,7 @@ impl Draw for ToggleButton {
         let mut trailing = dimensions::BUTTON_PADDING_H as i32;
         #[cfg(full_widgets)]
         if self.arrow_type != MenuArrowType::None {
-            trailing += 12;
+            trailing = self.arrow_trailing();
             let arrow_x = rect.x + rect.width as i32 - trailing;
             let arrow_y = rect.y + rect.height as i32 / 2 - 2;
             // Constant vertex offsets rather than a freshly built `Vec` per frame. The
@@ -1489,7 +1524,10 @@ impl crate::event::EventHandler for ToggleButton {
                     }
                     consumed = true;
                 }
-                crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
+                crate::event::Event::MousePress { pos, button, .. }
+                | crate::event::Event::PointerPress { pos, button, .. }
+                    if *button == 1 =>
+                {
                     if let Some(index) = self.hit_test_menu_item(*pos) {
                         self.activate_menu_row(index);
                     } else if !self.menu_rect().contains_point(*pos) {
@@ -1497,7 +1535,8 @@ impl crate::event::EventHandler for ToggleButton {
                     }
                     consumed = true;
                 }
-                crate::event::Event::MouseMove { pos } => {
+                crate::event::Event::MouseMove { pos }
+                | crate::event::Event::PointerMove { pos, .. } => {
                     if let Some(index) = self.hit_test_menu_item(*pos) {
                         if self.active_menu_index != Some(index) {
                             self.active_menu_index = Some(index);
@@ -1513,7 +1552,10 @@ impl crate::event::EventHandler for ToggleButton {
         }
 
         match event {
-            crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
+            crate::event::Event::MousePress { pos, button, .. }
+            | crate::event::Event::PointerPress { pos, button, .. }
+                if *button == 1 =>
+            {
                 #[cfg(full_widgets)]
                 if !self.menu_items.is_empty() {
                     let on_arrow = self.arrow_rect().contains_point(*pos)
@@ -1544,7 +1586,10 @@ impl crate::event::EventHandler for ToggleButton {
                 // set for a later release.
                 self.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
             }
-            crate::event::Event::MouseRelease { pos, button } if *button == 1 => {
+            crate::event::Event::MouseRelease { pos, button }
+            | crate::event::Event::PointerRelease { pos, button, .. }
+                if *button == 1 =>
+            {
                 #[cfg(full_widgets)]
                 {
                     // A release before the delay fired cancels the pending popup.
@@ -2261,5 +2306,104 @@ mod checked_visibility_tests {
             1,
             "and it reports the click, like every other button"
         );
+    }
+
+    /// A styled font grows the hint's height, not only its width.
+    ///
+    /// `measure_hint` hard-coded `FONT_SIZE_BASE + 4` as the content height, so a 60 px caption
+    /// kept the 40 px floor and painted outside the band its own `draw` derived from that hint.
+    #[test]
+    fn a_large_font_grows_the_toggle_hint_height() {
+        use crate::style::WidgetStyle;
+
+        let baseline = ToggleButton::new("A".to_string(), Rect::new(0, 0, 200, 40));
+        let base_hint = baseline.size_hint();
+
+        let mut big = ToggleButton::new("A".to_string(), Rect::new(0, 0, 200, 40));
+        big.set_style(WidgetStyle::default().with_font(crate::core::Font::simple("Test", 60.0)));
+        let big_hint = big.size_hint();
+
+        assert!(
+            big_hint.height > base_hint.height,
+            "a 60 px caption must grow the band: {} vs {}",
+            big_hint.height,
+            base_hint.height
+        );
+    }
+
+    /// Disabling a delayed popup cancels the timer and stops the frames it was asking for.
+    ///
+    /// `set_enabled` never cleared `press_elapsed`, and `tick` fired the menu without asking
+    /// whether the control was still enabled — so a disabled button opened its menu and kept
+    /// reporting itself as animating.
+    #[cfg(full_widgets)]
+    #[test]
+    fn disabling_a_delayed_popup_cancels_it_and_stops_the_frames() {
+        use crate::event::Event;
+
+        let mut button = ToggleButton::new("File".to_string(), Rect::new(0, 0, 100, 30));
+        button.set_arrow_type(MenuArrowType::Down);
+        button.set_menu(vec![MenuItem::new(1, "Open")]);
+        button.set_popup_mode(MenuButtonPopup::DelayedPopup);
+
+        // The face (not the arrow) is what arms a delayed popup.
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(10, 15),
+            button: 1,
+            modifiers: 0,
+        });
+        button.set_enabled(false);
+        assert!(!button.is_animating(), "the abandoned timer must not keep the control animating");
+
+        let _ = Widget::tick(&mut button, 1_000);
+        assert!(!button.is_menu_open(), "a disabled control must not open its menu");
+    }
+
+    /// The disclosure's hit rect is derived from where the arrow is painted.
+    ///
+    /// `arrow_rect` was the rightmost 20 px while the glyph was painted at `right-24..right-16`,
+    /// so a 100 px button opened its menu from blank padding and toggled its latch when the
+    /// drawn arrow was clicked.
+    #[cfg(full_widgets)]
+    #[test]
+    fn the_disclosure_hit_rect_covers_the_painted_arrow() {
+        use crate::event::Event;
+
+        let mut button = ToggleButton::new("File".to_string(), Rect::new(0, 0, 100, 30));
+        button.set_arrow_type(MenuArrowType::Down);
+        button.set_menu(vec![MenuItem::new(1, "Open")]);
+        button.set_popup_mode(MenuButtonPopup::MenuButtonPopup);
+
+        let arrow = Point::new(78, 15);
+        assert!(
+            button.arrow_rect().contains_point(arrow),
+            "the painted glyph starts inside the hit segment: {:?}",
+            button.arrow_rect()
+        );
+        button.handle_event(&Event::MousePress { pos: arrow, button: 1, modifiers: 0 });
+        assert!(button.is_menu_open(), "a press on the drawn arrow opens the menu");
+        assert!(!button.is_checked(), "and does not toggle the face's latch");
+    }
+
+    /// A stylus press and release toggle the tool button, matching the mouse arms.
+    #[test]
+    fn a_pointer_press_and_release_toggle_the_tool_button() {
+        use crate::event::Event;
+
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        button.handle_event(&Event::pointer_press(
+            Point::new(5, 5),
+            crate::event::mouse_button::PRIMARY,
+            0.5,
+            0.0,
+            0.0,
+        ));
+        assert!(button.is_pressed(), "the pen press arms the control");
+        button.handle_event(&Event::pointer_release(
+            Point::new(5, 5),
+            crate::event::mouse_button::PRIMARY,
+            0.0,
+        ));
+        assert!(button.is_checked(), "the pen release completes the tap");
     }
 }

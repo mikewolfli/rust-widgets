@@ -476,8 +476,10 @@ impl BezierCurveEditor {
     ///
     /// Point `0` and the last point are the curve's endpoints and are not removable. The merge
     /// is the exact inverse of [`Self::add_point`] at the recorded split fraction, so
-    /// split-then-remove restores the original cubic; an adjacent pair that was not produced by
-    /// a split still merges into the cubic with the same endpoints.
+    /// split-then-remove restores the original cubic. Only a join **produced by a split** can be
+    /// removed: the right-hand segment's `split_fraction` must lie strictly inside `(0, 1)`.
+    /// An adjacent pair that was not produced by a split is refused (`false`) rather than being
+    /// silently merged into new geometry.
     pub fn remove_point(&mut self, point: usize) -> bool {
         if point == 0 || point >= self.segments.len() {
             return false;

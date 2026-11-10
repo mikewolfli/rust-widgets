@@ -56,6 +56,9 @@ const SHADOW_BLUR_RADIUS: u32 = 12;
 /// the bubble is genuinely semi-transparent but its backdrop is not sampled and blurred.
 const TRANSLUCENT_CARD_ALPHA: u8 = 217;
 
+/// The inset between the painted card's edge and the content child's box.
+const CONTENT_PADDING: i32 = 8;
+
 /// How a popover decides to close itself.
 ///
 /// The three names mirror the behaviour families a floating card is usually offered:
@@ -562,6 +565,30 @@ impl Popover {
         (body_rect, arrow_tip, arrow_dir)
     }
 
+    /// The body rectangle the last frame painted, clipped to the reveal's current unfold.
+    ///
+    /// `body_rect` caches the settled body; while the card unfolds, the painted bottom edge
+    /// is the revealed height. The outside-click test belongs to what the user can see, so
+    /// it reads this rather than the settled box.
+    fn painted_body_rect(&self) -> Rect {
+        let settled = self.body_rect;
+        let reveal = self.reveal.value();
+        let closed_height = ((self.geometry().height as f32 * REVEAL_MIN_SCALE) + 0.5) as u32;
+        let revealed_height = ((settled.height as f32 * reveal) + 0.5) as u32;
+        Rect::new(settled.x, settled.y, settled.width, revealed_height.max(closed_height))
+    }
+
+    /// The box `draw` hands the content child at the current reveal.
+    fn painted_content_rect(&self) -> Rect {
+        let body = self.painted_body_rect();
+        Rect::new(
+            body.x + CONTENT_PADDING,
+            body.y + CONTENT_PADDING,
+            body.width.saturating_sub((CONTENT_PADDING as u32) * 2),
+            body.height.saturating_sub((CONTENT_PADDING as u32) * 2),
+        )
+    }
+
     /// The unclamped card position for `dir`, centred on the anchor's cross axis.
     fn place_beside(&self, anchor: Rect, body: Size, dir: ArrowDirection) -> Rect {
         let anchor_center_x = anchor.x + anchor.width as i32 / 2;
@@ -636,6 +663,13 @@ impl Widget for Popover {
             crate::widget::metrics::dimensions::POPOVER_DEFAULT_WIDTH,
             crate::widget::metrics::dimensions::POPOVER_DEFAULT_HEIGHT,
         )
+    }
+
+    /// The card can sit against an anchor outside the control's own rectangle, so its
+    /// painted body is part of the hit area as well as the control box.
+    fn contains_point(&self, point: Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || (self.visible && self.painted_body_rect().contains_point(point))
     }
 
     /// Advances the unfold by `delta_ms`, returning whether another frame is owed.
@@ -894,16 +928,15 @@ impl Draw for Popover {
         // ── Draw placeholder content indicator ──
         // The label reads the theme rather than the previous fixed grey, so a dark card does
         // not carry light-theme text.
-        let content_padding = 8i32;
         // The label lives inside the card, so it is clipped to what has **unfolded so far** rather
         // than to the settled body: an unclipped label in a half-open card paints below the card's
         // own bottom edge, which is the one thing that would make the unfold visibly wrong. At
         // `reveal = 1.0` this box is exactly the padded body, so a settled label is unchanged.
-        let content_rect = crate::core::Rect::new(
-            body_rect.x + content_padding,
-            body_rect.y + content_padding,
-            body_rect.width.saturating_sub((content_padding as u32) * 2),
-            body_rect.height.saturating_sub((content_padding as u32) * 2),
+        let content_rect = Rect::new(
+            body_rect.x + CONTENT_PADDING,
+            body_rect.y + CONTENT_PADDING,
+            body_rect.width.saturating_sub((CONTENT_PADDING as u32) * 2),
+            body_rect.height.saturating_sub((CONTENT_PADDING as u32) * 2),
         );
         if content_rect.height == 0 {
             return;
@@ -1026,13 +1059,33 @@ impl EventHandler for Popover {
             return;
         }
 
+        // The content child is a `Box<dyn Widget>`, not a node in the mounted tree, so the
+        // popover is the only object that can hand it pointer input. Forward events aimed
+        // at the painted content box; the popover is otherwise a container that swallowed
+        // every click the child beneath it should have received.
+        if let Some(pos) = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos } => Some(*pos),
+            _ => None,
+        } {
+            if self.painted_content_rect().contains_point(pos) {
+                if let Some(content) = self.content.as_mut() {
+                    content.handle_event(event);
+                }
+            }
+        }
+
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == 1
                     && self.behavior.closes_on_outside_click()
-                    && !self.body_rect.contains_point(*pos)
+                    && !self.painted_body_rect().contains_point(*pos)
                 {
-                    // Auto-dismiss on click outside
+                    // Auto-dismiss on a click outside what the card currently paints. Using
+                    // the settled body left clicks below a half-unfolded card inside it.
                     self.hide();
                 }
             }
@@ -1709,5 +1762,79 @@ mod tests {
         assert_eq!(popover.arrow_direction(), PopoverArrow::Left);
         popover.set_placement(PopoverEdge::Auto);
         assert_eq!(popover.arrow_direction(), PopoverArrow::Auto);
+    }
+
+    /// A pointer event inside the painted content box reaches the content child.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw` painted the `Box<dyn Widget>` but `handle_event` never forwarded to it, and
+    /// the child is not mounted in the tree, so every click over the content was swallowed.
+    #[test]
+    fn a_press_inside_the_painted_content_reaches_the_child() {
+        struct ClickCounter {
+            base: BaseWidget,
+            presses: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl Widget for ClickCounter {
+            fn base(&self) -> &BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut BaseWidget {
+                &mut self.base
+            }
+        }
+        impl EventHandler for ClickCounter {
+            fn handle_event(&mut self, event: &Event) {
+                if matches!(event, Event::MousePress { .. }) {
+                    self.presses.set(self.presses.get() + 1);
+                }
+            }
+        }
+
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut popover = Popover::new(Rect::new(0, 0, 300, 200));
+        popover.set_content(Box::new(ClickCounter {
+            base: BaseWidget::new(WidgetKind::Label, Rect::new(0, 0, 0, 0), "ClickCounter"),
+            presses: std::rc::Rc::clone(&presses),
+        }));
+        popover.show(Rect::new(100, 40, 50, 20));
+        while popover.tick(1000) {}
+        let _ = render_to_svg(&mut popover);
+
+        let content = popover.painted_content_rect();
+        let pos =
+            Point::new(content.x + content.width as i32 / 2, content.y + content.height as i32 / 2);
+        popover.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+
+        assert_eq!(presses.get(), 1, "the content child must receive the press");
+        assert!(popover.is_visible(), "and the press is inside the card, so it must not dismiss");
+    }
+
+    /// A click below a half-unfolded card is outside what is painted and dismisses it.
+    #[test]
+    fn a_click_below_the_unfolded_card_dismisses_it() {
+        let mut popover = Popover::new(Rect::new(0, 0, 300, 200));
+        popover.show(Rect::new(100, 20, 50, 20));
+        assert!(popover.tick(20), "the card is still unfolding");
+        let _ = render_to_svg(&mut popover);
+
+        let painted = popover.painted_body_rect();
+        let settled = popover.body_rect;
+        assert!(
+            painted.height < settled.height,
+            "the visible card is shorter than the settled one: {painted:?} vs {settled:?}"
+        );
+        let pos = Point::new(painted.x + 2, painted.y + painted.height as i32 + 1);
+        assert!(
+            settled.contains_point(pos) && !painted.contains_point(pos),
+            "the click is below the painted card but inside the settled body: {pos:?}"
+        );
+
+        popover.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert!(
+            !popover.is_visible(),
+            "a click below the visible card is an outside click during the unfold"
+        );
     }
 }

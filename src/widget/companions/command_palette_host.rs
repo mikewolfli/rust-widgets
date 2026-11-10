@@ -192,6 +192,9 @@ pub struct CommandPaletteHost {
 impl CommandPaletteHost {
     /// Creates a closed palette with no entries.
     pub fn new(geometry: Rect) -> Self {
+        // The capability table declares this host `visible` by default, so the base flag starts
+        // set; `contains_point` below enforces that a closed palette paints nothing and takes no
+        // press. `open`/`close` still keep the flag in step once it has been toggled.
         Self {
             base: BaseWidget::new(WidgetKind::ListView, geometry, "CommandPaletteHost"),
             entries: Vec::new(),
@@ -218,6 +221,10 @@ impl CommandPaletteHost {
         } else {
             self.apply_filter(String::new());
         }
+        // The open palette owns the press that dismisses it (I-127), and its base flag must
+        // follow `open` so the hit test can reach it at all.
+        self.base.show();
+        crate::widget::runtime::set_popup_grab(self.base.id());
         self.base.request_redraw();
     }
 
@@ -225,6 +232,8 @@ impl CommandPaletteHost {
     pub fn close(&mut self) {
         if self.open {
             self.open = false;
+            self.base.hide();
+            crate::widget::runtime::clear_popup_grab_for(self.base.id());
             self.base.request_redraw();
         }
     }
@@ -433,6 +442,11 @@ impl EventHandler for CommandPaletteHost {
                 }
             }
             Event::MousePress { pos, button, .. } => {
+                // The runtime clears the grab after delivering one press through it, so a press
+                // that leaves the palette open (a click in its header or padding) re-arms it.
+                if self.open {
+                    crate::widget::runtime::set_popup_grab(self.base.id());
+                }
                 if *button != 1 {
                     return;
                 }
@@ -452,6 +466,7 @@ impl EventHandler for CommandPaletteHost {
                 if delta.y == 0 {
                     return;
                 }
+                let before = self.scroll_offset;
                 let step = if delta.y < 0 { 1 } else { -1 };
                 let next = (self.scroll_offset as i32 + step).max(0) as usize;
                 let next = next.min(self.max_scroll());
@@ -459,6 +474,9 @@ impl EventHandler for CommandPaletteHost {
                     self.scroll_offset = next;
                     self.base.request_redraw();
                 }
+                // C2-D0: only a notch that actually moved the list claims the wheel; otherwise
+                // an outer container still gets it (scroll chaining).
+                crate::widget::claim_wheel_if_moved(&before, &self.scroll_offset);
             }
             Event::KeyPress { key, .. } => match *key {
                 key_codes::UP => self.move_selection(Direction::Previous),
@@ -621,6 +639,10 @@ impl Widget for CommandPaletteHost {
             crate::style::EdgeOffsets::all(0),
             Size::new(480, PALETTE_HEADER_HEIGHT + rows * PALETTE_ROW_HEIGHT),
         )
+    }
+    /// A closed palette paints nothing, so it must not accept a press in the rectangle it reserves.
+    fn contains_point(&self, point: Point) -> bool {
+        self.open && self.base.contains_point_with_touch_expansion(point)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

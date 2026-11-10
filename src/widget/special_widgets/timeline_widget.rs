@@ -370,21 +370,22 @@ impl TimelineWidget {
     /// [`nice_tick_step`]: crate::widget::chart_widgets::charts::nice_tick_step
     fn time_ticks(&self) -> Vec<i64> {
         if !self.auto_time_step {
-            let span = self.viewport_end - self.viewport_start;
+            let span = self.viewport_end.saturating_sub(self.viewport_start);
             return (0..=TIME_LABEL_TICKS)
                 .map(|tick| {
                     let ratio = tick as f64 / f64::from(TIME_LABEL_TICKS);
-                    self.viewport_start + (span as f64 * ratio).round() as i64
+                    self.viewport_start.saturating_add((span as f64 * ratio).round() as i64)
                 })
                 .collect();
         }
-        let span = (self.viewport_end - self.viewport_start).max(1) as f64;
+        let span = self.viewport_end.saturating_sub(self.viewport_start).max(1) as f64;
         let step =
             crate::widget::chart_widgets::charts::nice_tick_step(span, TIME_LABEL_TICKS as usize);
         // Timeline coordinates are integer instants, so a fractional step is rounded up to one
         // unit rather than producing duplicate labels.
         let step = if step.is_finite() { (step.round() as i64).max(1) } else { 1 };
-        let first = (self.viewport_start as f64 / step as f64).ceil() as i64 * step;
+        let first = (self.viewport_start as f64 / step as f64).ceil() as i64;
+        let first = first.saturating_mul(step);
         let mut ticks = Vec::new();
         let mut value = first;
         while value <= self.viewport_end && ticks.len() < 32 {
@@ -419,7 +420,7 @@ impl TimelineWidget {
     /// "Close" is a twelfth of the visible span, so the marker follows the zoom instead of being
     /// tied to a fixed unit (SP-112).
     fn dense_clusters(&self) -> Vec<(i64, usize)> {
-        let span = (self.viewport_end - self.viewport_start).max(1) as f64;
+        let span = self.viewport_end.saturating_sub(self.viewport_start).max(1) as f64;
         let threshold = ((span / 12.0).ceil() as i64).max(1);
         let mut starts: Vec<i64> = self.items.iter().map(|item| item.start).collect();
         starts.sort_unstable();
@@ -427,7 +428,7 @@ impl TimelineWidget {
         let mut current: Option<(i64, usize)> = None;
         for start in starts {
             match current {
-                Some((first, count)) if start - first <= threshold => {
+                Some((first, count)) if start.saturating_sub(first) <= threshold => {
                     current = Some((first, count + 1));
                 }
                 Some((first, count)) => {
@@ -599,7 +600,7 @@ impl TimelineWidget {
 
     /// Sets viewport range.
     pub fn set_viewport(&mut self, start: i64, end: i64) {
-        let end = end.max(start + 1);
+        let end = end.max(start.saturating_add(1));
         if self.viewport_start == start && self.viewport_end == end {
             return;
         }
@@ -616,11 +617,11 @@ impl TimelineWidget {
         if factor <= 0.0 {
             return;
         }
-        let span = (self.viewport_end - self.viewport_start).max(1) as f32;
-        let center = (self.viewport_start + self.viewport_end) as f32 / 2.0;
+        let span = self.viewport_end.saturating_sub(self.viewport_start).max(1) as f32;
+        let center = (self.viewport_start as f64 + self.viewport_end as f64) / 2.0;
         let next_half = (span / factor / 2.0).max(1.0);
-        let start = (center - next_half).floor() as i64;
-        let end = (center + next_half).ceil() as i64;
+        let start = (center - f64::from(next_half)).floor() as i64;
+        let end = (center + f64::from(next_half)).ceil() as i64;
         self.set_viewport(start, end);
     }
 
@@ -667,7 +668,7 @@ impl TimelineWidget {
                 max_end = max_end.max(item.end);
             }
             if min_start >= max_end {
-                max_end = min_start + 1;
+                max_end = min_start.saturating_add(1);
             }
             (min_start, max_end)
         };
@@ -742,7 +743,7 @@ impl TimelineWidget {
         if track_w == 0 {
             return 0;
         }
-        let span = (self.viewport_end - self.viewport_start).max(1) as f64;
+        let span = self.viewport_end.saturating_sub(self.viewport_start).max(1) as f64;
         ((dx as f64 / track_w as f64) * span).round() as i64
     }
 
@@ -757,12 +758,12 @@ impl TimelineWidget {
                     return;
                 }
                 let delta = self.pixels_to_time(dx, track_w);
-                self.set_viewport(start - delta, end - delta);
+                self.set_viewport(start.saturating_sub(delta), end.saturating_sub(delta));
                 self.drag = Some(TimelineDrag::Pan { origin_x, start, end, moved: true });
             }
             TimelineDrag::Move { index, origin_x, start, end } => {
                 let delta = self.pixels_to_time(pos.x - origin_x, track_w);
-                let next = (index, start + delta, end + delta);
+                let next = (index, start.saturating_add(delta), end.saturating_add(delta));
                 if let Some(item) = self.items.get(index) {
                     self.item_moved.emit((item.id.clone(), next.1, next.2));
                 }
@@ -773,7 +774,7 @@ impl TimelineWidget {
             TimelineDrag::ResizeStart { index, origin_x, start, end } => {
                 let delta = self.pixels_to_time(pos.x - origin_x, track_w);
                 // An edge cannot cross its counterpart, so the span never inverts.
-                let next_start = (start + delta).min(end - 1);
+                let next_start = start.saturating_add(delta).min(end.saturating_sub(1));
                 if let Some(item) = self.items.get(index) {
                     self.item_resized.emit((item.id.clone(), next_start, end));
                 }
@@ -783,7 +784,7 @@ impl TimelineWidget {
             }
             TimelineDrag::ResizeEnd { index, origin_x, start, end } => {
                 let delta = self.pixels_to_time(pos.x - origin_x, track_w);
-                let next_end = (end + delta).max(start + 1);
+                let next_end = end.saturating_add(delta).max(start.saturating_add(1));
                 if let Some(item) = self.items.get(index) {
                     self.item_resized.emit((item.id.clone(), start, next_end));
                 }
@@ -796,9 +797,9 @@ impl TimelineWidget {
 
     fn project_x(&self, value: i64, track_x: i32, track_w: u32) -> i32 {
         let start = self.viewport_start;
-        let end = self.viewport_end.max(start + 1);
-        let span = (end - start) as f32;
-        let ratio = ((value - start) as f32 / span).clamp(0.0, 1.0);
+        let end = self.viewport_end.max(start.saturating_add(1));
+        let span = end.saturating_sub(start).max(1) as f32;
+        let ratio = ((value.saturating_sub(start)) as f32 / span).clamp(0.0, 1.0);
         track_x + (ratio * track_w as f32) as i32
     }
 }
@@ -1282,10 +1283,12 @@ impl Draw for TimelineWidget {
                         ticks.push(TickLabel { x, text: Self::format_time_label(value) });
                     }
                 } else {
-                    let span = self.viewport_end - self.viewport_start;
+                    let span = self.viewport_end.saturating_sub(self.viewport_start);
                     for tick in 0..=TIME_LABEL_TICKS {
                         let ratio = tick as f64 / f64::from(TIME_LABEL_TICKS);
-                        let value = self.viewport_start + (span as f64 * ratio).round() as i64;
+                        let value = self
+                            .viewport_start
+                            .saturating_add((span as f64 * ratio).round() as i64);
                         let x = track_x + (track_w as f64 * ratio) as i32;
                         ticks.push(TickLabel { x, text: value.to_string() });
                     }

@@ -416,13 +416,19 @@ impl Draw for LineEdit {
             let bw = style.border_width.unwrap_or(0);
             // STY-01: the outline follows the fill's corner radius. A square rule around a
             // rounded field left the four corners showing the backdrop.
-            crate::widget::draw::stroke_surface_border(
-                context,
-                Rect::new(rect.x, rect.y, rect.width, rect.height),
-                style.resolved_corner_radii().to_array(),
-                border_color,
-                bw,
-            );
+            //
+            // A field with no configured width (`unwrap_or(0)`) must not paint a border: the
+            // helper used to force one pixel, so `None` and `Some(0)` both drew an outline the
+            // caller never asked for.
+            if bw > 0 {
+                crate::widget::draw::stroke_surface_border(
+                    context,
+                    Rect::new(rect.x, rect.y, rect.width, rect.height),
+                    style.resolved_corner_radii().to_array(),
+                    border_color,
+                    bw,
+                );
+            }
         }
         // Draw text or placeholder
         //

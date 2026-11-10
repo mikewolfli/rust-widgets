@@ -376,6 +376,13 @@ impl ImageGallery {
         self.images.remove(index);
         // Every index at and after `index` now names a different image.
         self.thumbnails.clear();
+        // The hover is an image index like the current one, so it moves with its image rather
+        // than pointing at the tile that shifted into the removed slot.
+        self.hovered_thumb = match self.hovered_thumb {
+            Some(hovered) if hovered == index => None,
+            Some(hovered) if hovered > index => Some(hovered - 1),
+            other => other,
+        };
         if self.images.is_empty() {
             self.current_index = 0;
         } else if index < self.current_index {
@@ -762,6 +769,11 @@ impl ImageGallery {
             return;
         }
         self.zoom = zoom;
+        // The pan is bounded by the overhang the *new* scale produces. A picture that filled the
+        // stage at 4x has nothing to pan at 1x, so keeping the old offset left it off-stage.
+        let (max_x, max_y) = self.pan_bounds();
+        self.pan_x = self.pan_x.clamp(-max_x, max_x);
+        self.pan_y = self.pan_y.clamp(-max_y, max_y);
         self.base.request_redraw();
     }
 
@@ -809,6 +821,34 @@ impl Widget for ImageGallery {
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
+    }
+
+    /// Disabling the gallery drops a pan that is still latched.
+    ///
+    /// `handle_event` returns before the release arm while disabled, so a drag that outlived the
+    /// disable would pan again on the first move after re-enabling, with no button held. The
+    /// default body is repeated because an override cannot call it.
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.base.is_enabled() == enabled {
+            return;
+        }
+        if !enabled {
+            self.pan_drag = None;
+        }
+        self.base.set_enabled(enabled);
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base.id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
+        self.set_state_theme_hook();
+        self.base.request_redraw();
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -1474,11 +1514,19 @@ impl EventHandler for ImageGallery {
                 self.pan_drag = None;
             }
             Event::MouseLeave { .. } => {
-                if self.hovered_thumb.take().is_some() {
+                // A pointer that leaves mid-drag must end the drag here: `MouseRelease` is then
+                // delivered elsewhere, and the first move after re-entry would pan by the gap.
+                let dropped_drag = self.pan_drag.take().is_some();
+                if self.hovered_thumb.take().is_some() || dropped_drag {
                     self.base.request_redraw();
                 }
             }
             Event::MouseDoubleClick { pos, button: 1 } => {
+                // Full screen shows an image; with none selected there is nothing to show, and
+                // the emit used to name index 0 of an empty list.
+                if self.current_image().is_none() {
+                    return;
+                }
                 if self.thumbnail_at(*pos).is_some() || self.preview_rect().contains_point(*pos) {
                     self.fullscreen_requested.emit(self.current_index);
                 }
@@ -1530,8 +1578,10 @@ impl EventHandler for ImageGallery {
                     }
                     // GX-06: Enter/Space open the full-screen view, which was pointer-only (the
                     // double-click path above). The other press-to-activate controls all pair the
-                    // two forms the same way.
-                    crate::event::key_codes::ENTER | crate::event::key_codes::SPACE => {
+                    // two forms the same way. With no image there is nothing to show.
+                    crate::event::key_codes::ENTER | crate::event::key_codes::SPACE
+                        if self.current_image().is_some() =>
+                    {
                         self.fullscreen_requested.emit(self.current_index);
                     }
                     _ => {}
@@ -1610,6 +1660,93 @@ mod tests {
             Some(2),
             "the current index must follow the same photo after an earlier removal"
         );
+    }
+
+    /// The hover is an image index, so a removal shifts or clears it like the current index.
+    ///
+    /// `remove_image` cleared the thumbnail cache but left `hovered_thumb` naming the old
+    /// position, so after removing an earlier image the highlight lit its neighbour's tile.
+    #[test]
+    fn removing_an_image_shifts_the_hover_with_it() {
+        let mut g = make_gallery(Rect::new(0, 0, 400, 300));
+        g.hovered_thumb = Some(2);
+        g.remove_image(0);
+        assert_eq!(g.hovered_thumb, Some(1), "the highlight follows its image");
+
+        g.hovered_thumb = Some(1);
+        g.remove_image(1);
+        assert_eq!(g.hovered_thumb, None, "the hovered image was the one removed");
+    }
+
+    /// Full screen is only offered when there is an image to show.
+    ///
+    /// Neither the double-click nor the Enter/Space path checked for a current image, so an
+    /// empty gallery emitted `fullscreen_requested(0)` — the index of an image that is not there.
+    #[test]
+    fn fullscreen_is_not_requested_without_an_image() {
+        use crate::event::EventHandler;
+
+        let mut g = ImageGallery::new(Rect::new(0, 0, 400, 300));
+        let requested = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&requested);
+        g.fullscreen_requested.connect(move |index: Arc<usize>| {
+            sink.lock().expect("lock").push(*index);
+        });
+
+        let preview = g.preview_rect();
+        let stage = Point::new(preview.x + 2, preview.y + 2);
+        g.handle_event(&Event::MouseDoubleClick { pos: stage, button: 1 });
+        g.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        g.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
+        assert!(
+            requested.lock().expect("lock").is_empty(),
+            "an empty gallery has nothing to show full screen"
+        );
+
+        g.add_image("/images/photo.jpg", Some("Photo"));
+        g.handle_event(&Event::MouseDoubleClick { pos: stage, button: 1 });
+        assert_eq!(*requested.lock().expect("lock"), vec![0]);
+    }
+
+    /// Changing the zoom re-clamps the pan the new scale allows.
+    ///
+    /// `set_zoom` re-clamped `zoom` but not `pan_x`/`pan_y`: panning a 4x picture to its edge and
+    /// then zooming out left the now-fitting image offset out of the stage.
+    #[test]
+    fn zooming_out_reclamps_the_pan_to_the_new_bounds() {
+        let mut g = make_gallery(Rect::new(0, 0, 400, 600));
+        g.set_zoom(4.0);
+        g.pan_by(-10_000, 0);
+        assert!(g.pan().0 < 0, "the zoomed image pans");
+
+        g.set_zoom(1.0);
+        assert_eq!(g.pan(), (0, 0), "the pan is re-derived for the new zoom");
+    }
+
+    /// A pan drag ends when the pointer leaves or the gallery is disabled.
+    ///
+    /// `pan_drag` was cleared only by `MouseRelease`, and `handle_event` returns early while
+    /// disabled: pressing the stage, dragging outside and releasing there left the drag latched,
+    /// so the first move after re-entry panned by the gap. A disable mid-drag latched it forever.
+    #[test]
+    fn a_pan_drag_does_not_outlive_the_gallery() {
+        use crate::event::EventHandler;
+
+        let mut g = make_gallery(Rect::new(0, 0, 400, 600));
+        g.set_zoom(4.0);
+        let stage = Point::new(200, 50);
+        g.handle_event(&Event::MousePress { pos: stage, button: 1, modifiers: 0 });
+        assert!(g.pan_drag.is_some(), "a press on the stage begins a pan");
+
+        g.handle_event(&Event::MouseLeave { pos: Point::new(-1, -1) });
+        assert!(g.pan_drag.is_none(), "leaving ends the drag");
+        g.handle_event(&Event::MouseMove { pos: Point::new(260, 90) });
+        assert_eq!(g.pan(), (0, 0), "the first move after re-entry must not pan");
+
+        g.handle_event(&Event::MousePress { pos: stage, button: 1, modifiers: 0 });
+        assert!(g.pan_drag.is_some());
+        g.set_enabled(false);
+        assert!(g.pan_drag.is_none(), "disabling ends the drag");
     }
 
     #[test]

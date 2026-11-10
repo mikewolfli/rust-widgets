@@ -41,24 +41,43 @@ impl WindowChromeGeometry {
     /// `button_size` is the diameter of one traffic light, `spacing` the distance from one
     /// button's leading edge to the next, and `title_bar_height` the strip's own height. All
     /// three are clamped to the window's extent, so a window smaller than its chrome still gets
-    /// boxes inside itself rather than negative rectangles.
+    /// boxes inside itself rather than negative rectangles. A button whose natural position would
+    /// cross the trailing edge is moved to the last position it still fits in; a button that has
+    /// no room left (it would overlap the one before it, or the window is narrower than one
+    /// button) becomes a zero-sized box, which the paint path and hit test both skip.
     pub fn compute(window: Rect, title_bar_height: u32, button_size: u32, spacing: u32) -> Self {
         let height = title_bar_height.min(window.height);
         let title_bar = Rect::new(window.x, window.y, window.width, height);
         let size = button_size.clamp(6, 20).min(height.max(1));
         let gap = spacing.max(size + 4);
         let top = window.y + (height as i32 - size as i32) / 2;
-        let button = |index: u32| {
-            let x = window.x + 8 + index as i32 * gap as i32;
-            Rect::new(x, top, size, size)
+        // The x a button may occupy while still ending inside the window. It may sit left of
+        // `window.x` when the window is narrower than one button; the fit check below then skips
+        // every button rather than producing a negative/overflowing rectangle.
+        let right = window.x + window.width as i32 - size as i32;
+        let mut previous_x: Option<i32> = None;
+        let mut button = |index: u32| {
+            let natural = window.x + 8 + index as i32 * gap as i32;
+            let x = natural.min(right);
+            // Fit means inside the window and not on top of (or before) the previous button.
+            let fits = x >= window.x && previous_x.is_none_or(|previous| x > previous);
+            if fits {
+                previous_x = Some(x);
+                Rect::new(x, top, size, size)
+            } else {
+                Rect::new(x.max(window.x), top, 0, 0)
+            }
         };
+        let close = button(0);
+        let minimize = button(1);
+        let maximize = button(2);
         let client = Rect::new(
             window.x,
             window.y + height as i32,
             window.width,
             window.height.saturating_sub(height),
         );
-        Self { title_bar, close: button(0), minimize: button(1), maximize: button(2), client }
+        Self { title_bar, close, minimize, maximize, client }
     }
 
     /// The colour of one of the three buttons, in the platform's order.
@@ -86,6 +105,10 @@ impl WindowChromeGeometry {
                 1 => self.minimize,
                 _ => self.maximize,
             };
+            if button.width == 0 {
+                // No room in a tiny window; a zero-sized box must not paint a dot at its origin.
+                continue;
+            }
             let radius = (button.width / 2).max(1);
             let center = Point::new(button.x + radius as i32, button.y + radius as i32);
             context.fill_circle_aa(center, radius, Self::button_color(index));
@@ -126,5 +149,30 @@ mod tests {
         assert_eq!(geometry.title_bar.height, 4);
         assert_eq!(geometry.client.height, 0);
         assert!(geometry.close.width <= 4);
+    }
+
+    /// Every traffic light is inside the window, and a light with no room is not painted.
+    ///
+    /// # The defect this pins
+    ///
+    /// Only the diameter was clamped; each button's x was `window.x + 8 + index * gap` with no
+    /// clamp. A 10 px-wide window therefore put minimize/maximize at x = 48/88, painted outside
+    /// the window. The first button moves to the last position where it still fits, and the two
+    /// that would overlap it become zero-sized boxes that the paint path and hit test skip.
+    #[test]
+    fn a_tiny_window_keeps_every_button_inside_and_skips_the_ones_with_no_room() {
+        let window = Rect::new(0, 0, 10, 4);
+        let geometry = WindowChromeGeometry::compute(window, 32, 14, 40);
+        assert_eq!(geometry.close.x, 6, "the leading button moves to the trailing edge it fits in");
+        assert_eq!(geometry.close.width, 4);
+        for button in [geometry.close, geometry.minimize, geometry.maximize] {
+            assert!(
+                button.x >= window.x
+                    && button.x + button.width as i32 <= window.x + window.width as i32,
+                "{button:?} must stay inside {window:?}"
+            );
+        }
+        assert_eq!(geometry.minimize.width, 0, "no room left, so nothing is painted");
+        assert_eq!(geometry.maximize.width, 0);
     }
 }

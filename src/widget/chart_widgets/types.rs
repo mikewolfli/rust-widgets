@@ -189,6 +189,15 @@ pub trait ChartContext {
     fn draw_rect(&mut self, rect: Rect, color: Color);
     /// Draw text
     fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, color: Color);
+    /// The advance width of `text` at `font_size`, in chart units.
+    ///
+    /// A backend that can measure its font overrides this. The default is the same `0.6 em`
+    /// advance the exporter's `sans-serif` labels assume, which is enough to anchor a label to
+    /// its right edge: an approximate width still puts the ink's *right* edge where the caller
+    /// asked, so it cannot leak into the plot beside it.
+    fn measure_text(&self, text: &str, font_size: f32) -> f32 {
+        text.chars().count() as f32 * font_size.max(1.0) * 0.6
+    }
     /// The line box one line of `font_size` occupies when centred in `band`.
     ///
     /// [`Self::draw_text`] takes the glyph box's **top-left** edge, so a caller
@@ -208,6 +217,10 @@ pub trait ChartContext {
     /// Draw a path segment (line) with specified width.
     fn draw_path_segment(&mut self, start: Point, end: Point, width: f32, color: Color);
     /// Draw an arc approximated by a series of line segments.
+    ///
+    /// `start_angle` and `end_angle` are **radians**, measured clockwise from 3 o'clock in
+    /// screen space (positive angles turn toward +y, which is down). Both backends stroke the
+    /// arc at one pixel; the arc is an open mark, not a filled wedge.
     fn draw_arc(
         &mut self,
         center: Point,

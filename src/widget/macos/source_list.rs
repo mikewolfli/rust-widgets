@@ -235,13 +235,22 @@ impl MacSourceList {
     /// Selects the row at flat index `row`, or clears the selection when `row` is `None`.
     ///
     /// Returns whether the selection changed; emits [`Self::selection_changed`] with the row's
-    /// identifier, so a host can switch destinations without re-deriving the index.
+    /// identifier, so a host can switch destinations without re-deriving the index. An
+    /// out-of-range `Some` is refused with `false` and leaves the selection alone: only `None`
+    /// clears it, which is also how the `selected_row` property route answers an out-of-range
+    /// index (`OutOfRange`).
     pub fn set_selected_row(&mut self, row: Option<usize>) -> bool {
-        let next = row.filter(|row| *row < self.row_count());
-        if next == self.selected_row() {
+        // Refused before the filter: filtering the out-of-range value to `None` first made
+        // `set_selected_row(Some(99))` clear the selection and emit `selection_cleared`.
+        if let Some(row) = row {
+            if row >= self.row_count() {
+                return false;
+            }
+        }
+        if row == self.selected_row() {
             return false;
         }
-        self.selected_row = next;
+        self.selected_row = row;
         self.base.request_redraw();
         match self.selected_id().map(str::to_string) {
             Some(id) => self.selection_changed.emit(id),
@@ -897,6 +906,31 @@ mod tests {
         // Clearing is a change, and a cleared list reports no id.
         assert!(list.set_selected_row(None));
         assert!(list.selected_id().is_none());
+    }
+
+    /// An out-of-range `Some` is refused, not read as a request to clear.
+    ///
+    /// `set_selected_row` filtered the index to `None` before comparing, so `Some(99)` cleared
+    /// the current selection and emitted `selection_cleared`, while the `selected_row` property
+    /// route refuses the same value with `OutOfRange`.
+    #[test]
+    fn an_out_of_range_row_is_refused_without_clearing_the_selection() {
+        let mut list = sample();
+        assert!(list.set_selected_row(Some(1)));
+
+        let cleared = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink = Arc::clone(&cleared);
+        list.selection_cleared.connect(move || {
+            sink.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert!(!list.set_selected_row(Some(99)), "an out-of-range row is not a change");
+        assert_eq!(list.selected_row(), Some(1), "the existing selection is kept");
+        assert!(!cleared.load(std::sync::atomic::Ordering::SeqCst), "nothing was cleared");
+
+        assert!(list.set_selected_row(None), "`None` is still the clear spelling");
+        assert!(list.selected_row().is_none());
+        assert!(cleared.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

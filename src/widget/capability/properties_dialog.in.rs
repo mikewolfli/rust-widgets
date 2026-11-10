@@ -115,7 +115,15 @@ macro_rules! impl_properties_dialog {
         pub(crate) const INPUT_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("label_text", PropertyValueKind::String, true, true),
-            PropertySchema::enumerated("mode", true, true, &["text", "integer", "double", "item"]),
+            // `password` is one of the modes the control's own name table answers, so the
+            // published enumeration has to list it: a generic consumer validating a read against
+            // this schema used to reject the dialog's own answer.
+            PropertySchema::enumerated(
+                "mode",
+                true,
+                true,
+                &["text", "integer", "double", "item", "password"],
+            ),
             PropertySchema::new("text_value", PropertyValueKind::String, true, true),
             PropertySchema::new("int_value", PropertyValueKind::Int, true, true),
             PropertySchema::new("double_value", PropertyValueKind::Float, true, true),

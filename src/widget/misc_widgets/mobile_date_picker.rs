@@ -29,6 +29,14 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// pixels with the row's value.
 const ARROW_GUTTER: u32 = 10;
 
+/// The largest span the year drum will materialise, on either side of the selected year.
+///
+/// The drum owns one `String` per offered year, so an unbounded `u32` span is not a usable range:
+/// a value near `u32::MAX` would build billions of rows (and its `i32` cast used to wrap to a
+/// negative range in the first place). Ten thousand years either side is already far past any
+/// picker; a larger request is clamped rather than made to allocate without bound.
+const MAX_YEAR_SPAN: u32 = 10_000;
+
 /// The in-progress pointer drag over one drum column.
 ///
 /// A drag scrolls the column under the press; the last sample is kept so each `MouseMove` only
@@ -150,16 +158,30 @@ impl MobileDatePicker {
     }
 
     /// Sets how many years the drum offers on either side of the selected year.
+    ///
+    /// The span is clamped to [`MAX_YEAR_SPAN`] so the drum stays materialisable, and the
+    /// endpoints are computed in `i64` and clamped into `i32` rather than cast, so a large `u32`
+    /// can never wrap into a negative span (which made `i32::clamp` panic on a reversed range).
     pub fn set_year_span(&mut self, span: u32) {
+        let span = span.min(MAX_YEAR_SPAN);
         if self.year_span == span {
             return;
         }
         self.year_span = span;
-        self.year_start = self.year.saturating_sub(span as i32);
-        self.year_end = self.year.saturating_add(span as i32);
+        let span = i64::from(span);
+        let start = i64::from(self.year).saturating_sub(span);
+        let end = i64::from(self.year).saturating_add(span);
+        let start = start.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        let end = end.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        // The two endpoints are computed around the same centre, so this only has to normalise
+        // the degenerate case where one of them hit a representable bound.
+        (self.year_start, self.year_end) = if start <= end { (start, end) } else { (end, start) };
         // The range changed even if its length did not, so the year list is rebuilt explicitly.
         self.year = self.year.clamp(self.year_start, self.year_end);
         self.rebuild_year_items();
+        if self.clamp_day_to_month() {
+            self.date_changed.emit(self.date_string());
+        }
         self.rebuild_day_items();
         self.base.request_redraw();
     }
@@ -178,8 +200,25 @@ impl MobileDatePicker {
         // A shifted range can keep its length, so rebuild the list rather than infer it.
         self.year = self.year.clamp(self.year_start, self.year_end);
         self.rebuild_year_items();
+        // The year may have landed on one where the current day does not exist (29 February moved
+        // from a leap year to a common one). Clamping the year alone leaves `date_string` claiming
+        // a day the drum cannot highlight.
+        if self.clamp_day_to_month() {
+            self.date_changed.emit(self.date_string());
+        }
         self.rebuild_day_items();
         self.base.request_redraw();
+    }
+
+    /// Clamps `day` to the length of the current year/month, returning whether it moved.
+    fn clamp_day_to_month(&mut self) -> bool {
+        let max_day = days_in_month(self.year, self.month);
+        if self.day > max_day {
+            self.day = max_day;
+            true
+        } else {
+            false
+        }
     }
 
     /// The inclusive year range shown by the drum.
@@ -233,7 +272,9 @@ impl MobileDatePicker {
     /// x-coordinate.
     fn column_at(&self, x: i32) -> usize {
         let rect = self.geometry();
-        let col_width = rect.width / 3;
+        // A control narrower than three pixels still has a column to name; dividing by zero here
+        // panicked on the first press in a 2 px-wide picker.
+        let col_width = (rect.width / 3).max(1);
         if x < rect.x {
             return 0;
         }
@@ -1239,5 +1280,71 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut picker);
         crate::widget::advanced_widgets::calendar::set_today_override(None);
         assert!(svg.contains("<circle"), "a pinned 2031 day must still be marked as today: {svg}");
+    }
+
+    /// A span larger than `i32` must not wrap into a reversed year range.
+    ///
+    /// `set_year_span` cast the `u32` span to `i32`; 3_000_000_000 became a negative number, so
+    /// `year_start > year_end` and `i32::clamp` panicked in debug (and released as `i32::MAX`,
+    /// leaving an empty year drum). The property write is the same entry point a document uses.
+    #[test]
+    fn a_huge_year_span_is_clamped_instead_of_wrapping() {
+        let mut picker = make_picker();
+        picker.set_date(2025, 6, 15);
+        picker.set("year_span", CapabilityValue::UInt(5_000_000_000)).unwrap();
+        let (start, end) = picker.year_range();
+        assert!(start <= end, "the range must be ordered, got {start}..={end}");
+        assert!(
+            (start..=end).contains(&picker.year()),
+            "the selected year must stay inside its drum"
+        );
+
+        picker.set_year_span(3_000_000_000);
+        let (start, end) = picker.year_range();
+        assert!(start <= end, "a direct span set must be ordered too, got {start}..={end}");
+        assert!((start..=end).contains(&picker.year()));
+        // The drum is still materialised and paintable rather than blanked into an empty range.
+        assert!(
+            picker.year_items.contains(&"2025".to_string()),
+            "the selected year must still have a drum row"
+        );
+        let svg = render_to_svg(&mut picker);
+        assert!(svg.starts_with("<svg"), "and the picker must still paint");
+    }
+
+    /// Moving the year range must re-clamp the day and announce the new date.
+    ///
+    /// 29 February 2024 is clamped into 2025..=2030 by changing only the year, which left
+    /// `date_string()` reporting the non-existent `2025-02-29` and the day drum highlighting
+    /// nothing.
+    #[test]
+    fn moving_the_year_range_reclamps_the_day_and_announces_it() {
+        let mut picker = make_picker();
+        picker.set_date(2024, 2, 29);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        picker.date_changed.connect(move |value| sink.lock().unwrap().push(value.to_string()));
+
+        picker.set_year_range(2025, 2030);
+        assert_eq!(picker.year(), 2025);
+        assert_eq!(picker.day(), 28, "29 February does not exist in 2025");
+        assert_eq!(picker.date_string(), "2025-02-28");
+        assert_eq!(
+            seen.lock().unwrap().last().map(String::as_str),
+            Some("2025-02-28"),
+            "the date moved, so the change has to be announced"
+        );
+    }
+
+    /// A picker narrower than three pixels still resolves a column instead of dividing by zero.
+    #[test]
+    fn a_press_in_a_two_pixel_picker_does_not_divide_by_zero() {
+        let mut picker = MobileDatePicker::new(Rect::new(0, 0, 2, 200));
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(1, 100),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(picker.focus_column, 1, "a 2 px control still names a column");
     }
 }

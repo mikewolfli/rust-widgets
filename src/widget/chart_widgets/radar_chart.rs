@@ -570,7 +570,7 @@ impl RadarChart {
         /// Room below for the legend-free bottom margin.
         const BOTTOM_MARGIN: u32 = 8;
 
-        let legend = if self.show_legend && !self.series.is_empty() { LEGEND_WIDTH } else { 0 };
+        let legend = if self.show_legend && self.series.len() > 1 { LEGEND_WIDTH } else { 0 };
         let usable_w = rect.width.saturating_sub(LABEL_MARGIN * 2 + legend).max(1);
         let usable_h = rect.height.saturating_sub(LABEL_MARGIN + BOTTOM_MARGIN).max(1);
         let radius = usable_w.min(usable_h) / 2;
@@ -1327,6 +1327,11 @@ impl RadarChart {
         // One buffer reused across the read-outs, for the same reason as `draw_legend`.
         let mut label = String::new();
         for series_index in 0..self.series.len() {
+            // A hidden series is skipped by the paint and by the hit tests; its hover read-out
+            // must be skipped too, or a legend-hidden polygon still marks and labels its values.
+            if !self.is_series_visible(series_index) {
+                continue;
+            }
             let Some(value) = self.value_at(series_index, axis) else {
                 continue;
             };
@@ -2038,5 +2043,78 @@ mod tests {
         let ratio = chart.projection_ratio(1, 0).expect("the appended series is projected");
         assert!((ratio - 1.0).abs() < 1e-6, "an over-max value is clamped to 1.0, got {ratio}");
         assert_eq!(chart.projection_ratio(9, 0), None);
+    }
+
+    /// A single-series chart paints no legend, so it must not reserve the legend strip.
+    ///
+    /// # The defect this pins
+    ///
+    /// `geometry_center_radius` reserved 96 px for the legend whenever the series list was
+    /// non-empty, while the legend itself was painted only for `series.len() > 1`. On a 320x320
+    /// single-series chart the ring was 68 px instead of 116 px, centred in a blank band.
+    #[test]
+    fn a_single_series_chart_reserves_no_legend_strip() {
+        let mut chart = chart();
+        let (shown_center, shown_radius) =
+            chart.geometry_center_radius().expect("the chart has a plot");
+        chart.set_show_legend(false);
+        let (hidden_center, hidden_radius) =
+            chart.geometry_center_radius().expect("the chart has a plot");
+        assert_eq!(
+            shown_radius, hidden_radius,
+            "with one series the legend flag must not change the radius"
+        );
+        assert_eq!(shown_center, hidden_center, "the centre follows the same predicate");
+
+        // Two series do paint the legend, so the reservation is real there.
+        chart.set_show_legend(true);
+        chart.add_series(vec![20.0, 30.0, 40.0, 50.0, 60.0]);
+        let (_, two_series_radius) =
+            chart.geometry_center_radius().expect("the chart still has a plot");
+        assert!(
+            two_series_radius < shown_radius,
+            "a painted legend column must shrink the ring: {two_series_radius} vs {shown_radius}"
+        );
+    }
+
+    /// The hover spoke marks and reads out only the series the paint actually draws.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw_hover_spoke` walked every series with no visibility check, so a legend-hidden
+    /// polygon still got a coloured marker and a value line, contradicting `series_visible`'s
+    /// documented contract.
+    #[test]
+    fn a_hidden_series_paints_no_hover_spoke_marker() {
+        let mut chart = RadarChart::new(Rect::new(0, 0, 320, 320));
+        chart.set_axes(vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()]);
+        chart.set_series(vec![vec![10.0, 20.0, 30.0, 40.0], vec![40.0, 30.0, 20.0, 10.0]]);
+        chart.set_series_visible(1, false);
+
+        let (center, radius) = chart.geometry_center_radius().expect("the chart has a plot");
+        let chrome = chart.chrome_colors();
+        let mut recorder = Recorder {
+            commands: Vec::new(),
+            inner: SoftwarePaintBackend::new(Size::new(320, 320), 1.0),
+        };
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            chart.draw_hover_spoke(&mut context, center, radius, 0, &chrome);
+        }
+        recorder.end_frame();
+
+        let markers = recorder
+            .commands
+            .iter()
+            .filter(|command| matches!(command, crate::render::RenderCommand::FillCircle { .. }))
+            .count();
+        let readouts = recorder
+            .commands
+            .iter()
+            .filter(|command| matches!(command, crate::render::RenderCommand::DrawText { .. }))
+            .count();
+        assert_eq!(markers, 1, "only the visible series gets a marker");
+        assert_eq!(readouts, 1, "only the visible series gets a value read-out");
     }
 }

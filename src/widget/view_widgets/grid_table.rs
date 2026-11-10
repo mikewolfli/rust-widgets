@@ -921,6 +921,7 @@ impl GridTableWidget {
         if col >= cols {
             return;
         }
+        let previous_cell = self.selected_cell;
 
         if let Some(existing) = self.sort_specs.iter_mut().find(|s| s.column == col) {
             existing.descending = !existing.descending;
@@ -928,6 +929,7 @@ impl GridTableWidget {
             self.sort_order = None;
             self.sort_order_key = None;
             self.ensure_sort_order();
+            self.announce_moved_selection(previous_cell);
             self.sort_changed.emit((col, desc));
         } else {
             self.sort_specs.clear();
@@ -935,6 +937,7 @@ impl GridTableWidget {
             self.sort_order = None;
             self.sort_order_key = None;
             self.ensure_sort_order();
+            self.announce_moved_selection(previous_cell);
             self.sort_changed.emit((col, false));
         }
         self.base.request_redraw();
@@ -979,9 +982,14 @@ impl GridTableWidget {
         if self.sort_role == role {
             return;
         }
+        let previous_cell = self.selected_cell;
         self.sort_role = role;
         self.sort_order = None;
         self.sort_order_key = None;
+        // The role changes the keys, so the projection must be rebuilt now rather than on the next
+        // paint; the selection has to move with the records it names.
+        self.ensure_sort_order();
+        self.announce_moved_selection(previous_cell);
         self.base.request_redraw();
     }
 
@@ -991,10 +999,48 @@ impl GridTableWidget {
     /// the next data read would notice, but a host that has just written cells can force the
     /// projection immediately.
     pub fn apply_sort(&mut self) {
+        let previous_cell = self.selected_cell;
         self.sort_order = None;
         self.sort_order_key = None;
         self.ensure_sort_order();
+        self.announce_moved_selection(previous_cell);
         self.base.request_redraw();
+    }
+
+    /// Emits `cell_selected` for the cell's new projected address when a reorder moved it.
+    fn announce_moved_selection(&self, previous: Option<(usize, usize)>) {
+        if self.selected_cell == previous {
+            return;
+        }
+        if let Some(cell) = self.selected_cell {
+            self.cell_selected.emit(cell);
+        }
+    }
+
+    /// Re-points the projected-index selection at the same records after the order changed.
+    ///
+    /// Selection is stored in projected rows because every paint and hit test addresses the
+    /// projection. Sorting permutes that projection, so without this the highlight (and the cell a
+    /// host reads back) silently names whatever record now occupies the old index.
+    fn remap_selection_after_reorder(&mut self, previous_order: Option<&[usize]>) {
+        let current_order = self.sort_order.clone();
+        let current = current_order.as_deref();
+        let rows = self.row_count();
+        let map = |row: usize| -> Option<usize> {
+            let source = previous_order.and_then(|order| order.get(row).copied()).unwrap_or(row);
+            match current {
+                Some(order) => order.iter().position(|candidate| *candidate == source),
+                None => (source < rows).then_some(source),
+            }
+        };
+        self.selected_cell =
+            self.selected_cell.and_then(|(row, column)| map(row).map(|row| (row, column)));
+        self.selected_cells = self
+            .selected_cells
+            .iter()
+            .filter_map(|(row, column)| map(*row).map(|row| (row, *column)))
+            .collect();
+        self.selected_rows = self.selected_rows.iter().filter_map(|row| map(*row)).collect();
     }
 
     /// The source row painted at projected row `row`.
@@ -1042,6 +1088,9 @@ impl GridTableWidget {
         if self.sort_order_inputs_match(revision, generation, rows) {
             return;
         }
+        // The order before this rebuild is the identity/previous permutation the selection's
+        // projected indices were expressed in.
+        let previous_order = self.sort_order.clone();
 
         let columns = self.column_count();
         let specs: Vec<(usize, bool)> = self
@@ -1054,11 +1103,13 @@ impl GridTableWidget {
         if !self.sorting_enabled || key.specs.is_empty() || rows == 0 {
             self.sort_order = None;
             self.sort_order_key = Some(key);
+            self.remap_selection_after_reorder(previous_order.as_deref());
             return;
         }
         let Some(source) = self.data_source.clone() else {
             self.sort_order = None;
             self.sort_order_key = Some(key);
+            self.remap_selection_after_reorder(previous_order.as_deref());
             return;
         };
 
@@ -1088,6 +1139,7 @@ impl GridTableWidget {
         });
         self.sort_order = Some(order);
         self.sort_order_key = Some(key);
+        self.remap_selection_after_reorder(previous_order.as_deref());
     }
 
     /// Returns a reference to the current sort specs.
@@ -2062,6 +2114,10 @@ impl EventHandler for GridTableWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            // Disabling can happen mid-drag; a release delivered while disabled must not leave the
+            // column latched into resize mode (the next plain move would keep resizing it).
+            self.resizing_column = None;
+            self.hovered_row = None;
             return;
         }
         // The hit test and the keyboard paths index the *projected* rows, so the sort map has to be
@@ -2141,7 +2197,11 @@ impl EventHandler for GridTableWidget {
             }
 
             Event::MouseLeave { .. } => {
-                if self.hovered_row.take().is_some() {
+                // A drag that leaves the control and releases outside never returns its release to
+                // this handler, so the leave is the last event it can clear the drag on.
+                let resizing = self.resizing_column.take().is_some();
+                let hovered = self.hovered_row.take().is_some();
+                if resizing || hovered {
                     self.base.request_redraw();
                 }
             }
@@ -3055,5 +3115,147 @@ mod tests {
         );
         tbl.apply_selection(1, 2, 0);
         assert_eq!(emitted.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    struct ValuesSource;
+
+    impl IncrementalTableDataSource for ValuesSource {
+        fn row_count(&self) -> usize {
+            3
+        }
+        fn column_count(&self) -> usize {
+            1
+        }
+        fn data(&self, row: usize, _column: usize) -> Option<String> {
+            Some(
+                match row {
+                    0 => "charlie",
+                    1 => "alpha",
+                    _ => "bravo",
+                }
+                .to_string(),
+            )
+        }
+    }
+
+    /// Sorting re-points the projected selection at the record it selected.
+    ///
+    /// # The defect this pins
+    ///
+    /// Selection is stored as projected rows, but `toggle_sort_column` permuted the projection
+    /// without remapping the selection. Selecting row 0 (`charlie`) and sorting ascending left
+    /// `selected_cell == (0, 0)` while row 0 was now `alpha`: the highlight, the property read and
+    /// the host all silently switched to a different record. No `cell_selected` was emitted.
+    #[test]
+    fn sorting_keeps_the_selection_on_its_record() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(ValuesSource));
+        tbl.apply_selection(0, 0, 0);
+        assert_eq!(tbl.selected_cell(), Some((0, 0)));
+
+        let moved = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = std::sync::Arc::clone(&moved);
+        tbl.cell_selected.connect(move |cell| {
+            sink.lock().expect("the test slot locks").push(*cell);
+        });
+
+        tbl.toggle_sort_column(0);
+        assert_eq!(tbl.source_row(0), 1, "the first projected row is now `alpha`");
+        assert_eq!(
+            tbl.selected_cell(),
+            Some((2, 0)),
+            "`charlie` moved to projected row 2 and the selection followed it"
+        );
+        assert_eq!(tbl.selected_cells(), vec![(2, 0)]);
+        assert_eq!(*moved.lock().expect("the test slot locks"), vec![(2, 0)]);
+    }
+
+    #[test]
+    fn sorting_keeps_row_mode_selection_on_its_record() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(ValuesSource));
+        tbl.set_selection_mode(GridTableSelectionMode::Row);
+        tbl.apply_selection(0, 0, 0);
+        assert_eq!(tbl.selected_rows(), vec![0]);
+
+        tbl.toggle_sort_column(0);
+        assert_eq!(tbl.selected_rows(), vec![2], "the row selection follows its record");
+    }
+
+    /// A new sort role rebuilds the projection immediately and remaps the selection with it.
+    #[test]
+    fn changing_the_sort_role_remaps_the_selection() {
+        struct RoleSource;
+        impl IncrementalTableDataSource for RoleSource {
+            fn row_count(&self) -> usize {
+                3
+            }
+            fn column_count(&self) -> usize {
+                1
+            }
+            fn data(&self, row: usize, _column: usize) -> Option<String> {
+                Some(
+                    match row {
+                        0 => "alpha",
+                        1 => "bravo",
+                        _ => "charlie",
+                    }
+                    .to_string(),
+                )
+            }
+            fn data_role(&self, row: usize, column: usize, role: DataRole) -> Option<String> {
+                if role != DataRole::User(0) {
+                    return self.data(row, column);
+                }
+                Some(
+                    match row {
+                        0 => "charlie",
+                        1 => "alpha",
+                        _ => "bravo",
+                    }
+                    .to_string(),
+                )
+            }
+        }
+
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(RoleSource));
+        tbl.toggle_sort_column(0);
+        tbl.apply_selection(0, 0, 0);
+        assert_eq!(tbl.selected_cell(), Some((0, 0)));
+
+        // User keys sort as alpha (source 1), bravo (source 2), charlie (source 0), so the
+        // selected source-0 record (`charlie` under this role) moves to projected row 2.
+        tbl.set_sort_role(DataRole::User(0));
+        assert_eq!(
+            tbl.selected_cell(),
+            Some((2, 0)),
+            "the selected record moved to projected row 2"
+        );
+    }
+
+    /// A column drag ends when the pointer leaves or the control is disabled.
+    ///
+    /// # The defect this pins
+    ///
+    /// `resizing_column` was cleared only by a `MouseRelease` delivered to this control. Dragging a
+    /// column edge out of the grid and releasing outside left it set, so the next plain `MouseMove`
+    /// kept resizing and no cell could be selected until a stray release arrived. A disable that
+    /// swallowed the release had the same effect.
+    #[test]
+    fn leaving_or_disabling_ends_a_column_resize() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(TestSource { rows: 5, cols: 3 }));
+
+        tbl.resizing_column = Some(1);
+        tbl.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(tbl.resizing_column.is_none(), "leaving the control ends the drag");
+
+        tbl.resizing_column = Some(1);
+        tbl.hovered_row = Some(2);
+        tbl.base.set_enabled(false);
+        tbl.handle_event(&Event::MouseRelease { pos: Point::new(0, 0), button: 1 });
+        assert!(tbl.resizing_column.is_none(), "a disabled control cannot stay in resize mode");
+        assert!(tbl.hovered_row.is_none());
     }
 }

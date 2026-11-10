@@ -541,9 +541,11 @@ impl TableWidget {
             let share = (content.width / count.max(1) as u32).max(40);
             while self.columns.len() < count {
                 let column = self.columns.len();
-                let title = self.source_column_name(column).unwrap_or_default();
+                // As in `ensure_columns`: a title the model supplied is not written into the
+                // structure, so the header keeps resolving it (and a host's `set_header_labels`
+                // keeps winning over it).
                 let width = self.column_widths.get(&column).copied().unwrap_or(share);
-                self.columns.push(ColumnSpec::new(title, width));
+                self.columns.push(ColumnSpec::new(String::new(), width));
             }
         }
     }
@@ -594,6 +596,28 @@ impl TableWidget {
         )
     }
 
+    /// How many whole content rows the rows band currently shows.
+    ///
+    /// Walks the same resolved heights the paint loop and the hit test use, so a table whose rows
+    /// carry overrides or a delegate hint is measured correctly. The scroll unit of the
+    /// `ScrollableRows` contract reads this rather than assuming every row has an override; a
+    /// table with none used to report zero visible rows and then "ensure visible" scrolled a row
+    /// that was already on screen to the top.
+    pub fn visible_rows(&self) -> usize {
+        let band = self.rows_band();
+        let mut painted = 0u32;
+        let mut row = self.scroll_row;
+        while row < self.row_count() {
+            let height = self.resolved_row_height(row);
+            if painted.saturating_add(height) > band.height {
+                break;
+            }
+            painted = painted.saturating_add(height);
+            row += 1;
+        }
+        row.saturating_sub(self.scroll_row)
+    }
+
     /// Whether the header band is painted and reserved.
     pub fn header_visible(&self) -> bool {
         self.header_visible
@@ -623,6 +647,10 @@ impl TableWidget {
     /// A label here takes precedence over [`TableModel::column_name`], which lets a host relabel a
     /// model's columns without owning the model. A missing index falls back to the model's name;
     /// a model that names nothing keeps the strip's historical blank section.
+    ///
+    /// The explicit column structure only shadows this setter when a title was *written* to it
+    /// (through `insert_column` / `set_column_title`): a structure materialised from the model
+    /// keeps its titles empty precisely so a later relabel is still visible.
     pub fn set_header_labels(&mut self, labels: &[&str]) {
         self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
         self.base.request_redraw();
@@ -659,15 +687,11 @@ impl TableWidget {
         // and give later columns a wider share than earlier ones.
         let share = (content.width / count.max(1) as u32).max(40);
         for column in 0..count {
-            let title = self
-                .header_labels
-                .get(column)
-                .filter(|label| !label.is_empty())
-                .cloned()
-                .or_else(|| self.source_column_name(column))
-                .unwrap_or_default();
+            // The title stays empty: the structure is authoritative only for a title a host
+            // actually wrote. Copying the model's or the host's current label here would freeze
+            // it into the structure, so a later `set_header_labels` could never take effect.
             let width = self.column_widths.get(&column).copied().unwrap_or(share);
-            self.columns.push(ColumnSpec::new(title, width));
+            self.columns.push(ColumnSpec::new(String::new(), width));
         }
     }
 
@@ -858,13 +882,24 @@ impl TableWidget {
         self.base.request_redraw();
     }
 
-    /// The header column at `point`, when the header is visible.
-    fn header_column_at(&self, point: crate::core::Point) -> Option<usize> {
+    /// The header band, when the paint loop actually draws one.
+    ///
+    /// The paint path has always skipped the header when the content box is no taller than the
+    /// header row (`content.height > header.height`), while the hit test only asked whether the
+    /// header was enabled. A table too short to paint its header therefore still resolved a press
+    /// there as a section click, so the two paths are expressed once.
+    fn header_band(&self) -> Option<Rect> {
         if !self.header_visible {
             return None;
         }
         let content = ControlMetrics::band_inset(self.base.geometry(), TABLE_INSET);
         let header = ControlMetrics::top_band(content, HEADER_ROW_HEIGHT);
+        (content.height > header.height).then_some(header)
+    }
+
+    /// The header column at `point`, when the header is painted.
+    fn header_column_at(&self, point: crate::core::Point) -> Option<usize> {
+        let header = self.header_band()?;
         if !header.contains_point(point) {
             return None;
         }
@@ -881,15 +916,18 @@ impl TableWidget {
     /// snapshot and the hit-test tests pin.
     fn resolved_row_height(&self, index: usize) -> u32 {
         if let Some(height) = self.row_heights.get(&index) {
-            return *height;
+            return (*height).max(1);
         }
         // A delegate that wants a taller row (a two-line cell, an editor, a thumbnail) says so
-        // through its size hint. Without a delegate, and without a hint, the default stands.
+        // through its size hint. Without a delegate, and without a hint, the default stands. A
+        // zero height would make the row unaddressable by both the paint loop and the hit test,
+        // so the resolved height is floored at one pixel like every other extent here.
         self.delegate
             .as_ref()
             .and_then(|delegate| delegate.size_hint(index, 0))
             .map(|size| size.height)
             .unwrap_or(TABLE_ROW_HEIGHT)
+            .max(1)
     }
 
     /// The y offset of content row `index` from the top of the rows band.
@@ -898,13 +936,13 @@ impl TableWidget {
     ///
     /// `TABLE_ROW_HEIGHT * index` is the same thing only while every row is the default height. With
     /// per-row overrides the rows **compose**: row `n` starts where rows `0..n` end, and multiplying
-    /// would overlap a tall row with its successors. The accumulation is over the overrides that are
-    /// actually set, so a table with none takes the same arithmetic as before (`default * index`) and
-    /// cannot drift from it.
+    /// would overlap a tall row with its successors. The accumulation is unconditionally over the
+    /// **resolved** heights, including the delegate's size hints: the fast path used
+    /// `default * index` whenever no override map entry existed, so with a delegate that asked for
+    /// a taller row `row_at_point` still targeted the default-height geometry while the paint loop
+    /// drew the resolved one. With no override and no hint the sum is exactly `default * index`, so
+    /// the constant case is unchanged.
     fn row_offset(&self, index: usize) -> u32 {
-        if self.row_heights.is_empty() {
-            return TABLE_ROW_HEIGHT * index as u32;
-        }
         (0..index).map(|i| self.resolved_row_height(i)).sum()
     }
 
@@ -1046,7 +1084,14 @@ impl TableWidget {
     ///
     /// Repaints: the selected row's highlight is painted, so without the request it
     /// would only appear once some unrelated event repainted the control.
+    ///
+    /// In [`SelectionMode::None`](crate::widget::view_widgets::list_view::SelectionMode::None)
+    /// the selection model accepts nothing, so the call reports `false` and leaves both the
+    /// selection and the focus band untouched rather than reporting a selection that cannot exist.
     pub fn select_row(&mut self, row: usize) -> bool {
+        if !self.selection.is_selectable() {
+            return false;
+        }
         if row < self.row_count() {
             self.selection.select_row(row);
             self.selection_changed.emit(row);
@@ -1068,6 +1113,9 @@ impl TableWidget {
         row: usize,
         modifiers: crate::shortcut::Modifiers,
     ) -> bool {
+        if !self.selection.is_selectable() {
+            return false;
+        }
         if row >= self.row_count() {
             return false;
         }
@@ -1134,6 +1182,12 @@ impl TableWidget {
             return;
         }
         self.selection.set_mode(mode);
+        // `None` accepts no selection at all, so switching to it drops both the selected rows and
+        // the focus band that would otherwise keep painting a selection the mode forbids.
+        if mode == crate::widget::view_widgets::list_view::SelectionMode::None {
+            self.selection.clear();
+            self.clear_focused_row();
+        }
         // The new mode may trim the set; the highlight is painted from the model, and a host
         // mirroring the selection has to hear about the surviving row.
         if let Some(row) = self.selection.current_row() {
@@ -1147,7 +1201,15 @@ impl TableWidget {
     }
     /// Sets column width.
     pub fn set_column_width(&mut self, column: usize, width: u32) {
+        let width = width.max(1);
         self.column_widths.insert(column, width);
+        // The structure publishes the width that is painted, so it is updated with the override.
+        // Leaving it stale made `columns()[column].width` disagree with both the pixels and
+        // `column_width` after `set_column_width`, while `insert_column` and
+        // `fit_column_to_contents` already wrote both.
+        if let Some(spec) = self.columns.get_mut(column) {
+            spec.width = width;
+        }
         self.base.request_layout();
     }
     /// Returns explicit column width override when present.
@@ -1208,6 +1270,11 @@ impl TableWidget {
     /// Sets item delegate.
     pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
         self.delegate = Some(delegate);
+        // A delegate owns a cell's ink and may make its rows taller through `size_hint`, so both
+        // the layout and the pixels change; storing it without asking left the first frame at the
+        // old geometry until an unrelated event repainted.
+        self.base.request_layout();
+        self.base.request_redraw();
     }
 
     /// Begins an in-place edit of cell `(row, column)`, returning the editor the delegate built.
@@ -1247,10 +1314,13 @@ impl TableWidget {
         let scroll = self.scroll_offset_px();
         let y = band.y + self.row_offset(row) as i32 - scroll as i32;
         let content = ControlMetrics::band_inset(self.base.geometry(), TABLE_INSET);
-        let x: i32 = (0..column)
-            .map(|index| self.resolved_column_width(index, content.width) as i32)
-            .sum::<i32>()
-            + content.x;
+        // The cell is painted minus the horizontal scroll, so its box is the composed width before
+        // the column minus that offset. Reading the content edge instead put the editor two
+        // columns to the right of the cell once `scroll_column` was non-zero.
+        let x: i32 = content.x - self.horizontal_offset() as i32
+            + (0..column)
+                .map(|index| self.resolved_column_width(index, content.width) as i32)
+                .sum::<i32>();
         let width = self.resolved_column_width(column, content.width);
         let height = self.resolved_row_height(row);
         delegate.update_editor_geometry(editor.as_mut(), Rect::new(x, y, width, height));

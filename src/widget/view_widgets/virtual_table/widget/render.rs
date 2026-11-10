@@ -7,6 +7,9 @@ use super::*;
 
 impl Draw for VirtualTable {
     fn draw(&mut self, context: &mut RenderContext) {
+        // The source change signal only raises a flag; the repair runs once here, before any row
+        // or column state is read.
+        self.drain_data_updates();
         let rect = self.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for

@@ -107,6 +107,13 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
         self.inner.draw_text(origin, text, &font, color, crate::core::HorizontalAlignment::Left);
     }
 
+    fn measure_text(&self, text: &str, font_size: f32) -> f32 {
+        // The renderer's own metrics, so a label anchored by this width ends on the same pixel
+        // the widget path measured. Falls back through the trait default when the backend has
+        // no font measurement.
+        self.inner.measure_text(text, &self.font_at(font_size)).width as f32
+    }
+
     fn text_line(&self, band: Rect, font_size: f32) -> Rect {
         // Delegated to the renderer's own primitive rather than re-derived here,
         // so a chart label sits on exactly the row a widget label does. That

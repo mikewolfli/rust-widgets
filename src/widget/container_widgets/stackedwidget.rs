@@ -80,11 +80,37 @@ impl StackedWidget {
         }
         let index = index.min(self.layout.item_count());
         self.base.add_child_linked(widget);
-        // The stack's own insert keeps the selected page on the same widget.
+        // The stack's own insert keeps the selected page on the same widget. A running slide names
+        // pages by index too, so it is remapped by the same rule — or dropped, for an insert that
+        // splits the pair — instead of sliding the wrong widget out.
+        self.remap_previous_page_for_insert(index);
         self.layout.insert_at(index, widget);
         self.sync_pages();
         self.base.request_redraw();
     }
+    /// Shifts the outgoing page's index after an insertion.
+    ///
+    /// A running slide names pages by index, exactly like the selection the layout repairs. An
+    /// insert at or before the outgoing page moves it one slot down; without this the transition
+    /// slid the *wrong* widget out (or painted the current page twice).
+    fn remap_previous_page_for_insert(&mut self, index: usize) {
+        if self.previous_page.is_some_and(|previous| index <= previous) {
+            self.previous_page = self.previous_page.map(|previous| previous + 1);
+        }
+    }
+
+    /// Drops or shifts the outgoing page's index after a removal.
+    fn remap_previous_page_for_remove(&mut self, index: usize) {
+        self.previous_page = match self.previous_page {
+            Some(previous) if previous == index => None,
+            Some(previous) if previous > index => Some(previous - 1),
+            other => other,
+        };
+        if self.previous_page.is_none() {
+            self.transition = 1.0;
+        }
+    }
+
     /// Removes a widget.
     pub fn remove_widget(&mut self, widget: ObjectId) {
         if let Some(index) = self.index_of(widget) {
@@ -105,6 +131,8 @@ impl StackedWidget {
         let Some(widget) = self.layout.remove_at(index) else {
             return false;
         };
+        // A running slide may be naming the page that just left (or one after it, which shifted).
+        self.remap_previous_page_for_remove(index);
         self.base.remove_child_linked(widget);
         // A removed page is no longer part of the stack; clear its visibility too, so a host
         // that renders by id cannot paint it over the selected one.
@@ -324,10 +352,16 @@ impl Widget for StackedWidget {
         self.transition = (self.transition + step).min(1.0);
         if self.transition >= 1.0 {
             self.previous_page = None;
+            // The slide is over, so the outgoing page must go with it. Clearing the index alone
+            // left its `visible` flag (and its last slide geometry) in place, a ghost page over the
+            // stack until some later page operation called `sync_pages`.
+            self.sync_pages();
+            self.base.request_frame_repaint();
+            return false;
         }
         self.place_current_page();
         self.base.request_frame_repaint();
-        self.previous_page.is_some()
+        true
     }
 
     fn is_animating(&self) -> bool {
@@ -1306,5 +1340,81 @@ mod tests {
         for page in pages {
             let _ = crate::widget::runtime::unregister(page);
         }
+    }
+
+    /// The completing tick must hide the outgoing page, not just forget its index.
+    ///
+    /// `tick` cleared `previous_page` but left the page's `visible` flag set, so the
+    /// outgoing page kept painting (at its last slide geometry) over the stack until some
+    /// later page operation happened to call `sync_pages`.
+    #[test]
+    fn a_completed_transition_hides_the_outgoing_page() {
+        use crate::widget::base_widgets::label::Label;
+        use crate::widget::runtime;
+
+        let outgoing = runtime::register(Box::new(Label::new(
+            "outgoing".to_string(),
+            Rect::new(0, 0, 100, 40),
+        )))
+        .expect("the outgoing page mounts");
+        let incoming = runtime::register(Box::new(Label::new(
+            "incoming".to_string(),
+            Rect::new(0, 0, 100, 40),
+        )))
+        .expect("the incoming page mounts");
+
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 200, 100));
+        sw.add_widget(outgoing);
+        sw.add_widget(incoming);
+        sw.set_transition_duration(100);
+        sw.set_current_index(1);
+
+        assert!(sw.is_animating(), "the page change starts a slide");
+        assert!(crate::is_widget_visible(outgoing), "both pages paint during the slide");
+        assert!(crate::is_widget_visible(incoming));
+
+        assert!(!sw.tick(100), "the completing tick ends the animation");
+        assert!(!sw.is_animating());
+        assert!(
+            !crate::is_widget_visible(outgoing),
+            "the outgoing page must not stay painted after the slide completes"
+        );
+        assert!(crate::is_widget_visible(incoming), "the current page stays visible");
+
+        let _ = runtime::unregister(outgoing);
+        let _ = runtime::unregister(incoming);
+    }
+
+    /// A page inserted during a slide must carry the outgoing index with it.
+    ///
+    /// The slide names pages by index, exactly like the selection the layout repairs. An
+    /// insert at or before the outgoing page shifts it one slot down; a removal of that page
+    /// drops the slide instead of leaving a stale index naming a page that no longer exists.
+    #[test]
+    fn an_insert_during_a_transition_does_not_leave_a_stale_previous_page() {
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 200, 100));
+        sw.add_widget(2001);
+        sw.add_widget(2002);
+        sw.add_widget(2003);
+        sw.set_transition_duration(100);
+        sw.set_current_index(1); // slide 2001 (0) -> 2002 (1)
+        assert_eq!(sw.previous_page, Some(0));
+        assert!(sw.is_animating());
+
+        // Inserting before the outgoing page shifts both the selection and the slide.
+        sw.insert_widget(0, 2004);
+        assert_eq!(sw.widget(1), Some(2001), "the outgoing page moved one slot down");
+        assert_eq!(
+            sw.previous_page,
+            Some(1),
+            "the slide follows the outgoing page, not the old slot"
+        );
+        assert_eq!(sw.selected_index(), Some(2), "2002 is still the selected page");
+
+        // Removing the outgoing page drops the slide rather than naming a page that is gone.
+        assert!(sw.remove_widget_at(1), "the outgoing page is the one that left");
+        assert_eq!(sw.previous_page, None, "there is no outgoing page left to slide");
+        assert!(!sw.is_animating(), "dropping the outgoing page ends the transition");
+        assert_eq!(sw.transition_progress(), 1.0);
     }
 }

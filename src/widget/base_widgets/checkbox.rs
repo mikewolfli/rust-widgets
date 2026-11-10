@@ -201,18 +201,42 @@ impl CheckBox {
         let contents = if self.text.is_empty() {
             indicator
         } else {
-            // Indicator through the end of the label, on the indicator's own row. The label width
-            // comes from the **same** shared measurement the `implicit_size` and the painter's ruler
-            // use (D09-CTRL-02): the old `chars().count() * 3/5 em` estimate under-counts wide glyphs
-            // (`W`, CJK), so the visible label could extend past this region and its tail was not
-            // clickable.
-            let label_width = estimate_text_width(&self.text, font, 1.0);
-            Rect::new(
-                indicator.x,
-                indicator.y,
-                indicator.width + self.label_gap() as u32 + label_width,
-                indicator.height,
-            )
+            // The label starts where the painter puts it, past the indicator and the shared gap.
+            let label_x = indicator.x + indicator.width as i32 + self.label_gap();
+            let label_width = rect.width.saturating_sub((label_x - rect.x).max(0) as u32);
+            if self.word_wrap {
+                // The painter wraps to that width and stacks the lines down from the line box,
+                // clipped at the control's bottom. A single indicator-high strip left lines 2..n
+                // unclickable, so the hit region covers the painted block.
+                let lines = {
+                    let mut measure = |text: &str| estimate_text_width(text, font, 1.0);
+                    wrap_to_width(&self.text, label_width, &mut measure)
+                };
+                let block_height = (lines.len().max(1) as u32).saturating_mul(line_height);
+                let visible = block_height
+                    .min((rect.y + rect.height as i32).saturating_sub(line_y).max(0) as u32);
+                let top = indicator.y.min(line_y);
+                let bottom = (indicator.y + indicator.height as i32).max(line_y + visible as i32);
+                Rect::new(
+                    indicator.x,
+                    top,
+                    (label_x - indicator.x).max(0) as u32 + label_width,
+                    (bottom - top).max(0) as u32,
+                )
+            } else {
+                // Indicator through the end of the label, on the indicator's own row. The label width
+                // comes from the **same** shared measurement the `implicit_size` and the painter's ruler
+                // use (D09-CTRL-02): the old `chars().count() * 3/5 em` estimate under-counts wide glyphs
+                // (`W`, CJK), so the visible label could extend past this region and its tail was not
+                // clickable.
+                let label_width = estimate_text_width(&self.text, font, 1.0);
+                Rect::new(
+                    indicator.x,
+                    indicator.y,
+                    indicator.width + self.label_gap() as u32 + label_width,
+                    indicator.height,
+                )
+            }
         };
         match self.style().touch_target {
             // The style's explicit target can only widen the platform floor; both steps are
@@ -307,13 +331,17 @@ impl CheckBox {
             return;
         };
         button_group::register(key.clone(), self.id(), self.geometry(), self.base.is_enabled());
-        if let Some(previous) = button_group::select(&key, self.id()) {
-            if previous != self.id() {
-                // A mounted peer is told through the property layer, so it emits its own
-                // `state_changed`. An unmounted peer derives the answer from the registry.
-                button_group::notify_checked(&[previous], false);
-            }
+        // `state()` reads the group, so the displaced peer has to be told **before** the selection
+        // moves: after `select` it already reports `Unchecked` and `set_checked(false)` sees no
+        // edge, so its `state_changed`/`toggled` never fired (the comment below promised they did).
+        if let Some(previous) =
+            button_group::selected(&key).filter(|previous| *previous != self.id())
+        {
+            // A mounted peer is told through the property layer, so it emits its own
+            // `state_changed`. An unmounted peer derives the answer from the registry.
+            button_group::notify_checked(&[previous], false);
         }
+        button_group::select(&key, self.id());
     }
 
     /// Releases the group's selection when this box is the member holding it.
@@ -905,7 +933,9 @@ impl EventHandler for CheckBox {
             Event::MouseEnter { .. }
             | Event::MouseLeave { .. }
             | Event::MousePress { .. }
-            | Event::MouseRelease { .. } => self.sync_fade(),
+            | Event::PointerPress { .. }
+            | Event::MouseRelease { .. }
+            | Event::PointerRelease { .. } => self.sync_fade(),
             _ => { /* Other events carry no fade-relevant pointer state */ }
         }
         match event {
@@ -923,7 +953,9 @@ impl EventHandler for CheckBox {
             // which is the reading every toolkit uses: a checkbox reacts to its own contents,
             // and the minimum touch size widens that region rather than making the whole row
             // live. A caller that wants the row to toggle should size the control to the row.
-            Event::MousePress { pos, button, .. } if *button == 1 && self.base.is_enabled() => {
+            Event::MousePress { pos, button, .. } | Event::PointerPress { pos, button, .. }
+                if *button == 1 && self.base.is_enabled() =>
+            {
                 if self.hit_area().contains_point(*pos) {
                     // Only a press that actually landed on the box may repeat: the base records
                     // `pressed` for the whole laid-out rectangle, which can be much wider.
@@ -932,7 +964,10 @@ impl EventHandler for CheckBox {
                     self.toggle();
                 }
             }
-            Event::MouseRelease { .. } | Event::MouseLeave { .. } | Event::FocusLost => {
+            Event::MouseRelease { .. }
+            | Event::PointerRelease { .. }
+            | Event::MouseLeave { .. }
+            | Event::FocusLost => {
                 self.end_auto_repeat();
             }
             // Focus arrival repaints the ring immediately (G-A14). The checkbox already handled
@@ -2296,5 +2331,87 @@ mod tests {
             single_svg, wrapped_svg,
             "wrapping must reshape a caption that does not fit its width"
         );
+    }
+
+    /// Every wrapped line is part of the click target, not just the indicator's own strip.
+    ///
+    /// `hit_area` measured the unwrapped label on one indicator-high row while the painter
+    /// wrapped the caption to `rect.height`, so a click on line 2..n did nothing.
+    #[test]
+    fn a_wrapped_label_is_clickable_on_every_line() {
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 120, 160));
+        checkbox.set_text(
+            "This label is much wider than its control and needs several wrapped lines to fit"
+                .to_string(),
+        );
+        checkbox.set_word_wrap(true);
+
+        let rect = checkbox.geometry();
+        let line_height = effective_font(checkbox.style()).size().max(1.0) as u32;
+        let line_y = rect.y + ((rect.height as i32 - line_height as i32) / 2).max(0);
+        let point = Point::new(30, line_y + 4 * line_height as i32);
+
+        assert!(
+            checkbox.hit_area().contains_point(point),
+            "a click on a lower wrapped line must hit: {:?} vs {point:?}",
+            checkbox.hit_area()
+        );
+        checkbox.handle_event(&Event::MousePress {
+            pos: point,
+            button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0,
+        });
+        assert!(checkbox.is_checked(), "and it toggles the box");
+    }
+
+    /// A stylus press toggles the box, matching the mouse arm.
+    #[test]
+    fn a_pointer_press_toggles_the_checkbox() {
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 120, 32));
+        checkbox.handle_event(&Event::pointer_press(
+            Point::new(5, 16),
+            crate::event::mouse_button::PRIMARY,
+            0.5,
+            0.0,
+            0.0,
+        ));
+        assert!(checkbox.is_checked(), "a pen press is a press (D09-POINTER-01)");
+    }
+
+    /// The displaced peer is told **before** the group moves, so it still sees its checked state.
+    ///
+    /// `claim_group_selection` selected first and then notified the peer; `state()` derives from
+    /// the group, so the peer already reported `Unchecked` and `set_state` saw no edge — its
+    /// `state_changed`/`toggled` never fired, contradicting the comment on that path.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_displaced_checkbox_announces_its_final_state() {
+        use crate::compat::{Arc, Box, Mutex, Vec};
+        use crate::widget::runtime;
+
+        let mut a = CheckBox::new(Rect::new(0, 0, 80, 20));
+        let mut b = CheckBox::new(Rect::new(0, 24, 80, 20));
+        a.set_parent(Some(5_005));
+        b.set_parent(Some(5_005));
+        a.set_auto_exclusive(true);
+        b.set_auto_exclusive(true);
+        a.set_checked(true);
+
+        let changes: Arc<Mutex<Vec<CheckState>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&changes);
+        a.state_changed.connect(move |state| {
+            crate::compat::lock(&sink).push(*state);
+        });
+        let a_id = a.id();
+        runtime::register_with_id(Box::new(a), a_id).expect("registry");
+
+        b.set_checked(true);
+
+        assert_eq!(
+            *crate::compat::lock(&changes),
+            vec![CheckState::Unchecked],
+            "the displaced box must emit the state it leaves"
+        );
+        runtime::unregister(a_id);
     }
 }

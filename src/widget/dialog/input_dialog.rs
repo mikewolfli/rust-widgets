@@ -12,7 +12,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -367,6 +367,10 @@ impl InputDialog {
             return;
         }
         self.mode = mode;
+        // The drop-down only exists in `Item` mode; leaving it must not leave the flag set, or
+        // Escape would take the "close drop-down" arm with nothing painted (and the property
+        // would read `true` forever).
+        self.dropdown_open = false;
         self.refresh_display_text();
         self.base.request_redraw();
     }
@@ -395,6 +399,11 @@ impl InputDialog {
     pub fn set_items(&mut self, items: Vec<String>) {
         self.items = items;
         self.current_item = 0;
+        // An empty list has no rows to paint, so an open drop-down would be a flag with no ink
+        // (and Escape would spend its press closing nothing).
+        if self.items.is_empty() {
+            self.dropdown_open = false;
+        }
         self.refresh_display_text();
         self.base.request_redraw();
     }
@@ -514,8 +523,11 @@ impl InputDialog {
     }
 
     /// Opens or closes the item-mode drop-down and repaints when it changes.
+    ///
+    /// Closing is allowed in every mode: a control that left `Item` mode must still be able to
+    /// retire a flag it set there. Opening is an item-mode affordance only.
     pub fn set_dropdown_open(&mut self, open: bool) {
-        if self.dropdown_open == open || self.mode != InputMode::Item {
+        if self.dropdown_open == open || (open && self.mode != InputMode::Item) {
             return;
         }
         self.dropdown_open = open;
@@ -772,12 +784,11 @@ impl WidgetProperties for InputDialog {
                 Ok(())
             }
             "int_value" => {
-                let number = match value {
-                    CapabilityValue::Int(v) => v,
-                    CapabilityValue::Float(v) => v as i64,
-                    _ => return Err(CapabilityAccessError::TypeMismatch),
-                };
-                self.set_int_value(number);
+                // The shared extractor accepts a signed integer and an in-range unsigned one, and
+                // refuses a float (a whole-number float is not an integer carrier) or a magnitude
+                // that does not fit. The old `as i64` turned `NaN` into 0 and `+inf` into
+                // `i64::MAX`, reporting success for values it had invented.
+                self.set_int_value(expect_i64(value)?);
                 Ok(())
             }
             "double_value" => {
@@ -790,11 +801,9 @@ impl WidgetProperties for InputDialog {
                 Ok(())
             }
             "int_step" => {
-                let step = match value {
-                    CapabilityValue::Int(v) => v,
-                    CapabilityValue::UInt(v) => v as i64,
-                    _ => return Err(CapabilityAccessError::TypeMismatch),
-                };
+                // Same extractor as `int_value`: the two sibling `Int` rows must not disagree about
+                // which carriers they accept. `u64::MAX` used to wrap to `-1` through `as i64`.
+                let step = expect_i64(value)?;
                 if step != self.int_step {
                     self.int_step = step;
                 }
@@ -1002,8 +1011,12 @@ impl InputDialog {
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let field_band = ControlMetrics::content_below_top_band(body, label_line_h);
-        // A multi-line field grows by whole rows, bounded by the room the label leaves.
-        let wanted = (26 * self.line_count.max(1) as u32).max(26);
+        // A multi-line field grows by whole rows, bounded by the room the label leaves. The
+        // multiply saturates because `set_line_count` takes any `usize`; a saturated height is
+        // then capped by the band, so an absurd request paints a full-height field instead of
+        // panicking in a debug build.
+        let wanted =
+            u32::try_from(self.line_count.max(1)).unwrap_or(u32::MAX).saturating_mul(26).max(26);
         ControlMetrics::top_band(field_band, field_band.height.min(wanted))
     }
 
@@ -1273,10 +1286,10 @@ impl Draw for InputDialog {
                 HorizontalAlignment::Left,
             );
         }
-        // Input field: the band below the label, its height the field's own rather than a
-        // literal `26` written at the frame's top plus `60`.
-        let field_band = ControlMetrics::content_below_top_band(body, label_line_h);
-        let input_band = ControlMetrics::top_band(field_band, field_band.height.min(26));
+        // Input field: the band below the label, derived by the same function the press path and
+        // the drop-down use. The height is the field's own (grown by `line_count`) rather than a
+        // literal `26`, so paint, hit test and the multi-line text loop cannot disagree.
+        let input_band = self.input_band();
         context.fill_rect(input_band, field);
         context.draw_rect(input_band, border);
         if self.focus == Some(0) {
@@ -1586,6 +1599,105 @@ mod tests {
         assert_eq!(dialog.current_item(), 1);
         assert!(!dialog.is_dropdown_open());
         assert_eq!(dialog.current_item_text(), Some("Two"));
+    }
+
+    /// The field's height, its hit region and its text loop must be one derivation.
+    ///
+    /// # What this pins
+    ///
+    /// `input_band` grew by `26 * line_count`, but `draw` always painted `min(26)` and bounded the
+    /// text loop by that band. A three-line field therefore painted one row, yet focused and moved
+    /// the caret when clicked in the unpainted band below it, and the drop-down anchored below ink
+    /// that did not exist.
+    #[test]
+    fn a_multi_line_field_paints_and_hits_the_whole_band() {
+        let mut dialog =
+            InputDialog::get_text(Rect::new(0, 0, 320, 240), "T", "L", "one\ntwo\nthree");
+        let single = dialog.input_band();
+        let single_runs =
+            crate::widget::svg::render_to_svg(&mut dialog).matches("data-text").count();
+
+        dialog.set_line_count(3);
+        let tall = dialog.input_band();
+        assert!(
+            tall.height > single.height,
+            "the field must grow: {} -> {}",
+            single.height,
+            tall.height
+        );
+        let tall_runs = crate::widget::svg::render_to_svg(&mut dialog).matches("data-text").count();
+        assert!(
+            tall_runs >= single_runs + 2,
+            "all three explicit lines must paint, not only the first: {single_runs} -> {tall_runs}"
+        );
+
+        // A press in the band the old paint left blank now belongs to the field.
+        let probe_y = tall.y + tall.height as i32 - 2;
+        assert!(
+            probe_y > single.y + single.height as i32,
+            "the probe must be in the newly grown part of the field"
+        );
+        dialog.handle_event(&Event::mouse_press(tall.x + 4, probe_y, 1));
+        assert_eq!(dialog.focus, Some(0), "the whole painted field is clickable");
+    }
+
+    /// An arbitrary `line_count` must saturate rather than overflow the pixel height.
+    ///
+    /// # What this pins
+    ///
+    /// `set_line_count` accepts any `usize` and `26 * line_count as u32` panicked in a debug
+    /// build on the next paint or press.
+    #[test]
+    fn an_absurd_line_count_saturates_instead_of_panicking() {
+        let mut dialog = InputDialog::get_text(Rect::new(0, 0, 320, 240), "T", "L", "text");
+        dialog.set_line_count(usize::MAX);
+        let svg = crate::widget::svg::render_to_svg(&mut dialog);
+        assert!(svg.contains("data-text"), "the dialog still paints: {svg}");
+        let band = dialog.input_band();
+        dialog.handle_event(&Event::mouse_press(band.x + 2, band.y + 2, 1));
+    }
+
+    /// A drop-down that is no longer painted must not leave its flag set.
+    ///
+    /// # What this pins
+    ///
+    /// Leaving `Item` mode (or emptying the list) left `dropdown_open` true while nothing was
+    /// painted, so Escape took the "close the drop-down" arm instead of rejecting, and
+    /// `set_dropdown_open(false)` refused because the mode was no longer `Item`.
+    #[test]
+    fn leaving_item_mode_or_emptying_the_items_closes_the_dropdown() {
+        let mut dialog = InputDialog::new(Rect::new(0, 0, 320, 240));
+        dialog.set_mode(InputMode::Item);
+        dialog.set_items(vec!["One".to_string()]);
+        dialog.set_dropdown_open(true);
+        assert!(dialog.is_dropdown_open());
+
+        let rejected = Arc::new(Mutex::new(0usize));
+        let counter = Arc::clone(&rejected);
+        dialog.rejected.connect(move || {
+            if let Ok(mut n) = counter.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.set_mode(InputMode::Text);
+        assert!(!dialog.is_dropdown_open(), "the mode has no drop-down to paint");
+        dialog.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert_eq!(*rejected.lock().expect("rejected lock"), 1, "Escape rejects the dialog");
+
+        // Emptying the list closes it too.
+        dialog.set_mode(InputMode::Item);
+        dialog.set_items(vec!["One".to_string()]);
+        dialog.set_dropdown_open(true);
+        assert!(dialog.is_dropdown_open());
+        dialog.set_items(Vec::new());
+        assert!(!dialog.is_dropdown_open(), "an empty list has no rows");
+
+        // Closing is accepted in any mode, which is what lets a caller retire a stale flag.
+        dialog.set_mode(InputMode::Text);
+        dialog.dropdown_open = true;
+        dialog.set_dropdown_open(false);
+        assert!(!dialog.is_dropdown_open());
     }
 
     #[test]

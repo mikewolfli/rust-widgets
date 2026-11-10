@@ -407,26 +407,13 @@ impl ScrollableRows for TableWidget {
         TableWidget::set_scroll_row(self, row);
     }
 
-    /// Sums each row's own height; a table whose rows were resized is not uniform.
+    /// The rows band, measured with each row's resolved height.
+    ///
+    /// A table's rows are not uniform — an override or a delegate's size hint composes them — so a
+    /// single division would be a fiction; the control owns the walk because only it can resolve a
+    /// row's height (override, hint, or the default constant).
     fn visible_row_count(&self) -> usize {
-        let viewport = crate::widget::Widget::geometry(self).height as i64;
-        let rows = TableWidget::row_count(self);
-        let mut used = 0i64;
-        let mut count = 0usize;
-        let mut row = self.scroll_row();
-        while row < rows {
-            let Some(height) = TableWidget::row_height(self, row) else {
-                break;
-            };
-            let height = i64::from(height);
-            if height <= 0 || used.saturating_add(height) > viewport {
-                break;
-            }
-            used = used.saturating_add(height);
-            count += 1;
-            row += 1;
-        }
-        count
+        TableWidget::visible_rows(self)
     }
 
     /// Rows carry their own heights, so a single answer would be a fiction.
@@ -643,6 +630,46 @@ mod tests {
         // The MDI content bounds clamp the pan; the accepted value is what the trait reports.
         ScrollableSurface::set_scroll_position(&mut area, 9_999, 9_999);
         assert_eq!(ScrollableSurface::scroll_position(&area), (300, 300));
+    }
+
+    /// A table without row overrides still reports how many rows its band holds.
+    ///
+    /// `visible_row_count` broke out of its walk on `TableWidget::row_height(row) == None`, which is
+    /// every row that has no explicit override. A plain 20-row table in a 300 px viewport therefore
+    /// reported zero visible rows, and `ensure_row_visible(5)` scrolled row 5 to the top although it
+    /// was already on screen. The control now owns the walk over its resolved heights.
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_table_without_row_overrides_reports_its_visible_rows() {
+        use crate::widget::view_widgets::table_widget::{TableModel, TableWidget};
+        use crate::widget::Widget;
+        use std::sync::Arc;
+
+        struct TwentyRows;
+        impl TableModel for TwentyRows {
+            fn row_count(&self) -> usize {
+                20
+            }
+            fn column_count(&self) -> usize {
+                2
+            }
+            fn data(&self, row: usize, _column: usize) -> Option<String> {
+                Some(format!("r{row}"))
+            }
+        }
+
+        let mut table = TableWidget::new(Rect::new(0, 0, 200, 300));
+        table.set_model(Arc::new(TwentyRows));
+
+        // 300 px less the 2 px inset on each edge and the 20 px header leaves 276 px: 13 rows.
+        let visible = table
+            .scrollable_rows()
+            .expect("the table implements ScrollableRows")
+            .visible_row_count();
+        assert_eq!(visible, 13, "a plain table must report the rows that fit");
+
+        table.scrollable_rows_mut().expect("mutable access").ensure_row_visible(5);
+        assert_eq!(table.scroll_row(), 0, "row 5 was already inside the viewport");
     }
 }
 

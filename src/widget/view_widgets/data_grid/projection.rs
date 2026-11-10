@@ -575,7 +575,11 @@ impl DataGrid {
     }
 
     pub(crate) fn visible_row_capacity(&self) -> usize {
-        let height = self.base.geometry().height;
+        // The cells box, not the control's box: the band inset and the column-title strip are
+        // not paintable rows. Dividing the control height by the row height over-counted by a
+        // row here (600x300 and 20 px rows answered 15 while the paint stopped at 14), which
+        // let `set_current_cell` leave a row that was never painted off-screen.
+        let height = self.cells_box().height;
         if height == 0 {
             return 0;
         }
@@ -585,12 +589,52 @@ impl DataGrid {
     }
 
     pub(crate) fn visible_column_capacity(&self) -> usize {
-        let width = self.base.geometry().width;
+        // Same cells-box reasoning as `visible_row_capacity`; the 4 px horizontal inset was the
+        // equivalent error here.
+        let width = self.cells_box().width;
         if width == 0 {
             return 0;
         }
         // Same `div_ceil` reasoning as `visible_row_capacity`.
         width.div_ceil(self.effective_column_width().max(1)) as usize
+    }
+
+    /// The number of rows the paint pass enumerates.
+    ///
+    /// The source's row count when nothing filters it (a sort reorders rows but never removes
+    /// one), otherwise the cached projection's length. Hit testing reads this because a cell's box
+    /// only exists for a projected row: clamping against `row_count()` named blank space below the
+    /// last painted row of a filtered grid.
+    pub(crate) fn projected_row_count(&self) -> usize {
+        if self.filter_expr.is_noop() {
+            return self.row_count();
+        }
+        let key = self.data_projection_revision();
+        if let Some((cached_key, index)) = self.index_projection_cache.as_ref() {
+            if *cached_key == key {
+                return index.len();
+            }
+        }
+        if let Some((cached_key, projected)) = self.full_projection_cache.as_ref() {
+            if *cached_key == key {
+                return projected.len();
+            }
+        }
+        // No projection has been built since the last filter change; the paint that follows will
+        // build it, and until then the source count is the only honest upper bound.
+        self.row_count()
+    }
+
+    /// [`Self::projected_row_count`] with the projection built on demand.
+    ///
+    /// Keyboard navigation owns `&mut self`, so it can build the index rather than fall back to
+    /// the source count; that fallback is what let a key walk onto rows the grid never painted.
+    pub(crate) fn projected_row_count_mut(&mut self) -> usize {
+        if self.filter_expr.is_noop() {
+            self.row_count()
+        } else {
+            self.index_projection().len()
+        }
     }
 
     pub(crate) fn normalize_projection_state(&mut self) {
@@ -611,12 +655,78 @@ impl DataGrid {
             self.frozen_columns = self.frozen_columns.min(col_count);
         }
         // Cell references that survived a shrink would point at rows or columns that no longer
-        // exist, so filter them against the final projected size.
+        // exist, so filter them against the final projected size. `selection` is the cursor the
+        // ring draws, so it is filtered with them; leaving it behind painted the ring far below a
+        // shrunken grid.
         self.current_cell =
             self.current_cell.filter(|(row, column)| *row < row_count && *column < col_count);
         self.hovered_cell =
             self.hovered_cell.filter(|(row, column)| *row < row_count && *column < col_count);
+        self.selection =
+            self.selection.filter(|(row, column)| *row < row_count && *column < col_count);
         self.selected_cells.retain(|(row, column)| *row < row_count && *column < col_count);
+    }
+
+    /// Drops every column-indexed fact that names a column the bound source no longer has.
+    ///
+    /// Re-binding a source can shrink the column space, while the filter, sort, hidden and
+    /// description state address columns by absolute index. An out-of-range filter rejects every
+    /// row (the grid goes blank yet still reports `filter_count == 1`); an out-of-range hidden
+    /// index makes `Stretch` divide the box by the wrong number of visible columns.
+    ///
+    /// Returns whether the filter expression changed, so the caller can report `filter_changed`.
+    /// The sort removal is deliberately not reported through `sort_changed`: that signal carries
+    /// `(column, descending)` and has no spelling for "removed" (the same reason an unsorted
+    /// header is observable only through `sort_specs()`).
+    pub(crate) fn prune_column_indexed_state(&mut self) -> bool {
+        let columns = self.column_count();
+        let filter_changed = {
+            let conditions = self.filter_expr.conditions();
+            conditions
+                .iter()
+                .map(|condition| condition.column)
+                .max()
+                .is_some_and(|max| max >= columns)
+        };
+        if filter_changed {
+            let max_column = self
+                .filter_expr
+                .conditions()
+                .iter()
+                .map(|condition| condition.column)
+                .max()
+                .unwrap_or(columns);
+            for column in columns..=max_column {
+                self.filter_expr = self.filter_expr.without_column(column);
+            }
+            // Rebuild the flat mirror from the evaluated tree, so the two cannot describe
+            // different filters.
+            self.filters = self
+                .filter_expr
+                .conditions()
+                .into_iter()
+                .map(|condition| ColumnFilter {
+                    column: condition.column,
+                    query: condition.operand.clone(),
+                })
+                .collect();
+        }
+        self.sort_specs.retain(|spec| spec.column < columns);
+        self.sort_roles.retain(|column, _| *column < columns);
+        self.hidden_columns.retain(|column| *column < columns);
+        self.column_widths.retain(|column, _| *column < columns);
+        self.column_alignments.retain(|column, _| *column < columns);
+        self.column_order.retain(|column| *column < columns);
+        if self.header_columns.len() > columns {
+            self.header_columns.truncate(columns);
+            self.header_labels.truncate(columns);
+            for row in &mut self.extra_header_rows {
+                row.truncate(columns);
+            }
+            self.header_text_revision = self.header_text_revision.wrapping_add(1);
+        }
+        self.frozen_columns = self.frozen_columns.min(columns);
+        filter_changed
     }
 
     pub(crate) fn clear_cache(&mut self) {
@@ -625,5 +735,100 @@ impl DataGrid {
 
     pub(crate) fn emit_visible_window_changed(&self) {
         self.visible_window_changed.emit(self.visible_window());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Source {
+        data: Vec<Vec<String>>,
+    }
+
+    impl IncrementalTableDataSource for Source {
+        fn row_count(&self) -> usize {
+            self.data.len()
+        }
+
+        fn column_count(&self) -> usize {
+            self.data.first().map_or(0, Vec::len)
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            self.data.get(row).and_then(|line| line.get(column)).cloned()
+        }
+    }
+
+    /// Capacity is measured against the cells box (band inset and column-title strip removed) —
+    /// the box the paint actually fills. Dividing the control's own height answered 15 where the
+    /// paint stopped at 14, so `set_current_cell(14, ..)` left that row off-screen forever.
+    #[test]
+    fn visible_capacity_measures_the_cells_box() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 600, 300));
+        grid.set_data_source(Arc::new(Source {
+            data: (0..20)
+                .map(|row| (0..4).map(|column| format!("{row}:{column}")).collect())
+                .collect(),
+        }));
+
+        let cells = grid.cells_box();
+        assert_eq!(cells.height, 274, "300 minus 4 px of inset and the 22 px title strip");
+        assert_eq!(grid.visible_row_capacity(), 14, "274 / 20 rounds up to 14, not 15");
+
+        assert!(grid.set_current_cell(14, 0));
+        assert_eq!(grid.scroll_row(), 1, "the capacity is what decides whether to scroll");
+        let row = grid.cell_rect(14, 0);
+        assert!(
+            row.y >= cells.y && row.y < cells.y + cells.height as i32,
+            "the scrolled-to row is inside the painted box ({row:?})"
+        );
+
+        // 596 / 199 = 2.99.. rounds up to 3; the control width (600) would answer 4.
+        grid.set_default_column_width(199);
+        assert_eq!(grid.visible_column_capacity(), 3);
+        let cells = grid.cells_box();
+        assert!(grid.cell_rect(0, 2).x < cells.x + cells.width as i32, "column 2 is painted");
+        assert!(
+            grid.cell_rect(0, 3).x >= cells.x + cells.width as i32,
+            "column 3 starts past the last painted pixel"
+        );
+    }
+
+    /// A model that shrinks under the grid must drop the `selection` cursor too; it is the box the
+    /// focus ring draws, and leaving it behind painted the ring far below the grid.
+    #[test]
+    fn a_shrunk_model_drops_a_selection_cursor_past_the_last_row() {
+        struct Shrinkable {
+            rows: std::sync::atomic::AtomicUsize,
+            columns: usize,
+        }
+        impl IncrementalTableDataSource for Shrinkable {
+            fn row_count(&self) -> usize {
+                self.rows.load(std::sync::atomic::Ordering::Relaxed)
+            }
+            fn column_count(&self) -> usize {
+                self.columns
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("{row}:{column}"))
+            }
+        }
+
+        let source =
+            Arc::new(Shrinkable { rows: std::sync::atomic::AtomicUsize::new(100), columns: 2 });
+        let mut grid = DataGrid::new(Rect::new(0, 0, 600, 300));
+        grid.set_data_source(source.clone());
+        grid.replace_selection(50, 0);
+        grid.current_cell = Some((50, 0));
+
+        source.rows.store(10, std::sync::atomic::Ordering::Relaxed);
+        grid.refresh_data();
+        // The fetch is the normalization point the paint and hit test share.
+        grid.fetch_visible_cells();
+
+        assert_eq!(grid.selection(), None, "row 50 is no longer in the model");
+        assert_eq!(grid.current_cell(), None);
+        assert!(grid.selected_cells().is_empty());
     }
 }

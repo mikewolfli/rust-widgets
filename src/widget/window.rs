@@ -421,11 +421,20 @@ impl Window {
         let flags = state[17];
         let opacity =
             f32::from_bits(u32::from_le_bytes([state[18], state[19], state[20], state[21]]));
+        let was_decorated = self.decorated;
         self.base.set_geometry(crate::core::Rect::new(x, y, width, height));
         self.modal = flags & 1 != 0;
         self.always_on_top = flags & 2 != 0;
         self.decorated = flags & 4 != 0;
         self.opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
+        // `set_geometry` early-returns when the saved rectangle equals the current one, so a graph
+        // restore onto a window that has not moved would otherwise change the chrome flag without
+        // any repaint and leave the title bar absent. `decorated` is the one restored flag the
+        // draw path reads; `modal`, `always_on_top` and `opacity` are host-facing (G-302) and do
+        // not change a pixel here.
+        if self.decorated != was_decorated {
+            self.base.request_redraw();
+        }
         true
     }
 }
@@ -567,8 +576,13 @@ impl WidgetProperties for Window {
 impl EventHandler for Window {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        if let Event::MousePress { pos, button, .. } = event {
-            if *button == 1 && self.decorated {
+        // D09-POINTER-01: a stylus contact is a press like any other, exactly as
+        // `BaseWidget::record_interaction_state` treats it. Matching only `MousePress` armed the
+        // base for a pen tap but never closed the window.
+        if let Event::MousePress { pos, button, .. } | Event::PointerPress { pos, button, .. } =
+            event
+        {
+            if *button == crate::event::mouse_button::PRIMARY && self.decorated {
                 // The close dot is the first of the three painted buttons. Tapping it is the
                 // only window action the self-drawn chrome offers: minimise/maximise are the
                 // window manager's job and remain reachable through `set_window_state`.
@@ -704,22 +718,24 @@ impl Draw for Window {
             );
             let title_fill = bg_color.blend(&bg_color.contrast_color(), 0.06);
             context.fill_rect(chrome.title_bar, title_fill);
-            for (index, color) in [
-                Color::rgba(255, 95, 86, 255),
-                Color::rgba(255, 189, 46, 255),
-                Color::rgba(39, 201, 63, 255),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            for index in 0..3 {
                 let button = match index {
                     0 => chrome.close,
                     1 => chrome.minimize,
                     _ => chrome.maximize,
                 };
+                if button.width == 0 {
+                    // A window too small for this light: the geometry skipped it, so paint nothing.
+                    continue;
+                }
                 let radius = (button.width / 2).max(1);
                 let center = Point::new(button.x + radius as i32, button.y + radius as i32);
-                context.fill_circle_aa(center, radius, color);
+                // One home for the traffic-light colours: `WindowChromeGeometry::button_color`.
+                context.fill_circle_aa(
+                    center,
+                    radius,
+                    crate::widget::window_decorations::WindowChromeGeometry::button_color(index),
+                );
             }
             if !self.title.is_empty() {
                 let font = crate::widget::metrics::role_font(self.style(), 13.0);
@@ -1154,5 +1170,90 @@ mod window_contract_tests {
         let chrome = render_to_svg(&mut window);
         assert!(plain.starts_with("<svg"));
         assert_ne!(plain, chrome, "the chrome is opt-in and visibly different");
+    }
+
+    /// A stylus contact on the close dot closes the window, exactly like a mouse press.
+    ///
+    /// # The defect this pins
+    ///
+    /// The self-drawn close dot was hit-tested only in the `MousePress` arm while `BaseWidget`
+    /// explicitly treats `PointerPress` as a press (D09-POINTER-01). A pen tap therefore armed the
+    /// base gesture but never closed the window.
+    #[test]
+    fn a_stylus_press_on_the_close_dot_closes_the_window() {
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+        window.set_decorated(true);
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let c = closed.clone();
+        window.closed.connect(move || {
+            c.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        window.handle_event(&Event::PointerPress {
+            pos: Point::new(12, 16),
+            button: crate::event::mouse_button::PRIMARY,
+            pressure: 0.5,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+        });
+        assert!(
+            closed.load(std::sync::atomic::Ordering::SeqCst),
+            "a stylus press is a press and must reach the close dot"
+        );
+    }
+
+    /// The painted chrome uses the shared traffic-light colours.
+    ///
+    /// # The drift this pins
+    ///
+    /// The window's draw path restated the three RGB triples that
+    /// [`WindowChromeGeometry::button_color`] owns, so the documented "single home" for the
+    /// values was a second copy that could silently diverge. Both paths now read the same
+    /// function; the assertion catches a future literal creeping back in with a different value.
+    #[test]
+    fn the_painted_chrome_uses_the_shared_traffic_light_colours() {
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+        window.set_decorated(true);
+        let svg = render_to_svg(&mut window);
+        for index in 0..3 {
+            let colour =
+                crate::widget::window_decorations::WindowChromeGeometry::button_color(index);
+            let expected = format!("rgba({},{},{},1.00)", colour.r, colour.g, colour.b);
+            assert!(
+                svg.contains(&expected),
+                "traffic light {index} must use button_color({index}); {expected} is absent"
+            );
+        }
+    }
+
+    /// Restoring chrome flags repaints even when the saved rectangle equals the current one.
+    ///
+    /// # The defect this pins
+    ///
+    /// `restore_state` wrote `decorated` directly after `base.set_geometry`, which early-returns on
+    /// an unchanged rectangle. Restoring onto a window already at the saved rect therefore made
+    /// `is_decorated()` true with no redraw, so the title bar stayed absent.
+    #[test]
+    fn restoring_decorated_chrome_requests_a_repaint_at_the_same_rect() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let geometry = Rect::new(10, 20, 400, 300);
+        let mut source = Window::new("Doc".to_string(), geometry);
+        source.set_decorated(true);
+        let blob = source.save_state();
+
+        let mut target = Window::new("Doc".to_string(), geometry);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        target.base.redraw_requested_signal().connect(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        assert!(target.restore_state(&blob));
+        assert!(target.is_decorated());
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a changed pixel-visible flag must request a repaint despite the unchanged rect"
+        );
     }
 }

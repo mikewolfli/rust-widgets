@@ -605,7 +605,11 @@ impl Draw for ModalBottomSheet {
         // 5. Content area (child widget rendering is delegated)
         let content_top = title_y + title_metrics.height as i32 + 8;
         let content_bottom = rect.y + rect.height as i32 + drag_offset_px;
-        let content_available = (content_bottom - content_top) as u32;
+        // While the panel is still below the control the reveal has not lifted the content
+        // above the body's bottom edge, so the difference is negative; casting it directly to
+        // `u32` wrapped to ~4.29e9 and handed the child a four-billion-pixel box. Clamp first,
+        // the same way `content_rect` does.
+        let content_available = (content_bottom - content_top).max(0) as u32;
 
         if content_available > 20 {
             let content_rect = Rect::new(
@@ -1174,5 +1178,28 @@ mod tests {
         while sheet.tick(1000) {}
         assert_eq!(sheet.reveal_progress(), 1.0);
         assert!(!sheet.is_animating());
+    }
+
+    /// The first frame of an animated show must not hand the content a wrapped rect.
+    ///
+    /// # The defect this pins
+    ///
+    /// At `reveal == 0` the content's top edge sits below the control's bottom, so
+    /// `content_bottom - content_top` is negative. Casting it to `u32` produced roughly
+    /// 4.29e9 and the child was laid out four billion pixels tall.
+    #[test]
+    fn the_first_animated_frame_does_not_wrap_the_content_height() {
+        let painted = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut sheet = make_sheet();
+        sheet.set_content(Box::new(PaintedContent::new(std::rc::Rc::clone(&painted))));
+        sheet.set_animated(true);
+        sheet.show();
+        assert_eq!(sheet.reveal_progress(), 0.0, "the first animated frame is still stowed");
+
+        let _ = render_to_svg(&mut sheet);
+        assert!(
+            painted.get().is_none(),
+            "a panel below the control has no content box to hand the child"
+        );
     }
 }

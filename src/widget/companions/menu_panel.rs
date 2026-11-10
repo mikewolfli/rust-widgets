@@ -106,6 +106,8 @@ pub struct MenuPanel {
 impl MenuPanel {
     /// Creates a closed panel occupying `geometry`.
     pub fn new(geometry: Rect) -> Self {
+        // The capability table declares this host `visible` by default; a closed panel is kept
+        // out of the hit test by `contains_point`, and `close` still clears the base flag.
         Self {
             base: BaseWidget::new(WidgetKind::MenuPanel, geometry, "MenuPanel"),
             items: Vec::new(),
@@ -125,6 +127,9 @@ impl MenuPanel {
         if !self.open {
             self.open = true;
             self.scroll_offset = 0;
+            self.base.show();
+            // The open panel owns the press that dismisses it (I-127).
+            crate::widget::runtime::set_popup_grab(self.base.id());
             self.base.request_redraw();
         }
     }
@@ -134,6 +139,8 @@ impl MenuPanel {
         if self.open {
             self.open = false;
             self.highlighted_index = None;
+            self.base.hide();
+            crate::widget::runtime::clear_popup_grab_for(self.base.id());
             self.base.request_redraw();
         }
     }
@@ -220,6 +227,9 @@ impl MenuPanel {
         }
         self.max_visible_rows = rows;
         self.clamp_scroll();
+        // A shorter window can put the highlight outside it; the sibling `DropDownPopupHost`
+        // re-reveals for the same reason. Without this, Enter activates a row nobody can see.
+        self.ensure_highlight_visible();
         self.base.request_redraw();
     }
 
@@ -252,7 +262,9 @@ impl MenuPanel {
         }
         let row = ((pos.y - rect.y) as u32 / MENU_ROW_HEIGHT) as usize;
         let index = self.scroll_offset + row;
-        (index < self.items.len()).then_some(index)
+        // Only the rows `visible_rows()` / `draw` paint can be highlighted: a panel taller than
+        // its row window must not map a point below the last painted row to an off-window row.
+        (row < self.visible_rows() && index < self.items.len()).then_some(index)
     }
 
     /// Moves the highlight by `delta` rows, wrapping and skipping disabled rows.
@@ -358,6 +370,11 @@ impl EventHandler for MenuPanel {
                     }
                     None => self.cancel(),
                 }
+                // A press that leaves the panel open (a disabled row, padding) re-arms the
+                // one-shot grab the runtime consumed while routing the press here.
+                if self.open {
+                    crate::widget::runtime::set_popup_grab(self.base.id());
+                }
             }
             Event::Wheel { delta, .. } => {
                 if !self.open || self.items.len() <= self.visible_rows() || delta.y == 0 {
@@ -365,6 +382,7 @@ impl EventHandler for MenuPanel {
                 }
                 let visible = self.visible_rows();
                 let max_offset = self.items.len() - visible;
+                let before = self.scroll_offset;
                 let next = if delta.y < 0 {
                     self.scroll_offset.saturating_add(1)
                 } else {
@@ -375,6 +393,8 @@ impl EventHandler for MenuPanel {
                     self.scroll_offset = next;
                     self.base.request_redraw();
                 }
+                // C2-D0: a window already at its end lets an outer container scroll.
+                crate::widget::claim_wheel_if_moved(&before, &self.scroll_offset);
             }
             Event::KeyPress { key, .. } if self.open => match *key {
                 key_codes::UP => self.move_highlight(-1),
@@ -471,6 +491,10 @@ impl Draw for MenuPanel {
 impl Widget for MenuPanel {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    /// A closed panel paints nothing, so it must not accept a press over its rectangle.
+    fn contains_point(&self, point: Point) -> bool {
+        self.open && self.base.contains_point_with_touch_expansion(point)
     }
     fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
         Some(self)
@@ -707,5 +731,43 @@ mod tests {
         assert!(panel.set_highlighted_index(Some(2)));
         assert!(panel.item_rect(2).is_some(), "the window followed the highlight");
         assert_eq!(panel.item_rect(2).unwrap().y, panel.geometry().y);
+    }
+
+    /// FINDING 8: a point below the last painted row is not a row.
+    ///
+    /// `highlight_at` bounded the computed index by `items.len()` only, while `draw` paints at
+    /// most `visible_rows()`. A taller panel therefore mapped a press in its empty bottom area to
+    /// an off-window row that had never been painted.
+    #[test]
+    fn a_point_below_the_painted_rows_is_not_a_row() {
+        let mut panel = MenuPanel::new(Rect::new(0, 0, 180, 320));
+        panel.set_items((0..20).map(|index| MenuPanelItem::new(format!("Row {index}"))).collect());
+        panel.set_max_visible_rows(8);
+        panel.open();
+
+        // Rows occupy 8 * 32 = 256 px; y = 280 is inside the geometry but below every painted row.
+        assert_eq!(panel.highlight_at(Point::new(10, 280)), None);
+        assert_eq!(
+            panel.highlight_at(Point::new(10, 250)),
+            Some(7),
+            "the last painted row still hits"
+        );
+    }
+
+    /// FINDING 9: shrinking the row window must re-reveal the highlight.
+    #[test]
+    fn shrinking_the_window_keeps_the_highlight_visible() {
+        let mut panel = MenuPanel::new(Rect::new(0, 0, 180, 600));
+        panel.set_items((0..20).map(|index| MenuPanelItem::new(format!("Row {index}"))).collect());
+        panel.set_max_visible_rows(8);
+        panel.open();
+        assert!(panel.set_highlighted_index(Some(19)));
+        assert_eq!(panel.scroll_offset, 12, "8 visible rows leave row 19 at offset 12");
+
+        panel.set_max_visible_rows(2);
+        assert!(
+            panel.item_rect(19).is_some(),
+            "the two-row window must follow the highlight instead of leaving it off-window"
+        );
     }
 }

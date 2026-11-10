@@ -182,11 +182,14 @@ impl BarcodeScanner {
 
     /// Hands a captured frame to the installed decoder and publishes a found symbol.
     ///
-    /// Returns `true` when a symbol was decoded and stored, which also emits
-    /// `barcode_detected`. A frame with no symbol returns `false` and leaves the previous
-    /// result in place, so a viewfinder that misses for a few frames does not blank the
-    /// readout. A malformed frame (length not `width * height`) is refused for the same
-    /// reason rather than being decoded from whatever bytes happened to be nearby.
+    /// Returns `true` when a symbol was decoded **and accepted by this scanner's format
+    /// filter**, which also emits `barcode_detected`. A frame with no symbol returns `false` and
+    /// leaves the previous result in place, so a viewfinder that misses for a few frames does not
+    /// blank the readout. A symbol whose format [`Self::accepts_format`] refuses is the same
+    /// answer: nothing was stored and no signal fired, so reporting `true` would promise a
+    /// result the caller cannot read back. A malformed frame (length not `width * height`) is
+    /// refused for the same reason rather than being decoded from whatever bytes happened to be
+    /// nearby.
     pub fn decode_frame(&mut self, frame: BarcodeFrame<'_>) -> bool {
         let expected = frame.width as usize * frame.height as usize;
         if expected == 0 || frame.gray.len() < expected {
@@ -198,8 +201,7 @@ impl BarcodeScanner {
         let Some((data, format)) = decoder.decode(frame) else {
             return false;
         };
-        self.detect_barcode(data, format);
-        true
+        self.detect_barcode(data, format)
     }
 
     /// Starts the simulated scanning animation (local state and redraw only).
@@ -266,9 +268,13 @@ impl BarcodeScanner {
     /// only way a result enters the widget (an external decoder/integration is
     /// expected to call it). The result is stored, emitted on
     /// `barcode_detected`, and shown in the overlay.
-    pub fn detect_barcode(&mut self, data: String, format: BarcodeFormat) {
+    ///
+    /// Returns `false` when [`Self::accepted_formats`] refuses `format`; in that case nothing is
+    /// stored and nothing is emitted. The flag is what lets [`Self::decode_frame`] report the
+    /// same fact instead of always answering `true` after the decoder produced a symbol.
+    pub fn detect_barcode(&mut self, data: String, format: BarcodeFormat) -> bool {
         if !self.accepts_format(format) {
-            return;
+            return false;
         }
         use std::time::{SystemTime, UNIX_EPOCH};
         let timestamp =
@@ -277,6 +283,7 @@ impl BarcodeScanner {
         self.last_result = Some(result.clone());
         self.barcode_detected.emit(result);
         self.base.request_redraw();
+        true
     }
 
     /// The symbologies this scanner accepts, by [`BarcodeFormat::name`].
@@ -824,5 +831,41 @@ mod tests {
         assert_eq!(scanner.scan_phase_ms, first + 16);
         assert!(scanner.tick(16));
         assert_eq!(scanner.scan_phase_ms, first + 32);
+    }
+
+    /// A decoder's symbol the format filter refuses is not a successful decode.
+    ///
+    /// `decode_frame` answered `true` unconditionally after the decoder found a symbol, while
+    /// `detect_barcode` returned early for a refused format: the caller was told a result was
+    /// stored and announced when `last_result()` was unchanged and no signal fired.
+    #[test]
+    fn a_refused_format_is_not_reported_as_decoded() {
+        struct FixedDecoder;
+        impl BarcodeDecoder for FixedDecoder {
+            fn decode(&mut self, _frame: BarcodeFrame<'_>) -> Option<(String, BarcodeFormat)> {
+                Some(("4006381333931".to_string(), BarcodeFormat::EAN13))
+            }
+        }
+
+        let mut scanner = BarcodeScanner::new(Rect::new(0, 0, 300, 200));
+        let detected = Arc::new(AtomicBool::new(false));
+        let d = Arc::clone(&detected);
+        scanner.barcode_detected.connect(move |_result| {
+            d.store(true, Ordering::SeqCst);
+        });
+        scanner.set_accepted_formats(vec!["QR Code".to_string()]);
+        scanner.set_decoder(Some(Box::new(FixedDecoder)));
+
+        let pixels = [0u8; 16];
+        let frame = BarcodeFrame { width: 4, height: 4, gray: &pixels };
+        assert!(!scanner.decode_frame(frame), "an EAN-13 is not an accepted QR Code");
+        assert!(scanner.last_result().is_none(), "a refused symbol is not stored");
+        assert!(!detected.load(Ordering::SeqCst), "and is not announced");
+
+        // The same frame is reported once the whitelist admits its format.
+        scanner.set_accepted_formats(vec!["EAN-13".to_string()]);
+        assert!(scanner.decode_frame(frame));
+        assert_eq!(scanner.last_result().map(|result| result.format), Some(BarcodeFormat::EAN13));
+        assert!(detected.load(Ordering::SeqCst));
     }
 }

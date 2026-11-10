@@ -80,6 +80,8 @@ pub struct TreeFindBar {
 impl TreeFindBar {
     /// Creates a closed find bar covering `geometry`.
     pub fn new(geometry: Rect) -> Self {
+        // The capability table declares this host `visible` by default; `contains_point` keeps a
+        // closed bar from taking a press, and `close` also clears the base flag.
         Self {
             base: BaseWidget::new(WidgetKind::Panel, geometry, "TreeFindBar"),
             source: None,
@@ -108,6 +110,9 @@ impl TreeFindBar {
             return;
         }
         self.visible = true;
+        self.base.show();
+        let id = crate::widget::runtime::registry_id_of(self.base.id()).unwrap_or(self.base.id());
+        let _ = crate::widget::runtime::focus_widget(id);
         self.base.request_redraw();
     }
 
@@ -120,6 +125,7 @@ impl TreeFindBar {
         self.query.clear();
         self.preedit.clear();
         self.current_match = None;
+        self.base.hide();
         self.base.request_redraw();
     }
 
@@ -257,6 +263,10 @@ impl Widget for TreeFindBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// A closed bar paints nothing, so it must not accept a press over its rectangle.
+    fn contains_point(&self, point: Point) -> bool {
+        self.visible && self.base.contains_point_with_touch_expansion(point)
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -265,6 +275,14 @@ impl Widget for TreeFindBar {
     }
     fn size_hint(&self) -> Size {
         Size::new(260, 28)
+    }
+    /// A find bar owns the keyboard while it is open, so Tab must be able to reach it.
+    ///
+    /// Its kind is `Panel`, which `WidgetKind::wants_keyboard_focus` does not list; without this
+    /// override the bar could not be focused by click or by Tab, and Ctrl+F left the keys in the
+    /// document behind it.
+    fn is_focusable(&self) -> bool {
+        true
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

@@ -3051,6 +3051,67 @@ fn a_press_inside_a_popup_below_its_parent_reaches_the_popup() {
     unregister(combo);
 }
 
+/// An open popup that rejects the point must not hide the siblings under it.
+///
+/// The overlay branch broke out of the reverse sibling walk **before** testing `contains_point`,
+/// so the descent then rejected the popup's own bounds and returned `None` for the whole window.
+/// Nothing reacted to the press and no other control received `MouseEnter` while the menu was up.
+/// A `Button` that opens its attached menu must also take the popup grab, or the outside press
+/// that dismisses it is delivered to the control behind.
+#[test]
+fn an_open_popup_that_rejects_the_point_does_not_swallow_the_window() {
+    use crate::widget::base_widgets::button::Button;
+    use crate::widget::capability::coercion::widget_as_mut;
+    use crate::widget::menu_toolbar::menu_button::MenuItem;
+
+    let mut owner = Button::new("menu".to_string(), Rect::new(10, 10, 80, 32));
+    owner.set_menu(vec![MenuItem::new(1, "Open")]);
+    let owner = register(Box::new(owner)).expect("mount the menu owner");
+    let sibling = register(Box::new(Button::new("other".to_string(), Rect::new(150, 10, 80, 32))))
+        .expect("mount the sibling");
+
+    let window = register(Box::new(crate::widget::Window::new(
+        "popup fallthrough".to_string(),
+        Rect::new(0, 0, 400, 300),
+    )))
+    .expect("mount the window");
+    with_widget_mut(window, |widget| {
+        widget.base_mut().add_child_linked(owner);
+        widget.base_mut().add_child_linked(sibling);
+    });
+
+    with_widget_mut(owner, |widget| {
+        widget_as_mut::<Button>(widget).expect("button").open_menu();
+    });
+    assert!(
+        read_widget(owner, |widget| widget.has_open_popup()).unwrap_or(false),
+        "the menu is open"
+    );
+    assert_eq!(popup_grab(), Some(owner), "the menu owner must take the popup grab");
+
+    assert_eq!(
+        widget_at(window, Point::new(160, 20)),
+        Some(sibling),
+        "a point the open menu rejects must fall through to the sibling under it"
+    );
+
+    let point = Point::new(160, 20);
+    assert!(dispatch_pointer_event(
+        window,
+        &Event::MousePress { pos: point, button: 1, modifiers: 0 },
+        point,
+    ));
+    assert!(
+        !read_widget(owner, |widget| widget.has_open_popup()).unwrap_or(true),
+        "the outside press must reach the menu owner and close its menu"
+    );
+    assert_eq!(popup_grab(), None, "and the dismissal releases the grab");
+
+    unregister(window);
+    unregister(owner);
+    unregister(sibling);
+}
+
 /// Tab steps over disabled and hidden controls instead of landing on them.
 ///
 /// The tab order keeps them (a user must be able to move *past* a disabled control), so the
@@ -3082,6 +3143,38 @@ fn tab_skips_disabled_and_hidden_controls() {
     for id in [first, disabled, hidden, last] {
         unregister(id);
     }
+}
+
+/// Tab must skip a control whose **ancestor** is hidden.
+///
+/// The step predicate read the control's own visibility flag, so a field inside a collapsed page
+/// or hidden panel still qualified: Tab moved focus off screen, painted no ring, and the keys
+/// that followed were swallowed by a control the user could not see (WG-01).
+#[test]
+fn tab_skips_a_control_inside_a_hidden_container() {
+    let first = register(sample_editor("a")).expect("registry");
+    let _first = MountGuard(first);
+    let child = register(sample_editor("b")).expect("registry");
+    let _child = MountGuard(child);
+
+    let page = register(Box::new(crate::widget::container_widgets::groupbox::GroupBox::new(
+        Rect::new(0, 0, 300, 300),
+    )))
+    .expect("registry");
+    let _page = MountGuard(page);
+    // Link after mounting so the child records the page's **registry** id, which is the id every
+    // tree walk (including `is_effectively_visible`) uses.
+    with_widget_mut(page, |widget| {
+        widget.base_mut().add_child_linked(child);
+    });
+
+    let last = register(sample_editor("c")).expect("registry");
+    let _last = MountGuard(last);
+
+    assert!(focus_widget(first));
+    with_widget_mut(page, |widget| widget.hide());
+
+    assert_eq!(focus_next(true), Some(last), "Tab must step over the field inside the hidden page");
 }
 
 /// Hover does not enter a control a modal blocks.
@@ -4454,6 +4547,60 @@ fn a_control_that_stops_animating_lets_the_frame_loop_sleep() {
     );
     assert_eq!(after.controls_ticked, 0);
     assert_eq!(after.repaints_submitted, 0, "and a still frame costs no submission");
+}
+
+/// A control that settles **during** its own tick still counts as ticked.
+///
+/// `FrameStats::controls_ticked` and `FrameOutcome::controls_ticked` are documented as the
+/// controls that answered `is_animating()` and were advanced. The sweep counted them only when
+/// the post-tick flag was still set, so the very frame that advanced a control into its resting
+/// state reported `0` and hid work the frame had done.
+#[test]
+fn a_settling_control_is_still_counted_as_ticked() {
+    struct Settling {
+        base: BaseWidget,
+        animating: bool,
+    }
+
+    impl crate::widget::Widget for Settling {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn is_animating(&self) -> bool {
+            self.animating
+        }
+        fn tick(&mut self, _delta_ms: u32) -> bool {
+            // Settle on this advance: it moved, but owes no further frame.
+            self.animating = false;
+            false
+        }
+    }
+
+    impl crate::event::EventHandler for Settling {
+        fn handle_event(&mut self, _event: &Event) {}
+    }
+
+    let _serial = serialise_drive_frame();
+    // Baseline frame: drain anything an earlier test left queued before mounting the control.
+    let _ = drive_frame(0);
+
+    let id = register(Box::new(Settling {
+        base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 10, 10), "Settling"),
+        animating: true,
+    }))
+    .expect("mount the settling control");
+    let _unmount = MountGuard(id);
+
+    let outcome = drive_frame(16);
+    assert_eq!(
+        outcome.controls_ticked, 1,
+        "the frame advanced the control, even though its tick settled it"
+    );
+    assert!(!outcome.needs_another_frame, "a settled control owes no further frame");
+    assert!(!has_animating_widgets());
 }
 
 /// BLUE24 §8 criterion 3: five requests for one surface submit once and coalesce four.

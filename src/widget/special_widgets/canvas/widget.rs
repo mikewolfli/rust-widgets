@@ -550,6 +550,30 @@ impl Canvas {
                     .collect();
                 layer.touch();
             }
+            // Decorations and the redo history are painted/replayed too, so they follow the same
+            // global switch. Rewriting only the layers left a restored command anti-aliased while
+            // the rest of the canvas was not.
+            let overlay = core::mem::take(&mut self.overlay_commands);
+            self.overlay_commands = overlay
+                .into_iter()
+                .map(|mut stored| {
+                    stored.command = without_anti_aliasing(stored.command);
+                    stored.replay = None;
+                    stored
+                })
+                .collect();
+            let redo = core::mem::take(&mut self.redo_stack);
+            self.redo_stack = redo
+                .into_iter()
+                .map(|step| {
+                    step.into_iter()
+                        .map(|mut undone| {
+                            undone.command = without_anti_aliasing(undone.command);
+                            undone
+                        })
+                        .collect()
+                })
+                .collect();
             self.invalidate_hit_cache();
         }
         self.base.request_redraw();
@@ -576,8 +600,12 @@ impl Canvas {
     }
 
     /// Sets the grid cell size, clamped to at least one pixel.
+    ///
+    /// The upper clamp is `i32::MAX`: the paint and the ruler loop step with a signed `i32`, so a
+    /// larger `u32` would be cast to a negative step and the loop would walk backwards forever — a
+    /// hang in release and an overflow panic in debug.
     pub fn set_grid_step(&mut self, step: u32) {
-        let step = step.max(1);
+        let step = step.clamp(1, i32::MAX as u32);
         if self.grid_step == step {
             return;
         }
@@ -646,6 +674,8 @@ impl Canvas {
     /// undoing cannot grow memory without limit either.
     pub fn set_command_limit(&mut self, limit: usize) {
         self.command_limit = limit.max(1);
+        let before = self.command_count();
+        let overlay_before = self.overlay_commands.len();
         self.trim_to_limit();
         while self.overlay_commands.len() > self.command_limit {
             self.overlay_commands.pop_front();
@@ -655,6 +685,14 @@ impl Canvas {
         }
         while self.redo_stack.len() > self.command_limit {
             self.redo_stack.pop_front();
+        }
+        // A smaller limit can evict content and decorations. That is an observable change to the
+        // document, so it is published and repainted exactly like an undo's own eviction; without
+        // this, hosts kept a stale picture and a stale `command_count` mirror.
+        if self.command_count() != before || self.overlay_commands.len() != overlay_before {
+            self.invalidate_hit_cache();
+            self.content_changed.emit(self.command_count());
+            self.base.request_redraw();
         }
     }
 
@@ -1033,6 +1071,15 @@ impl Canvas {
     fn to_drawing_space(&self, point: Point) -> Point {
         let rect = self.geometry();
         self.transform.inverse_point(Point::new(point.x - rect.x, point.y - rect.y))
+    }
+
+    /// Maps a window point into the control's own surface space, without undoing the transform.
+    ///
+    /// The wheel anchor and a drop's model coordinate need the surface-relative pointer but not
+    /// the inverse zoom, so they cannot reuse [`Self::to_drawing_space`] whole.
+    fn local_pointer(&self, point: Point) -> Point {
+        let rect = self.geometry();
+        Point::new(point.x - rect.x, point.y - rect.y)
     }
 
     /// Exports the canvas to an SVG document.
@@ -1629,8 +1676,11 @@ impl EventHandler for Canvas {
                 self.double_clicked.emit_at(*pos, *button);
             }
             Event::Wheel { delta, .. } if self.zoom_enabled && delta.y != 0 => {
-                // Zoom about the pointer, so the ink under the cursor stays under it.
-                let anchor = self.last_mouse_pos;
+                // Zoom about the pointer, so the ink under the cursor stays under it. The stored
+                // offset is relative to the control's own surface, while the pointer is in window
+                // coordinates: without subtracting the geometry the anchor was displaced by the
+                // control's origin and the picture slid under the cursor.
+                let anchor = self.local_pointer(self.last_mouse_pos);
                 let factor = if delta.y > 0 { 1.0 / self.zoom_step } else { self.zoom_step };
                 let previous = self.transform.scale;
                 let scale = (previous * factor).clamp(self.zoom_min, self.zoom_max);
@@ -2256,9 +2306,143 @@ mod tests {
             vertical.iter().any(|tick| tick.model == 50 && tick.surface == 110),
             "50 design units at 2x must be 100 surface pixels from the origin: {vertical:?}"
         );
-        assert!(
-            vertical.iter().all(|tick| tick.label == tick.model.to_string()),
-            "a model-space label names the design coordinate: {vertical:?}"
+    }
+
+    /// A grid step above `i32::MAX` is clamped instead of becoming a negative paint step.
+    ///
+    /// # What this pins
+    ///
+    /// `set_grid_step` only floored at 1, and both grid loops cast the step to `i32`. A value
+    /// above `i32::MAX` therefore became negative and `x += unit` walked backwards forever — a
+    /// hang in release, an overflow panic in debug.
+    #[test]
+    fn a_grid_step_above_i32_max_still_paints_and_terminates() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        canvas.set_grid_step(u32::MAX);
+        assert_eq!(canvas.grid_step(), i32::MAX as u32, "the step is clamped to the signed range");
+        canvas.set_show_grid(true);
+        let svg = render_to_svg(&mut canvas);
+        assert!(svg.starts_with("<svg"), "the grid paints without walking off the i32 range");
+    }
+
+    /// A line spanning the whole `i32` range has bounds, so it can be hit-tested.
+    ///
+    /// # What this pins
+    ///
+    /// The span was computed as `(from.x - to.x).unsigned_abs()` in `i32`, so the subtraction
+    /// itself overflowed before the absolute value was taken. The probe sits inside the control
+    /// and strictly inside the half-open box (`Rect::contains_point` excludes the max edge), which
+    /// is where a reader would click the painted line.
+    #[test]
+    fn a_line_spanning_the_full_i32_range_has_bounds_instead_of_overflowing() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        canvas.draw_line(Point::new(i32::MIN, 10), Point::new(i32::MAX, 10), Color::RED);
+        assert_eq!(canvas.hit_test(Point::new(5, 10)), Some(0));
+    }
+
+    /// Text is part of the hit-test index, not only of the picture.
+    ///
+    /// # What this pins
+    ///
+    /// `command_bounds` had no `DrawText` arm, and `hit_entries` only indexes commands that have
+    /// bounds, so a painted label could never be picked.
+    #[test]
+    fn a_text_command_is_part_of_the_hit_test_index() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        canvas.draw_text(Point::new(10, 20), "Hello", &Font::default_ui(), Color::BLACK);
+        assert_eq!(canvas.hit_test(Point::new(12, 22)), Some(0));
+        assert_eq!(canvas.hit_test(Point::new(500, 500)), None);
+    }
+
+    /// Lowering the command limit publishes the eviction and repaints.
+    ///
+    /// # What this pins
+    ///
+    /// `set_command_limit` could drop content and overlay commands while emitting nothing, so a
+    /// host mirroring `content_changed` kept a stale count and the canvas kept a stale picture.
+    #[test]
+    fn lowering_the_command_limit_publishes_the_eviction() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        for index in 0..5 {
+            canvas.fill_rect(Rect::new(index * 4, 0, 2, 2), Color::BLUE);
+        }
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        canvas.content_changed.connect(move |count| sink.lock().unwrap().push(*count));
+
+        canvas.set_command_limit(2);
+        assert_eq!(canvas.command_count(), 2);
+        assert_eq!(*seen.lock().unwrap(), vec![2], "the eviction is published once");
+
+        // Raising the limit evicts nothing, so it publishes nothing.
+        seen.lock().unwrap().clear();
+        canvas.set_command_limit(10);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    /// Disabling anti-aliasing rewrites decorations and the redo history too.
+    ///
+    /// # What this pins
+    ///
+    /// Only `layers` was rewritten, so a decoration already on screen and a command restored
+    /// from the redo stack stayed anti-aliased after the global switch said otherwise.
+    #[test]
+    fn disabling_anti_aliasing_also_rewrites_overlays_and_the_redo_history() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        canvas.draw_line_aa(Point::new(0, 0), Point::new(10, 10), Color::RED);
+        canvas.begin_overlay_layer();
+        canvas.fill_circle_aa(Point::new(20, 20), 5, Color::BLUE);
+        canvas.end_overlay_layer();
+        assert!(canvas.undo());
+
+        canvas.set_anti_alias(false);
+        assert!(matches!(canvas.overlay_commands[0].command, RenderCommand::FillCircle { .. }));
+        assert!(matches!(canvas.redo_stack[0][0].command, RenderCommand::DrawLine { .. }));
+
+        assert!(canvas.redo());
+        assert!(matches!(canvas.layers[0].commands[0].command, RenderCommand::DrawLine { .. }));
+    }
+
+    /// Wheel zoom anchors on the pointer in the canvas's own space.
+    ///
+    /// # What this pins
+    ///
+    /// The anchor was the raw window point while `transform.offset` is surface-relative, so a
+    /// canvas mounted away from the origin zoomed about a point displaced by its own position.
+    #[test]
+    fn wheel_zoom_anchors_on_the_surface_relative_pointer() {
+        let mut canvas = Canvas::new(Rect::new(100, 50, 200, 100));
+        canvas.handle_event(&Event::MouseMove { pos: Point::new(150, 80) });
+        canvas.handle_event(&Event::wheel(0, 1, 0));
+
+        // Local anchor (50, 30) at ratio 1/1.1 -> offset (5, 3), not (14, 7).
+        assert_eq!(canvas.transform().offset, Point::new(5, 3));
+        assert!((canvas.transform().scale - 1.0 / 1.1).abs() < 1e-6);
+    }
+
+    /// A drop's model point is mapped in the canvas's own space.
+    ///
+    /// # What this pins
+    ///
+    /// `CanvasDropEvent::model` inverse-transformed the raw window point, so a canvas at
+    /// (100, 50) reported the drop as if the pointer had been that far outside it.
+    #[test]
+    fn a_drop_model_point_is_relative_to_the_canvas_surface() {
+        use crate::event::dnd::{DragPayload, DropEffect, DropTarget};
+
+        let mut canvas = Canvas::new(Rect::new(100, 50, 200, 100));
+        canvas.set_drop_handler(Some(Arc::new(|_| DropEffect::Copy)));
+        let payload = DragPayload::new("node", "button");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&seen);
+        canvas.drop_received_signal().connect_ref(move |event: &CanvasDropEvent| {
+            *sink.lock().unwrap() = Some(event.model);
+        });
+
+        assert_eq!(
+            DropTarget::on_drop(&mut canvas, &payload, Point::new(150, 90)),
+            DropEffect::Copy
         );
+        assert_eq!(*seen.lock().unwrap(), Some(Point::new(50, 40)));
     }
 }

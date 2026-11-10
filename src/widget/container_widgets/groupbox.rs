@@ -260,6 +260,10 @@ impl GroupBox {
         // estimate until the next `draw` measures the new title exactly.
         self.cached_title_width = None;
         self.title = title;
+        // `size_hint` reads the cached title width, so the box's reported width changes with this
+        // write: a redraw marks damage but does not re-run layout, leaving the parent on the old
+        // allocation.
+        self.base.request_layout();
         self.base.request_redraw();
     }
     /// Returns alignment.
@@ -1579,5 +1583,34 @@ mod tests {
         assert!(SaveState::restore_state(&mut plain, &saved));
         assert!(plain.is_checked(), "a non-checkable box stays checked");
         assert!(!plain.is_collapsed(), "a non-collapsible box stays open");
+    }
+
+    /// A retitle changes what `size_hint` reports, so it must re-run layout.
+    ///
+    /// `size_hint` reads the cached title width, and `set_title` drops that cache. A redraw
+    /// marks damage but does not re-run layout, so without the layout request the parent kept
+    /// the previous caption's allocation.
+    #[test]
+    fn set_title_requests_a_layout() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut gb = GroupBox::new(Rect::new(0, 0, 200, 100));
+        let count = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&count);
+        let subscription = crate::signal::ConnectionScope::new();
+        gb.base().layout_requested.connect_scoped(&subscription, move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // A repeated title is not a change, so it must stay quiet.
+        gb.set_title(gb.title().to_string());
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a no-op title write must not relayout");
+
+        gb.set_title("Options".to_string());
+        assert_eq!(count.load(Ordering::SeqCst), 1, "`set_title` must request a layout");
+
+        gb.set_title("Options".to_string());
+        assert_eq!(count.load(Ordering::SeqCst), 1, "re-setting the identical title stays quiet");
     }
 }

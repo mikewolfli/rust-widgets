@@ -283,8 +283,15 @@ pub(crate) fn widget_at_inner(root: ObjectId, point: Point, trust_root: bool) ->
                     continue;
                 }
                 if overlay {
-                    open_popup = Some(child);
-                    break;
+                    // An open popup only owns the point it **accepts**. Breaking here
+                    // unconditionally made a popup whose own bounds reject the point descend
+                    // into a node that then failed its bound check, turning the whole window's
+                    // hit test into `None` instead of trying the siblings underneath.
+                    if accepts {
+                        open_popup = Some(child);
+                        break;
+                    }
+                    continue;
                 }
                 if !accepts {
                     continue;

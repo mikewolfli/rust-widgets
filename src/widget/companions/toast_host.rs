@@ -271,6 +271,7 @@ impl ToastHost {
     pub fn expire_toasts(&mut self, now_ms: u64) -> usize {
         self.now_ms = self.now_ms.max(now_ms);
         let now = self.now_ms;
+        let visible_before = self.visible.len();
         let mut expired = Vec::new();
         self.visible.retain(|toast| {
             if toast.deadline_ms <= now {
@@ -284,7 +285,12 @@ impl ToastHost {
             self.toast_expired.emit(*id);
         }
         self.promote();
-        self.base.request_redraw();
+        // `push` documents this as a once-per-frame call. Requesting a repaint unconditionally
+        // made an empty queue re-rasterise the whole window on every frame; only an expiry or a
+        // promotion changes a pixel.
+        if !expired.is_empty() || self.visible.len() != visible_before {
+            self.base.request_redraw();
+        }
         expired.len()
     }
 

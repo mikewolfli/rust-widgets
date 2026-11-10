@@ -239,7 +239,8 @@ impl MacToolbar {
         self.base.request_layout();
         self.base.request_redraw();
         // The slot width is derived from the icon size, so a larger icon folds more slots away.
-        // `overflow_changed` is how a host mirrors the folded set; only `set_items` raised it.
+        // `overflow_changed` is how a host mirrors the folded set; the same announcement is
+        // repeated by the `set_geometry` override for a layout resize.
         let overflow = self.overflow_indices().len();
         if overflow != self.last_overflow_count {
             self.last_overflow_count = overflow;
@@ -583,6 +584,21 @@ impl Widget for MacToolbar {
 
     fn kind(&self) -> WidgetKind {
         WidgetKind::ToolBar
+    }
+
+    /// Keeps `overflow_changed` in step with the strip width.
+    ///
+    /// The folded set is a function of the strip's width as well as of the items and the icon
+    /// size, so a layout resize can fold more (or fewer) slots away. Without this arm the count
+    /// moved silently and a host mirroring the overflow menu never heard about it.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.layout_cache = None;
+        let overflow = self.overflow_indices().len();
+        if overflow != self.last_overflow_count {
+            self.last_overflow_count = overflow;
+            self.overflow_changed.emit(overflow);
+        }
     }
 
     impl_draw_bridge!();
@@ -1084,5 +1100,31 @@ mod tests {
             })
             .collect();
         assert!(texts.contains(&"..."), "the overflow control is painted: {texts:?}");
+    }
+
+    /// A resize that folds more slots away announces the new count.
+    ///
+    /// The folded set depends on the strip's width as well as on the items and the icon size, but
+    /// `overflow_changed` was only raised by `set_items` / `set_icon_size`, and there was no
+    /// `set_geometry` override: a layout resize moved `overflow_count()` silently.
+    #[test]
+    fn a_layout_resize_announces_the_new_overflow_count() {
+        let mut toolbar = MacToolbar::new(Rect::new(0, 0, 320, 38));
+        let counts = Arc::new(Mutex::new(Vec::new()));
+        let c = Arc::clone(&counts);
+        toolbar.overflow_changed.connect(move |count: Arc<usize>| {
+            c.lock().unwrap().push(*count);
+        });
+        toolbar.set_items(vec![MacToolbarItem::new("a", "A"), MacToolbarItem::new("b", "B")]);
+        assert_eq!(toolbar.overflow_count(), 0, "the wide strip fits both slots");
+        counts.lock().unwrap().clear();
+
+        toolbar.set_geometry(Rect::new(0, 0, 80, 38));
+        assert!(toolbar.overflow_count() > 0, "the narrow strip folds slots away");
+        assert_eq!(
+            counts.lock().unwrap().last().copied(),
+            Some(toolbar.overflow_count()),
+            "the new count is announced"
+        );
     }
 }

@@ -18,7 +18,6 @@ impl Draw for TableWidget {
         // content box instead, and the header row the inset reserves is what the first
         // content row then sits below.
         let content = ControlMetrics::band_inset(rect, TABLE_INSET);
-        let header = ControlMetrics::top_band(content, HEADER_ROW_HEIGHT);
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
         // switch visible; the surface, the border, the grid lines, the focused-row highlight
@@ -90,7 +89,7 @@ impl Draw for TableWidget {
         // Header row: the band the content rows begin below. It carries the surface's own
         // ink as a rule, so a table with a model reads as a table before its first row.
         let column_count = self.column_count();
-        if self.header_visible && content.height > header.height && column_count > 0 {
+        if let Some(header) = self.header_band().filter(|_| column_count > 0) {
             context.fill_rect(header, surface.blend(&ink, 0.06));
             context.draw_line(
                 crate::core::Point::new(header.x, header.y + header.height as i32),
@@ -155,13 +154,15 @@ impl Draw for TableWidget {
             let needed_rows = self.visible_row_span(band);
             let needed_columns = self.visible_column_span(content_width);
             let revision = self.data_source.as_ref().map(|source| source.revision()).unwrap_or(0);
-            let key = self.data_generation.load(Ordering::Relaxed)
-                ^ revision.rotate_left(17)
-                ^ ((self.scroll_row as u64) << 32)
-                ^ self.scroll_column as u64
-                ^ ((needed_rows as u64) << 16)
-                ^ needed_columns as u64;
-            let matches = self.window_cache.as_ref().is_some_and(|window| window.key == key);
+            let generation = self.data_generation.load(Ordering::Relaxed);
+            let matches = self.window_cache.as_ref().is_some_and(|window| {
+                window.generation == generation
+                    && window.revision == revision
+                    && window.row_start == self.scroll_row
+                    && window.column_start == self.scroll_column
+                    && window.rows >= needed_rows
+                    && window.columns >= needed_columns
+            });
             if !matches {
                 if let Some(source) = self.data_source.clone() {
                     let cells = source.fetch_window(
@@ -171,9 +172,12 @@ impl Draw for TableWidget {
                         needed_columns,
                     );
                     self.window_cache = Some(TableWindow {
-                        key,
+                        generation,
+                        revision,
                         row_start: self.scroll_row,
                         column_start: self.scroll_column,
+                        rows: needed_rows,
+                        columns: needed_columns,
                         cells,
                     });
                     self.window_fetches = self.window_fetches.saturating_add(1);

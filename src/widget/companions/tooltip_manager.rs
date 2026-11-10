@@ -239,9 +239,11 @@ impl TooltipManager {
             && self.now_ms.saturating_sub(self.shown_at_ms) >= u64::from(self.duration_ms)
         {
             self.hide();
-            // Restart the hover delay: without this the same tick would see `hovered` still
-            // true, `hover_elapsed_ms` past the delay, and immediately re-show what it just
-            // expired.
+            // The hover has had its showing. Leaving `hovered` set re-armed the delay, so the
+            // same stationary pointer re-showed the bubble forever and `is_animating()` never
+            // fell false. Clearing it makes one hover produce one bubble; a fresh `note_hover`
+            // (the pointer leaving and re-entering) starts the next one.
+            self.hovered = None;
             self.hover_elapsed_ms = 0;
         }
         if !self.visible {

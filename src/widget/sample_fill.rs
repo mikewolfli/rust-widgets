@@ -1879,11 +1879,17 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         "popup_window" => match widget_as_mut::<PopupWindow>(widget) {
             Some(window) => {
                 window.set_title("Popup".to_string());
-                if let Some(id) = crate::widget::runtime::register(Box::new(Label::new(
-                    "Popup content".to_string(),
-                    Rect::new(0, 0, 160, 24),
-                ))) {
-                    window.set_content_widget(Some(id));
+                // Register the sample label only once. A second `apply` on the same popup used to
+                // mount a second label and abandon the first (the popup unlinks, but does not
+                // unregister, the replaced content), leaking a mounted widget and its a11y node on
+                // every call. A host that already supplied content also keeps it.
+                if window.content_widget().is_none() {
+                    if let Some(id) = crate::widget::runtime::register(Box::new(Label::new(
+                        "Popup content".to_string(),
+                        Rect::new(0, 0, 160, 24),
+                    ))) {
+                        window.set_content_widget(Some(id));
+                    }
                 }
                 true
             }

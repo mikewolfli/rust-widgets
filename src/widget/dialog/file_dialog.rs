@@ -354,6 +354,13 @@ const LIST_TOP_GAP: i32 = 10;
 const SEL_H: i32 = 22;
 /// The gap between the list and the selected-file strip below it.
 const SELECTED_STRIP_GAP: i32 = 10;
+/// The gap the draw requires between the list's bottom edge and the strip's top edge.
+///
+/// `list_rect` reserves the strip's own band plus this gap, so the list can never reach
+/// the strip's top edge and the `sel_fits` guard is satisfiable. Reserving only
+/// `SEL_H + SELECTED_STRIP_GAP` made the list's bottom exactly `sel_y`, while the draw
+/// required four more pixels — so the whole strip was dead code.
+const SELECTED_STRIP_LIST_GAP: i32 = 4;
 
 /// The facts [`FileDialog::visible_rows`] is a pure function of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1562,6 +1569,11 @@ impl EventHandler for FileDialog {
         if !self.base.is_enabled() {
             return;
         }
+        // A dismissed dialog is hidden, not merely disabled: Enter/Escape must not keep
+        // answering (and re-emitting `accepted`/`rejected`) after `accept`/`reject` closed it.
+        if !self.base.is_visible() {
+            return;
+        }
         match event {
             Event::MousePress { pos, button: 1, modifiers } => {
                 // A press outside the naming prompt dismisses it before any other hit test, so
@@ -1818,7 +1830,7 @@ impl FileDialog {
         let sidebar = self.sidebar_width();
         let x = rect.x + 10 + sidebar as i32;
         let width = rect.width.saturating_sub(20 + sidebar);
-        let reserved_below = SEL_H + SELECTED_STRIP_GAP;
+        let reserved_below = SEL_H + SELECTED_STRIP_GAP + SELECTED_STRIP_LIST_GAP;
         // The selected-file strip above the buttons is a *conditional* row: the draw drops it
         // when it cannot fit between the list and the buttons (see `sel_fits`). Reserving its
         // band unconditionally therefore squeezed the list for a row nobody paints — on a short
@@ -2563,7 +2575,7 @@ impl Draw for FileDialog {
         // the buttons by the `max` that used to guarantee it a place.
         let sel_h = SEL_H;
         let sel_y = button_top - sel_h - SELECTED_STRIP_GAP;
-        let sel_fits = sel_y >= list_y + list_h as i32 + 4;
+        let sel_fits = sel_y >= list_y + list_h as i32 + SELECTED_STRIP_LIST_GAP;
         if sel_fits {
             // The translated caption is appended into the buffer the painter already needs;
             // the caller's own caption is copied into it instead of being cloned first
@@ -3322,5 +3334,66 @@ mod tests {
                 > crate::widget::svg::text_subpath_count(&list_svg),
             "the details view paints the type column as extra text runs"
         );
+    }
+
+    /// A settled dialog paints the selected-file strip between the list and the buttons.
+    ///
+    /// # The defect this pins
+    ///
+    /// `list_rect` reserved `SEL_H + SELECTED_STRIP_GAP`, which made the list's bottom edge
+    /// equal `sel_y`, while the draw required `sel_y >= list bottom + 4`. The guard could
+    /// therefore never hold and the label, field, caret and IME preedit were all dead code.
+    #[test]
+    fn the_selected_file_strip_is_painted_between_the_list_and_the_buttons() {
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 280));
+        dialog.set_source(Box::new(FakeSource { path_exists: false }));
+        dialog.select_file("/tmp/a.txt");
+
+        let rect = dialog.frame_rect();
+        let button_top = super::super::message_box::inset_action_band(
+            ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
+            rect.y,
+        )
+        .y;
+        let sel_y = button_top - SEL_H - SELECTED_STRIP_GAP;
+        let list = dialog.list_rect();
+        assert!(
+            sel_y >= list.y + list.height as i32 + SELECTED_STRIP_LIST_GAP,
+            "the list must leave the strip its gap: list {list:?}, strip top {sel_y}"
+        );
+
+        let svg = crate::widget::svg::render_to_svg(&mut dialog);
+        let label_ink =
+            crate::widget::svg::text_ink_boxes(&svg).into_iter().any(|(left, top, _, bottom)| {
+                left >= rect.x + 8 && left < rect.x + 70 && top >= sel_y && bottom <= sel_y + SEL_H
+            });
+        assert!(label_ink, "the selected-file label must be painted in its strip: {svg}");
+    }
+
+    /// A hidden dialog ignores Enter and Escape instead of re-emitting the outcome.
+    #[test]
+    fn a_hidden_dialog_ignores_enter_and_escape() {
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 280));
+        let accepted = Arc::new(Mutex::new(0usize));
+        let rejected = Arc::new(Mutex::new(0usize));
+        let a = Arc::clone(&accepted);
+        dialog.accepted.connect(move || {
+            if let Ok(mut n) = a.lock() {
+                *n += 1;
+            }
+        });
+        let r = Arc::clone(&rejected);
+        dialog.rejected.connect(move || {
+            if let Ok(mut n) = r.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.show();
+        dialog.hide();
+        dialog.handle_event(&Event::key_press(13, 0));
+        dialog.handle_event(&Event::key_press(27, 0));
+        assert_eq!(*accepted.lock().expect("accepted lock"), 0, "a hidden dialog must not accept");
+        assert_eq!(*rejected.lock().expect("rejected lock"), 0, "a hidden dialog must not reject");
     }
 }

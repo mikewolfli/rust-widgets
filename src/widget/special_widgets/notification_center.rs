@@ -376,6 +376,20 @@ impl NotificationCenter {
             return false;
         };
         let removed = self.items.remove(index);
+        let removed_selection = self.selected_index == Some(index);
+        if let Some(selected) = self.selected_index {
+            if selected > index {
+                // The removed row was above the selection: the selection names the same item
+                // one slot earlier. Without the shift it silently named the next row.
+                self.selected_index = Some(selected - 1);
+            } else if selected == index {
+                self.selected_index = if self.items.is_empty() {
+                    None
+                } else {
+                    Some(index.min(self.items.len() - 1))
+                };
+            }
+        }
         if self.items.is_empty() {
             self.selected_index = None;
         } else if self.selected_index.is_some_and(|selected| selected >= self.items.len()) {
@@ -384,6 +398,13 @@ impl NotificationCenter {
         let capacity = (self.geometry().height / self.row_height.max(1)) as usize;
         self.scroll_offset =
             self.scroll_offset.min(self.items.len().saturating_sub(capacity.max(1)));
+        if removed_selection {
+            // The selected row itself left; the selection moved to its neighbour, so observers
+            // must hear the new id rather than keep the stale one.
+            if let Some(id) = self.selected_id().map(str::to_owned) {
+                self.notification_selected.emit(id);
+            }
+        }
         if self.bulk_edit == 0 {
             self.notification_dismissed.emit(removed.id);
             if !removed.read {
@@ -801,7 +822,25 @@ impl NotificationCenter {
 
     fn row_at(&self, pos: Point) -> Option<usize> {
         let rows = self.layout_rows();
-        rows.iter().find(|row| row.rect.contains_point(pos)).map(|row| row.item)
+        rows.iter()
+            .find(|row| self.row_rect(row.item, row.rect).contains_point(pos))
+            .map(|row| row.item)
+    }
+
+    /// A row's laid-out slot plus the arrival offset, shared by the paint and the hit test.
+    ///
+    /// The offset used to be applied only in the paint loop, so while the newest row slid in
+    /// its remove affordance was painted at the offset position but pressed against the seat:
+    /// the press addressed another row or none at all.
+    fn row_rect(&self, index: usize, laid_out: Rect) -> Rect {
+        if index + 1 == self.items.len() && self.reveal.is_animating() {
+            // Slides in from the trailing edge, so it reads as the list *growing* rather than
+            // as a row fading in place. Proportional to the row so a taller row travels further.
+            let offset = (self.row_height as f32 * (1.0 - self.reveal.value())) as i32;
+            Rect::new(laid_out.x + offset, laid_out.y, laid_out.width, laid_out.height)
+        } else {
+            laid_out
+        }
     }
 
     /// Returns the height of one notification row, in logical pixels.
@@ -1089,8 +1128,8 @@ impl EventHandler for NotificationCenter {
                 let hit = {
                     let rows = self.layout_rows();
                     rows.iter()
-                        .find(|row| row.rect.contains_point(*pos))
-                        .map(|row| (row.item, row.rect))
+                        .find(|row| self.row_rect(row.item, row.rect).contains_point(*pos))
+                        .map(|row| (row.item, self.row_rect(row.item, row.rect)))
                 };
                 if let Some((index, rect)) = hit {
                     // The trailing band is the row's remove affordance.
@@ -1242,16 +1281,9 @@ impl Draw for NotificationCenter {
             // The reveal is re-aimed on every `push`, so applying it to every row would make the
             // whole list slide whenever one item is added — the settled items would look like they
             // are re-arriving, which says the opposite of what happened. Items are appended, so the
-            // one at `len - 1` is the only one still on its way in.
-            let is_arriving = index + 1 == self.items.len();
-            let row_rect = if is_arriving && self.reveal.is_animating() {
-                // Slides in from the trailing edge, so it reads as the list *growing* rather than
-                // as a row fading in place. Proportional to the row so a taller row travels further.
-                let offset = (self.row_height as f32 * (1.0 - self.reveal.value())) as i32;
-                Rect::new(row_rect.x + offset, row_rect.y, row_rect.width, row_rect.height)
-            } else {
-                row_rect
-            };
+            // one at `len - 1` is the only one still on its way in. `row_rect` applies the same
+            // offset the hit test reads, so the painted × and its click target agree.
+            let row_rect = self.row_rect(index, row_rect);
 
             let bg = if self.selected_index == Some(index) {
                 selected_background
@@ -1689,5 +1721,53 @@ mod tests {
         assert_eq!(center.items().len(), 2, "the item is still enqueued");
         assert_eq!(center.reveal.value(), 1.0, "the arrival is not animated");
         assert!(!center.is_animating());
+    }
+
+    /// Removing a row above the selection keeps the same item selected, and removing the
+    /// selected row moves the selection to a neighbour and announces it.
+    #[test]
+    fn removal_repairs_the_selection_by_position() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 420, 160));
+        for id in ["a", "b", "c", "d"] {
+            center.push(NotificationItem::new(id, id, "body", NotificationLevel::Info));
+        }
+        assert!(center.select_index(2), "c is selected");
+
+        let selected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&selected);
+        center.notification_selected.connect(move |id| sink.lock().unwrap().push(id.to_string()));
+
+        assert!(center.remove("a"));
+        assert_eq!(center.selected_id(), Some("c"), "the removal was above the selection");
+        assert!(selected.lock().unwrap().is_empty(), "the selected item did not change");
+
+        assert!(center.remove("c"));
+        assert_eq!(center.selected_id(), Some("d"), "the selected row itself left");
+        assert_eq!(*selected.lock().unwrap(), vec!["d".to_string()]);
+    }
+
+    /// The remove × is hit-tested where it is painted, including the arrival offset.
+    #[test]
+    fn a_sliding_rows_remove_button_hits_its_painted_position() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 420, 160));
+        center.push(NotificationItem::new("n1", "One", "body", NotificationLevel::Info));
+        center.push(NotificationItem::new("n2", "Two", "body", NotificationLevel::Info));
+        assert!(center.reveal.is_animating(), "the newest row is sliding in");
+
+        let (index, rect) = {
+            let rows = center.layout_rows();
+            let row = rows.last().expect("two laid-out rows");
+            (row.item, center.row_rect(row.item, row.rect))
+        };
+        assert_eq!(index, 1);
+
+        let dismissed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&dismissed);
+        center.notification_dismissed.connect(move |id| sink.lock().unwrap().push(id.to_string()));
+
+        // The × is at the trailing edge of the *offset* rect, which is where it is painted.
+        center.handle_event(&Event::mouse_press(rect.x + rect.width as i32 - 3, rect.y + 4, 1));
+        assert_eq!(*dismissed.lock().unwrap(), vec!["n2".to_string()]);
+        assert_eq!(center.items().iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["n1"]);
     }
 }

@@ -1260,8 +1260,14 @@ impl EventHandler for CommandPalette {
                     _ => {
                         // Printable ASCII is the fallback for a host that reports only key codes;
                         // committed text wins once it has arrived, so a Windows-style pair
-                        // (`WM_KEYDOWN` + `WM_CHAR`) cannot double every character.
-                        if !self.text_input_seen {
+                        // (`WM_KEYDOWN` + `WM_CHAR`) cannot double every character. A chord that
+                        // carries the primary accelerator or Alt is a command, not typing: without
+                        // this gate `Ctrl+C` typed a `C` into the query on a host that had not
+                        // delivered any `TextInput` yet.
+                        let altered = primary
+                            || crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                                .contains(crate::shortcut::Modifiers::ALT);
+                        if !self.text_input_seen && !altered {
                             self.append_query_char(*key);
                         }
                     }
@@ -2034,5 +2040,30 @@ mod tests {
         }
         backend.end_frame();
         assert_eq!(palette.filtered_count(), 1);
+    }
+
+    /// A primary-accelerator chord is a command, not typing.
+    ///
+    /// # What this pins
+    ///
+    /// The key-code fallback appended any code it did not recognise, ignoring the modifiers, so
+    /// on a host that had not delivered a `TextInput` yet `Ctrl+C` typed a `C` into the query.
+    #[test]
+    fn a_primary_chord_does_not_type_into_the_query() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 400, 300));
+        palette.set_entries(sample_entries());
+        assert_eq!(palette.query(), "");
+
+        palette.handle_event(&Event::KeyPress {
+            key: 67,
+            // `Event::KeyPress` uses the framework's own bitmask, where bit 3 is the
+            // Command/primary accelerator (see `Modifiers::from_event_bits`).
+            modifiers: 1 << 3,
+        });
+        assert_eq!(palette.query(), "", "a command chord must not type into the query");
+
+        // A bare letter still types: the fallback exists for hosts that report only key codes.
+        palette.handle_event(&Event::KeyPress { key: 67, modifiers: 0 });
+        assert!(!palette.query().is_empty(), "a plain letter still reaches the query");
     }
 }

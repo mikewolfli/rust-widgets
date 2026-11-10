@@ -432,6 +432,10 @@ impl Carousel {
         if had_current && index <= self.current_index {
             self.current_index += 1;
         }
+        // A running slide names pages by index; the insert shifts them. The pixels are mid-flight
+        // and every index they name just changed meaning, so the slide ends here rather than
+        // painting a stale pair (or hiding the freshly selected page).
+        self.slide = None;
         self.page_changed.emit(self.current_index);
         self.base.request_redraw();
         index
@@ -509,6 +513,8 @@ impl Carousel {
         } else if self.current_index > last {
             self.current_index = last;
         }
+        // End a running slide: its two indices named pages that no longer exist in those slots.
+        self.slide = None;
         self.page_changed.emit(self.current_index);
         self.base.request_redraw();
         Some(removed)
@@ -1933,6 +1939,44 @@ impl Carousel {
     /// unconditionally, because a focused control owns the keyboard wherever the pointer is.
     fn forward_visible_page_event(&mut self, event: &Event) {
         let page_rect = self.page_rect();
+        // A programmatic slide paints `slide.from` and `slide.to` at two offsets (see `draw`).
+        // Hit-testing only the drag/settle offsets sent pointer events to the selected page at the
+        // unscrolled rectangle while a slide was running, so a press on the outgoing page's visible
+        // band activated the incoming page's control.
+        if let Some(slide) = self.slide {
+            let progress = (slide.elapsed_ms as f32 / page_transition_ms() as f32).clamp(0.0, 1.0);
+            let stride = self.page_stride() as f32;
+            let forward = slide.to >= slide.from;
+            let travelled = (progress * stride).round() as i32;
+            let remaining = (stride.round() as i32).saturating_sub(travelled);
+            let (outgoing_offset, incoming_offset) =
+                if forward { (-travelled, remaining) } else { (travelled, -remaining) };
+            let outgoing = self.offset_rect(page_rect, outgoing_offset);
+            let incoming = self.offset_rect(page_rect, incoming_offset);
+            let target = match event {
+                Event::MousePress { pos, .. }
+                | Event::MouseRelease { pos, .. }
+                | Event::MouseMove { pos }
+                | Event::MouseDoubleClick { pos, .. }
+                | Event::MouseEnter { pos }
+                | Event::MouseLeave { pos } => {
+                    // The incoming page is painted last, so it is the one under the pointer where
+                    // the two overlap.
+                    if incoming.contains(*pos) {
+                        Some((slide.to, incoming))
+                    } else if outgoing.contains(*pos) {
+                        Some((slide.from, outgoing))
+                    } else {
+                        None
+                    }
+                }
+                _ => Some((self.current_index, page_rect)),
+            };
+            if let Some((index, rect)) = target {
+                self.deliver_to_page(index, rect, event);
+            }
+            return;
+        }
         let (offset, neighbour) = match self.drag {
             DragState::Swiping { offset, .. } => (offset, self.neighbour_for_offset(offset)),
             _ if self.settle_offset.abs() > 0.5 => {
@@ -1967,6 +2011,11 @@ impl Carousel {
         let Some((index, rect)) = target else {
             return;
         };
+        self.deliver_to_page(index, rect, event);
+    }
+
+    /// Places the page at `index` at `rect` and offers it `event`.
+    fn deliver_to_page(&mut self, index: usize, rect: Rect, event: &Event) {
         if let Some(page) = self.pages.get_mut(index) {
             if let Some(content) = page.content_mut() {
                 content.set_geometry(rect);
@@ -3191,5 +3240,113 @@ mod tests {
         assert_eq!(carousel.selected_index(), Some(2));
         assert!(!SaveState::restore_state(&mut carousel, b"short"));
         assert_eq!(carousel.selected_index(), Some(2), "a refused blob changes nothing");
+    }
+
+    /// A page inserted or removed mid-slide invalidates both indices the slide names.
+    ///
+    /// The pixels are already mid-flight, so the slide is dropped rather than leaving it to
+    /// paint a stale pair (or hide the freshly selected page).
+    #[test]
+    fn inserting_a_page_ends_an_active_slide() {
+        let mut c = default_carousel();
+        c.set_current(1);
+        assert!(c.slide.is_some(), "a programmatic change starts a slide");
+
+        c.insert_page(0, "Inserted", Color::WHITE);
+        assert!(c.slide.is_none(), "an insert ends the slide");
+        assert!(!c.is_animating(), "and owes no animation frames");
+
+        // Removal ends a fresh slide for the same reason.
+        c.set_current(3);
+        assert!(c.slide.is_some(), "the next navigation starts a slide again");
+        assert!(c.remove_page(0).is_some());
+        assert!(c.slide.is_none(), "a removal ends the slide");
+        assert!(!c.is_animating(), "and owes no animation frames");
+    }
+
+    /// A press during a slide is routed by the rectangles the draw path painted, not by the
+    /// un-scrolled current rectangle.
+    ///
+    /// `forward_visible_page_event` used to hit-test only the drag/settle offsets, so while a
+    /// programmatic slide ran a press on a painted page was delivered to the selected page at
+    /// the un-scrolled rectangle — or dropped entirely.
+    #[test]
+    fn a_press_during_a_slide_reaches_the_painted_page() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct PressProbe {
+            label: Label,
+            presses: Arc<AtomicUsize>,
+        }
+        impl Widget for PressProbe {
+            fn base(&self) -> &BaseWidget {
+                self.label.base()
+            }
+            fn base_mut(&mut self) -> &mut BaseWidget {
+                self.label.base_mut()
+            }
+            fn set_geometry(&mut self, geometry: Rect) {
+                self.label.set_geometry(geometry);
+            }
+            fn size_hint(&self) -> Size {
+                self.label.size_hint()
+            }
+        }
+        impl Draw for PressProbe {
+            fn draw(&mut self, ctx: &mut RenderContext) {
+                self.label.draw(ctx);
+            }
+        }
+        impl EventHandler for PressProbe {
+            fn handle_event(&mut self, event: &Event) {
+                if matches!(event, Event::MousePress { .. }) {
+                    self.presses.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let presses = Arc::new(AtomicUsize::new(0));
+        let mut c = Carousel::new(Rect::new(0, 0, 300, 200));
+        c.add_page("A", Color::WHITE);
+        c.add_page("B", Color::WHITE);
+        assert!(c.set_page_content(
+            1,
+            Box::new(PressProbe {
+                label: Label::new("b".to_string(), Rect::new(0, 0, 300, 200)),
+                presses: Arc::clone(&presses),
+            })
+        ));
+
+        // Slide A (0) -> B (1) and advance it halfway, so both pages are painted offset.
+        c.set_current(1);
+        let half = (page_transition_ms() / 2).max(1);
+        assert!(c.tick(half), "the slide is still running");
+
+        // Recompute exactly the offsets `draw` and `forward_visible_page_event` use.
+        let slide = c.slide.expect("the slide is in flight");
+        let progress = (slide.elapsed_ms as f32 / page_transition_ms() as f32).clamp(0.0, 1.0);
+        let stride = c.page_stride() as f32;
+        let travelled = (progress * stride).round() as i32;
+        let remaining = (stride.round() as i32).saturating_sub(travelled);
+        assert!(remaining > 0, "a half-finished slide paints the incoming page off to one side");
+
+        let page_rect = c.page_rect();
+        let incoming = c.offset_rect(page_rect, remaining);
+        // A point inside the incoming page's painted rect but outside the un-scrolled
+        // rectangle: only the slide-aware hit test can route it to page 1.
+        let pos = Point::new(
+            page_rect.x + page_rect.width as i32 + remaining / 2,
+            page_rect.y + page_rect.height as i32 / 2,
+        );
+        assert!(incoming.contains(pos), "the point lies on the painted incoming page");
+        assert!(!page_rect.contains(pos), "and outside the un-scrolled current rectangle");
+
+        c.forward_visible_page_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(
+            presses.load(Ordering::SeqCst),
+            1,
+            "the press reaches the page painted under the pointer"
+        );
     }
 }

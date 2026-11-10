@@ -312,6 +312,10 @@ impl PresetChipBar {
             return;
         }
         self.chip_height = height;
+        // `size_hint` is the bar's own `(240, chip_height)`, so a taller chip has to re-run the
+        // host's layout: without it a vertical bar stayed in its 24 px slot while later chips
+        // were painted (and hit-tested) past the control's edge.
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -750,6 +754,35 @@ mod tests {
 
         bar.remove_preset(bar.presets()[0].id);
         assert_eq!(bar.chip_rects().len(), 2);
+    }
+
+    /// The chip height is the bar's reported height, so changing it requests layout.
+    ///
+    /// Only a redraw was requested, so the host kept the old slot while `chip_rects` advanced by
+    /// the new height and the chips after the first painted outside the control.
+    #[test]
+    fn changing_the_chip_height_requests_layout() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut bar = bar();
+        assert_eq!(bar.size_hint(), Size::new(240, 24));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&requests);
+        bar.base.layout_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        bar.set_chip_height(40);
+        assert_eq!(bar.size_hint(), Size::new(240, 40));
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "the hint moved, so layout must run");
+
+        bar.set_chip_height(40);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "an unchanged height is not a layout change"
+        );
     }
 
     /// Arrow and Enter keys choose a chip only while the bar holds focus.

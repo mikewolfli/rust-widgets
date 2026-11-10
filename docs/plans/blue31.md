@@ -1,81 +1,533 @@
-# BLUE31 — CLI 双向转换器 + 完整 Markdown 编辑器计划
+# BLUE31 — 编辑器分层重构 + CLI 双向转换器
 
-> **来源**：用户 2026-11-10 要求：（1）创建 CLI 转换程序，实现 `json + css ↔ rust-widgets GUI 代码` 双向转换；
-> （2）完整支持 Markdown 编辑器（Mermaid、LaTeX / MathJax）；（3）把上一轮（`log-20261109-2.md` 第 19/20 轮）
-> 尚未闭合的项追加到本文件末尾。
+> **来源**：用户 2026-11-10 确认的最终架构。
 >
-> **本次范围声明**：本轮**只创建本文件**，不修改任何源码、不新增依赖、不提交。下文所有"实施"都是计划条目，
-> 不是已完成的代码。
+> **本次范围声明**：本文件只记录计划；不表示已实现、不修改源码、不新增依赖。
 >
-> **证据基线**（均为本仓库现存事实，已逐条核实）：
-> - 声明式 JSON 引擎：`src/json/mod.rs`（双路径说明）、`src/json/project.rs:192`（`JsonProject`）、
->   `src/json/project.rs:449`（`collect_preorder`）、`src/json/project.rs:590`（`collect_properties`）、
->   `src/json/loader.rs:2123`（`apply_declared_styles` 的四层级联）、`src/json/loader.rs:2429`
->   （`is_loader_owned_key`，已 `pub use` 供生成器复用）。
-> - 设计器生成器：`src/designer/generator.rs`（`generate` 619、`GenerationRequest` 591、
->   `is_style_only_property` 575、`availability` 749）、`src/designer/artifact.rs`
->   （`GENERATED_MARKER` 48、`plan_artifacts` 158、`regenerate_into` 245、`file_for` 74）。
-> - 生成物两种方言（已提交样例）：`examples/generated_project/src/generated/ui_default.rs`
->   （`Node::new(...).key(...).prop(...).child(...)`）与 `ui_stripped.rs`
->   （`rust_widgets::widget::X::new(...)` + `set_*` + `try_add_child`）。
-> - CSS：`src/style/css.rs`（`CssParser` 750、`parse` 765、`parse_prepared_rules` 886、
->   `CssDeclaration` 371、`CssRule` 385、`ParsedCssRule` 406、`apply_declaration_text` 1181、
->   `is_known_property` 1313）、`src/style/selector.rs`（`Selector` 222、`ElementRef` 369）、
->   `src/style/stylesheet.rs`（`StyleSheetManager` 56、`register` 68、`apply_to_context` 132）。
-> - 能力/工厂：`src/widget/capability.rs:1506`（`WidgetFactory::create(kind_or_name, geometry, text)`）、
->   `src/widget/capability.rs:1394`（`shared()`）。
-> - Markdown 编辑器：`src/widget/special_widgets/markdown_editor/`（9 个文件，共 6035 行；
->   `paint.rs:160-169` 一源行一文本行、`preview.rs:206` `parse_preview_line`、`preview.rs:53`
->   `PreviewRow`、`events.rs:155` 属性表、`markdown_toolbar.rs:64` 七个动作）；
->   `tests.rs:337` 证明图片目前只被当作 `PreviewStyle::Link` 文本。
-> - 渲染原语：`src/render/backend/surface.rs`（`draw_path` 2389、`draw_text` 2492、
->   `measure_text` 2560、`push_clip` 2783、`fill_circle`、`draw_line_stroke` 等）。
-> - 门控脚本（均已存在）：`tools/check_generated_sources.sh`、`check_generator_output_compiles.sh`、
->   `check_mode_consistency.sh`、`check_generator_agrees_with_registry.sh`、
->   `check_generator_reuses_wire_rules.sh`、`check_event_signal_dyn.sh`、
->   `check_setter_census.sh`、`check_source_structure.sh`。
->
-> **判定口径（原则 #105）**：每条"完成"必须同时给出 ①可执行门控/测试名 + 预期输出，②具名排除项及原因。
-> 没有门控的收编不算收编；"打算做"不计入闭合。
+> **判定口径（原则 #105）**：每条“完成”必须同时给出 ①可执行门禁/测试名 + 预期输出，
+> ②具名排除项及原因。没有门控的收编不算收编；“打算做”不计入闭合。
 
 ---
 
-## 0. 结论（一页）
+## 1. 编辑器分层重构
 
-| 项 | 缺口本质 | 方案一句话 | 闭合判据 |
+### 1.1 最终结论
+
+| 项 | 最终决定 |
+|---|---|
+| `code_editor` | **核心控件**，由 `code-editor` feature 可选编译；公开名称、路径、API 全部保留 |
+| `markdown_editor` | **核心控件**，由 `markdown-editor` feature 可选编译；公开名称、路径、API 全部保留 |
+| `editor` | **共享下层**，不是第三个公共核心控件；公开共享类型，内部持有编辑器实现 |
+| 公共 API | `CodeEditor`、`MarkdownEditor` 及其现有类型、capability、WidgetKind、Toolbar、Outline、FindBar 全部保留 |
+| 内部删除 | 只删除 `MarkdownEditor` 与共享内核重复的文本/撤销/选区/查找/IME 实现 |
+| 依赖修复 | `diff_viewer`、`terminal_view` 从 `code_editor` 改为依赖 `editor` |
+| Markdown 能力 | `MarkdownEditor` 门面保留 Markdown 解析/预览/工具栏/大纲/块渲染；外部插件继续可接入 |
+
+**两个核心控件默认开启，保持现有行为；外部可以单独关闭任意一个。**
+
+```toml
+default = [
+    "desktop",
+    "code-editor",
+    "markdown-editor",
+    "builtin-languages",
+]
+
+code-editor = []
+markdown-editor = []
+builtin-languages = []
+```
+
+---
+
+### 1.2 现状取证
+
+以下均为仓库现存事实：
+
+| 事实 | 证据 |
+|---|---|
+| `code_editor` 只在 `full_widgets` 下编译 | `src/widget/mod.rs:195-203` |
+| `code_editor` 内部没有 per-language `cfg` | grep `cfg(feature` / `cfg(full_widgets)` 在 `code_editor/**` 无命中 |
+| `LanguageId` 固定包含 21 个语言变体 | `src/widget/special_widgets/code_editor/syntax.rs:173-217` |
+| `BuiltinHighlighter` 与全部 keyword/type 表始终编译 | `syntax.rs:970-984`、`330-334`、`824-828` |
+| `CodeEditorConfig` 默认语言是 `PlainText` | `code_editor/types.rs:1546-1556` |
+| `markdown_editor` 直接依赖 `code_editor` | `markdown_editor/editor.rs:12-14`、`preview.rs:9-11` |
+| `markdown_editor` 的 fenced code 使用 `BuiltinHighlighter` | `markdown_editor/editor.rs:1355-1393`、`preview.rs:222-227` |
+| `diff_viewer` 依赖 `code_editor` 的语法类型 | `crates/rust-widgets-suites/src/devtools/diff_viewer/viewer.rs:25-27` |
+| `diff_viewer/tests` 依赖 `code_editor` 的 `LanguageId`/`TokenKind` | `crates/rust-widgets-suites/src/devtools/diff_viewer/tests.rs:12-16` |
+| `terminal_view` 依赖 `code_editor::CaretStyle` | `crates/rust-widgets-suites/src/devtools/terminal/terminal_view.rs:32-36` |
+| `FindBar` 当前位于 `markdown_editor/find.rs` | `src/widget/special_widgets/markdown_editor/find.rs` |
+| `crates/rust-widgets-suites` 的 `devtools` feature 当前为空 | `crates/rust-widgets-suites/Cargo.toml:51-52` |
+
+结论：
+
+1. 目前 `code_editor` 一旦编译，全部内置语言 lexer 都会被编译；
+2. `markdown_editor` 为了 fenced code 高亮，会把整个 `code_editor` 拉进来；
+3. `crates/rust-widgets-suites` 的 `diff_viewer`、`terminal_view` 也通过 `code_editor` 取通用类型；
+4. 因此“只用 Markdown、不编译 Code”目前无法做到。
+
+---
+
+### 1.3 目标结构
+
+```mermaid
+flowchart TD
+    CodeEditor[code_editor::CodeEditor 核心控件] --> Editor[editor 共享下层]
+    MarkdownEditor[markdown_editor::MarkdownEditor 核心控件] --> Editor
+
+    CodeEditor --> CodeFeatures[行号 / gutter / minimap / 折叠 / 补全 / 诊断 / 内置语言]
+    MarkdownEditor --> MdFeatures[Markdown 解析 / 预览 / 大纲 / 工具栏 / block renderer]
+
+    Editor --> Core[文本 / 撤销 / 选区 / 查找 / IME / 剪贴板 / 滚动]
+    Editor --> Plugin[插件宿主]
+    Editor --> Render[通用绘制 / Decoration / 图片]
+```
+
+依赖方向严格单向：
+
+```text
+editor  ←  code_editor
+editor  ←  markdown_editor
+editor  ←  crates/rust-widgets-suites（仅使用 syntax / caret / plugin）
+```
+
+`code_editor` 与 `markdown_editor` 互不依赖。
+
+---
+
+### 1.4 公共类型边界
+
+`editor` 是共享下层，**不作为第三个公共核心控件**。公开的是共享类型，不是 `Editor` widget。
+
+#### 公开
+
+```rust
+rust_widgets::widget::special_widgets::editor::syntax::{
+    LanguageId,
+    LineState,
+    TokenKind,
+    TokenSpan,
+    SyntaxHighlighter,
+    BuiltinHighlighter,
+};
+
+rust_widgets::widget::special_widgets::editor::CaretStyle;
+
+rust_widgets::widget::special_widgets::editor::plugin::{
+    EditorPlugin,
+    Decoration,
+    InlineStyle,
+    BlockRenderer,
+    BlockSpec,
+    BlockRender,
+};
+
+rust_widgets::widget::special_widgets::editor::companions::FindBar;
+```
+
+#### 内部可见
+
+```rust
+editor::Editor          // 实现体；不作为第三个公共控件
+editor::EditorConfig
+editor::EditorDocument
+editor::core
+editor::layout
+editor::render
+```
+
+`CodeEditor` / `MarkdownEditor` 各自 re-export 需要的共享类型：
+
+- `code_editor` 保留旧路径 `code_editor::{LanguageId, TokenKind, CaretStyle, ...}`；
+- `markdown_editor` 也 re-export 它需要的 `LanguageId`、`TokenKind`、`SyntaxHighlighter`、`FindBar`；
+- 外部旧代码不需要改 import。
+
+#### 公共核心控件只有两个
+
+```rust
+rust_widgets::widget::special_widgets::code_editor::CodeEditor
+rust_widgets::widget::special_widgets::markdown_editor::MarkdownEditor
+```
+
+---
+
+### 1.5 feature 设计
+
+```toml
+[features]
+default = [
+    "desktop",
+    "code-editor",
+    "markdown-editor",
+    "builtin-languages",
+]
+
+# 核心控件 1：CodeEditor
+code-editor = []
+
+# 核心控件 2：MarkdownEditor
+markdown-editor = []
+
+# 共享内置语言 lexer
+# 供 CodeEditor，以及 MarkdownEditor 的 fenced code 使用
+builtin-languages = []
+```
+
+规则：
+
+| feature | 编译内容 |
+|---|---|
+| `code-editor` 开 | `code_editor` 核心控件 + Code 专属模块 |
+| `code-editor` 关 | 不编译 `code_editor` 及其 capability/constructor/event |
+| `markdown-editor` 开 | `markdown_editor` 核心控件 + Markdown 专属模块 |
+| `markdown-editor` 关 | 不编译 `markdown_editor` 及其 capability/constructor/event |
+| `builtin-languages` 开 | 真实内置 lexer（Rust/Python/…） |
+| `builtin-languages` 关 | `BuiltinHighlighter` 为 stub，返回空 token |
+
+`editor` 的共享类型：
+
+```rust
+#[cfg(full_widgets)]
+pub mod editor {
+    pub mod syntax;   // 始终编译
+    pub mod plugin;   // 始终编译
+    pub mod caret;    // 始终编译
+
+    #[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
+    pub mod companions; // FindBar
+
+    #[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
+    mod core;          // Editor 实现体
+    #[cfg(any(feature = "code-editor", feature = "markdown-editor"))]
+    mod render;
+}
+```
+
+因此：
+
+- 只编译 `crates/rust-widgets-suites` 的 `diff_viewer` 时，只需要 `editor::syntax`；
+- 两个核心控件都关闭时，`editor` 的 widget 实现也不编译；
+- `builtin-languages` 独立于两个控件 feature，diff_viewer 可在不启用 `code-editor` 的情况下使用内置 lexer。
+
+#### 编译矩阵
+
+| 外部需求 | features | 编译结果 |
+|---|---|---|
+| 默认 / 全量 | default | `editor` 共享层 + `CodeEditor` + `MarkdownEditor` + 内置语言 |
+| 只用 Markdown | `desktop,markdown-editor` | `editor` 共享层 + `MarkdownEditor`；不编译 `CodeEditor`；不编译内置语言 |
+| Markdown + fenced code 高亮 | `desktop,markdown-editor,builtin-languages` | 同上 + 共享 lexer；仍不编译 `CodeEditor` |
+| 只用 Code | `desktop,code-editor` | `editor` 共享层 + `CodeEditor`；不编译 `MarkdownEditor` |
+| Code + 外部语言插件 | `desktop,code-editor` | `CodeEditor` 编译，内置语言不编译 |
+| Code + 内置语言 | `desktop,code-editor,builtin-languages` | `CodeEditor` + 内置语言 |
+| 两者都不要 | `desktop` | 不编译两个核心控件；只保留其它控件 |
+
+---
+
+### 1.6 模块结构
+
+```text
+src/widget/special_widgets/
+  editor/
+    mod.rs
+    syntax/
+      mod.rs                 // LanguageId / LineState / TokenKind / TokenSpan / SyntaxHighlighter
+      builtin/               // BuiltinHighlighter 门面 + #[cfg(builtin-languages)] 真实 lexer
+    caret.rs                 // CaretStyle
+    plugin/
+      mod.rs                 // EditorPlugin / Decoration / InlineStyle / 注册表
+      block.rs               // BlockRenderer / BlockSpec / BlockRender
+    companions/
+      find_bar.rs            // FindBar 共享实现
+    core/
+      model.rs
+      history.rs
+      selection.rs
+      find.rs
+      input.rs
+      clipboard.rs
+    layout/
+      rows.rs
+      coords.rs
+    render/
+      source.rs
+      rendered.rs
+      chrome.rs
+    widget.rs                // Editor 实现体（内部）
+
+  code_editor/               // #[cfg(feature = "code-editor")]
+    mod.rs
+    editor.rs                // CodeEditor { editor: Editor, code: CodeFeatures }
+    config.rs                // CodeEditorConfig
+    document.rs              // CodeEditorDocument
+    syntax.rs                // BuiltinHighlighter re-export
+    render/                  // gutter / minimap / fold / popup / status
+
+  markdown_editor/           // #[cfg(feature = "markdown-editor")]
+    mod.rs
+    editor.rs                // MarkdownEditor { editor: Editor, markdown: MarkdownFeatures }
+    preview.rs               // Markdown 解析 → Decoration
+    block_renderer.rs        // MarkdownBlockRenderer → editor::BlockRenderer 适配
+    document.rs              // 保留的 Markdown 辅助类型
+    outline.rs               // 保留
+    markdown_toolbar.rs      // 保留
+```
+
+---
+
+### 1.7 两个门面的职责
+
+#### `CodeEditor`
+
+```rust
+pub struct CodeEditor {
+    editor: Editor,
+    code: CodeFeatures,
+}
+```
+
+- 文本、撤销、选区、查找、IME、剪贴板、滚动：委托 `self.editor`；
+- 行号、gutter、minimap、折叠、补全、诊断、CodeLens、snippet、breakpoint、diff：留在 `self.code`；
+- `Draw`：先 `self.editor.draw(context)`，再画 Code 专属 chrome；
+- `handle_event`：先处理 gutter/minimap/tab/popup，再委托 `self.editor`；
+- `WidgetProperties`：先匹配 Code 专属属性，再委托 `self.editor`；
+- `base()` 委托 `self.editor.base()`，避免两个 `BaseWidget`。
+
+#### `MarkdownEditor`
+
+```rust
+pub struct MarkdownEditor {
+    editor: Editor,
+    markdown: MarkdownFeatures,
+}
+```
+
+- 文本、撤销、选区、查找、IME、剪贴板、滚动：委托 `self.editor`；
+- Markdown 解析、预览、大纲、工具栏、block renderer：留在 `self.markdown`；
+- `preview_mode` 映射为 `EditorPresentation::Rendered`；
+- `Draw`：先 `self.editor.draw(context)`，再画 Markdown header/outline/toolbar；
+- Markdown 富文本、隐藏标记、代码块、图片通过 `Decoration` / `BlockRenderer` 交给 `Editor` 绘制；
+- 所有现有公开方法签名保持不变。
+
+#### 绘制协作
+
+`Editor` 负责：
+
+- 背景、文本、token 颜色；
+- 光标、选区、搜索高亮；
+- 行内/块级装饰；
+- 图片；
+- 滚动条；
+- 基础 caret 闪烁。
+
+`CodeEditor` 负责：
+
+- gutter、minimap、fold summary、completion popup、diagnostics、status；
+- 通过 `Decoration` 把当前行、缩进线、括号匹配、出现位置交给 `Editor` 画。
+
+`MarkdownEditor` 负责：
+
+- header、Markdown 工具栏、大纲面板；
+- 把 Markdown 解析结果转成 `Decoration` / `BlockRenderer` 交给 `Editor` 画。
+
+统一使用 `EditorInsets`：
+
+```rust
+pub(crate) struct EditorInsets {
+    pub left: u32,    // gutter
+    pub right: u32,   // minimap + scrollbar
+    pub top: u32,     // tab strip / header
+    pub bottom: u32,  // status bar
+}
+```
+
+---
+
+### 1.8 `markdown_editor` 去掉 `code_editor` 依赖
+
+这是本计划的关键修复。
+
+当前：
+
+```rust
+// markdown_editor/editor.rs:12-14
+use crate::widget::special_widgets::code_editor::{
+    BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter,
+};
+
+// markdown_editor/preview.rs:9-11
+use crate::widget::special_widgets::code_editor::{
+    BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter, TokenKind,
+};
+```
+
+最终：
+
+```rust
+use crate::widget::special_widgets::editor::syntax::{
+    BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter, TokenKind,
+};
+```
+
+`BuiltinHighlighter` 的归属：
+
+- 类型位于 `editor::syntax::builtin`；
+- `builtin-languages` 开：真实 lexer；
+- `builtin-languages` 关：stub，返回空 token；
+- `code_editor::BuiltinHighlighter` 继续 re-export，旧路径不变；
+- `markdown_editor` 内部直接使用 `editor::syntax::builtin::BuiltinHighlighter`。
+
+结果：
+
+- `markdown-editor` 开启、`code-editor` 关闭时，`markdown_editor` 可以独立编译；
+- fenced code 高亮由 `builtin-languages` 控制，不再拉入整个 `CodeEditor`；
+- `builtin-languages` 关闭时，Markdown fenced code 显示纯文本，行为诚实。
+
+---
+
+### 1.9 `crates/rust-widgets-suites` 迁移
+
+#### 1.9.1 `diff_viewer/viewer.rs`
+
+```rust
+use rust_widgets::widget::special_widgets::editor::syntax::{
+    BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter, TokenKind, TokenSpan,
+};
+```
+
+#### 1.9.2 `diff_viewer/tests.rs`
+
+```rust
+use rust_widgets::widget::special_widgets::editor::syntax::{LanguageId, TokenKind};
+```
+
+#### 1.9.3 `terminal_view.rs`
+
+```rust
+use rust_widgets::widget::special_widgets::editor::CaretStyle;
+```
+
+否则 `devtools` 仍会隐式依赖 `code_editor`。
+
+#### 1.9.4 `webview/find_bar.rs`
+
+注释从：
+
+```text
+special_widgets::markdown_editor::FindBar
+```
+
+改为：
+
+```text
+special_widgets::editor::companions::FindBar
+```
+
+`FindBar` 的公共路径仍由 `markdown_editor` re-export 保持兼容。
+
+#### 1.9.5 feature 语义
+
+`devtools` 不再需要 `code-editor`：
+
+```toml
+[features]
+devtools = []
+```
+
+`diff_viewer` 只依赖 `editor::syntax`。
+
+若需要保留语法高亮，宿主启用：
+
+```toml
+rust_widgets = { ..., features = ["builtin-languages"] }
+```
+
+`rust_widgets` 默认 feature 已包含 `builtin-languages`，默认行为不变。
+
+> 源码层面 `crates/rust-widgets-suites` 不再 import `code_editor`。
+> 若还要在二进制层面验证 suites 不链接 `code_editor`，需要把 suites 对 `rust_widgets` 的依赖
+> 改成 `default-features = false` 并显式转发所需 feature；这是独立的 Cargo 配置改造。
+
+---
+
+### 1.10 分阶段实施
+
+| 阶段 | 内容 | 交付物 | 依赖 |
 |---|---|---|---|
-| **A. CLI `json+css ↔ rust`** | 现有两条路径各自可用但**首尾不相连**：运行时 JSON 路径已支持 `class`/`css` 与四层级联（`apply_declared_styles`），设计器生成器只把 `class`/`css` 当 loader-owned key 跳过，**不把 CSS 解析结果带进生成物**；反向（Rust → JSON）完全没有解析器 | 新建独立包 `crates/rust-widgets-cli`（二进制 `rwui`），**正向**复用 `JsonProject` + `CssParser` + `designer::generate` + `artifact`，**反向**写一个只接受"生成器方言"的受限解析器（不引入 `syn`），并用双向不变量门控锁死 | `rwui check`/`json2rust --check`/`rust2json`/`roundtrip` 全绿；生成的两种 profile 文件与已提交样例逐字节一致；任一不可表达构造都有 `file:line` 诊断 |
-| **B. 完整 Markdown** | 编辑器已有 GFM 预览、代码高亮、查找/替换、大纲、工具栏，但**图片只显示为链接文本**、**Mermaid/LaTeX 完全不存在**；且预览是"一源行一文本行"的固定行高模型，无法容纳块级渲染 | 先改渲染模型为**可变高度块布局**（`DisplayRow` + 前缀和），再以 provider 化接入：`ImageProvider`、`DiagramProvider`（内置 Mermaid 子集）、`MathProvider`（内置 TeX 子集）；不可渲染内容一律"可见降级 + 报告"，绝不空白 | Markdown/Mermaid/Math 三组黄金用例 + 无帧内分配回归 + 新事件接线门控 + `demo/markdown_editor` 实跑 |
-| **C. 未完成项** | 第 19/20 轮只完成了 gantt / finance / media / web_engine 的具名项，`terminal_view.rs`、`web_engine.rs` 其余分支仍是候选面 | 在本文件 §4 立账：逐面带状态、剩余范围、验收方式 | 每条有名字、有范围、有门控；没有"以后再说"的黑箱 |
-
-两件事的共同纪律：**先复用现有实现路径（#101），再写新代码；先立账，再收编；每一处新 API 都必须被 demo / 测试 / 生成物真实调用**，不允许造死代码。
+| **P0** | 建立 `editor::syntax` / `editor::plugin` / `editor::caret`；移动 `LanguageId`、`LineState`、`TokenKind`、`TokenSpan`、`SyntaxHighlighter`、`CaretStyle`、`BuiltinHighlighter` | 共享类型公开；`code_editor` re-export 旧路径 | 无 |
+| **P1** | 从 `CodeEditor` 抽出 `Editor` 内核与通用绘制；`CodeEditor` 改为门面 | `CodeEditor` 全部现有测试与快照不变 | P0 |
+| **P2** | `MarkdownEditor` 改为门面；通用编辑委托 `Editor`；Markdown 预览结果转为 `Decoration` / `BlockRenderer` | `MarkdownEditor` 全部现有测试与快照不变 | P1 |
+| **P3** | 加 feature：`code-editor`、`markdown-editor`、`builtin-languages`；门控模块/capability/constructor/event/re-export | 编译矩阵全绿 | P2 |
+| **P4** | `crates/rust-widgets-suites` 迁移：`diff_viewer`、`terminal_view`、`find_bar` 注释 | suites 源码不再 import `code_editor` | P0 |
+| **P5** | 门禁、快照、文档、CHANGELOG | 全量验证通过 | P1-P4 |
 
 ---
 
-## 1. 共同约束（不得违反）
+### 1.11 验证与门禁
 
-1. **一个概念一条实现路径（#101）**
-   - JSON 文档含义 → `JsonProject::parse`，不许在 CLI 里重写文档语义。
-   - 控件名 → 构造器 → `WidgetFactory`，不许维护第二张名字表。
-   - loader 自己消费的键 → `crate::json::is_loader_owned_key`（已公开），生成器已在 1264-1271 行引用，CLI 继续复用。
-   - CSS 解析/校验 → `CssParser`；样式落到 `WidgetStyle` 的字段级含义 → `style` 模块。
-2. **不新增依赖**
-   - 反向 Rust 解析器**不用 `syn`**（当前根 crate 无 `syn` 依赖），用无分配友好的手写 lexer + 递归下降，只覆盖生成器方言。
-   - CLI 的 JSON 输出用 `serde_json`（根 crate 已有可选依赖；CLI 包显式开启）。
-   - 不引入 clap：参数解析手写（`std::env::args_os`），保持零新依赖。
-3. **只承认可核实子集**
-   - Rust 侧只解析"生成器确实会生成的形状"+ 明确列出的手写扩集；其余语法**报错并给 span**，不做"尽量猜"。
-   - Mermaid 只实现子集（§3.4 列明）；LaTeX 只实现 TeX 子集（§3.5 列明）。未实现命令进入报告，不静默。
-4. **生成物必须可编译且可复现**
-   - 正向输出必须通过 `tools/check_generator_output_compiles.sh`（5 个 profile）。
-   - 同一输入两次运行逐字节一致（生成器已有该契约，CLI 不许引入 HashMap 迭代序）。
-5. **失败必须可见**
-   - 生成器已有 `GenerationReport { unsupported, resolved_at_generation, capacity_overflow }`；
-     CLI 必须把三者全部映射成诊断，而不是只打印 `Ok`。
-   - 反向解析的丢弃必须进 `LossReport`（kind + span + 原因）。
-6. **内存/性能**
-   - CLI 是批处理程序：允许一次性读取，但不得在循环里重复 parse CSS / 重复构造 probe 控件。
-   - Markdown 的帧路径沿用现有纪律：帧内不分配、不重复 `measure_text`、缓存键必须包含全部输入。
+```bash
+# 默认：两个核心控件 + 内置语言
+cargo check --all-targets
+cargo test
+
+# 只用 Markdown：不编译 code_editor，不编译内置语言
+cargo check --no-default-features --features "desktop,markdown-editor"
+cargo test  --no-default-features --features "desktop,markdown-editor"
+
+# Markdown + fenced code 高亮：仍不编译 code_editor
+cargo check --no-default-features --features "desktop,markdown-editor,builtin-languages"
+
+# 只用 Code：不编译 markdown_editor
+cargo check --no-default-features --features "desktop,code-editor"
+
+# Code + 内置语言
+cargo check --no-default-features --features "desktop,code-editor,builtin-languages"
+
+# 两个核心控件都关闭
+cargo check --no-default-features --features "desktop"
+
+# suites
+cargo check -p rust-widgets-suites --features devtools
+cargo test  -p rust-widgets-suites --features devtools
+
+# 质量门
+cargo clippy --all-targets -- -D warnings
+cargo doc --no-deps
+```
+
+grep 门禁：
+
+```text
+markdown_editor/ 下不得出现：
+  special_widgets::code_editor
+  code_editor::
+
+crates/rust-widgets-suites/ 下不得出现：
+  special_widgets::code_editor
+  code_editor::
+```
+
+快照：
+
+- 默认 build：`code_editor.*`、`markdown_editor.*` 逐字节不变；
+- Markdown-only build：`markdown_editor.*` 仍能生成；
+- Code-only build：`code_editor.*` 仍能生成；
+- `diff_viewer.*`、`terminal_view.*` 不变；
+- 两个核心控件都关闭时，对应快照不参与导出。
+
+---
+
+### 1.12 具名排除与边界
+
+- `editor` 不作为第三个公共核心控件；只公开 `syntax` / `plugin` / `caret` / `FindBar`。
+- 不删除 `CodeEditor`、`MarkdownEditor` 的任何公共类型、capability、WidgetKind、Toolbar、Outline、FindBar。
+- 不重命名 `code_editor` 模块、`CodeEditor`、`CodeEditorConfig`、`CodeEditorDocument`。
+- 不重命名 `markdown_editor` 模块、`MarkdownEditor`、`MarkdownBlockRenderer`、`MarkdownToolbar`、`MarkdownOutlinePanel`。
+- 不引入动态插件加载；插件仍是编译期注册的 trait object。
+- 不在本库实现 Markdown 之外的图片解码/网络加载；图片仍由外部 provider 提供像素。
+- `full_widgets` 仍是前提：`editor` 共享类型与两个核心控件都在 `full_widgets` 下；
+  `mini` / `embedded` 继续不编译它们。若要在 mini/embedded 使用 Markdown-only，需要另立 profile 计划。
+- Cargo feature 是加法语义：若同一依赖图中其它包启用了 `code-editor`，本包无法单独关闭它；
+  这是 Cargo 的既有约束，不在本计划内解决。
 
 ---
 
@@ -89,10 +541,10 @@
 | 包名 / 二进制 | `rust-widgets-cli` / `rwui` | 与 suites 同级的独立工具包 |
 | 依赖 | `rust_widgets = { path = "../..", features = ["desktop"] }` + `serde_json` | `designer` 由 `designer_tooling` 在 `desktop` 下默认开启（`src/lib.rs:185-193`）；`json` 由 `full_widgets` 开启（`src/lib.rs:220`）|
 | 平台 | 仅 desktop 宿主工具 | `mini`/`embedded` 是生成目标，不是运行环境（`src/designer/mod.rs` 已写明） |
-| 工作区 | 根 `Cargo.toml` 目前**没有** `[workspace]` 段；新包独立构建 | 与 `crates/rust-widgets-suites` 现有的"嵌套包 + 路径依赖"模式一致 |
+| 工作区 | 根 `Cargo.toml` 目前**没有** `[workspace]` 段；新包独立构建 | 与 `crates/rust-widgets-suites` 现有的“嵌套包 + 路径依赖”模式一致 |
 
 > ⚠️ 备选：若后续要把 CLI 纳入统一 `cargo test --workspace`，需要在根 `Cargo.toml` 新增 `[workspace]` 并登记现有嵌套包；
-> 这会改变发布/CI 口径，属于需人工确认项（§5-Q1）。
+> 这会改变发布/CI 口径，属于需人工确认项。
 
 ### 2.2 输入/输出格式（bundle）
 
@@ -393,433 +845,3 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p rust-widgets-cli --no-deps
 - 不在 CLI 内渲染控件（没有窗口/渲染上下文）；`--preview` 明确不做。
 - 不改变 mode 1（运行时 JSON）的既有语义；CLI 只增加生成期解析。
 - 不新增 crate 依赖；不引入 `syn`/`clap`/`regex`。
-
----
-
-## 3. 完整 Markdown 编辑器
-
-### 3.1 现状事实（取证）
-
-| 能力 | 现状 | 出处 |
-|---|---|---|
-| 文档模型 / 编辑 / 撤销 | 已有（`document.rs` 268 行、`editor.rs` 1536 行） | `markdown_editor/` |
-| GFM 块：标题、列表、任务、引用、表格、分隔线、围栏 | 已有 | `preview.rs:206` `parse_preview_line` |
-| 围栏代码高亮 | 已有（复用 `code_editor::BuiltinHighlighter`） | `preview.rs` 顶部 use |
-| 行内强调 / 删除线 / 行内代码 / 链接 | 已有（`PreviewStyle`） | `preview.rs:27-45` |
-| 图片 | **只作为 Link 文本**，不加载、不绘制 | `tests.rs:337` 断言 `PreviewStyle::Link` |
-| Mermaid | **不存在** | 全目录 grep 无匹配 |
-| LaTeX / MathJax | **不存在** | 全目录 grep 无匹配 |
-| 预览行模型 | **一源行 = 一文本行**（`TEXT_ROW_HEIGHT` 固定） | `paint.rs:160-169` |
-| 查找 / 替换 | 已有（`find.rs` 922 行） | `find.rs` |
-| 大纲面板 | 已有（`outline.rs` 420 行） | `outline.rs` |
-| 工具栏 | 已有 7 个动作 | `markdown_toolbar.rs:64` |
-| 属性面 | `text`、`preview_mode`、`line_count`、`word_count`、`heading_count`、`cursor_line`、`show_scrollbar`、`gfm_extensions`、`code_highlight`、`undo_stack_limit` | `events.rs:155` |
-| 事件面 | `text_changed`、`preview_mode_changed`、`selection_changed`、`heading_activated` | `editor.rs:35-41` |
-| 演示程序 | **无**（仅测试引用） | 全仓 grep |
-| 图片编解码 | 根 crate 的 `image` 模块只支持 PNG/JPEG/BMP/QOI/Farbfeld/PNM；GIF/WebP/TIFF/AVIF/ICO/SVG 明确返回 `Err` | `src/lib.rs:208-219` |
-
-### 3.2 "完整"的定义（验收清单）
-
-| # | 条目 | 现状 | 本次目标 |
-|---|---|---|---|
-| MD-1 | CommonMark 0.30 块级与行内语法（含嵌套强调、转义、代码跨度、引用嵌套） | 部分 | 补齐并用官方子集 fixture 锁死 |
-| MD-2 | GFM：表格、任务列表、删除线、自动链接 | 已有 | 回归测试补全（编辑语义见 MD-10） |
-| MD-3 | 围栏代码 + info string 高亮 + 未知语言回退 | 已有 | 未知语言显式标记，不静默降级 |
-| MD-4 | 图片（块级/行内、alt、title、失败占位） | 缺 | `ImageProvider` + 占位/缓存 |
-| MD-5 | Mermaid（flowchart + sequence 子集） | 缺 | 内置渲染器 + provider 接缝 |
-| MD-6 | LaTeX / MathJax（行内 + 展示 + TeX 子集） | 缺 | 内置排版器 + provider 接缝 |
-| MD-7 | 预览滚动与源行同步、点击链接发信号 | 缺 | `link_activated` + 双向滚动同步 |
-| MD-8 | 编辑完整性：列表/引用自动续行、表格 Tab、围栏自动闭合、粘贴 URL/图片 | 部分 | 明确键位与行为，逐条测试 |
-| MD-9 | 工具栏覆盖新增块（图片/数学/图表/表格/任务/分隔线） | 7/15 | 扩展 token 表，保持前 7 个不动 |
-| MD-10 | 能力/属性/事件/命令全接线（含 `event_signal_dyn`） | 部分 | 新属性/事件/命令 + 门控 |
-| MD-11 | 性能预算（大文档、长行、多图/多图块） | 无基线 | 帧内零分配 + 缓存键 + 上限 |
-| MD-12 | Demo（打开/保存/工具栏/大纲/预览/图表/数学） | 无 | `demo/markdown_editor`（`main.rs` 桩 + `app.rs`） |
-
-### 3.3 渲染模型改造：可变高度块（MD-4/5/6 的前提）
-
-**问题**：`paint.rs` 用 `y = rect.y + TEXT_TOP + row * TEXT_ROW_HEIGHT` 直接由"源行号"算 y，
-并且滚动、选择、光标都以源行为单位。块级渲染（一张图、一个流程图、一个展示公式）需要 N 行高度，
-现在的模型无法表达。
-
-**方案：`PreviewLayout`（显示行模型）**
-
-```rust
-pub(crate) struct PreviewLayout {
-    /// 每个源行对应的显示行起点（前缀和），长度 = 源行数 + 1
-    starts: Vec<u32>,
-    /// 每个源行的显示高度（普通行 = 1，块 = N；0 表示被块吞并的后续源行）
-    heights: Vec<u16>,
-    /// 块跨度：源行区间 → 块种类
-    blocks: Vec<BlockSpan>,
-}
-
-pub(crate) struct BlockSpan {
-    pub first_line: usize,
-    pub last_line: usize,   // 含
-    pub kind: BlockKind,    // Image { .. } | Diagram { .. } | Math { .. } | Table?（表格暂按行渲染）
-}
-```
-
-- **构建**：在 `blocks`/`table_header` 的既有 revision 计算处扩展；Mermaid / `$$` / ```math / 图片
-  的块区间一次扫描得出；普通行高度 1。
-- **绘制**：`y_for_line(line)` 由 `starts` 查表；块内部由 `render_block` 画进 `height * TEXT_ROW_HEIGHT`
-  的矩形；`push_clip` 保证不越界。
-- **滚动/可见行**：`visible_start/line_count` 改用显示行；`scroll_page`/`scroll_to_line` 换算。
-- **选择与光标**：编辑模式不变（仍按源行/列）；预览模式下点击只触发链接/块激活，不产生文本选择。
-- **缓存**：
-  - 行解析缓存沿用 `PreviewKey`（内容 + block 上下文 + 宽度/DPI）；
-  - 新增 `BlockKey { source_hash, width, theme_rev, dpi_bits, renderer_rev }` → `Rc<RenderedBlock>`；
-  - 主题/DPI/宽度变化才重排块。
-
-**兼容性**：`blocks` 的现有语义（围栏/表格）保留；新模型只是额外提供"高度表"。若 `PreviewLayout`
-构建失败（极端深度），回退到旧的"一行一行"路径并报告。
-
-### 3.4 Mermaid（MD-5）
-
-#### 3.4.1 接缝
-
-```rust
-/// 图表渲染结果：要么是一组可直接绘制的场景对象，要么是"不支持"的报告。
-pub enum DiagramOutcome {
-    Scene(DiagramScene),
-    Unsupported(Vec<DiagramIssue>),
-    Failed(String),
-}
-
-pub trait DiagramProvider {
-    fn render(&self, source: &str, theme: &DiagramTheme, max_width: u32) -> DiagramOutcome;
-}
-
-pub struct DiagramTheme { pub ink: Color, pub surface: Color, pub line: Color, pub accent: Color }
-```
-
-`DiagramScene` 只含渲染原语（矩形/圆角矩形/线/折线/文本/箭头），由编辑器用
-`RenderContext::{fill_rect, fill_rounded_rect, draw_line_stroke, draw_path, draw_text, measure_text}`
-绘制——不生成 SVG 字符串，不引入新依赖。
-
-注册：`MarkdownEditor::set_diagram_provider(Arc<dyn DiagramProvider>)`；未注册时用内置实现。
-内置实现同样实现该 trait，所以"内置"与"宿主覆盖"是同一条路径（#101）。
-
-#### 3.4.2 内置 Mermaid 子集（分两阶段）
-
-| 阶段 | 语法 | 布局 |
-|---|---|---|
-| **D1** | `flowchart TD/TB/LR/BT`：节点 `A[text]`、`A(text)`、`A{text}`、边 `A --> B`、`A -- text --> B`、`A --- B`（无箭头）、`subgraph`/`end`（仅分组框） | 分层（BFS 去环）→ 层内重心排序 → 网格定位 → 正交连线 + 箭头；节点尺寸由 `measure_text` + padding |
-| **D2** | `sequenceDiagram`：`participant A`、`A->>B: msg`、`A-->>B: msg`、`Note over A,B: text`、`loop`/`alt`/`end`（框） | 参与者列 + 生命线 + 消息行 + 激活条；宽度按最长消息测量 |
-| **D3**（可选） | `stateDiagram-v2` 基本状态/转移 | 复用 D1 的分层器 |
-
-**明确不支持（报告 `DiagramIssue`，画占位框 + 源码摘要）**：`classDiagram`、`gantt`、`pie`、
-`erDiagram`、`journey`、`mindmap`、`timeline`、`quadrantChart`、`xychart`、`--config`、
-主题指令、点击/链接、动画。理由：这些需要全新的语义模型，且本计划不引入外部 crate。
-
-**防护上限**（全部可配置并报告）：
-- 最大节点数 200、最大边数 500、最大层数 40、最大源文本 64 KiB；
-- 超限 → `DiagramIssue::TooLarge` + 占位，不 panic、不 O(n²) 爆炸；
-- 布局必须处理环（BFS 分层天然去环）、自环（不画或画小回环）、重复边（合并/偏移）。
-
-#### 3.4.3 主题
-
-`DiagramTheme` 从编辑器 `WidgetStyle` 推导：
-`ink = text_color`、`surface = background_color`、`line = border_color`、`accent = primary 导出色`。
-所有颜色走主题，禁止硬编码（沿用项目主题纪律）。
-
-### 3.5 LaTeX / MathJax（MD-6）
-
-#### 3.5.1 接缝
-
-```rust
-pub enum MathOutcome {
-    Layout(MathBox),
-    Unsupported(Vec<MathIssue>),
-    Failed(String),
-}
-
-pub trait MathProvider {
-    fn layout(&self, tex: &str, display: bool, font: &Font, max_width: u32) -> MathOutcome;
-}
-
-pub struct MathBox { /* 宽高、基线、原子列表（文本/线/矩形） */ }
-```
-
-内置实现：`markdown_editor/math.rs`。
-
-#### 3.5.2 TeX 子集（D1 交付）
-
-| 类别 | 支持 |
-|---|---|
-| 分组/转义 | `{ }`、`\ `、`\,`、`\;`、`\!`、`\%`、`\$`、`\&`、`\#`、`\_` |
-| 上下标 | `^`、`_`（含 `^{...}`）；连续上下标按 TeX 规则合并 |
-| 分式 | `\frac{a}{b}`、`\dfrac`、`\tfrac` |
-| 根式 | `\sqrt{x}`、`\sqrt[n]{x}` |
-| 大型运算符 | `\sum`、`\prod`、`\int`、`\iint`、`\oint`、`\lim`（行内用侧标、展示用上下限） |
-| 希腊/符号 | 常用希腊字母、关系符、箭头、集合符、`\infty`、`\partial`、`\nabla`、`\pm`、`\times`、`\cdot`、`\dots` |
-| 定界符 | `\left( ... \right)`、`\left[`、`\left\{`、`\left|`、`\middle|`；自动伸缩 |
-| 文本 | `\text{...}`、`\mathrm`、`\mathbf`、`\mathit`、`\operatorname` |
-| 重音 | `\hat`、`\bar`、`\vec`、`\dot`、`\ddot`、`\tilde` |
-| 环境 | `matrix`/`pmatrix`/`bmatrix`/`vmatrix`、`cases`、`aligned`（简单按 `&` 与 `\\`） |
-| 颜色 | `\color{...}`（仅命名色/hex；未知报错） |
-
-**D2 可选**：`\begin{align}`、`\overbrace`/`\underbrace`、`\stackrel`、化学式（不承诺）、
-`\newcommand`（**明确不做**，避免宏展开失控）。
-
-**明确不支持**：`\usepackage`/`\documentclass`/`\input`/`\includegraphics`/`\href`/`\begin{tikzpicture}`；
-JS 版 MathJax 的扩展包（`\require`、`mhchem` 等）。这些一律 `MathIssue::Unsupported`。
-
-#### 3.5.3 定界与排版语义
-
-- 行内：`$...$`、`\(...\)`；展示：`$$...$$`、`\[...\]`；围栏：```` ```math ```` / ```` ```latex ````。
-- 行内公式作为**原子**参与行内排版（不换行）；展示公式独占块，居中（可配置左对齐）。
-- 基线：`MathBox` 记录 ascent/descent；行内公式与文本基线对齐；展示公式在块内垂直居中。
-- 字体回退：符号优先 Unicode；缺字时用 ASCII 近似（`∑`→`S` 等）并在 `MathIssue` 记 `GlyphFallback`；
-  绝不画空白。
-- 嵌套深度上限 32；超出 → `MathIssue::DepthLimit` + 以文本形式显示源码。
-
-#### 3.5.4 MathJax 兼容性口径
-
-- **兼容的是"输入语法与定界符"**，不是 MathJax 运行时；不嵌入 JS 引擎（`markdown_editor` 属于
-  根 crate，不依赖 `js-engine`）。
-- 提供 `math_supported_commands() -> &'static [&'static str]` 与 `unsupported_math()` 报告，
-  宿主可据此在工具栏禁用不支持的按钮（与 Lottie 的 `unsupported_shapes()` 同一模式）。
-
-### 3.6 图片（MD-4）
-
-- **`ImageProvider` 接缝**（宿主加载/解码，控件不阻塞 UI）：
-  ```rust
-  pub enum ImageState { Ready(Arc<Image>), Pending, Failed(String) }
-  pub trait ImageProvider { fn get(&self, src: &str, width: u32) -> ImageState; }
-  ```
-- 块级图片：独占块，按 `max_width` 等比缩放；无 provider / `Pending` → 占位框（alt + 尺寸）；
-  `Failed` → 错误框（alt + 原因），并进 `render_report()`。
-- 行内图片：仅在字体行高内按比例缩放，超出即退化/占位（不撑破行高）。
-- alt 文本在未加载/失败时始终可见（可访问性）。
-- 缓存：`(src, width, dpi)`；解码由宿主/`image` 模块完成；编辑器不在帧内解码。
-- 明确：GIF/WebP/TIFF/AVIF/ICO/SVG 在当前 `image` 模块返回 `Err`（见 `src/lib.rs:208-219`），
-  本计划用占位图 + 报告，不新增编解码器。
-
-### 3.7 编辑完整性（MD-8/9）
-
-| 行为 | 规则 | 测试 |
-|---|---|---|
-| 回车续行 | 在 `- `、`1. `、`> `、`- [ ] ` 行尾回车自动续前缀；空前缀行回车清除前缀 | `enter_continues_list_markers` |
-| 表格 | `Tab`/`Shift+Tab` 在单元格间移动；最后一格 `Tab` 追加一行；`Enter` 在单元格内不退出 | `table_tab_moves_between_cells` |
-| 围栏 | 输入 ``` 后回车自动补闭合围栏；删除开围栏则同步删除闭围栏（仅当空块） | `fence_auto_closes` |
-| 粘贴 | 选中的纯文本若形如 URL，粘贴时生成 `[选中](URL)`；文件路径以图片扩展名结尾时生成 `!(...)` | `paste_url_wraps_selection` |
-| 快捷键 | `Ctrl+B/I/K`、`Ctrl+Shift+7`（有序列表）、`Ctrl+Shift+8`（无序）、`Ctrl+Shift+.`（引用）、`Ctrl+E`（行内代码） | 快捷键表测试 |
-| 工具栏 | 新增 token：`strike`、`ordered_list`、`task`、`table`、`image`、`math`、`diagram`、`hr` | token 表 + `execute` |
-| 兼容 | 前 7 个 token 与顺序不变（宿主已存的动作列表不失效） | 快照测试 |
-
-> ⚠️ 快捷键需与全局 `shortcut` 系统的既有绑定做冲突检查（`src/shortcut`），冲突时以全局为准并报告。
-
-### 3.8 预览联动与信号（MD-7）
-
-- 新增信号：`link_activated: Signal1<String>`（点击预览中的链接；`event_signal_dyn` 必须加分支）。
-- 新增信号：`block_activated: Signal1<(usize, String)>`（源行 + 块种类，供宿主打开图片/图表查看器）。
-- 新增信号：`render_gap: Signal1<String>`（一个块降级时发一次，kind + 原因）。
-- 滚动同步：编辑区滚动 → 预览定位到对应块；预览滚动 → 编辑区 `goto_line`（可关闭，
-  属性 `preview_scroll_sync`）。
-- 预览中的链接命中：`PreviewRun` 目前只存文本/样式；计划加 `RunLink { target: Option<String> }`
-  或在 `ParsedLine` 增 `links: Vec<(Rect, String)>`（绘制时记录矩形，命中用矩形）。
-
-### 3.9 能力 / 属性 / 事件 / 命令接线（MD-10）
-
-**新增属性**（`events.rs` 的 `property_names`）：
-
-| 属性 | 类型 | 说明 |
-|---|---|---|
-| `diagrams_enabled` | Bool | 关掉后 Mermaid 围栏按普通代码块显示 |
-| `math_enabled` | Bool | 关掉后 `$...$` 按字面文本显示 |
-| `images_enabled` | Bool | 关掉后图片按链接文本显示 |
-| `preview_scroll_sync` | Bool | 双向滚动同步 |
-| `diagram_max_width` | UInt | 块宽上限（0 = 控件宽） |
-| `render_report` | String（只读） | 一次 JSON 摘要：降级块数/原因（或改为 `Tuple`） |
-
-**新增事件**（`event_signal_dyn` + capability 发布名 + `check_event_signal_dyn.sh`）：
-`link_activated`、`block_activated`、`render_gap`。
-
-**新增命令**：
-`insert_image`、`insert_math`、`insert_diagram`、`insert_table`（带 payload 的命令走
-`default_command` 的既有形态）、`toggle_diagrams`、`toggle_math`。
-
-**Provider 注册**（非能力：trait object 不能进 `CapabilityValue`）：
-`set_image_provider(Arc<dyn ImageProvider>)`、`set_diagram_provider(Arc<dyn DiagramProvider>)`、
-`set_math_provider(Arc<dyn MathProvider>)`。
-
-**门控**：
-- `tools/check_setter_census.sh`（新 setter 必须分类）；
-- `tools/check_event_signal_dyn.sh`（新事件必须有 arm）；
-- `cargo doc -D warnings`（新公开项必须有文档链接）。
-
-### 3.10 性能预算（MD-11）
-
-| 指标 | 预算 | 测量 |
-|---|---|---|
-| 帧内分配 | 0（预览/编辑滚动帧） | 现有 `tools/_scan_draw_alloc.py` 纪律 + 单测计数 |
-| 1 MB 文档、200 行可见 | < 2 ms/帧（software backend，release） | 基准测试（`examples`/bench） |
-| 块重排 | 仅在 source/width/theme/dpi 变化时 | 缓存命中测试 |
-| 图片 | 不在帧内解码；同图同宽只解码一次 | provider 计数 |
-| 图表 | 单块 ≤ 5 ms；节点/边上限见 §3.4.2 | 场景构建计时 |
-| 数学 | 单公式 ≤ 2 ms；深度 ≤ 32 | 排版计时 |
-| 内存 | 块缓存按"存活块"驱逐；行缓存沿用现有 bound | 缓存长度测试 |
-
-### 3.11 门禁与验收（Markdown）
-
-```
-cargo fmt --all -- --check
-cargo test --lib markdown_editor          # 现有 + 新增
-cargo clippy --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-bash tools/check_event_signal_dyn.sh
-bash tools/check_source_structure.sh
-# 新 demo
-cargo run -p markdown-editor-demo         # demo/markdown_editor
-```
-
-新增测试组（计划名）：
-- `commonmark_subset_fixtures`：标题/强调嵌套/链接/转义/引用嵌套/表格/任务/围栏。
-- `preview_layout_maps_blocks_to_rows`：块高度/前缀和/滚动边界。
-- `image_block_uses_provider_and_falls_back`：Ready/Pending/Failed 三态 + alt。
-- `mermaid_flowchart_lays_out_and_draws`：节点/边/环/自环/上限。
-- `mermaid_sequence_orders_messages`：参与者/消息/Note/框。
-- `mermaid_unsupported_types_report`：gantt/pie 等 → 占位 + 报告。
-- `math_fractions_scripts_and_roots_metrics`：黄金尺寸/基线。
-- `math_environments_and_delimiters`：matrix/cases/`\left...\right`。
-- `math_unsupported_command_is_visible`：`\usepackage` → 报告 + 可读降级。
-- `preview_link_activation_emits`：命中/未命中/链接矩形。
-- `capability_surface_covers_new_state`：属性/事件/命令 round-trip。
-- `large_document_stays_within_frame_budget`：性能回归。
-
-### 3.12 分阶段（Markdown）
-
-| 阶段 | 内容 | 可独立交付 | 依赖 |
-|---|---|---|---|
-| **M0** | `PreviewLayout` + 块跨度 + 绘制重构（不含新块种类） | 现有预览行为不变、测试全绿 | 无 |
-| **M1** | 图片块/行内 + `ImageProvider` + 三态占位 + 链接信号 | 图片可显示 | M0 |
-| **M2** | 数学：行内 + 展示 + TeX D1 子集 + 报告 | LaTeX 可用 | M0 |
-| **M3** | Mermaid D1（flowchart） | 流程图可用 | M0 |
-| **M4** | Mermaid D2（sequence）+ 主题/上限 | 时序图可用 | M3 |
-| **M5** | 编辑完整性 + 工具栏扩展 + 能力接线 | 完整编辑体验 | M1-M4 |
-| **M6** | Demo `demo/markdown_editor` + 性能门控 + 文档 | 可运行样例 | M5 |
-
-每阶段结束都必须：`cargo fmt` + 该模块测试 + clippy + doc + 结构门控；不允许把新 public API 留成死代码。
-
-### 3.13 具名排除（Markdown）
-
-- 不实现 Mermaid 的 class/gantt/pie/er/journey/mindmap/timeline/quadrant/xychart。
-- 不实现 TeX 宏定义、`\usepackage`、外部文件、TikZ、化学式。
-- 不嵌入 MathJax/JS 运行时；不做 HTML 渲染（原始 HTML 按现有行为作为文本显示）。
-- 不新增图片编解码器（GIF/WebP/SVG 等仍走占位 + 报告）。
-- 不做 WYSIWYG（编辑区仍是源码 + 预览切换）。
-- 不做文件 I/O（由 demo/宿主负责）。
-
----
-
-## 4. 未完成项（追加：`docs/log/log-20261109-2.md` 第 19/20 轮余项）
-
-> 本节是"最后的未完成"的账。每一项都有名字、范围、验收方式；没有"以后再说"的黑箱。
-> 基线门禁（第 20 轮末实跑）：fmt clean；suites all-features **1299**；suites 默认 **82**；
-> suites clippy clean；root lib **9799**；`cargo doc -D warnings` clean；结构门控 PASS。
-
-### 4.1 已闭合（记录，不计入未完成）
-
-- 第十九轮：gantt 10 项、finance depth/layout 8 项、media rive/lottie 10 项，共 26 用例。
-- 第二十轮：`form_widgets/rules.rs` 全文复核无缺陷；`webview/web_engine.rs` 5 项修复 + 4 用例。
-- 文档：`docs/log/log-20261109-2.md` 已追加第 19/20 轮；`docs/issues/issue-20261106.md` 已追加 §13.13/§13.14。
-
-### 4.2 未闭合：`media_playback` 的 `Widget::tick` 语义审计
-
-- 范围：`LottieWidget::tick` / `RiveWidget::tick` 的 trait 桥接已改为"是否还欠帧"，
-  但**同族其它动画控件**（`AudioVisualizer`、`CameraPreview`、`AnimatedImage`、`Spinner`、
-  `ProgressCircle`、`CursorBlink` 家族）尚未逐一按同一契约复核。
-- 验收：对每个实现 `Widget::tick` 的控件，断言"返回 true ⇔ 下一帧还会变化"；
-  用 `tools/animation_driver_scan.py` + 新增表驱动测试；发现反例即修。
-- 风险：低（不影响当前已闭合项），但属于"同类未扫完"。
-
-### 4.3 未闭合：`devtools/terminal/terminal_view.rs`（4387 行）
-
-- 已复核且无缺陷的局部：`set_grid`/`announce_grid`（264-285）、`set_scrollback_lines`/`trim_scrollback`
-  （293-327）、`set_wrap_output`（335-344）、`tick`（905-924）、`total_output_rows`/`max_scroll_offset`
-  （660-678）、`scroll_output`（684-695）。
-- 未逐行复核：
-  1. `handle_event`（1492 起）：修饰键、选择拖拽、preedit、IME、滚动条命中、快捷键冲突；
-  2. `draw`（1799 起）：输出缓存与行高、缩放/裁剪、滚动条几何、光标绘制；
-  3. 选择模型：`apply_output_selection`/`clamp_selection_offset`/anchor/head 的边界；
-  4. 查找联动：`TerminalFindBar` 的队列/进度与 `revision` 的失效时机；
-  5. 屏幕模式（`feed_screen`）与 scrollback 的 `revision` 一致性。
-- 验收：全文精读 + 每个发现一条回归用例；`cargo test --all-features --lib -- devtools::terminal` 全绿；
-  结构与 clippy 门控不变。
-- 风险：中（文件大、状态多；按 §4.6 的分组顺序进行）。
-
-### 4.4 未闭合：`webview/web_engine.rs`（3651 行）
-
-- 已修复（第 20 轮）：加载进度信号、cookie 替换清理、下载命名、导航状态去重、滚轮饱和。
-- 未逐行复核：
-  1. `draw`（2570 起）：URL 栏/内容区布局、缩放命中矩形、滚动条、查找高亮带、空文档分支；
-  2. `handle_event` 其余分支：非 URL 编辑状态下的按键/滚轮/指针、禁用态；
-  3. 查找：`poll_find_requests` 的多次请求合并、命中矩形与滚动可见性；
-  4. 下载：`download_state` 的完成/失败/取消边界、重复报告；
-  5. 页面簿记：`create_page`/`destroy_page`/`reload_page` 的重复销毁与已销毁 reload（当前仅范围校验）；
-  6. `WebEnginePage/Settings/DownloadItem/...` 门面：是否每一条都真实转发、有无死状态。
-- 验收：分节精读 + 回归用例；`cargo test --all-features --lib -- webview::` 全绿；文档门控不变。
-
-### 4.5 未闭合：其它候选面（按优先级）
-
-| 面 | 范围 | 状态 |
-|---|---|---|
-| `webview/js_engine.rs` | 迭代上限、错误传播、DOM 绑定、无引擎特性下的拒绝路径 | 未排期（需单独立项） |
-| `devtools/diff_viewer`（viewer/file_list） | 大文件分块、滚动/选择、行号缓存 | 未排期 |
-| `finance/order_book`、`quote_board` | 闪烁/排序/属性写入的边角 | 第 19 轮只复核 depth/layout；其余未逐行 |
-| `project/kanban_board` | 拖拽/滚动/宽度覆盖 | 第 17 轮部分覆盖；剩余边界未逐行 |
-| `form_widgets/form.rs` | 规则安装是否立即重判的策略一致性 | 已记录为"按既有策略"，未改；若产品口径变化需重审 |
-| 全仓 `Widget::tick` 契约 | 同 §4.2 | 未排期 |
-
-### 4.6 跨切面待办（每项都必须有门控）
-
-1. **新增公开 API 的账**：本计划新增的 CLI 包与 Markdown 属性/事件/命令，必须进
-   `check_setter_census` / `check_event_signal_dyn` / `cargo doc -D warnings`。
-2. **新二进制/包的发布**：若采纳 §2.1 的 `crates/rust-widgets-cli`，需确认根 `include` 不变、
-   不进入根 crate tarball；若改为 `[[bin]]`，需同步 `check_declared_targets_ship.sh`（§5-Q1）。
-3. **生成器门控**：CSS 解析写回 JSON 后，必须继续通过
-   `check_generator_output_compiles.sh` / `check_mode_consistency.sh` / `check_generated_sources.sh`；
-   任何"生成物与 mode 1 不一致"都视为失败。
-4. **`!important` 落地**：改 `CssParser` 时，必须同时覆盖运行时 `StyleSheetManager` 与 CLI 静态级联，
-   不能只改一边（#101）。
-5. **Markdown 预览的行高契约**：`PreviewLayout` 改变滚动/可见行语义，必须补"选择/查找/大纲"
-   三处回归，防止旧测试锁死旧语义。
-6. **文档回写**：每个阶段结束时回写 `docs/log/` 与 `docs/issues/`；本计划本身不回写代码状态，
-   直到对应阶段真正实施。
-
-### 4.7 本次明确不做
-
-- 不修改任何源码；不新增依赖；不提交。
-- 不把 CLI 的"未实现"包装成成功（`check` 的严格模式必须能失败）。
-- 不在 Markdown 里用硬编码颜色/尺寸；一切走主题与度量。
-- 不为"完整"而引入 H 级依赖（MathJax/Mermaid 的 JS 运行时）；只做原生子集 + provider 接缝。
-
----
-
-## 5. 需人工确认（⚠️ 计划信息不足）
-
-| # | 问题 | 本计划假设 | 若不同意的替代方案 |
-|---|---|---|---|
-| Q1 | CLI 放 `crates/rust-widgets-cli`（独立嵌套包）还是根 crate 的 `[[bin]]`？ | 独立包（不污染根发布物） | 加根 `[[bin]]` + 同步 `check_declared_targets_ship.sh` |
-| Q2 | "latex/**jx" 的确切含义？ | LaTeX 子集 + MathJax 兼容的定界符/命令，不嵌入 JS | 若指嵌入 MathJax JS，需要新依赖/引擎，另立项 |
-| Q3 | Mermaid 的"完整"范围？ | flowchart + sequence（D1/D2），其余报告 | 若必须 class/gantt/pie 等，需要更大规模的解析/布局，单独立项 |
-| Q4 | Markdown 原始 HTML 如何处理？ | 维持现状：按文本显示（不渲染、不执行） | 渲染子集或直接透传，需安全评审 |
-| Q5 | 图片失败/不支持格式（GIF/WebP/SVG）如何处理？ | 占位 + `render_report` 报告 | 新增编解码器（新依赖/体积） |
-| Q6 | CSS 是否需要 `@media`（响应式断点）？ | 不支持；断点已有 JSON `breakpoints` 键（loader-owned） | 把 `@media` 映射到 `breakpoints`，需设计映射规则 |
-| Q7 | 反向 Rust 是否必须支持手写代码（非生成器产物）？ | 只承诺"生成器方言 + 白名单扩集" | 扩大解析范围会接近重写 `syn`，不建议 |
-| Q8 | CLI 是否需要 `watch/preview`？ | 不做（宿主用 `cargo run`） | 需要事件循环/渲染上下文，另立项 |
-
----
-
-## 6. 判定口径（DoD）
-
-一个条目只有同时满足下列 4 条才可标记 ✅：
-
-1. **实现**：代码/配置已落地，且被至少一个真实调用者（demo、CLI 命令、生成器、测试）使用；
-   没有"只定义未接线"的 API。
-2. **门控**：有可执行测试/脚本，并在回复中贴出**实跑输出**（不是"应该通过"）。
-3. **回归**：既有门禁不退化（本文件基线：suites 1299 / 默认 82 / root 9799 / fmt / clippy / doc / 结构）。
-4. **诚实报告**：所有不支持项都有名字、原因和可见降级；没有静默丢弃。
-
-> 原则 #105 的直译：**"没跑过" = 没完成；"没接线" = 没完成；"没报告" = 没完成。**

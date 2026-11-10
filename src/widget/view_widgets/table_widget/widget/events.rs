@@ -87,13 +87,17 @@ impl crate::event::EventHandler for TableWidget {
                 let last = self.row_count().saturating_sub(1);
                 match *key {
                     crate::event::key_codes::UP => {
-                        let next = self.focused_row.unwrap_or(0).saturating_sub(1);
+                        // The validated accessor, not the raw field: a model that shrinks without a
+                        // change signal leaves a focus row past the end, and subtracting from it
+                        // produced a row that no longer exists (so the viewport jumped to the
+                        // clamp while every further `UP` recomputed the same stale index).
+                        let next = self.focused_row().unwrap_or(0).saturating_sub(1);
                         self.select_row(next);
                         self.set_scroll_row(next);
                     }
                     crate::event::key_codes::DOWN => {
                         let next = self
-                            .focused_row
+                            .focused_row()
                             .map(|row| row.saturating_add(1))
                             .unwrap_or(0)
                             .min(last);
@@ -109,13 +113,13 @@ impl crate::event::EventHandler for TableWidget {
                         self.set_scroll_row(last);
                     }
                     crate::event::key_codes::PAGE_UP => {
-                        let next = self.focused_row.unwrap_or(0).saturating_sub(page);
+                        let next = self.focused_row().unwrap_or(0).saturating_sub(page);
                         self.select_row(next);
                         self.set_scroll_row(next);
                     }
                     crate::event::key_codes::PAGE_DOWN => {
                         let next = self
-                            .focused_row
+                            .focused_row()
                             .map(|row| row.saturating_add(page))
                             .unwrap_or(0)
                             .min(last);
@@ -125,7 +129,7 @@ impl crate::event::EventHandler for TableWidget {
                     crate::event::key_codes::ENTER
                         if self.edit_triggers.contains(TableEditTriggers::EDIT_KEY) =>
                     {
-                        if let Some(row) = self.focused_row {
+                        if let Some(row) = self.focused_row() {
                             if self.editable {
                                 let column = self.last_pointed_column.unwrap_or(0);
                                 self.edit_requested.emit((row, column));

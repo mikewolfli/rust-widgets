@@ -806,11 +806,20 @@ impl Heatmap {
         if dx < 0 || dy < 0 || dx >= grid.width as i32 || dy >= grid.height as i32 {
             return None;
         }
-        // Integer arithmetic, and the column is floored by the same expression the drawing
-        // uses, so a click lands in the cell it looks like it landed in. The position is the one
-        // **inside the viewport**; the display index is that plus the pan offset.
-        let column = (dx as u64 * columns as u64 / grid.width as u64) as usize;
-        let row = (dy as u64 * rows as u64 / grid.height as u64) as usize;
+        // Integer arithmetic, and the column is derived by **inverting the painter's own**
+        // expression: a cell starts at `grid.x + column * (grid.width / columns)` and the last
+        // one is extended to the grid's edge. Flooring `dx * columns / grid.width` instead
+        // disagreed with that truncating cell width (a 30-column 344 px grid needed dx >= 333
+        // for column 29 although its painted cell begins at 319), so a click in the last cell
+        // reported an earlier column. The position is the one **inside the viewport**; the
+        // display index is that plus the pan offset.
+        let cell_width = grid.width as i32 / columns as i32;
+        let cell_height = grid.height as i32 / rows as i32;
+        if cell_width <= 0 || cell_height <= 0 {
+            return None;
+        }
+        let column = (dx / cell_width).min(columns as i32 - 1) as usize;
+        let row = (dy / cell_height).min(rows as i32 - 1) as usize;
         let display_row = (row + self.first_row).min(self.row_count() - 1);
         let display_column = (column + self.first_column).min(self.column_count() - 1);
         Some((self.data_row(display_row), self.data_column(display_column)))
@@ -2577,6 +2586,39 @@ mod tests {
         heatmap.handle_event(&Event::mouse_double_click(cell.x + 2, cell.y + 2, 1));
         let got = clicked.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![(2, 1)]);
+    }
+
+    /// A click in the last painted column reports that column, not one several slots earlier.
+    ///
+    /// # The defect this pins
+    ///
+    /// `cell_at` floored `dx * columns / grid.width` while the painter placed cell `n` at
+    /// `grid.x + n * (grid.width / columns)`. With a truncating cell width the two disagree: a
+    /// 30-column 344 px grid painted column 29 at x = grid.x + 319, but the inverse formula
+    /// needed x >= 333, so the last ~14 px of the cell reported column 27.
+    #[test]
+    fn the_last_painted_column_hit_tests_as_itself() {
+        let mut heatmap = Heatmap::new(Rect::new(0, 0, 344, 100));
+        heatmap.set_show_labels(false);
+        heatmap.set_show_legend(false);
+        let columns: Vec<String> = (0..30).map(|index| std::format!("c{index}")).collect();
+        let values = vec![columns.iter().map(|_| HeatmapCell::new(1.0)).collect()];
+        heatmap.set_data(vec!["r0".to_string()], columns, values);
+
+        let grid = heatmap.grid_rect();
+        let cell_width = grid.width as i32 / 30;
+        assert!(cell_width > 0, "the test grid must have painted cells");
+        let last_start = grid.x + 29 * cell_width;
+        assert_eq!(
+            heatmap.cell_at(Point::new(last_start + 1, grid.y + 1)),
+            Some((0, 29)),
+            "the first pixel of the last painted cell belongs to column 29"
+        );
+        assert_eq!(
+            heatmap.cell_at(Point::new(grid.x + grid.width as i32 - 1, grid.y + 1)),
+            Some((0, 29)),
+            "the extended last cell reaches the grid's edge"
+        );
     }
 }
 

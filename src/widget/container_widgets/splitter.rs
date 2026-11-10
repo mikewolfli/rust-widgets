@@ -151,6 +151,12 @@ impl Splitter {
         if self.layout.orientation() == orientation {
             return;
         }
+        // A drag measures its delta on the splitter's axis, so a session opened on one axis cannot
+        // be continued on the other: the next move would compute a bogus delta and jerk the
+        // divider. The preview mark goes with it.
+        self.drag_session = None;
+        self.drag_state = None;
+        self.preview_mark = None;
         self.layout.set_orientation(orientation);
         self.orientation_changed.emit(orientation);
         // Every pane rectangle is recomputed along the other axis.
@@ -1681,5 +1687,41 @@ mod tests {
         let before = sp.ratio(0).expect("ratio 0");
         sp.handle_event(&crate::event::Event::KeyPress { key: key_codes::UP, modifiers: 0 });
         assert!(sp.ratio(0).expect("ratio 0") < before, "Up shrinks the leading pane");
+    }
+
+    /// A drag measures its delta on one axis, so switching axes must end it.
+    ///
+    /// The session and its snapshot used to survive `set_orientation`, and the next
+    /// `MouseMove` then measured a delta on the new axis from a start recorded on the old
+    /// one, jerking the divider. The live preview mark went with it.
+    #[test]
+    fn changing_the_orientation_ends_a_drag() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut sp = two_pane_splitter();
+        // A subscriber makes `update_handle_drag` record a live preview mark.
+        let previews = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&previews);
+        sp.pane_layout_preview.connect(move |_ratios: Arc<Vec<f32>>| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let divider = divider_x(&sp);
+        sp.handle_event(&crate::event::Event::mouse_press(divider, 100, 1));
+        sp.handle_event(&crate::event::Event::mouse_move(divider + 40, 100));
+        assert!(sp.is_dragging_handle(), "the press opened a drag session");
+        assert!(sp.preview_mark.is_some(), "the move recorded a live preview");
+
+        let ratios = sp.ratios();
+        sp.set_orientation(Orientation::Vertical);
+        assert!(!sp.is_dragging_handle(), "the axis change ends the session");
+        assert!(sp.drag_session.is_none());
+        assert!(sp.drag_state.is_none(), "and drops its snapshot");
+        assert!(sp.preview_mark.is_none(), "no drag preview survives the axis change");
+
+        // With no session, the next move cannot resize anything.
+        sp.handle_event(&crate::event::Event::mouse_move(100, 150));
+        assert_eq!(sp.ratios(), ratios, "a move after the axis change resizes nothing");
     }
 }

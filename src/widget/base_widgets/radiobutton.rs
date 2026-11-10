@@ -179,17 +179,42 @@ impl RadioButton {
             // No label to reach, so the indicator alone is the target.
             indicator
         } else {
-            // The label's width uses the **same** shared measurement the painter's ruler and
-            // `implicit_size` use (D09-CTRL-02): the old `chars().count() * 3/5 em` estimate
-            // under-counts wide glyphs, so the visible label could extend past this region and its
-            // tail was not clickable.
-            let label_width = estimate_text_width(&self.text, font, 1.0);
-            Rect::new(
-                indicator.x,
-                indicator.y,
-                indicator.width + self.label_gap() as u32 + label_width,
-                indicator.height,
-            )
+            // The label begins where the painter puts it, in both the single-line and wrapped
+            // pictures: past the disc and the shared gap.
+            let label_x = indicator.x + indicator.width as i32 + self.label_gap();
+            let label_width = rect.width.saturating_sub((label_x - rect.x).max(0) as u32);
+            if self.word_wrap {
+                // The painter wraps to that width and stacks the lines down from the control's
+                // line box; the hit region must cover every painted line, not one indicator-high
+                // strip. `wrap_to_width` is the same splitter the painter uses.
+                let lines = {
+                    let mut measure = |text: &str| estimate_text_width(text, font, 1.0);
+                    wrap_to_width(&self.text, label_width, &mut measure)
+                };
+                let block_height = (lines.len().max(1) as u32).saturating_mul(line.height);
+                let visible = block_height
+                    .min((rect.y + rect.height as i32).saturating_sub(line.y).max(0) as u32);
+                let top = indicator.y.min(line.y);
+                let bottom = (indicator.y + indicator.height as i32).max(line.y + visible as i32);
+                Rect::new(
+                    indicator.x,
+                    top,
+                    (label_x - indicator.x).max(0) as u32 + label_width,
+                    (bottom - top).max(0) as u32,
+                )
+            } else {
+                // The label's width uses the **same** shared measurement the painter's ruler and
+                // `implicit_size` use (D09-CTRL-02): the old `chars().count() * 3/5 em` estimate
+                // under-counts wide glyphs, so the visible label could extend past this region and its
+                // tail was not clickable.
+                let label_width = estimate_text_width(&self.text, font, 1.0);
+                Rect::new(
+                    indicator.x,
+                    indicator.y,
+                    indicator.width + self.label_gap() as u32 + label_width,
+                    indicator.height,
+                )
+            }
         };
         match self.style().touch_target {
             Some(min_size) => contents.expand_to_touch_target(min_size),
@@ -289,11 +314,16 @@ impl RadioButton {
             return;
         };
         button_group::register(key.clone(), self.id(), self.geometry(), self.base.is_enabled());
-        if let Some(previous) = button_group::select(&key, self.id()) {
-            if previous != self.id() {
-                button_group::notify_checked(&[previous], false);
-            }
+        // `is_checked` reads the group, so the displaced member must be told **before** the
+        // selection moves: after `select` it already reports `false` and its `set_checked(false)`
+        // would find no edge to announce, leaving a mounted peer painted unchecked without ever
+        // emitting `checked_changed(false)`.
+        if let Some(previous) =
+            button_group::selected(&key).filter(|previous| *previous != self.id())
+        {
+            button_group::notify_checked(&[previous], false);
         }
+        button_group::select(&key, self.id());
     }
 
     /// Releases the group's selection when this radio holds it.
@@ -379,6 +409,10 @@ impl RadioButton {
         if self.group_id.as_deref() == group_id.as_deref() {
             return;
         }
+        // The effective checked state can change without the latch moving: a radio displaced by a
+        // peer in the old group becomes checked again when it leaves that group. Capture the
+        // answer the user sees so the repaint and signals below describe the real transition.
+        let previous = self.is_checked();
         let previous_key = self.exclusive_key();
         self.group_id = group_id.map(|id| Rc::from(id.as_str()));
         if let Some(key) = previous_key {
@@ -387,6 +421,21 @@ impl RadioButton {
         self.sync_group_registration();
         if self.checked {
             self.claim_group_selection();
+        }
+        let current = self.is_checked();
+        self.base.request_redraw();
+        if previous != current {
+            // Re-resolve before announcing, as `set_checked` does, so a listener reading the
+            // style back sees the state it is being told about.
+            crate::style::reapply_active_theme_state(self);
+            self.checked_changed.emit(current);
+            if current {
+                self.selected.emit();
+            }
+            button_group::notify_member_event(
+                self.id(),
+                button_group::MemberEvent::Toggled(current),
+            );
         }
     }
     /// Returns optional group identifier.
@@ -464,11 +513,19 @@ impl RadioButton {
             return true;
         }
 
-        if let Some(previous) = button_group::select(&key, target) {
-            if previous != self.id() && previous != target {
+        if let Some(previous) = button_group::selected(&key).filter(|previous| *previous != target)
+        {
+            if previous != self.id() {
+                // The target's own claim notifies this peer when the target is mounted; asking
+                // here as well covers an unmounted target and is a no-op for a peer already told.
                 button_group::notify_checked(&[previous], false);
             }
         }
+        // Ask the target **before** moving the group's selection. A radio's `is_checked` reads
+        // the group, so a mounted target told after `select` already reports checked and emits
+        // no `checked_changed(true)`/`selected`.
+        button_group::notify_checked(&[target], true);
+        button_group::select(&key, target);
         // This control is no longer the selected member; its own latch would otherwise come back
         // to life the moment the new selection is cleared.
         if self.checked {
@@ -476,7 +533,6 @@ impl RadioButton {
             crate::style::reapply_active_theme_state(self);
             self.checked_changed.emit(false);
         }
-        button_group::notify_checked(&[target], true);
         #[cfg(not(alloc_frugal))]
         {
             // Focus follows selection, which is what makes a second arrow press continue from
@@ -916,14 +972,19 @@ impl EventHandler for RadioButton {
             Event::MouseEnter { .. }
             | Event::MouseLeave { .. }
             | Event::MousePress { .. }
-            | Event::MouseRelease { .. } => self.sync_fade(),
+            | Event::PointerPress { .. }
+            | Event::MouseRelease { .. }
+            | Event::PointerRelease { .. } => self.sync_fade(),
             _ => { /* Other events carry no fade-relevant pointer state */ }
         }
         // A release, a leave or a lost focus ends an auto-repeat hold *before* the enabled gate
         // below, so a control that was disabled mid-press cannot resume a stale hold when it is
         // re-enabled with the pointer still down.
         match event {
-            Event::MouseRelease { .. } | Event::MouseLeave { .. } | Event::FocusLost => {
+            Event::MouseRelease { .. }
+            | Event::PointerRelease { .. }
+            | Event::MouseLeave { .. }
+            | Event::FocusLost => {
                 self.end_auto_repeat();
             }
             #[cfg(feature = "touch")]
@@ -936,7 +997,9 @@ impl EventHandler for RadioButton {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } if *button == 1 => {
+            Event::MousePress { pos, button, .. } | Event::PointerPress { pos, button, .. }
+                if *button == 1 =>
+            {
                 if self.hit_area().contains_point(*pos) {
                     // Only a press that landed on the radio may repeat; the base's `pressed` flag
                     // covers the whole laid-out rectangle.
@@ -2362,5 +2425,124 @@ mod tests {
             single_svg, wrapped_svg,
             "wrapping must reshape a caption that does not fit its width"
         );
+    }
+
+    /// Every wrapped line is part of the click target, not just the indicator's own strip.
+    ///
+    /// `hit_area` measured the unwrapped label on one indicator-high row while the painter
+    /// wrapped the caption to `rect.height`, so a click on line 2..n did nothing.
+    #[test]
+    fn a_wrapped_label_is_clickable_on_every_line() {
+        let mut radio = RadioButton::new(Rect::new(0, 0, 120, 160));
+        radio.set_text(
+            "This label is much wider than its control and needs several wrapped lines to fit"
+                .to_string(),
+        );
+        radio.set_word_wrap(true);
+
+        let rect = radio.geometry();
+        let line_height = effective_font(radio.style()).size().max(1.0) as u32;
+        let line_y = rect.y + ((rect.height as i32 - line_height as i32) / 2).max(0);
+        let point = Point::new(30, line_y + 4 * line_height as i32);
+
+        assert!(
+            radio.hit_area().contains_point(point),
+            "a click on a lower wrapped line must hit: {:?} vs {point:?}",
+            radio.hit_area()
+        );
+        radio.handle_event(&Event::MousePress {
+            pos: point,
+            button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0,
+        });
+        assert!(radio.is_checked(), "and it selects the radio");
+    }
+
+    /// A stylus press selects the radio, matching the mouse arm.
+    #[test]
+    fn a_pointer_press_selects_the_radio() {
+        let mut radio = RadioButton::new(Rect::new(0, 0, 120, 32));
+        radio.handle_event(&Event::pointer_press(
+            Point::new(5, 16),
+            crate::event::mouse_button::PRIMARY,
+            0.5,
+            0.0,
+            0.0,
+        ));
+        assert!(radio.is_checked(), "a pen press is a press (D09-POINTER-01)");
+    }
+
+    /// Arrow navigation asks the target **before** moving the selection, so the target emits.
+    ///
+    /// `select` runs first in the old order, and `is_checked` derives from the group — so a
+    /// mounted target already reported checked when it was notified and announced no edge.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn arrow_navigation_announces_the_target_members_checked_edge() {
+        use crate::compat::{Arc, Box, Mutex, Vec};
+        use crate::event::FocusReason;
+        use crate::widget::runtime;
+
+        let mut first = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut second = RadioButton::new(Rect::new(0, 24, 80, 20));
+        for radio in [&mut first, &mut second] {
+            radio.set_group_id(Some("nav-edge".into()));
+        }
+        first.set_checked(true);
+
+        let events: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        second.checked_changed.connect(move |value| {
+            crate::compat::lock(&sink).push(*value);
+        });
+        let second_id = second.id();
+        runtime::register_with_id(Box::new(second), second_id).expect("registry");
+
+        first.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        first.handle_event(&Event::KeyPress { key: key_codes::DOWN, modifiers: 0 });
+
+        assert_eq!(
+            *crate::compat::lock(&events),
+            vec![true],
+            "the mounted target must emit its own checked edge"
+        );
+        runtime::unregister(second_id);
+    }
+
+    /// Leaving a group can make a displaced latch effective, and that change is announced.
+    ///
+    /// `set_group_id` moved the control between groups without a repaint or a signal, so the
+    /// newly checked radio kept painting unchecked until an unrelated redraw.
+    #[test]
+    fn clearing_the_group_id_announces_a_newly_effective_selection() {
+        use crate::compat::{Arc, Mutex, Vec};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut a = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut b = RadioButton::new(Rect::new(0, 24, 80, 20));
+        a.set_group_id(Some("displaced-edge".into()));
+        b.set_group_id(Some("displaced-edge".into()));
+        a.set_checked(true);
+        b.set_checked(true);
+        assert!(!a.is_checked(), "the peer's selection displaces a");
+
+        let changes: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&changes);
+        a.checked_changed.connect(move |value| {
+            crate::compat::lock(&sink).push(*value);
+        });
+        let selected = Arc::new(AtomicBool::new(false));
+        let selected_sink = Arc::clone(&selected);
+        a.selected.connect(move || selected_sink.store(true, Ordering::SeqCst));
+
+        a.set_group_id(None);
+
+        assert!(a.is_checked(), "leaving the group makes its own latch effective again");
+        assert_eq!(
+            *crate::compat::lock(&changes),
+            vec![true],
+            "and the control announces the effective change"
+        );
+        assert!(selected.load(Ordering::SeqCst), "including the selection signal");
     }
 }

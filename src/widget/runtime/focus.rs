@@ -243,8 +243,11 @@ pub fn focus_next(forward: bool) -> Option<ObjectId> {
         .try_with(|focus| {
             let mut focus = focus.borrow_mut();
             focus.focus_next_matching(forward, |id| {
-                read_widget(id, |widget| widget.is_enabled() && widget.is_visible())
-                    .unwrap_or(false)
+                // A hidden **ancestor** hides this control too (WG-01): the own flag alone let
+                // Tab move into a hidden page's field, where the focus ring is invisible and the
+                // following keystrokes are swallowed off screen.
+                is_effectively_visible(id)
+                    && read_widget(id, |widget| widget.is_enabled()).unwrap_or(false)
             })
         })
         .ok()

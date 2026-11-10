@@ -290,14 +290,9 @@ impl EventHandler for MarkdownEditor {
                     }
                     return;
                 }
-                let row = (pos.y - rect.y - TEXT_TOP) / TEXT_ROW_HEIGHT;
-                if row < 0 {
+                let Some(line) = self.line_at_viewport_y(pos.y) else {
                     return;
-                }
-                let line = self.visible_start() + row as usize;
-                if line >= self.edit_line_count() {
-                    return;
-                }
+                };
                 // The column is resolved against the cached line tables, not by rescanning the
                 // document: the old form walked every line above the hit row on every press and
                 // drag move, and it resolved the column through a different path than the caret.
@@ -330,10 +325,7 @@ impl EventHandler for MarkdownEditor {
                 }
                 if self.selecting {
                     let rect = self.geometry();
-                    let row = (pos.y - rect.y - TEXT_TOP) / TEXT_ROW_HEIGHT;
-                    if row >= 0 {
-                        let line = (self.visible_start() + row as usize)
-                            .min(self.edit_line_count().saturating_sub(1));
+                    if let Some(line) = self.line_at_viewport_y(pos.y) {
                         // Same table, same answer as the press that started the drag.
                         let (column, line_chars) = self.hit_column(line, pos.x - rect.x - 12);
                         self.cursor_line = line;
@@ -610,7 +602,7 @@ impl MarkdownEditor {
             return None;
         }
         let total = self.line_count();
-        if total <= self.visible_line_count().max(1) {
+        if total <= self.visible_line_count().max(1) && self.max_first_line() == 0 {
             return None;
         }
         let rect = self.geometry();
@@ -676,11 +668,13 @@ impl MarkdownEditor {
     /// The scrollbar thumb, sized and placed from the scroll state.
     pub(crate) fn scrollbar_thumb(&self) -> Option<Rect> {
         let track = self.scrollbar_track()?;
-        let total = self.line_count().max(1);
-        let visible = self.visible_line_count().max(1).min(total);
+        let range = self.max_first_line();
+        let visible = self.visible_line_count().max(1);
+        // A rendered block can extend the content beyond the source-line count; the thumb has to
+        // represent that extent or it would stay full-height while the viewport still scrolls.
+        let total = self.line_count().max(1).max(range.saturating_add(visible));
         let height = ((track.height as i64 * visible as i64) / total as i64).max(12) as u32;
         let height = height.min(track.height);
-        let range = total.saturating_sub(visible);
         let travel = track.height.saturating_sub(height) as i64;
         let top = self.visible_start().min(range);
         let y = track.y + if range > 0 { (travel * top as i64 / range as i64) as i32 } else { 0 };
@@ -703,7 +697,7 @@ impl MarkdownEditor {
             return;
         };
         let ratio = ((y - track.y) as f32 / track.height.max(1) as f32).clamp(0.0, 1.0);
-        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        let max_first = self.max_first_line();
         let next = (ratio * max_first as f32).round() as usize;
         if next != self.first_visible_line {
             self.first_visible_line = next.min(max_first);

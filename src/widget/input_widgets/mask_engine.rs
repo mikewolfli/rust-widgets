@@ -91,6 +91,41 @@ impl MaskEngine {
         build_display_text(&self.segments, raw, self.placeholder)
     }
 
+    /// The raw index of the first input cell that begins at or after `display_offset` bytes
+    /// into the formatted value.
+    ///
+    /// # Why this is the engine's answer (I-011)
+    ///
+    /// [`Self::format`] is a many-to-one widening: every unfilled cell is padded, so comparing
+    /// formatted *lengths* cannot say where a raw character landed — the first prefix already
+    /// formats to the full mask width. Only the engine knows which display character came from
+    /// which cell, so the inverse of `format` is answered here, next to the grammar it inverts.
+    ///
+    /// Returns `None` when the offset is past every cell the value fills, because nothing
+    /// follows it there.
+    pub(crate) fn raw_index_at_or_after(&self, raw: &str, display_offset: usize) -> Option<usize> {
+        let raw_chars: Vec<char> = raw.chars().collect();
+        let mut offset = 0usize;
+        let mut raw_index = 0usize;
+        for segment in &self.segments {
+            match segment {
+                MaskSegment::Literal { ch } => offset += ch.len_utf8(),
+                MaskSegment::Input { .. } => {
+                    let Some(ch) = raw_chars.get(raw_index).copied() else {
+                        // Every remaining cell is empty, so there is nothing left to address.
+                        return None;
+                    };
+                    if offset >= display_offset {
+                        return Some(raw_index);
+                    }
+                    offset += ch.len_utf8();
+                    raw_index += 1;
+                }
+            }
+        }
+        None
+    }
+
     /// Keeps only the characters the mask can place, in cell order and with case converters applied.
     pub(crate) fn sanitize(&self, text: &str) -> String {
         let mut raw = String::new();

@@ -347,6 +347,10 @@ impl PopupWindow {
 
     /// Hides the popup and emits `closed`.
     pub fn close(&mut self) {
+        // Closing mid-gesture must not leave a latched drag/resize: `is_dragging()` would
+        // keep answering `true` for a popup that is no longer on screen.
+        self.end_drag();
+        self.end_resize();
         self.hide();
         // Base lifecycle signal (handle-layer `on_close` / JSON `closed`) alongside the widget's
         // own `closed` for its direct listeners.
@@ -1044,5 +1048,29 @@ mod tests {
         popup.set_size(Size::new(200, 150));
         assert_eq!(popup.geometry(), Rect::new(0, 0, 200, 150));
         assert_eq!(sizes.lock().expect("sizes").last(), Some(&Size::new(200, 150)));
+    }
+
+    /// `close` ends an in-flight drag or resize instead of leaving it latched.
+    #[test]
+    fn closing_mid_gesture_clears_the_drag_and_resize_origins() {
+        let mut popup = PopupWindow::with_title("Grip".to_string(), Rect::new(0, 0, 200, 150));
+        popup.open();
+
+        popup.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert!(popup.is_dragging(), "a title-bar press starts a drag");
+        popup.close();
+        assert!(!popup.is_dragging(), "closing must clear the drag origin");
+
+        popup.open();
+        popup.set_resizable(true);
+        let grip = popup.resize_grip_rect().expect("a resizable popup has a grip");
+        popup.handle_event(&Event::MousePress {
+            pos: Point::new(grip.x + 1, grip.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(popup.is_resizing(), "a grip press starts a resize");
+        popup.close();
+        assert!(!popup.is_resizing(), "closing must clear the resize origin");
     }
 }

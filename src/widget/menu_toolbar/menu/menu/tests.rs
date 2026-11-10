@@ -1397,3 +1397,76 @@ fn hovering_the_same_row_keeps_one_tooltip_registration() {
     menu.sync_hover_tooltip();
     assert_eq!(menu.tooltips.text_for(id), Some("Open a document"));
 }
+
+/// Home and End reach the ends of the level by scanning, not by a wrapping step.
+///
+/// # The defect this pins
+///
+/// Both keys called `move_level_hovered(level, ∓count)`. A count-sized step from the first
+/// row wraps back to the first row (so `End` stayed on A) and from there `Home` lands on
+/// the last (so `Home` moved to C).
+#[test]
+fn home_and_end_reach_the_ends_without_wrapping() {
+    let mut menu = Menu::new("Edit", Rect::new(0, 0, 160, 100));
+    menu.add_action("A");
+    menu.add_action("B");
+    menu.add_action("C");
+    menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+    assert_eq!(menu.hovered_index(), Some(0));
+
+    menu.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+    assert_eq!(menu.hovered_index(), Some(2), "End must land on the last row");
+    menu.handle_event(&Event::KeyPress { key: 36, modifiers: 0 });
+    assert_eq!(menu.hovered_index(), Some(0), "Home must land on the first row");
+}
+
+/// Opening a menu whose first row is a section highlights the first real choice.
+#[test]
+fn opening_a_menu_with_a_caption_first_highlights_a_choice() {
+    let mut menu = Menu::new("File", Rect::new(0, 0, 200, 160));
+    menu.add_item(MenuEntry::section("Recent"));
+    menu.add_item(MenuEntry::new("One"));
+    menu.open_at(Point::new(0, 0), Rect::new(0, 0, 600, 600));
+
+    assert_eq!(menu.hovered_index(), Some(1), "a section caption is not a keyboard starting point");
+}
+
+/// A mutation disarms the pending hover-open timer instead of opening the new occupant.
+#[test]
+fn mutating_items_disarms_a_pending_hover_open() {
+    let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+    menu.add_item(MenuEntry::new("Branch").with_submenu(vec![MenuEntry::new("Child")]));
+
+    menu.hover_open_pending = Some((0, 0));
+    menu.insert_item(0, MenuEntry::new("Inserted"));
+    assert_eq!(menu.hover_open_pending, None, "an insert must not leave the old index armed");
+
+    menu.hover_open_pending = Some((0, 0));
+    menu.remove_item(0);
+    assert_eq!(menu.hover_open_pending, None, "a removal must disarm the timer too");
+
+    menu.hover_open_pending = Some((0, 0));
+    menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+    assert_eq!(menu.hover_open_pending, None, "a reopen starts with no pending branch");
+}
+
+/// Adding and clearing rows asks for the frame that shows the change.
+#[test]
+fn mutating_the_items_requests_a_redraw() {
+    let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+    let redraws = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::clone(&redraws);
+    menu.base.redraw_requested.connect(move || {
+        sink.fetch_add(1, Ordering::SeqCst);
+    });
+
+    menu.add_action("Open");
+    let after_add = redraws.load(Ordering::SeqCst);
+    assert!(after_add > 0, "appending a row must request a frame");
+
+    menu.clear();
+    assert!(
+        redraws.load(Ordering::SeqCst) > after_add,
+        "clearing the rows must repaint the now-empty list"
+    );
+}

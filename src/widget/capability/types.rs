@@ -487,16 +487,23 @@ pub fn validate_property_value(
     // reach. Every path that validates a value against a *declared property* comes through this
     // function (see the note on it above), so the check is not avoidable by using another entry
     // point.
-    if let Some(record_schema) = schema.record_schema {
-        if let CapabilityValue::Records(list) = value {
-            // Judged against the schema the **property** declares, never the one the value brought
-            // with it: judging it by its own would let a caller satisfy a rule with a schema the
-            // control never published. A list from JSON or the ABI carries no schema at all, so this
-            // is also the only place its records can be checked.
-            return list.validate_against(record_schema).map_err(|cause| {
-                ConstraintViolation::RecordList { property: property.into(), cause }
+    if let CapabilityValue::Records(list) = value {
+        // A record list is *meaningless* without the schema the property declared, so a `Records`
+        // row that publishes none refuses the value rather than treating it as an open list. The
+        // contract is what stops an unvalidated shape travelling under a declared name.
+        let Some(record_schema) = schema.record_schema else {
+            return Err(ConstraintViolation::RecordList {
+                property: property.into(),
+                cause: crate::widget::capability::records::RecordViolation::SchemaMissing,
             });
-        }
+        };
+        // Judged against the schema the **property** declares, never the one the value brought
+        // with it: judging it by its own would let a caller satisfy a rule with a schema the
+        // control never published. A list from JSON or the ABI carries no schema at all, so this
+        // is also the only place its records can be checked.
+        return list
+            .validate_against(record_schema)
+            .map_err(|cause| ConstraintViolation::RecordList { property: property.into(), cause });
     }
     // A non-`Records` value written to a `Records` property is the property contract's own
     // `TypeMismatch`, reported by the write itself — the same division of labour the range check has,
@@ -645,6 +652,77 @@ pub enum PropertyValueKind {
     /// A sample series (a sparkline) is the motivating case. A non-finite sample is refused at
     /// the JSON boundary, because a `NaN` in a document is not a number any reader can consume.
     NumberList,
+    /// An ordered list of RGBA colours, carried as [`CapabilityValue::Tuple`] of
+    /// [`CapabilityValue::Color`].
+    ///
+    /// A swatch grid's palette is the motivating case. It is a separate kind from [`Self::Color`]
+    /// because a *list* of colours and *one* colour are different values: declaring the list with
+    /// the scalar kind made `get` answer a `Tuple<Color>` the schema did not describe, made a
+    /// `Color` write look legal when the control requires a list, and made the derived
+    /// `set_colors` command advertise one colour. The list kind is the honest declaration.
+    ColorList,
+}
+
+/// Whether a value's runtime shape satisfies a declared [`PropertyValueKind`] on the **property**
+/// path.
+///
+/// [`CapabilityValue::Null`] is accepted for every kind: it is the documented "not set" value, and
+/// many optional `UInt`/`Bool` rows genuinely accept it. The numeric widenings are the ones
+/// [`coercion`](super::coercion) defines (in-range `UInt` to `Int`, non-negative `Int` to `UInt`,
+/// either integer to `Float`). `Color` additionally accepts the `#rrggbbaa` string the controls'
+/// `expect_color` has always taken; a `Rect` accepts a four-number tuple for the same reason.
+///
+/// `Records` is true only for a [`CapabilityValue::Records`] value; the *field* matcher in
+/// `records.rs` refuses it because a record cannot carry a nested record list.
+pub fn value_matches_property_kind(value: &CapabilityValue, kind: PropertyValueKind) -> bool {
+    if matches!(value, CapabilityValue::Null) {
+        return true;
+    }
+    match kind {
+        PropertyValueKind::Bool => matches!(value, CapabilityValue::Bool(_)),
+        PropertyValueKind::Int => match value {
+            CapabilityValue::Int(_) => true,
+            CapabilityValue::UInt(number) => i64::try_from(*number).is_ok(),
+            _ => false,
+        },
+        PropertyValueKind::UInt => match value {
+            CapabilityValue::UInt(_) => true,
+            CapabilityValue::Int(number) => *number >= 0,
+            _ => false,
+        },
+        PropertyValueKind::Float | PropertyValueKind::Number => matches!(
+            value,
+            CapabilityValue::Float(_) | CapabilityValue::Int(_) | CapabilityValue::UInt(_)
+        ),
+        PropertyValueKind::String | PropertyValueKind::Enum => {
+            matches!(value, CapabilityValue::String(_))
+        }
+        PropertyValueKind::Color => {
+            matches!(value, CapabilityValue::Color(_) | CapabilityValue::String(_))
+        }
+        PropertyValueKind::Rect => match value {
+            CapabilityValue::Rect(_) => true,
+            CapabilityValue::Tuple(items) => {
+                items.len() == 4 && items.iter().all(numeric_value_is_some)
+            }
+            _ => false,
+        },
+        PropertyValueKind::IconSpec => matches!(value, CapabilityValue::IconSpec(_)),
+        PropertyValueKind::Records => matches!(value, CapabilityValue::Records(_)),
+        PropertyValueKind::StringList
+        | PropertyValueKind::NumberList
+        | PropertyValueKind::ColorList => {
+            // The list kinds are all carried as a `Tuple`; the element shape is the control's own
+            // declaration (and is validated by its extractor and, for records, by the record
+            // schema). The variant check is what this function owns, so it accepts any tuple.
+            matches!(value, CapabilityValue::Tuple(_))
+        }
+    }
+}
+
+/// Whether a value is one of the numeric carriers.
+fn numeric_value_is_some(value: &CapabilityValue) -> bool {
+    matches!(value, CapabilityValue::Int(_) | CapabilityValue::UInt(_) | CapabilityValue::Float(_))
 }
 
 /// Metadata for one readable/writable property.
@@ -658,8 +736,16 @@ pub struct PropertySchema {
     /// publish several names for the same property (aliases), in which case each
     /// has its own schema entry pointing at the same underlying value.
     pub name: &'static str,
-    /// The declared type of the value. A write of any other kind fails with
-    /// [`CapabilityAccessError::TypeMismatch`] rather than being coerced.
+    /// The declared type of the value. A write whose variant does not match fails with
+    /// [`CapabilityAccessError::TypeMismatch`] rather than being silently coerced.
+    ///
+    /// [`CapabilityValue::Null`] is accepted for every kind: it is the documented "not set"
+    /// value, and several optional numeric/boolean rows genuinely use it. The numeric widenings
+    /// [`coercion`](super::coercion) defines are accepted too (`Int`/`UInt` for `Number`, an
+    /// in-range `UInt` for `Int`, either integer for `Float`), because those are carriers of one
+    /// declared numeric type rather than a different kind. The check is
+    /// [`value_matches_property_kind`], applied by the property write path before the control
+    /// sees the value.
     pub value_kind: PropertyValueKind,
     /// Whether the property can be read. `false` means a read answers
     /// [`CapabilityAccessError::UnknownProperty`], exactly as an unresolvable

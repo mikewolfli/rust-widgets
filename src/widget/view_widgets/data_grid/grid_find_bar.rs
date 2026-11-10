@@ -42,7 +42,11 @@ pub struct GridFindBar {
     preedit: String,
     /// The painted prompt/query text, keyed by the query it was built from.
     display_cache: RefCell<Option<(String, String)>>,
-    /// Emitted with the matched row's projection index.
+    /// Emitted with the matched **source row index**.
+    ///
+    /// The bar searches the bound source, so it knows nothing about the owning grid's filter or
+    /// sort. This is therefore not a projection index: the host maps it through the grid's
+    /// projection (for example via `DataGrid::index_projection`) when it needs the painted row.
     pub match_found: Signal1<usize>,
     /// Emitted when a search reaches the end without a match.
     pub no_match: Signal1<()>,
@@ -194,6 +198,10 @@ impl GridFindBar {
     }
 
     /// Finds the next matching row after the current one, wrapping when enabled.
+    ///
+    /// The returned (and emitted) index is a **source** row index: the bar cannot see the owning
+    /// grid's filter or sort, so a host that scrolls to the match maps it through the grid's
+    /// projection rather than passing it to a projected-row API directly.
     pub fn find_next(&mut self) -> Option<usize> {
         let rows = self.source.as_ref().map(|source| source.row_count()).unwrap_or(0);
         if rows == 0 || self.query.is_empty() {
@@ -223,6 +231,9 @@ impl GridFindBar {
     }
 
     /// Finds the previous matching row before the current one, wrapping when enabled.
+    ///
+    /// Like [`Self::find_next`], the index is a source row index and the host maps it through the
+    /// grid's projection.
     pub fn find_previous(&mut self) -> Option<usize> {
         let rows = self.source.as_ref().map(|source| source.row_count()).unwrap_or(0);
         if rows == 0 || self.query.is_empty() {

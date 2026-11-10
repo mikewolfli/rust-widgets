@@ -427,9 +427,9 @@ pub struct TreeView {
     pub expanded: Signal1<usize>,
     /// Emitted with the model index when a branch closes.
     pub collapsed: Signal1<usize>,
-    /// Emitted when the user activates a node (Enter or double-click).
+    /// Emitted when the user activates a node (Enter or double-click), with its **visible** row.
     pub activated: Signal1<usize>,
-    /// Emitted when a node is double-clicked.
+    /// Emitted when a node is double-clicked, with its **visible** row.
     pub node_double_clicked: Signal1<usize>,
     /// First visible row; wheel and keyboard scrolling move it.
     scroll_row: usize,
@@ -694,6 +694,15 @@ impl TreeView {
             self.projection_positions.insert(*model_index, row);
         }
         self.projection_valid = true;
+        // A rebuild can shrink the projection (a collapse, a model swap); the row-unit offset has
+        // to follow it or the paint starts past the last row and the control looks empty.
+        self.clamp_scroll_row();
+    }
+
+    /// Keeps `scroll_row` inside the current visible projection.
+    fn clamp_scroll_row(&mut self) {
+        let rows = self.visible_row_count();
+        self.scroll_row = if rows == 0 { 0 } else { self.scroll_row.min(rows - 1) };
     }
 
     /// The one walk over the model, applying the ancestor-expansion rule.
@@ -1221,7 +1230,7 @@ impl TreeView {
         let Some(position) = self.visible_position_of(model_index) else {
             return false;
         };
-        let page = (self.base.geometry().height / TREE_ROW_HEIGHT.max(1) as u32).max(1) as usize;
+        let page = self.visible_row_capacity();
         if position < self.scroll_row {
             self.set_scroll_row(position);
         } else if position >= self.scroll_row.saturating_add(page) {
@@ -1473,6 +1482,17 @@ impl TreeView {
         } else {
             0
         }
+    }
+
+    /// The number of whole rows the content box can paint below the header band.
+    ///
+    /// The paint loop and the keyboard paging use this one derivation: measuring from the control's
+    /// rectangle ignored both the inset band and the header, so `PageDown` could focus a row the
+    /// frame never painted and `ensure_visible` refused to scroll to it.
+    fn visible_row_capacity(&self) -> usize {
+        let content = ControlMetrics::band_inset(self.base.geometry(), TREE_INSET);
+        let usable = content.height.saturating_sub(self.header_offset().max(0) as u32);
+        (usable / TREE_ROW_HEIGHT.max(1) as u32).max(1) as usize
     }
 
     /// The header band, when one is painted.
@@ -1924,6 +1944,10 @@ impl TreeView {
         self.focused_node = self.focused_node.filter(|index| *index < model_count);
         self.editing = self.editing.filter(|index| *index < model_count);
         self.expanded_override.retain(|index, _| *index < model_count);
+        // The scroll offset is a visible row index, so a projection change can leave it past the
+        // end. Clamping here covers every caller that normalises state; `rebuild_projection`
+        // clamps again after it has the new projection in hand.
+        self.clamp_scroll_row();
     }
 
     // ── In-place editing ─────────────────────────────────────────────────────
@@ -2117,6 +2141,12 @@ impl TreeView {
         self.selected_nodes = selected;
         self.selected_node = self.selected_nodes.iter().next().copied();
         self.expanded_override = expanded;
+        // The restored expansion replaces the old one, so every reader that trusts `projection_valid`
+        // would otherwise keep the previous projection (a collapsed branch whose children are still
+        // painted). Normalise the state against the new override and rebuild before any read.
+        self.normalize_projection_state();
+        self.rebuild_projection();
+        self.base.request_layout();
         self.base.request_redraw();
         true
     }
@@ -2634,10 +2664,7 @@ impl Draw for TreeView {
             // content box can hold plus one (the loop stops at the first row that does not
             // fit), so the projection stops as soon as painting will.
             let content = ControlMetrics::band_inset(rect, TREE_INSET);
-            let header = self.header_offset();
-            let row_capacity = (content.height.saturating_sub(header as u32)
-                / TREE_ROW_HEIGHT as u32) as usize
-                + 1;
+            let row_capacity = self.visible_row_capacity() + 1;
             // Start the cursor at the first visible row: the prefix above the viewport is never
             // materialised, however deep the scroll is (V-010).
             let rows = self.visible_rows_scratch.borrow_mut();
@@ -3055,6 +3082,16 @@ impl crate::event::EventHandler for TreeView {
                 // closes it. Without these a keyboard user could select a node but never reach the
                 // nodes inside a collapsed branch.
                 let changed = match *key {
+                    crate::event::key_codes::ENTER | crate::event::key_codes::LINE_FEED => {
+                        // Enter activates the focused node, the same operation a double-click
+                        // performs (and reported in the same visible-row space).
+                        if let Some(visible) =
+                            self.focused_node.and_then(|node| self.visible_position_of(node))
+                        {
+                            self.activated.emit(visible);
+                        }
+                        false
+                    }
                     crate::event::key_codes::RIGHT => self.expand_focused(),
                     crate::event::key_codes::LEFT => self.collapse_focused(),
                     crate::event::key_codes::UP
@@ -3076,8 +3113,7 @@ impl crate::event::EventHandler for TreeView {
                                     self.projection_positions.get(&model_index).copied()
                                 })
                                 .unwrap_or(0);
-                            let page = (self.base.geometry().height / TREE_ROW_HEIGHT.max(1) as u32)
-                                .max(1) as usize;
+                            let page = self.visible_row_capacity();
                             let next = match *key {
                                 crate::event::key_codes::UP => current.saturating_sub(1),
                                 crate::event::key_codes::DOWN => {
@@ -3106,9 +3142,11 @@ impl crate::event::EventHandler for TreeView {
             }
             crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
                 if let Some(index) = self.node_at(*pos) {
-                    let model_index = self.model_index(index).unwrap_or(index);
-                    self.node_double_clicked.emit(model_index);
-                    self.activated.emit(model_index);
+                    // Both activation signals and the same gesture's `selection_changed` speak the
+                    // **visible** row space; emitting the model index here made one gesture name two
+                    // different rows whenever a branch was collapsed.
+                    self.node_double_clicked.emit(index);
+                    self.activated.emit(index);
                     let _ = self.toggle_expanded(index);
                 }
             }
@@ -3826,7 +3864,7 @@ mod tests {
         assert!(view.ensure_visible(0));
         assert_eq!(view.scroll_row(), 0, "scrolling up to the node");
 
-        let page = (view.base.geometry().height / TREE_ROW_HEIGHT as u32) as usize;
+        let page = view.visible_row_capacity();
         assert!(view.ensure_visible(page + 5));
         assert_eq!(view.scroll_row(), 6, "moved by exactly the overflow");
         assert!(!view.scroll_to_node(10_000), "there is no such node");
@@ -3834,6 +3872,113 @@ mod tests {
         assert!(view.auto_scroll_to_expanded());
         view.set_auto_scroll_to_expanded(false);
         assert!(!view.auto_scroll_to_expanded());
+    }
+
+    /// Page/visible arithmetic and the paint loop agree on the rows below the header.
+    ///
+    /// # The defect this pins
+    ///
+    /// `ensure_visible` and the page keys divided the control's full height by the row height,
+    /// while paint measured the inset content box minus the header band. A 100 px tree with a
+    /// 24 px header paints 3 rows but paged by 5, so `PageDown` could focus a row the frame never
+    /// painted and `ensure_visible` refused to scroll to it.
+    #[test]
+    fn page_size_matches_the_rows_painted_below_the_header() {
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 100));
+        view.set_columns(vec![TreeColumn::new("Name", 160)]);
+        view.set_model(Arc::new(VecTreeModel::new((0..50).map(|n| format!("node {n}")).collect())));
+
+        assert_eq!(view.visible_row_capacity(), 3, "(100 - 2*inset - 24) / 20");
+        assert!(view.ensure_visible(4));
+        assert_eq!(view.scroll_row(), 2, "row 4 is brought inside a three-row page");
+    }
+
+    /// Restoring a state blob rebuilds the projection from the restored expansion.
+    ///
+    /// # The defect this pins
+    ///
+    /// `restore_state` replaced `expanded_override` but left `projection_valid == true`, so the
+    /// cached projection still described the previous expansion: `is_expanded` reported a branch
+    /// collapsed (and painted its glyph collapsed) while its children kept painting. The first
+    /// click then "expanded" it to the state already on screen.
+    #[test]
+    fn restoring_state_rebuilds_the_projection_for_the_restored_expansion() {
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 200));
+        view.set_model(Arc::new(NestedModel));
+
+        assert!(view.collapse(2), "child_b has a child to hide");
+        assert_eq!(view.visible_indices(), vec![0, 1, 2, 4]);
+        let state = view.save_state();
+
+        assert!(view.expand(2));
+        assert_eq!(view.visible_indices(), vec![0, 1, 2, 3, 4]);
+
+        assert!(view.restore_state(&state));
+        assert!(!view.is_expanded(2), "the restored state says child_b is collapsed");
+        assert_eq!(
+            view.visible_indices(),
+            vec![0, 1, 2, 4],
+            "the projection follows the restored expansion, not the previous one"
+        );
+    }
+
+    /// Collapsing a deep tree re-clamps the row-unit scroll offset.
+    #[test]
+    fn collapsing_all_reclamps_a_deep_scroll_offset() {
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 120));
+        view.set_model(Arc::new(CountingModel::nested(100)));
+        assert!(view.visible_row_count() > 5);
+
+        view.set_scroll_row(40);
+        assert_eq!(view.scroll_row(), 40);
+
+        assert!(view.collapse_all() > 0);
+        assert_eq!(view.visible_row_count(), 1);
+        assert_eq!(view.scroll_row(), 0, "the offset cannot point past the collapsed tree");
+    }
+
+    /// Enter and double-click activate the row in the **visible** space `selection_changed` uses.
+    ///
+    /// # The defect this pins
+    ///
+    /// `activated`'s documentation promised Enter, but no key arm existed. The double-click arm
+    /// then emitted the **model** index while the same gesture's `selection_changed` carried the
+    /// visible index, so one gesture named two different rows whenever a branch was collapsed.
+    #[test]
+    fn enter_and_double_click_activate_a_visible_row() {
+        use crate::event::{Event, EventHandler};
+
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 200));
+        view.set_model(Arc::new(NestedModel));
+        assert!(view.collapse(0), "collapsing the root makes row 1 a visible index for node 4");
+        assert_eq!(view.visible_indices(), vec![0, 4]);
+
+        let activated = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&activated);
+        view.activated.connect(move |row| {
+            sink.lock().expect("the test slot locks").push(*row);
+        });
+        let doubled = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&doubled);
+        view.node_double_clicked.connect(move |row| {
+            sink.lock().expect("the test slot locks").push(*row);
+        });
+
+        let row = view.node_row_rect(1).expect("row 1 is painted");
+        view.handle_event(&Event::MouseDoubleClick {
+            pos: crate::core::Point::new(row.x + 4, row.y + row.height as i32 / 2),
+            button: 1,
+        });
+        assert_eq!(*activated.lock().expect("the test slot locks"), vec![1]);
+        assert_eq!(*doubled.lock().expect("the test slot locks"), vec![1]);
+
+        assert!(view.set_focused_node(1));
+        view.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
+        assert_eq!(
+            *activated.lock().expect("the test slot locks"),
+            vec![1, 1],
+            "Enter activates the focused visible row"
+        );
     }
 
     /// V-010: the paint cursor starts at the first visible row instead of materialising a

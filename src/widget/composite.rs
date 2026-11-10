@@ -656,6 +656,12 @@ impl ActionRow {
     /// the font metrics, and a composite that guessed would be one more place the label's
     /// width is derived. The caller already has the context — it is about to draw the row.
     ///
+    /// The size is registered as a **hint**, not merely as initial geometry: a layout places a
+    /// child by its hints, so passing the rectangle alone let the row ignore the caller's
+    /// measurement (the row's own test had to recompute the buttons' real sizes to describe the
+    /// behaviour). [`CompositeBuilder::add_sized`] is the fixed-hint form, so the requested size
+    /// is what the layout honours.
+    ///
     /// Returns the created button so the caller can own and dispatch to it; a control the
     /// registry does not publish in this profile is skipped rather than fatal.
     pub fn add(
@@ -665,11 +671,11 @@ impl ActionRow {
         size: Size,
     ) -> Option<Box<dyn Widget>> {
         let leading = if self.labels.is_empty() { 0 } else { self.gap };
-        let widget = self.builder.add(
+        let widget = self.builder.add_sized(
             factory,
             "button",
             label,
-            Rect::new(0, 0, size.width, size.height),
+            size,
             LayoutParams::new().with_margins(EdgeOffsets::new(0, 0, 0, leading)),
         );
         if widget.is_some() {
@@ -691,11 +697,11 @@ impl ActionRow {
         role: ButtonRole,
     ) -> Option<Box<dyn Widget>> {
         let leading = if self.labels.is_empty() { 0 } else { self.gap };
-        let widget = self.builder.add(
+        let widget = self.builder.add_sized(
             factory,
             "button",
             label,
-            Rect::new(0, 0, size.width, size.height),
+            size,
             LayoutParams::new().with_margins(EdgeOffsets::new(0, 0, 0, leading)),
         );
         if widget.is_some() {
@@ -755,9 +761,7 @@ impl ActionRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Font;
     use crate::layout::{AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent};
-    use crate::widget::metrics::{dimensions, estimate_text_width};
     use crate::widget::WidgetFactory;
 
     /// The layout the samples are assembled with.
@@ -1094,23 +1098,11 @@ mod tests {
             row.add(&factory, label, Size::new(72, 36)).expect("button is published");
         }
         assert_eq!(row.len(), 3);
-        // Each button wants its own size -- `max(64, measured(label) + 24)` -- so the row is the
-        // three *different* widths plus the two gaps, not three uniform buttons. The row reports a
-        // width derived from the children rather than from a per-dialog constant, which is what
-        // makes it correct for a label of any length.
-        //
-        // The expected numbers are read from the same estimate the buttons themselves use rather
-        // than written as `72` / `64` / `72`: the old literals were the hand-rolled `label * 8`
-        // arithmetic copied into the test, so they would have gone stale (and did) the moment the
-        // measurement became shared. A test that restates an implementation's arithmetic is a
-        // second copy of it, which is the defect this round is closing.
-        let expected: u32 = ["Cancel", "Back", "Finish"]
-            .iter()
-            .map(|label| {
-                (estimate_text_width(label, &Font::default(), 1.0) + 24)
-                    .max(dimensions::BUTTON_MIN.width)
-            })
-            .sum();
+        // Every button uses the size the caller passed. The layout reads the child's *hints*,
+        // so an initial rectangle alone was ignored and the row silently substituted its own
+        // measurement of the label. The row now registers the requested size as a fixed hint,
+        // which is the documented contract of `ActionRow::add`.
+        let expected: u32 = 3 * 72;
         assert_eq!(row.preferred_width(), expected + 2 * 6);
 
         let band = Rect::new(0, 0, 240, 40);

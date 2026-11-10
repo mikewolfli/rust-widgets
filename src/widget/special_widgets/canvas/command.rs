@@ -9,7 +9,7 @@
 //! mapping, which is what keeps a zoom or a snap from disagreeing between those paths.
 
 use crate::compat::Arc;
-use crate::core::{Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderCommand;
 
 use super::CanvasTransform;
@@ -317,6 +317,38 @@ pub(super) fn without_anti_aliasing(command: RenderCommand) -> RenderCommand {
     }
 }
 
+/// The positive extent between two signed coordinates.
+///
+/// The difference is formed in `i64`: `i32::MAX - i32::MIN` is outside `i32`, so the old
+/// `(a - b).unsigned_abs()` overflowed before it could take the absolute value (a debug panic on
+/// `draw_line(Point(0, 0), Point(i32::MIN, 0))`). The result always fits `u32`, because the
+/// widest pair of `i32`s spans exactly `u32::MAX`.
+fn axis_span(a: i32, b: i32) -> u32 {
+    (i64::from(a) - i64::from(b)).unsigned_abs().max(1) as u32
+}
+
+/// The approximate painted box of a text command.
+///
+/// The canvas stores text as a command like any other mark, and the index only ever held
+/// commands with bounds, so text painted and could never be picked. The shared text estimate
+/// (the same one the controls measure with) gives it a box good enough for a hit test; the
+/// alignment is applied the way the backends apply it.
+fn text_bounds(
+    origin: Point,
+    text: &str,
+    font: &crate::core::Font,
+    alignment: HorizontalAlignment,
+) -> Rect {
+    let width = crate::widget::metrics::estimate_text_width(text, font, 1.0).max(1);
+    let height = crate::widget::metrics::estimate_line_height(font, 1.0);
+    let x = match alignment {
+        HorizontalAlignment::Left => origin.x,
+        HorizontalAlignment::Center => origin.x.saturating_sub(width as i32 / 2),
+        HorizontalAlignment::Right => origin.x.saturating_sub(width as i32),
+    };
+    Rect::new(x, origin.y, width, height)
+}
+
 /// The axis-aligned bounds of a command, when it has any.
 pub(super) fn command_bounds(command: &RenderCommand) -> Option<Rect> {
     match command {
@@ -336,8 +368,8 @@ pub(super) fn command_bounds(command: &RenderCommand) -> Option<Rect> {
         | RenderCommand::DrawLineStroke { from, to, .. } => Some(Rect::new(
             from.x.min(to.x),
             from.y.min(to.y),
-            (from.x - to.x).unsigned_abs().max(1),
-            (from.y - to.y).unsigned_abs().max(1),
+            axis_span(from.x, to.x),
+            axis_span(from.y, to.y),
         )),
         RenderCommand::DrawPath { points, .. } => {
             let first = points.first()?;
@@ -348,24 +380,14 @@ pub(super) fn command_bounds(command: &RenderCommand) -> Option<Rect> {
                 right = right.max(point.x);
                 bottom = bottom.max(point.y);
             }
-            Some(Rect::new(
-                left,
-                top,
-                (right - left).unsigned_abs().max(1),
-                (bottom - top).unsigned_abs().max(1),
-            ))
+            Some(Rect::new(left, top, axis_span(right, left), axis_span(bottom, top)))
         }
         RenderCommand::DrawPath3 { a, b, c, .. } => {
             let left = a.x.min(b.x).min(c.x);
             let top = a.y.min(b.y).min(c.y);
             let right = a.x.max(b.x).max(c.x);
             let bottom = a.y.max(b.y).max(c.y);
-            Some(Rect::new(
-                left,
-                top,
-                (right - left).unsigned_abs().max(1),
-                (bottom - top).unsigned_abs().max(1),
-            ))
+            Some(Rect::new(left, top, axis_span(right, left), axis_span(bottom, top)))
         }
         RenderCommand::DrawArc { center, radius, .. } => Some(Rect::new(
             center.x - *radius as i32,
@@ -376,6 +398,9 @@ pub(super) fn command_bounds(command: &RenderCommand) -> Option<Rect> {
         RenderCommand::DrawImage { x, y, width, height, .. }
         | RenderCommand::DrawImageScaled { x, y, width, height, .. } => {
             Some(Rect::new(*x, *y, *width, *height))
+        }
+        RenderCommand::DrawText { origin, text, font, alignment, .. } => {
+            Some(text_bounds(*origin, text, font, *alignment))
         }
         _ => None,
     }

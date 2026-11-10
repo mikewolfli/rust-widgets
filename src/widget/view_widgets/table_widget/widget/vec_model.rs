@@ -13,14 +13,18 @@ use super::*;
 
 /// One bounded window of cell text fetched from an [`IncrementalTableDataSource`] (RW-7).
 ///
-/// The key covers every input the window's contents depend on: the source's own revision, the
-/// control's change generation, the origin and the size. A paint whose key matches reuses the
-/// window instead of asking the source again, which is what keeps a 60 Hz repaint of a static
-/// table from allocating a visible window per frame.
+/// The cached record carries every input the window's contents depend on — the source's own
+/// revision, the control's change generation, the origin and the size — as **separate fields**.
+/// They used to be folded into one XOR key, and `scroll_column ^ needed_columns` let a different
+/// origin with a different span hash to the same key, so a scroll served a window that began at the
+/// previous column. Comparing the fields directly cannot alias.
 pub(super) struct TableWindow {
-    pub(super) key: u64,
+    pub(super) generation: u64,
+    pub(super) revision: u64,
     pub(super) row_start: usize,
     pub(super) column_start: usize,
+    pub(super) rows: usize,
+    pub(super) columns: usize,
     pub(super) cells: Vec<Vec<Option<String>>>,
 }
 
@@ -137,10 +141,14 @@ impl TableWidget {
     /// How many columns the content box can show from `scroll_column`.
     ///
     /// The same composition the paint loop walks, so the fetched window always contains every
-    /// column the loop can reach.
+    /// column the loop can reach. The accumulation starts at zero because the loop measures a
+    /// column's x **relative to the scrolled band** (the horizontal offset cancels at
+    /// `scroll_column`); starting at `horizontal_offset()` made the span short by however many
+    /// columns fit inside the first offset pixels, so the last headers were painted over cells the
+    /// window never fetched.
     pub(super) fn visible_column_span(&self, content_width: u32) -> usize {
         let count = self.column_count();
-        let mut left = self.horizontal_offset();
+        let mut left = 0u32;
         let mut visible = 0usize;
         for column in self.scroll_column..count {
             if left >= content_width {

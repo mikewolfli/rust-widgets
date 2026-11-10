@@ -13,10 +13,14 @@
 //!
 //! # What the scale means here
 //!
-//! The control is laid out against the **physical** rectangle (`logical × scale`) and the backend's
-//! own `dpi_scale` is set to the same factor, so text metrics/tracking scale with the geometry
-//! instead of the picture being a large canvas around unchanged ink. The widget's previous
-//! geometry is restored before returning, so a snapshot is a read, not a reparent or a resize.
+//! The control is laid out against the **physical** rectangle (`logical × scale`), so its
+//! geometric ink — fills, borders and shapes — is drawn into a larger buffer rather than the
+//! picture being a large canvas around unchanged ink. The backend's own `dpi_scale` is set to the
+//! same factor, which is what its rasteriser reads. The **widget's** text metrics are not
+//! rewritten: this function does not push the factor into the control, so a text run scales with
+//! the requested factor only when the control itself derives it from `dpi_scale`. The widget's
+//! previous geometry is restored before returning, so a snapshot is a read, not a reparent or a
+//! resize.
 //!
 //! # Not on the steady-state path
 //!

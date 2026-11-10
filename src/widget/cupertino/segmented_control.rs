@@ -127,18 +127,7 @@ impl CupertinoSegmentedControl {
         self.segment_enabled.clear();
         self.segment_enabled.resize(segments.len(), true);
         self.segments = segments;
-        if self.selected_index >= self.segments.len().max(1) {
-            self.selected_index = if self.segments.is_empty() {
-                0
-            } else {
-                self.selected_index.min(self.segments.len() - 1)
-            };
-        }
-        // A rebuilt segment set is a reset, not a selection change: the highlight starts on the
-        // segment it is on rather than animating out of the old set.
-        self.slide_from = self.selected_index;
-        self.slide.jump_to(1.0);
-        self.base.request_redraw();
+        self.reset_selection();
     }
 
     /// Replaces the segments with caption + optional icon items.
@@ -146,16 +135,24 @@ impl CupertinoSegmentedControl {
         self.segments = segments.iter().map(|segment| segment.label.clone()).collect();
         self.segment_icons = segments.iter().map(|segment| segment.icon.clone()).collect();
         self.segment_enabled = segments.iter().map(|segment| segment.enabled).collect();
-        if self.selected_index >= self.segments.len().max(1) {
-            self.selected_index = if self.segments.is_empty() {
-                0
-            } else {
-                self.selected_index.min(self.segments.len() - 1)
-            };
-        }
-        self.slide_from = self.selected_index;
+        self.reset_selection();
+    }
+
+    /// Resets the selection to the first segment of a rebuilt list, announcing a real move.
+    ///
+    /// A new non-empty list starts on segment 0, as [`Self::set_segments`] documents. The
+    /// highlight starts there rather than animating out of the old set, so the slide is jumped to
+    /// its arrived end. When the previous selection was somewhere else the reset is a change of
+    /// value and `value_changed` reports it; an empty list has no selection to report.
+    fn reset_selection(&mut self) {
+        let moved = !self.segments.is_empty() && self.selected_index != 0;
+        self.selected_index = 0;
+        self.slide_from = 0;
         self.slide.jump_to(1.0);
         self.base.request_redraw();
+        if moved {
+            self.value_changed.emit(0);
+        }
     }
 
     /// Returns the icon name of segment `index`.
@@ -624,6 +621,31 @@ mod tests {
         sc.set_segments(vec!["One".to_string(), "Two".to_string(), "Three".to_string()]);
         assert_eq!(sc.segment_count(), 3);
         assert_eq!(sc.selected_index().unwrap_or(0), 0);
+    }
+
+    /// A new segment list starts on segment 0 and announces the reset when it moved.
+    ///
+    /// The doc promised a reset while the code kept a clamped old index, and that forced clamp
+    /// emitted nothing, so a host mirroring the value stayed on the old segment.
+    #[test]
+    fn a_new_segment_list_resets_to_the_first_and_announces_it() {
+        use std::sync::{Arc, Mutex};
+
+        let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
+        sc.set_segments(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        sc.set_selected_index(2);
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        sc.value_changed.connect(move |index: Arc<usize>| sink.lock().unwrap().push(*index));
+
+        sc.set_segments(vec!["One".to_string(), "Two".to_string()]);
+        assert_eq!(sc.selected_index(), Some(0), "a rebuilt list starts on the first segment");
+        assert_eq!(*seen.lock().unwrap(), vec![0], "the reset is announced");
+
+        // A rebuild while already on segment 0 is not a change, so nothing is emitted.
+        sc.set_segments(vec!["Three".to_string(), "Four".to_string()]);
+        assert_eq!(*seen.lock().unwrap(), vec![0], "and a reset that moves nothing stays quiet");
     }
 
     #[test]

@@ -457,22 +457,23 @@ impl BarChart {
 
     /// Replaces the multi-series data and its category labels at once.
     ///
-    /// Non-finite values are dropped. When `series` is non-empty the chart draws in
-    /// multi-series mode and ignores [`Self::bars`]; setting an empty list returns it to the
-    /// single-series model.
+    /// Values are stored by category index, so every slot keeps its label: a non-finite value is
+    /// kept in place and simply draws no bar (the painter skips it), rather than being removed and
+    /// shifting every later value into the previous category's slot. When `series` is non-empty the
+    /// chart draws in multi-series mode and ignores [`Self::bars`]; setting an empty list returns it
+    /// to the single-series model.
     pub fn set_series(&mut self, series: Vec<BarSeries>, category_labels: Vec<String>) {
-        let next: Vec<BarSeries> = series
-            .into_iter()
-            .map(|mut item| {
-                item.values.retain(|value| value.is_finite());
-                item
-            })
-            .collect();
+        let next = series;
         if self.animate_value_changes && self.series_shape_matches(&next, &category_labels) {
             let from: Vec<Vec<f64>> = (0..self.series.len())
                 .map(|series_index| {
                     (0..self.series[series_index].values.len())
-                        .filter_map(|category| self.rendered_series_value(series_index, category))
+                        // A slot with no drawn value maps to `0.0` rather than being filtered
+                        // out: the start list is indexed by category, so dropping an entry
+                        // would ease every later category from the wrong starting value.
+                        .map(|category| {
+                            self.rendered_series_value(series_index, category).unwrap_or(0.0)
+                        })
                         .collect()
                 })
                 .collect();
@@ -1261,17 +1262,19 @@ impl BarChart {
     }
 
     /// The value the painter draws for `category` in `series[series_index]`.
+    ///
+    /// `None` means "no bar here": either the slot is absent, or it holds a non-finite value.
+    /// The slot itself stays in `values` so a category-indexed series keeps its alignment.
     fn rendered_series_value(&self, series_index: usize, category: usize) -> Option<f64> {
         let target = *self.series.get(series_index)?.values.get(category)?;
-        Some(
-            self.eased_value(
-                self.value_from_series
-                    .get(series_index)
-                    .and_then(|values| values.get(category))
-                    .copied(),
-                target,
-            ),
-        )
+        let value = self.eased_value(
+            self.value_from_series
+                .get(series_index)
+                .and_then(|values| values.get(category))
+                .copied(),
+            target,
+        );
+        value.is_finite().then_some(value)
     }
 
     /// Interpolates a value between the point a transition started at and its target.
@@ -1566,10 +1569,9 @@ impl BarChart {
     ///
     /// The incremental counterpart of [`Self::set_series`]: it keeps the existing category
     /// labels and every other series, so a live feed can add a feed without rebuilding the
-    /// whole multi-series snapshot. Non-finite values are dropped for the same reason
-    /// [`Self::set_bars`] drops them.
-    pub fn add_series(&mut self, mut series: BarSeries) -> usize {
-        series.values.retain(|value| value.is_finite());
+    /// whole multi-series snapshot. A non-finite value keeps its category slot and draws no bar,
+    /// exactly as [`Self::set_series`] stores it, so appending cannot shift a category.
+    pub fn add_series(&mut self, series: BarSeries) -> usize {
         self.clear_value_transition();
         self.series.push(series);
         self.data_revision = self.data_revision.wrapping_add(1);
@@ -1673,13 +1675,30 @@ impl BarChart {
     #[cfg(widgets_unstripped)]
     pub fn export_svg(&self, path: &str) -> Result<(), std::io::Error> {
         use crate::widget::chart_widgets::svg::render_chart_to_svg_file;
-        use crate::widget::chart_widgets::types::{
-            ChartSeries, ChartType as EngineChartType, DataPoint,
-        };
+        use crate::widget::chart_widgets::types::ChartType as EngineChartType;
 
         let mut engine = EngineChartType::Bar.create_chart();
+        for series in self.export_series() {
+            engine.add_series(series);
+        }
+
+        let geometry = self.base.geometry();
+        let rect = Rect::new(0, 0, geometry.width.max(1), geometry.height.max(1));
+        render_chart_to_svg_file(engine.as_ref(), rect, path)
+    }
+
+    /// The engine series this control exports, carrying each bar's category label.
+    ///
+    /// The label of a bar is its category label: in multi-series mode there is no per-bar
+    /// [`BarEntry`] list to read it from (`self.bars` is empty there), so the shared
+    /// `category_labels` is the only source that can satisfy `export_svg`'s promise that the
+    /// per-bar labels are carried over. A non-finite slot is skipped because it draws no bar.
+    #[cfg(widgets_unstripped)]
+    fn export_series(&self) -> Vec<crate::widget::chart_widgets::types::ChartSeries> {
+        use crate::widget::chart_widgets::types::{ChartSeries, DataPoint};
+
         if self.series.is_empty() {
-            engine.add_series(ChartSeries {
+            return vec![ChartSeries {
                 name: String::new(),
                 data: self
                     .bars
@@ -1693,30 +1712,28 @@ impl BarChart {
                     .collect(),
                 color: self.bar_color,
                 visible: true,
-            });
-        } else {
-            for (index, entry) in self.series.iter().enumerate() {
-                engine.add_series(ChartSeries {
-                    name: entry.name.clone(),
-                    data: entry
-                        .values
-                        .iter()
-                        .enumerate()
-                        .map(|(position, value)| DataPoint {
-                            x: position as f64,
-                            y: *value,
-                            label: self.bars.get(position).map(|bar| bar.label.clone()),
-                        })
-                        .collect(),
-                    color: self.series_color(index),
-                    visible: entry.visible,
-                });
-            }
+            }];
         }
-
-        let geometry = self.base.geometry();
-        let rect = Rect::new(0, 0, geometry.width.max(1), geometry.height.max(1));
-        render_chart_to_svg_file(engine.as_ref(), rect, path)
+        self.series
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| ChartSeries {
+                name: entry.name.clone(),
+                data: entry
+                    .values
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, value)| value.is_finite())
+                    .map(|(position, value)| DataPoint {
+                        x: position as f64,
+                        y: *value,
+                        label: self.category_labels.get(position).cloned(),
+                    })
+                    .collect(),
+                color: self.series_color(index),
+                visible: entry.visible,
+            })
+            .collect()
     }
 
     /// Sets the default bar color for all bars (used when BarEntry.color is None).
@@ -2524,22 +2541,29 @@ impl BarChart {
         plot_area.x + (plot_area.width as f64 * fraction) as i32
     }
 
-    /// Paints the hover highlight and, when enabled, its tooltip.
-    fn draw_hover_overlay(&self, context: &mut RenderContext, plot_area: Rect) {
-        let Some(index) = self.hovered else {
-            return;
-        };
+    /// The category slot the hover highlight covers, in plot coordinates.
+    ///
+    /// The band must use the same window arithmetic as the bar painter (`category_window`,
+    /// `index - first`, the reversed slot flip), otherwise a zoomed chart highlights a slot
+    /// beside the bar it names.
+    fn hover_band(&self, index: usize, plot_area: Rect) -> Option<Rect> {
         let categories = self.category_count();
-        if categories == 0 {
-            return;
+        if categories == 0 || index >= categories {
+            return None;
+        }
+        let (first, last) = self.category_window(categories);
+        let visible = (last - first).max(1);
+        if index < first || index >= last {
+            // The window no longer paints this category, so there is nothing to highlight.
+            return None;
         }
         let slot = match self.orientation {
-            BarOrientation::Vertical => plot_area.width as f32 / categories as f32,
-            BarOrientation::Horizontal => plot_area.height as f32 / categories as f32,
+            BarOrientation::Vertical => plot_area.width as f32 / visible as f32,
+            BarOrientation::Horizontal => plot_area.height as f32 / visible as f32,
         };
-        let slot_index = if self.category_reversed { categories - 1 - index } else { index };
-        let highlight = axis_chrome_color(0.10);
-        let band = match self.orientation {
+        let ordinal = index - first;
+        let slot_index = if self.category_reversed { visible - 1 - ordinal } else { ordinal };
+        Some(match self.orientation {
             BarOrientation::Vertical => Rect::new(
                 plot_area.x + (slot * slot_index as f32) as i32,
                 plot_area.y,
@@ -2552,7 +2576,18 @@ impl BarChart {
                 plot_area.width,
                 slot.max(1.0) as u32,
             ),
+        })
+    }
+
+    /// Paints the hover highlight and, when enabled, its tooltip.
+    fn draw_hover_overlay(&self, context: &mut RenderContext, plot_area: Rect) {
+        let Some(index) = self.hovered else {
+            return;
         };
+        let Some(band) = self.hover_band(index, plot_area) else {
+            return;
+        };
+        let highlight = axis_chrome_color(0.10);
         context.fill_rect(band, highlight);
         if !self.show_tooltip {
             return;
@@ -2588,7 +2623,12 @@ impl BarChart {
                     if !series.visible {
                         continue;
                     }
-                    let value = series.values.get(index).copied().unwrap_or(0.0);
+                    // A non-finite slot draws no bar, so it must not claim a reading in the
+                    // read-out either.
+                    let Some(value) = series.values.get(index).copied().filter(|v| v.is_finite())
+                    else {
+                        continue;
+                    };
                     let name = if series.name.is_empty() {
                         std::format!("Series {}", series_index + 1)
                     } else {
@@ -2806,6 +2846,7 @@ impl EventHandler for BarChart {
                         self.series
                             .iter()
                             .filter_map(|series| series.values.get(index).copied())
+                            .filter(|value| value.is_finite())
                             .fold(f64::NEG_INFINITY, f64::max)
                     };
                     let categories = self.category_count().max(1);
@@ -3113,10 +3154,9 @@ mod tests {
     /// Observable proof: `draw_y_ticks` emits a numeric value label for every
     /// tick, which the widget's previous hand-rolled grid loop did not draw. The labels are not
     /// searchable as strings — they are `font8x8` rectangles now — so the check is on where the
-    /// ink landed. `draw_text` anchors every y-tick label's glyph box at `plot_x - 44 = 20`, and
-    /// the value decides how much ink follows: `100.0` is 17 px wide, `0.0` is 29 px because a
-    /// three-character label is ellipsised to `0…` in the 29 px-wide `bar_width` band. A widget
-    /// drawing only bars produces no run on that anchor at all.
+    /// ink landed. `draw_y_ticks` right-anchors every y-tick label at `plot_x - 4`, so the ink's
+    /// *right* edge ends there whatever the label's width. A widget drawing only bars produces no
+    /// run on that anchor at all.
     ///
     /// Gated on the feature, like `ink_paths` and the module's other `chart`-dependent items:
     /// a build without `chart` compiles this test module and the engine it exercises is absent.
@@ -3132,6 +3172,7 @@ mod tests {
 
         let svg = render_to_svg(&mut bc);
         let runs = ink_paths(&svg);
+        let anchor = bc.last_plot_area().expect("the chart painted a plot").x - 4;
 
         // `draw_y_ticks` walks `tick_count = 4` plus the inclusive upper bound, so five labels
         // are painted. The bars' own `{:.1}` value labels are here too, which is why the
@@ -3141,35 +3182,35 @@ mod tests {
             "the shared tick engine must label every tick (bars included), got {} runs",
             runs.len()
         );
-        let (left, _, right, _) = runs[0];
-        // The engine's anchor is where the glyph **box** starts, at `plot_x - 44`; under the bitmap
-        // face the ink's left edge *is* that box edge, but an outline glyph is inset a pixel or two
-        // (its leftmost column carries no set bit), so the ink starts `INK_INSET_TOLERANCE` within it.
-        // Pinning the two equal encoded a property of the bitmap face, not of the layout.
+        let (_, _, right, _) = runs[0];
+        // The engine anchors the glyph box's **right** edge at `plot_x - 4`; an outline glyph is
+        // inset a pixel or two from its box, so the ink ends within `INK_INSET_TOLERANCE` of it.
+        // Pinning either edge to the bitmap face's geometry encoded a property of that face, not
+        // of the layout.
         assert!(
-            (left - 20).abs() <= INK_INSET_TOLERANCE,
-            "the topmost y-tick label starts at the engine's `plot_x - 44`"
+            (right - anchor).abs() <= INK_INSET_TOLERANCE,
+            "the first y-tick label ends at the engine's `plot_x - 4` anchor ({right} vs {anchor})"
         );
         // An outline's ink is the glyph's **real** width, which is narrower than the advance, so the
         // band is an upper bound rather than an equality: `100.0` is five characters and cannot
         // exceed the five advances they occupy.
         assert!(
-            right - left <= 17,
+            right - runs[0].0 <= 17,
             "...and `100.0` is at most five characters of ink, not the bar label"
         );
         let (short_left, _, short_right, _) = runs[4];
-        // `0.0` is three characters ellipsised to `0…`, whose bitmap ink spans the whole 29 px bar
-        // band; the outline face draws the real, narrower glyphs, so the band is an upper bound.
+        // The bottom y-tick label is right-anchored on the same column edge.
         assert!(
-            (short_left - 20).abs() <= INK_INSET_TOLERANCE,
-            "the bottom y-tick label starts on the same anchor"
+            (short_right - anchor).abs() <= INK_INSET_TOLERANCE,
+            "the fourth y-tick label ends on the same anchor ({short_right} vs {anchor})"
         );
         assert!(
             short_right - short_left <= 29,
             "the bottom y-tick label is `0.0`, which the 29 px bar band ellipsises to `0…`"
         );
         assert!(
-            runs.iter().any(|run| (run.0 - 20).abs() <= INK_INSET_TOLERANCE && run.2 - run.0 <= 17),
+            runs.iter()
+                .any(|run| (run.2 - anchor).abs() <= INK_INSET_TOLERANCE && run.2 - run.0 <= 17),
             "at least one five-character label sits on the y-axis anchor"
         );
         // The two runs differ, so the engine drew a *value* label rather than repeating one
@@ -3797,5 +3838,67 @@ mod tests {
         assert!((chart.growth_progress() - 1.0).abs() < f32::EPSILON);
         chart.set_bar_growth_progress(f32::NAN);
         assert!((chart.growth_progress() - 1.0).abs() < f32::EPSILON, "NaN is ignored");
+    }
+
+    /// A non-finite value keeps its category slot instead of shifting the labels after it.
+    ///
+    /// # The defect this pins
+    ///
+    /// `set_series`/`add_series` used `values.retain(is_finite)`, so a NaN at category 1 deleted
+    /// the slot and moved category 2's value left: label "b" drew "c"'s value and "c" lost its
+    /// bar. A category-indexed list must keep its positions; the painter skips the bad slot.
+    #[test]
+    fn a_non_finite_series_value_keeps_its_category_slot() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_series(
+            vec![BarSeries::new("s", vec![1.0, f64::NAN, 3.0])],
+            vec!["a".into(), "b".into(), "c".into()],
+        );
+        assert_eq!(chart.series()[0].values.len(), 3, "the NaN slot stays in the row");
+        assert!(chart.series()[0].values[1].is_nan());
+        assert_eq!(chart.series()[0].values[2], 3.0, "category c keeps its own value");
+        assert_eq!(chart.category_count(), 3);
+        assert_eq!(chart.rendered_series_value(0, 1), None, "the NaN slot draws no bar");
+        assert_eq!(chart.rendered_series_value(0, 2), Some(3.0));
+
+        let appended = chart.add_series(BarSeries::new("t", vec![f64::INFINITY, 2.0]));
+        assert_eq!(appended, 1);
+        assert_eq!(chart.series()[1].values.len(), 2, "an appended row keeps its slots too");
+        assert!(chart.series()[1].values[0].is_infinite());
+        assert_eq!(chart.series()[1].values[1], 2.0);
+    }
+
+    /// The hover band uses the zoom window, so it covers the bar the pointer names.
+    ///
+    /// # The defect this pins
+    ///
+    /// The band was `plot_width / category_count` at the absolute index, while the painter and
+    /// `category_at` used `first..last`; a 3-of-10 zoom highlighted a slot beside the painted bar.
+    #[test]
+    fn the_hover_band_follows_the_zoom_window() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars((0..10).map(|index| BarEntry::new(std::format!("c{index}"), 1.0)).collect());
+        chart.set_view_window(Some((0.0, 3.0)));
+        let plot = Rect::new(0, 0, 300, 200);
+
+        let band = chart.hover_band(2, plot).expect("category 2 is visible");
+        assert_eq!(band.x, 200, "the third visible slot, not the third of ten");
+        assert_eq!(band.width, 100);
+        assert_eq!(chart.hover_band(5, plot), None, "a category outside the window is not painted");
+    }
+
+    /// A multi-series export carries the shared category labels into each data point.
+    #[cfg(widgets_unstripped)]
+    #[test]
+    fn an_exported_multi_series_carries_its_category_labels() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_series(
+            vec![BarSeries::new("s", vec![1.0, 2.0, 3.0])],
+            vec!["Q1".into(), "Q2".into(), "Q3".into()],
+        );
+        let exported = chart.export_series();
+        let labels: Vec<Option<String>> =
+            exported[0].data.iter().map(|p| p.label.clone()).collect();
+        assert_eq!(labels, vec![Some("Q1".into()), Some("Q2".into()), Some("Q3".into())]);
     }
 }

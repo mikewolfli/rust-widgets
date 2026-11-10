@@ -791,11 +791,27 @@ impl WidgetProperties for NavigationStack {
             "current_page" => match value {
                 // `Null` is the getter's "no page" answer and means an empty stack —
                 // the only state in which this model reports no current page. Every
-                // page still leaves through `pop`, the single mutation path.
+                // page still leaves through `pop`, except the root, which has no `pop`
+                // and is released through the same slot path below.
                 CapabilityValue::Null => {
-                    while self.page_count() > 0 {
+                    if self.pages.is_empty() {
+                        return Ok(());
+                    }
+                    // `pop` refuses to remove the root, so a `page_count() > 0` drain
+                    // could never terminate. Pop every non-root page through the normal
+                    // path (each `pop` strictly shrinks `pages`), then release the root
+                    // itself through the same slot-release path.
+                    while self.can_pop() {
                         self.pop();
                     }
+                    if let Some(root) = self.pages.pop() {
+                        self.release_slot(root);
+                    }
+                    self.page_titles.clear();
+                    self.slide.jump_to(-1.0);
+                    self.slide.set_target(0.0);
+                    self.navigation_changed.emit(NavigationEvent::Popped);
+                    self.base.request_redraw();
                     Ok(())
                 }
                 other => {
@@ -1389,6 +1405,30 @@ mod tests {
         stack.pop_to_root();
         assert_eq!(stack.page_count(), 1);
         assert!(!stack.can_pop());
+    }
+
+    /// Assigning `current_page = Null` must reach the empty stack it documents.
+    ///
+    /// `pop` refuses to remove the root, so the old `while page_count() > 0` drain never
+    /// advanced once the root was the only page and hung the UI. The arm now removes every
+    /// page, and a second `Null` write is a no-op.
+    #[test]
+    fn assigning_a_null_current_page_empties_the_stack() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(Badge::new(Rect::new(0, 44, 100, 24))));
+        stack.push(Box::new(Badge::new(Rect::new(0, 44, 100, 24))));
+        assert_eq!(stack.page_count(), 2);
+
+        stack.set("current_page", CapabilityValue::Null).expect("Null is the empty-stack write");
+        assert_eq!(stack.page_count(), 0);
+        assert!(stack.current_page().is_none());
+        assert_eq!(stack.get("current_page").unwrap(), CapabilityValue::Null);
+
+        // A second write on an already-empty stack still terminates and changes nothing.
+        stack.set("current_page", CapabilityValue::Null).expect("Null remains valid when empty");
+        assert_eq!(stack.page_count(), 0);
     }
 
     #[test]

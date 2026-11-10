@@ -561,8 +561,27 @@ impl Widget for DataGridCellEditor {
 impl Draw for DataGridCellEditor {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        let ink = self.base.style().text_color.unwrap_or(Color::BLACK);
-        context.fill_rect(rect, Color::WHITE);
+        // Resolve the interior from the same `Input` theme role a line edit uses. Filling
+        // `Color::WHITE` unconditionally made this editor a white box on a dark appearance; the
+        // explicit style wins, then the theme's resolved style, then the palette's derived input
+        // background, and only a build with no theme falls back to the historical literal.
+        let theme = crate::style::resolved_theme_style_shared("line_edit");
+        let palette = crate::style::palette_shared();
+        let surface = self
+            .base
+            .style()
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|style| style.background_color))
+            .or_else(|| palette.as_ref().map(|colors| colors.input_background()))
+            .unwrap_or(Color::WHITE);
+        let ink = self
+            .base
+            .style()
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|style| style.text_color))
+            .or_else(|| palette.as_ref().map(|colors| colors.foreground))
+            .unwrap_or(Color::BLACK);
+        context.fill_rect(rect, surface);
         context.draw_rect(rect, ink);
         let font = effective_font(self.base.style());
         context.draw_text_fitted_ellipsis(
@@ -598,3 +617,41 @@ pub(crate) const HEADER_RESIZE_GRAB: i32 = 4;
 
 /// The side of a sort arrow or filter glyph.
 pub(crate) const HEADER_ICON_SIDE: u32 = 10;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cell editor is a field, so its interior has to follow the `Input` theme role; filling
+    /// `Color::WHITE` unconditionally made it a white box on a dark appearance.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_cell_editor_interior_follows_the_theme() {
+        use crate::core::Size;
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        use crate::widget::draw_bridge::draw_of;
+
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+
+        let mut editor = DataGridCellEditor::new(Rect::new(0, 0, 80, 24), "x");
+        let size = Size::new(80, 24);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        let probe = Color { r: 255, g: 0, b: 255, a: 255 };
+        backend.begin_frame(probe);
+        {
+            let drawable = draw_of(&mut editor).expect("the editor is a drawable widget");
+            let mut context = RenderContext::new(&mut backend);
+            drawable.draw(&mut context);
+        }
+        backend.end_frame();
+
+        // (3, 3) is inside the fill, clear of the one-pixel border and the centred glyph.
+        let frame = backend.frame_rgba();
+        let index = ((3 * 80) + 3) * 4;
+        let pixel = (frame[index], frame[index + 1], frame[index + 2]);
+        assert_ne!(pixel, (255, 255, 255), "a dark appearance must not paint a white field");
+        assert_ne!(pixel, (probe.r, probe.g, probe.b), "the fill covers the backdrop");
+    }
+}

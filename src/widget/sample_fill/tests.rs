@@ -233,3 +233,29 @@ fn both_table_routes_expose_the_same_cells() {
     assert_eq!(SampleTableModel.data(99, 0), None);
     assert_eq!(SampleTableSource.data(0, 99), None);
 }
+
+/// Applying the popup sample twice reuses its mounted content instead of leaking a label.
+///
+/// # The defect this pins
+///
+/// The arm called `runtime::register(Box::new(Label…))` on every call and never unregistered the
+/// previous label. `PopupWindow::set_content_widget` unlinks the replaced child but does not
+/// unregister it — that is the caller's job, as `compose_container` documents — so each
+/// `apply("popup_window", …)` left a mounted widget and its accessibility node behind. The fill
+/// now registers only when the popup has no content yet.
+#[test]
+fn applying_the_popup_sample_twice_reuses_its_mounted_content() {
+    let mut popup = PopupWindow::new(crate::core::Rect::new(0, 0, 240, 120));
+    assert!(apply("popup_window", &mut popup), "the popup owns sample content");
+    let first = popup.content_widget().expect("the sample mounts a content label");
+    assert!(crate::widget::runtime::is_mounted(first));
+
+    assert!(apply("popup_window", &mut popup));
+    assert_eq!(
+        popup.content_widget(),
+        Some(first),
+        "a second fill must not replace and abandon the mounted label"
+    );
+    assert!(crate::widget::runtime::is_mounted(first));
+    assert!(crate::widget::runtime::unregister(first), "clean up the mounted fixture");
+}

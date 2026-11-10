@@ -13,7 +13,9 @@ use crate::widget::capability::coercion::{
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use crate::widget::capability::WidgetProperties;
+use crate::widget::capability::{
+    RecordList, RecordValue, WidgetProperties, FILTER_CONDITION_SCHEMA,
+};
 use crate::widget::metrics::effective_font;
 use crate::widget::view_widgets::filter_expr::{FilterCondition, FilterOperator};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -68,11 +70,21 @@ impl FilterRow {
     pub fn set_columns(&mut self, columns: Vec<String>) {
         self.editors.resize(columns.len(), String::new());
         self.columns = columns;
+        // A condition addresses its column by index, so one whose column no longer exists has
+        // nothing left to filter. The documented promise is to preserve only the conditions that
+        // still address a column; the survivors are re-published when the list shrinks.
+        let before = self.conditions.len();
+        self.conditions.retain(|condition| condition.column < self.columns.len());
+        let pruned = self.conditions.len() != before;
         self.sync_editors();
         if self.active_column.is_some_and(|index| index >= self.columns.len()) {
             self.active_column = None;
         }
-        self.base.request_redraw();
+        if pruned {
+            self.publish_changed();
+        } else {
+            self.base.request_redraw();
+        }
     }
 
     /// Returns the editor labels.
@@ -362,27 +374,48 @@ fn condition_value(condition: &FilterCondition) -> CapabilityValue {
     ])
 }
 
+/// Encodes one condition as a record the property's schema declares.
+fn condition_record(condition: &FilterCondition) -> RecordValue {
+    RecordValue::new()
+        .with("column", CapabilityValue::UInt(condition.column as u64))
+        .with("operator", CapabilityValue::String(condition.operator.as_str().to_string()))
+        .with("operand", CapabilityValue::String(condition.operand.clone()))
+}
+
+/// Encodes the whole condition list as the record list its property declares.
+fn conditions_value(conditions: &[FilterCondition]) -> CapabilityValue {
+    CapabilityValue::Records(RecordList::from_items(
+        &FILTER_CONDITION_SCHEMA,
+        conditions.iter().map(condition_record).collect(),
+    ))
+}
+
 /// Decodes the condition-list property.
 fn expect_conditions(
     value: CapabilityValue,
 ) -> Result<Vec<FilterCondition>, CapabilityAccessError> {
-    let CapabilityValue::Tuple(items) = value else {
+    let CapabilityValue::Records(list) = value else {
         return Err(CapabilityAccessError::TypeMismatch);
     };
-    let mut conditions = Vec::with_capacity(items.len());
-    for item in items {
-        let CapabilityValue::Tuple(parts) = item else {
-            return Err(CapabilityAccessError::TypeMismatch);
-        };
-        if parts.len() != 3 {
-            return Err(CapabilityAccessError::TypeMismatch);
+    list.validate_against(&FILTER_CONDITION_SCHEMA).map_err(|violation| {
+        CapabilityAccessError::ConstraintViolation {
+            property: crate::compat::String::from("conditions"),
+            reason: crate::compat::format!("{violation}"),
         }
-        let mut parts = parts.into_iter();
-        let column = expect_usize(parts.next().ok_or(CapabilityAccessError::TypeMismatch)?)?;
-        let token = expect_string(parts.next().ok_or(CapabilityAccessError::TypeMismatch)?)?;
+    })?;
+    let mut conditions = Vec::with_capacity(list.len());
+    for record in list.items() {
+        let column = expect_usize(
+            record.get("column").cloned().ok_or(CapabilityAccessError::TypeMismatch)?,
+        )?;
+        let token = expect_string(
+            record.get("operator").cloned().ok_or(CapabilityAccessError::TypeMismatch)?,
+        )?;
         let operator = FilterOperator::from_name(&token.to_ascii_lowercase())
             .ok_or(CapabilityAccessError::TypeMismatch)?;
-        let operand = expect_string(parts.next().ok_or(CapabilityAccessError::TypeMismatch)?)?;
+        let operand = expect_string(
+            record.get("operand").cloned().ok_or(CapabilityAccessError::TypeMismatch)?,
+        )?;
         conditions.push(FilterCondition::new(column, operator, operand));
     }
     Ok(conditions)
@@ -394,9 +427,7 @@ impl WidgetProperties for FilterRow {
             "columns" => Ok(CapabilityValue::Tuple(
                 self.columns.iter().map(|column| CapabilityValue::String(column.clone())).collect(),
             )),
-            "conditions" => {
-                Ok(CapabilityValue::Tuple(self.conditions.iter().map(condition_value).collect()))
-            }
+            "conditions" => Ok(conditions_value(&self.conditions)),
             "operator" => Ok(CapabilityValue::String(self.operator.as_str().to_string())),
             "live" => Ok(CapabilityValue::Bool(self.live)),
             _ => base_property_get(self, name),
@@ -448,5 +479,38 @@ mod tests {
         assert_eq!(row.conditions().len(), 1);
         row.clear_filters();
         assert!(row.conditions().is_empty());
+    }
+
+    /// FINDING 11: a condition whose column disappears must be pruned and republished.
+    #[test]
+    fn dropping_a_column_prunes_its_condition_and_republishes() {
+        use std::sync::{Arc, Mutex};
+
+        let mut row = FilterRow::new(Rect::new(0, 0, 320, 32));
+        row.set_columns(crate::compat::Vec::from([
+            String::from("Name"),
+            String::from("Status"),
+            String::from("Owner"),
+        ]));
+        assert!(row.set_condition(2, FilterCondition::contains(2, "Ada")));
+        assert!(row.set_condition(1, FilterCondition::contains(1, "open")));
+
+        let published = Arc::new(Mutex::new(crate::compat::Vec::<usize>::new()));
+        let sink = Arc::clone(&published);
+        row.filter_changed.connect(move |conditions| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(conditions.len());
+            }
+        });
+
+        row.set_columns(crate::compat::Vec::from([String::from("Name"), String::from("Status")]));
+
+        assert_eq!(row.conditions().len(), 1, "only the in-range condition survives");
+        assert_eq!(row.conditions()[0].column, 1);
+        assert_eq!(
+            published.lock().expect("published lock").last(),
+            Some(&1),
+            "the pruned list must be published, not silently changed"
+        );
     }
 }

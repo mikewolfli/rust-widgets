@@ -595,7 +595,10 @@ impl Frame {
                         style.border_style.unwrap_or(crate::style::BorderStyle::Solid),
                     );
                 } else if width > 0 {
-                    context.draw_rect(rect, border);
+                    // A zero radius is still the declared frame width: `draw_rect` paints a 1 px
+                    // rule and silently dropped `set_line_width(4.0)`, so a default frame could
+                    // not honour its own width. The width-aware rect stroke is the same line.
+                    context.draw_rect_stroke(rect, border, width);
                 }
                 // `frameWidth(0)` is the reference toolkit's "no frame", so a zero width paints
                 // nothing rather than a hairline nobody asked for.
@@ -816,7 +819,7 @@ impl Frame {
                     style.border_style.unwrap_or(crate::style::BorderStyle::Solid),
                 );
             } else {
-                context.draw_rect(rect, border);
+                context.draw_rect_stroke(rect, border, width);
             }
         }
     }
@@ -1921,5 +1924,30 @@ mod tests {
         );
 
         crate::widget::runtime::unregister(id);
+    }
+
+    /// The no-radius plain and panel arms paint the frame's declared width.
+    ///
+    /// Both routed through `draw_rect`, which is documented as a 1 px rule and ignores its
+    /// argument, so `set_line_width(4.0)` and `set_frame_width(4.0)` still painted a hairline on
+    /// the default (zero-radius) frame.
+    #[test]
+    fn a_zero_radius_frame_paints_its_declared_width() {
+        let mut by_line = Frame::new(Rect::new(0, 0, 40, 30));
+        by_line.set_line_width(4.0);
+        let line_svg = crate::widget::svg::render_to_svg(&mut by_line);
+        assert!(
+            line_svg.contains("stroke-width=\"4\""),
+            "the plain box arm must honour `line_width`: {line_svg}"
+        );
+
+        let mut by_frame = Frame::new(Rect::new(0, 0, 40, 30));
+        by_frame.set_frame_shape(FrameShape::Panel);
+        by_frame.set_frame_width(4.0);
+        let panel_svg = crate::widget::svg::render_to_svg(&mut by_frame);
+        assert!(
+            panel_svg.contains("stroke-width=\"4\""),
+            "the panel arm must honour `frame_width`: {panel_svg}"
+        );
     }
 }

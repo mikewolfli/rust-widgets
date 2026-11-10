@@ -41,12 +41,14 @@ use crate::widget::display_widgets::icon_data_set::{
     lookup_registered, register_icon_data, register_icon_data_with_density,
 };
 
-/// How many host icons may be registered at once.
+/// How many host icon **sources** may be registered at once.
 ///
-/// A fixed capacity, like the runtime font registry: the lookup runs per draw, from threads that
-/// hold no lock, and a growable table behind a lock would put that lock on the draw path. Sixteen
-/// is a UI's worth of application-specific glyphs (a title bar and a toolbar) without making the
-/// per-lookup copy large.
+/// A slot is one `(name, density)` pair, not one name: the registry keeps an `@2x` source beside
+/// the ordinary one under the same name (see [`register_icon_at_density`]), so a name with two
+/// densities occupies two of the sixteen slots. A fixed capacity, like the runtime font registry:
+/// the lookup runs per draw, from threads that hold no lock, and a growable table behind a lock
+/// would put that lock on the draw path. Sixteen is a UI's worth of application-specific glyph
+/// sources (a title bar and a toolbar) without making the per-lookup copy large.
 pub const MAX_REGISTERED_ICONS: usize = 16;
 
 /// Register `paths` as the outline for `name`, replacing any earlier registration of that name.
@@ -144,9 +146,10 @@ pub fn try_register_icon_on_grid_at_density(
 ) -> Result<(), IconRegistrationError> {
     validate_registration(name, paths, grid)?;
     validate_drawable(name, paths, grid)?;
-    // Capacity only refuses a **new** name; a re-registration (of either the same name or
-    // the same name+density) replaces in place, so it is checked after that case is
-    // excluded rather than before.
+    // Capacity only refuses a **new source**: a re-registration of the same `(name, density)`
+    // replaces in place. A new density of an existing name is a new slot, so it passes this
+    // pre-check (the name is already known) but the storage below can still refuse it when the
+    // table is full.
     if !is_registered_icon(name) && registered_icon_count() >= MAX_REGISTERED_ICONS {
         return Err(IconRegistrationError::RegistryFull { capacity: MAX_REGISTERED_ICONS });
     }
@@ -221,12 +224,13 @@ pub enum IconRegistrationError {
     /// A path entry was blank. An empty `d` draws nothing, which is indistinguishable on screen
     /// from a missing icon, so it is refused rather than stored.
     BlankPath,
-    /// The registry is full and this name is not already registered.
+    /// The registry is full and this `(name, density)` source is not already registered.
     ///
-    /// A **re-registration** of an existing name is never refused by capacity: it replaces in
-    /// place, which is why the name is reported here.
+    /// A **re-registration** of an existing source is never refused by capacity: it replaces in
+    /// place. A new density of an already-registered name still needs a new slot, so it can be
+    /// refused here when the table is full even though the name is known.
     RegistryFull {
-        /// How many icons the registry holds at once.
+        /// How many `(name, density)` sources the registry holds at once.
         capacity: usize,
     },
     /// The geometry could not be drawn. The reason comes from the crate's own source validator, so
@@ -287,7 +291,9 @@ pub fn clear_registered_icons() -> usize {
     crate::widget::display_widgets::icon_data_set::clear_registered_icon_data()
 }
 
-/// How many host icons are currently registered.
+/// How many host icon **sources** are currently registered.
+///
+/// One source is one `(name, density)` pair, so a name with an `@2x` variant counts twice.
 pub fn registered_icon_count() -> usize {
     crate::widget::display_widgets::icon_data_set::registered_icon_data_count()
 }

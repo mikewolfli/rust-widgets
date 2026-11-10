@@ -452,9 +452,13 @@ impl ColorPicker {
     /// The band the recent colours occupy, shared by the paint and the hit test.
     pub fn recent_band_rect(&self) -> Rect {
         let rect = self.geometry();
+        // The button row is the bottom of the chrome stack, so a band anchored to the
+        // geometry's bottom painted the swatches over OK/Cancel. Reserve that row when it is
+        // shown, or the press handler forwards a click on the painted OK to the swatch.
+        let buttons = if self.show_buttons { Self::BUTTON_ROW } else { 0 };
         Rect::new(
             rect.x + 8,
-            rect.y + rect.height as i32 - (RECENT_ROW + MARGIN) as i32,
+            rect.y + rect.height as i32 - (RECENT_ROW + MARGIN + buttons) as i32,
             rect.width.saturating_sub(16),
             RECENT_ROW,
         )
@@ -1574,5 +1578,26 @@ mod tests {
         // The paint path accepts the band without panicking.
         let svg = crate::widget::svg::render_to_svg(&mut picker);
         assert!(!svg.is_empty());
+    }
+
+    /// The recent band clears the button row so a swatch never covers OK or Cancel.
+    #[test]
+    fn the_recent_band_leaves_the_button_row_clickable() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 300, 260));
+        picker.set_show_buttons(true);
+        picker.set_recent_colors_enabled(true);
+        picker.pick(Color::rgb(1, 2, 3));
+
+        let band = picker.recent_band_rect();
+        let ok = picker.ok_rect().expect("the button row is shown");
+        assert!(
+            band.y + band.height as i32 <= ok.y,
+            "the recent band must end above the button row: band {band:?}, OK {ok:?}"
+        );
+
+        // A press on the painted OK commits instead of being forwarded to the swatch.
+        let committed = record_colors(&picker.color_committed);
+        picker.handle_event(&Event::mouse_press(ok.x + 2, ok.y + 2, 1));
+        assert_eq!(colours(&committed), vec![picker.color()], "OK must commit the colour");
     }
 }

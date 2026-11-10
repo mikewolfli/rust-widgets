@@ -172,8 +172,12 @@ impl ChartCrosshair {
     }
 
     /// Shows the crosshair at a pixel and publishes the data coordinate it stands for.
+    ///
+    /// This does **not** re-enable a disabled crosshair: charts call it unconditionally on every
+    /// pointer move, so forcing `enabled` there undid `set_enabled(false)` on the next move. The
+    /// position and data still track (the read-out signals are documented as not gated by
+    /// `enabled`); only the paint is suppressed.
     pub fn show_at_data(&mut self, point: Point, data: (f64, f64)) {
-        self.enabled = true;
         let moved = self.point != Some(point);
         self.point = Some(point);
         self.data = Some(data);
@@ -600,6 +604,22 @@ mod tests {
         crosshair.show_at_data(Point::new(40, 50), (1.0, 2.0));
         let svg = crate::widget::svg::render_to_svg(&mut crosshair);
         assert!(svg.contains("line"), "the reference lines were drawn");
+    }
+
+    /// A disabled crosshair stays disabled when a chart drives it on a pointer move.
+    ///
+    /// # The defect this pins
+    ///
+    /// `show_at_data` assigned `self.enabled = true`, and the charts call it unconditionally on
+    /// every move, so `set_enabled(false)` survived only until the next pointer event.
+    #[test]
+    fn driving_a_disabled_crosshair_does_not_re_enable_it() {
+        let mut crosshair = ChartCrosshair::new(Rect::new(0, 0, 200, 100));
+        crosshair.set_enabled(false);
+        crosshair.show_at_data(Point::new(20, 30), (1.5, 2.5));
+        assert!(!crosshair.enabled(), "driving the anchor must not flip the enable flag");
+        let svg = crate::widget::svg::render_to_svg(&mut crosshair);
+        assert!(!svg.contains("line"), "a disabled crosshair paints no lines: {svg}");
     }
 
     /// The embedded spelling's surface is kept on the one kernel: an anchor read-back, an

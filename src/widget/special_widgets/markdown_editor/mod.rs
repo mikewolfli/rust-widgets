@@ -9,6 +9,7 @@
 pub mod markdown_toolbar;
 pub use markdown_toolbar::{MarkdownToolbar, ToolbarIconSide, MARKDOWN_TOOLBAR_ACTIONS};
 
+mod block_renderer;
 mod document;
 mod editor;
 mod events;
@@ -17,15 +18,19 @@ mod outline;
 mod paint;
 mod preview;
 
+pub use block_renderer::{MarkdownBlockRender, MarkdownBlockRenderer, MarkdownBlockSpec};
 pub use document::{MarkdownOutlineEntry, MarkdownTextChange};
 pub use editor::MarkdownEditor;
 pub use find::{FindBar, ReplaceRequest};
 pub use outline::MarkdownOutlinePanel;
 
+pub(crate) use block_renderer::*;
 pub(crate) use document::*;
 pub(crate) use find::*;
 pub(crate) use preview::*;
 
+#[cfg(test)]
+mod block_renderer_tests;
 #[cfg(test)]
 mod issue_20261026_tests;
 #[cfg(test)]

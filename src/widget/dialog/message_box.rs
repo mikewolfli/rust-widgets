@@ -1005,6 +1005,16 @@ impl EventHandler for MessageBox {
                     self.base.request_redraw();
                 }
             }
+            Event::MouseLeave { .. } => {
+                // A press that drags off the box and releases outside never sees the release.
+                // Clearing both flags here is what keeps the button from staying painted pressed
+                // (or hovered) after the pointer has left.
+                let had_hover = self.hovered.take().is_some();
+                let was_pressed = self.pressed.take().is_some();
+                if had_hover || was_pressed {
+                    self.base.request_redraw();
+                }
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.action_button_at(*pos) {
                     self.pressed = Some(index);
@@ -1125,6 +1135,21 @@ impl MessageBox {
         ControlMetrics::painted_box(self.base.geometry(), self.intrinsic_size(context))
     }
 
+    /// The frame the painter actually draws: [`Self::frame_rect`] scaled about its centre by
+    /// the reveal. The hit paths read the same rect, so a press lands on the ink even while the
+    /// box is still growing into place.
+    fn painted_frame_rect(&self, context: &RenderContext) -> Rect {
+        let rect = self.frame_rect(context);
+        let reveal = self.reveal.value();
+        if reveal <= 0.0 {
+            return rect;
+        }
+        super::scale_about_centre(
+            rect,
+            super::REVEAL_MIN_SCALE + (1.0 - super::REVEAL_MIN_SCALE) * reveal,
+        )
+    }
+
     /// The box this dialog needs: the action row's own width and the floor, component-wise.
     ///
     /// This is the shared implicit-size formula
@@ -1179,7 +1204,7 @@ impl MessageBox {
         if self.check_box_text.is_empty() {
             return None;
         }
-        let rect = super::with_measurement_context(|context| self.frame_rect(context));
+        let rect = super::with_measurement_context(|context| self.painted_frame_rect(context));
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let button_band = inset_action_band(
@@ -1199,7 +1224,7 @@ impl MessageBox {
         if self.detailed_text.is_empty() {
             return None;
         }
-        let rect = super::with_measurement_context(|context| self.frame_rect(context));
+        let rect = super::with_measurement_context(|context| self.painted_frame_rect(context));
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let button_band = inset_action_band(
@@ -1260,7 +1285,7 @@ impl MessageBox {
         let labels = self.labels();
         let place = !self.buttons.is_empty();
         super::with_measurement_context(|context| {
-            let rect = self.frame_rect(context);
+            let rect = self.painted_frame_rect(context);
             // The band the buttons are drawn in: the strip the title bar leaves, minus the row the
             // message occupies — the same two derivations `draw` uses, in the same order, and the
             // same `inset_action_band` that keeps the row off the frame's rounded corners.
@@ -1310,17 +1335,10 @@ impl Draw for MessageBox {
             );
         }
 
-        // The **frame**, not the control's rectangle: see `frame_rect`.
-        let rect = self.frame_rect(context);
-        // The frame **scales up** from its own centre as the reveal progresses, so the appear reads
-        // as a growth rather than a fade-in of a static box. At `reveal = 1.0` the scale is exactly
-        // 1.0, so a settled box is pixel-identical to the pre-animation one — which is what keeps
-        // the resting snapshot valid. Shared arithmetic with `Dialog`'s reveal, so the two modal
-        // families settle the same way.
-        let rect = super::scale_about_centre(
-            rect,
-            super::REVEAL_MIN_SCALE + (1.0 - super::REVEAL_MIN_SCALE) * reveal,
-        );
+        // The **frame**, not the control's rectangle: see `frame_rect`. The painted rect is
+        // scaled by the reveal, and the hit paths use the same `painted_frame_rect`, so the ink
+        // and its click target cannot drift apart while the box is growing.
+        let rect = self.painted_frame_rect(context);
         if rect.width == 0 || rect.height == 0 {
             return;
         }

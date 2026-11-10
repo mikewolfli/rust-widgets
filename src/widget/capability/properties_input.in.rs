@@ -220,10 +220,10 @@ macro_rules! impl_properties_input {
             // Whether the drop-down list is showing. Published so a host can read the state its
             // `popup_visibility_changed` event describes, and a designer can drive it.
             PropertySchema::new("open", PropertyValueKind::Bool, true, true),
-            // The writing direction the field runs in. Published because it moves the indicator to
-            // the other edge — a fact a host and a designer panel have to be able to read and set
-            // rather than infer from the drawing.
-            PropertySchema::new("direction", PropertyValueKind::String, true, true),
+            // The writing direction the field runs in. The control parses only `ltr`/`rtl`, so the
+            // row publishes exactly those tokens rather than accepting any string and refusing it
+            // later.
+            PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
             // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
             // value is centred vertically in the field band by the field's own layout, so a
             // `top`/`bottom` write would be one the control could never honour.
@@ -326,9 +326,10 @@ macro_rules! impl_properties_input {
             PropertySchema::new("modified", PropertyValueKind::Bool, true, true),
             PropertySchema::new("clear_button_enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("password_echo_on_edit", PropertyValueKind::Bool, true, true),
-            // Signed because the field's text can be scrolled back past the leading edge while
-            // the caret is parked; the writer clamps to the same range the reader reports.
-            PropertySchema::new("scroll_x", PropertyValueKind::Int, true, true),
+            // A horizontal scroll offset is never negative: `set_scroll_x` clamps to
+            // `[0, max]`, so declaring `Int` promised a negative range the control cannot store.
+            // `UInt` is the carrier the reader and writer actually use.
+            PropertySchema::new("scroll_x", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -523,7 +524,15 @@ macro_rules! impl_properties_input {
         /// this control, not by the tag button strip.
         #[cfg(not(alloc_frugal))]
         pub(crate) const CHIP_INPUT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("items", PropertyValueKind::Records, true, true),
+            // The committed items use the same record schema as `chip.items`. Declaring the kind
+            // without the schema left the validator unable to check the list, which is exactly the
+            // "unvalidated value under a declared name" the contract refuses.
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::special_widgets::chip::CHIP_ITEM_SCHEMA,
+            ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("text", PropertyValueKind::String, true, true).user_input(),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),

@@ -260,8 +260,15 @@ impl Avatar {
     }
 
     /// The disc actually painted, shared by draw and hit testing.
+    ///
+    /// The diameter is the widget's own `size`, not its fixed hint: the geometry is the cell the
+    /// avatar was laid out in, and `size` is what the property contract, `set_size` and the caller
+    /// all mean by "this avatar's diameter". Using the hint capped every avatar at
+    /// [`dimensions::AVATAR_SIZE`], so a 96 px avatar reported 96 to `get("size")` while painting a
+    /// 40 px disc and rejecting clicks in the outer 56 px. `center_in` still clamps down to the
+    /// geometry, so a smaller cell paints a smaller disc rather than overflowing.
     fn disc_rect(&self) -> Rect {
-        ControlMetrics::centered_square(self.geometry(), self.size_hint().width)
+        ControlMetrics::centered_square(self.geometry(), self.size)
     }
 }
 
@@ -276,8 +283,12 @@ impl Widget for Avatar {
         &mut self.base
     }
 
+    /// The avatar's own diameter, so the reported size and the painted disc agree.
+    ///
+    /// [`dimensions::AVATAR_SIZE`] is the constructor's default, not a ceiling: a 96 px avatar's
+    /// hint, disc and `size` property are now the same number.
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(dimensions::AVATAR_SIZE, dimensions::AVATAR_SIZE)
+        crate::core::Size::new(self.size, self.size)
     }
 
     /// An avatar that emits `avatar_clicked` is an affordance, so it must be reachable without a
@@ -845,8 +856,8 @@ impl GroupAvatar {
 
     /// The side length of one member.
     ///
-    /// Capped at [`dimensions::AVATAR_SIZE`] because [`Avatar`]'s draw path uses its hint as the
-    /// painted disc, so a larger slot would not paint a larger avatar.
+    /// Capped at [`dimensions::AVATAR_SIZE`] because the group's slots are one default avatar
+    /// wide; a taller cell must not stretch the members beyond the size they were built with.
     fn avatar_side(&self) -> u32 {
         self.geometry().height.clamp(1, dimensions::AVATAR_SIZE)
     }
@@ -1189,6 +1200,29 @@ mod tests {
 
         let large = Avatar::new(Rect::new(0, 0, 96, 96));
         assert_eq!(large.size(), 96);
+    }
+
+    /// The property, the painted disc and the hit test describe one avatar.
+    ///
+    /// The disc was derived from the fixed `AVATAR_SIZE` hint rather than the widget's own size, so
+    /// a 96 px avatar reported 96, painted 40, and rejected a press at x=5 even though that point is
+    /// inside the circle it claimed to draw.
+    #[test]
+    fn the_painted_disc_matches_the_reported_size() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut avatar = Avatar::new(Rect::new(0, 0, 96, 96));
+        assert_eq!(avatar.size(), 96);
+        assert_eq!(avatar.size_hint(), crate::core::Size::new(96, 96));
+        assert_eq!(avatar.disc_rect(), Rect::new(0, 0, 96, 96));
+
+        let clicked = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&clicked);
+        avatar.avatar_clicked.connect(move || flag.store(true, Ordering::SeqCst));
+        // 43 px from the centre: outside the old 40 px disc, inside the 96 px one.
+        avatar.handle_event(&Event::MousePress { pos: Point::new(5, 48), button: 1, modifiers: 0 });
+        assert!(clicked.load(Ordering::SeqCst), "the outer ring belongs to the reported disc");
     }
 
     #[test]

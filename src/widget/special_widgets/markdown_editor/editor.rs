@@ -17,6 +17,22 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// One open fence while [`MarkdownEditor::ensure_blocks`] scans the document.
+struct OpenFence {
+    marker: char,
+    run: usize,
+    language: LanguageId,
+    state: LineState,
+    /// The opening fence's line index.
+    start_line: usize,
+    /// The lower-cased info token, used as the block-renderer registry key.
+    language_key: String,
+    /// Body lines collected only when a renderer is registered for `language_key`.
+    source: String,
+    /// Whether a renderer was registered when the fence opened.
+    renderable: bool,
+}
+
 /// Lightweight markdown editor with preview toggle and metrics.
 pub struct MarkdownEditor {
     pub(crate) base: BaseWidget,
@@ -106,6 +122,36 @@ pub struct MarkdownEditor {
     pub(crate) char_widths: Vec<(char, f32, i32)>,
     /// Line offset tables for [`Self::revision`], rebuilt at most once per revision.
     pub(crate) line_index: RefCell<Option<(u64, LineIndex)>>,
+    /// Fenced blocks whose info token named a registered [`MarkdownBlockRenderer`].
+    ///
+    /// Rebuilt with [`Self::ensure_blocks`] and kept separately from the per-line
+    /// [`Self::blocks`] table so the paint path can skip a whole rendered block instead of
+    /// parsing each of its source rows.
+    pub(crate) fenced_blocks: Vec<FencedBlock>,
+    /// The painted preview rows of the last frame, as `(first source line, top y, height)`.
+    ///
+    /// A rendered block shifts the rows below it, so a pointer y cannot be divided by
+    /// `TEXT_ROW_HEIGHT` to find a line. The paint path records the geometry it actually used and
+    /// [`Self::line_at_viewport_y`] searches it. Cleared and rebuilt every frame.
+    pub(crate) preview_rows: Vec<(usize, i32, u32)>,
+    /// The revision, scroll position and geometry `preview_rows` was recorded for.
+    ///
+    /// A scroll or resize between a paint and a press would otherwise map the press through the
+    /// previous frame's geometry. When any of these does not match the live state,
+    /// [`Self::line_at_viewport_y`] falls back to the uniform-row mapping.
+    pub(crate) preview_rows_revision: u64,
+    pub(crate) preview_rows_scroll: usize,
+    pub(crate) preview_rows_geometry: Rect,
+    /// Host-provided block renderers, keyed by the lower-cased first token of a fence's info
+    /// string.
+    pub(crate) block_renderers: HashMap<String, Box<dyn MarkdownBlockRenderer>>,
+    /// Bumped when a renderer is registered or removed.
+    ///
+    /// The rendered-artifact cache is keyed by it, so an artifact produced by the previous
+    /// registry can never be reused by the next one.
+    pub(crate) block_renderer_generation: u64,
+    /// Rendered block artifacts, keyed by source, registry entry, width, scale and theme.
+    pub(crate) block_cache: HashMap<BlockKey, Rc<BlockArtifact>>,
 }
 
 impl MarkdownEditor {
@@ -163,6 +209,14 @@ impl MarkdownEditor {
             blocks_revision: u64::MAX,
             char_widths: Vec::new(),
             line_index: RefCell::new(None),
+            fenced_blocks: Vec::new(),
+            preview_rows: Vec::new(),
+            preview_rows_revision: u64::MAX,
+            preview_rows_scroll: usize::MAX,
+            preview_rows_geometry: Rect::new(0, 0, 0, 0),
+            block_renderers: HashMap::new(),
+            block_renderer_generation: 0,
+            block_cache: HashMap::new(),
         }
     }
 
@@ -307,6 +361,10 @@ impl MarkdownEditor {
     /// Toggles preview mode.
     pub fn toggle_preview_mode(&mut self) {
         self.preview_mode = !self.preview_mode;
+        if self.preview_mode {
+            // Fenced-block sources are collected only for a preview that can render them.
+            self.blocks_revision = u64::MAX;
+        }
         self.preview_mode_changed.emit(self.preview_mode);
         self.base.request_redraw();
     }
@@ -317,6 +375,10 @@ impl MarkdownEditor {
             return;
         }
         self.preview_mode = preview_mode;
+        if self.preview_mode {
+            // Fenced-block sources are collected only for a preview that can render them.
+            self.blocks_revision = u64::MAX;
+        }
         self.preview_mode_changed.emit(preview_mode);
         self.base.request_redraw();
     }
@@ -391,12 +453,7 @@ impl MarkdownEditor {
         // keystroke replaced text the reader could no longer see (most of it off screen).
         self.selection_anchor = None;
         self.apply_selection(None);
-        // Scroll the target into view rather than leaving it off screen.
-        if entry.line < self.first_visible_line {
-            self.first_visible_line = entry.line;
-        } else if entry.line >= self.first_visible_line + self.visible_line_count() {
-            self.first_visible_line = entry.line + 1 - self.visible_line_count();
-        }
+        self.reveal_line(entry.line);
         self.base.request_redraw();
         true
     }
@@ -800,6 +857,74 @@ impl MarkdownEditor {
         self.base.request_redraw();
     }
 
+    /// Registers a block renderer for one fenced-code info token, replacing any previous one.
+    ///
+    /// `language` is normalised to the lower-cased first token, so `"Mermaid"` and
+    /// `"mermaid  extra"` name the same ` ```mermaid ` fence the preview sees. An empty token is
+    /// ignored: a renderer under `""` would claim every fence with no info string.
+    ///
+    /// The block table is rebuilt on the next frame and cached artifacts are dropped, so a
+    /// renderer installed after the document loaded takes effect immediately. Only preview mode
+    /// consults renderers; edit mode always shows the source text.
+    pub fn register_block_renderer(
+        &mut self,
+        language: impl Into<String>,
+        renderer: Box<dyn MarkdownBlockRenderer>,
+    ) {
+        let language = language.into();
+        let key = block_language_key(&language);
+        if key.is_empty() {
+            return;
+        }
+        self.block_renderers.insert(key, renderer);
+        self.block_renderer_generation = self.block_renderer_generation.wrapping_add(1);
+        self.blocks_revision = u64::MAX;
+        self.block_cache.clear();
+        self.base.request_redraw();
+    }
+
+    /// Removes the renderer registered for `language`.
+    ///
+    /// Returns whether one was registered. The affected fences fall back to syntax-highlighted
+    /// source rows on the next frame.
+    pub fn unregister_block_renderer(&mut self, language: &str) -> bool {
+        let key = block_language_key(language);
+        let removed = self.block_renderers.remove(&key).is_some();
+        if removed {
+            self.block_renderer_generation = self.block_renderer_generation.wrapping_add(1);
+            self.blocks_revision = u64::MAX;
+            self.block_cache.clear();
+            self.base.request_redraw();
+        }
+        removed
+    }
+
+    /// Whether a renderer is registered for `language`.
+    pub fn has_block_renderer(&self, language: &str) -> bool {
+        self.block_renderers.contains_key(&block_language_key(language))
+    }
+
+    /// The registered block-renderer languages, sorted for a stable answer.
+    pub fn registered_block_renderers(&self) -> Vec<String> {
+        let mut languages: Vec<String> = self.block_renderers.keys().cloned().collect();
+        languages.sort();
+        languages
+    }
+
+    /// Tells the editor that an artifact previously reported as
+    /// [`MarkdownBlockRender::Pending`] is ready.
+    ///
+    /// The renderer is called again on the next frame. The editor cannot tell which artifact
+    /// completed, so every cached block artifact is dropped; calling this when none is cached is
+    /// a no-op that does not repaint.
+    pub fn notify_block_render_ready(&mut self) {
+        if self.block_cache.is_empty() {
+            return;
+        }
+        self.block_cache.clear();
+        self.base.request_redraw();
+    }
+
     /// The configured undo depth.
     pub fn undo_stack_limit(&self) -> usize {
         self.undo_stack_limit
@@ -930,11 +1055,40 @@ impl MarkdownEditor {
 
     /// Keeps the caret in view after a caret move or a search hit.
     pub(crate) fn reveal_caret(&mut self) {
+        self.reveal_line(self.cursor_line);
+    }
+
+    /// Places `line` where it can be painted, accounting for rendered blocks.
+    ///
+    /// In preview with a variable-height block, `visible_line_count` is an estimate: a target
+    /// below a tall artifact can land below the painted bottom even when the row arithmetic says
+    /// it fits. When the last painted layout does not contain the line, the line is put at the
+    /// top, which is always paintable and still reveals it.
+    pub(crate) fn reveal_line(&mut self, line: usize) {
+        let line = line.min(self.edit_line_count().saturating_sub(1));
+        if self.preview_mode && !self.fenced_blocks.is_empty() {
+            let rect = self.geometry();
+            let top_of_viewport = rect.y + TEXT_TOP;
+            let bottom = rect.y + rect.height as i32 - TEXT_BOTTOM_INSET;
+            let layout_fresh = self.preview_rows_revision == self.revision
+                && self.preview_rows_scroll == self.visible_start()
+                && self.preview_rows_geometry == rect;
+            let visible = layout_fresh
+                && self.preview_rows.iter().any(|(painted, top, height)| {
+                    *painted == line
+                        && *top >= top_of_viewport
+                        && top.saturating_add(*height as i32) <= bottom
+                });
+            if !visible {
+                self.first_visible_line = line;
+            }
+            return;
+        }
         let visible = self.visible_line_count().max(1);
-        if self.cursor_line < self.first_visible_line {
-            self.first_visible_line = self.cursor_line;
-        } else if self.cursor_line >= self.first_visible_line + visible {
-            self.first_visible_line = self.cursor_line + 1 - visible;
+        if line < self.first_visible_line {
+            self.first_visible_line = line;
+        } else if line >= self.first_visible_line + visible {
+            self.first_visible_line = line + 1 - visible;
         }
     }
 
@@ -1040,13 +1194,57 @@ impl MarkdownEditor {
         (usable / TEXT_ROW_HEIGHT + 1) as usize
     }
 
+    /// The largest `first_visible_line` that still lets the document be traversed.
+    ///
+    /// The line-based model is exact while every row is `TEXT_ROW_HEIGHT` tall. A rendered block
+    /// is taller than its source rows, so the final screenful can push the tail below the
+    /// viewport even though the line count did not change. When such a block exists, the viewport
+    /// may scroll until the last source line is at the top; the block itself stays reachable
+    /// because paint offsets an artifact by the fraction of its source rows already above the
+    /// viewport.
+    pub(crate) fn max_first_line(&self) -> usize {
+        let base = self.edit_line_count().saturating_sub(self.visible_line_count());
+        if self.preview_mode && !self.fenced_blocks.is_empty() {
+            base.max(self.edit_line_count().saturating_sub(1))
+        } else {
+            base
+        }
+    }
+
     /// The first line the viewport actually starts at, clamped to the last full window.
     pub(crate) fn visible_start(&self) -> usize {
         // The painter splits on `\n` (`edit_line_count`), so the scroll limit has to use the
         // same unit. `line_count` is `str::lines`, which drops the empty line a trailing
         // newline creates; clamping to it made that last line unreachable.
-        let max_first = self.edit_line_count().saturating_sub(self.visible_line_count());
-        self.first_visible_line.min(max_first)
+        self.first_visible_line.min(self.max_first_line())
+    }
+
+    /// Maps a pointer `y` to the source line painted at it.
+    ///
+    /// Preview mode records the geometry it actually painted (see [`Self::preview_rows`]), because
+    /// a rendered block shifts the rows below it by the artifact's height. Without a painted
+    /// layout, or outside preview, the uniform-row formula is the editor's original mapping.
+    pub(crate) fn line_at_viewport_y(&self, y: i32) -> Option<usize> {
+        let rect = self.geometry();
+        if self.preview_mode
+            && !self.preview_rows.is_empty()
+            && self.preview_rows_revision == self.revision
+            && self.preview_rows_scroll == self.visible_start()
+            && self.preview_rows_geometry == rect
+        {
+            if y < rect.y + TEXT_TOP || y > rect.y + rect.height as i32 - TEXT_BOTTOM_INSET {
+                return None;
+            }
+            let index = self.preview_rows.partition_point(|(_, top, _)| *top <= y);
+            let (line, top, height) = *self.preview_rows.get(index.checked_sub(1)?)?;
+            return (y < top.saturating_add(height as i32)).then_some(line);
+        }
+        let row = (y - rect.y - TEXT_TOP) / TEXT_ROW_HEIGHT;
+        if row < 0 {
+            return None;
+        }
+        let line = self.visible_start() + row as usize;
+        (line < self.edit_line_count()).then_some(line)
     }
 
     /// Scrolls the viewport by `lines` rows toward the end of the document.
@@ -1057,7 +1255,7 @@ impl MarkdownEditor {
         if lines == 0 {
             return false;
         }
-        let max_first = self.edit_line_count().saturating_sub(self.visible_line_count());
+        let max_first = self.max_first_line();
         let next =
             (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
         if next == self.first_visible_line {
@@ -1138,56 +1336,113 @@ impl MarkdownEditor {
     /// The preview needs to know which lines are inside a fenced code block before it can parse
     /// them, and that fact depends on every line above. Computing it once per revision keeps it
     /// out of the paint loop; the lexer state carried through the fence is what lets a block
-    /// comment that spans lines continue to be highlighted.
+    /// comment that spans lines continue to be highlighted. Fences whose info token has a
+    /// registered [`MarkdownBlockRenderer`] are also recorded whole in [`Self::fenced_blocks`],
+    /// so the paint path can hand the block to that renderer instead of parsing its rows.
     pub(crate) fn ensure_blocks(&mut self) {
         if self.blocks_revision == self.revision {
             return;
         }
         let mut blocks = Vec::new();
-        // `(marker, run length, language, lexer state)`. The marker and its length are part of
-        // the state because a closing fence must repeat the opener's character at least as
-        // many times; a ```` block containing ``` lines used to close at the first one.
-        let mut fence: Option<(char, usize, LanguageId, LineState)> = None;
+        let mut fenced_blocks = Vec::new();
+        // The marker and its length are part of the state because a closing fence must repeat the
+        // opener's character at least as many times; a ```` block containing ``` lines used to
+        // close at the first one.
+        let mut fence: Option<OpenFence> = None;
         // One lexer per fenced block, carried across its lines. A fresh highlighter per line reset
         // the interpreter state a multi-line construct depends on (block comments, template
         // literals) and re-created the lexer for every line of a long block.
         let mut highlighter: Option<(LanguageId, BuiltinHighlighter)> = None;
-        for line in self.text.split('\n') {
+        for (line_index, line) in self.text.split('\n').enumerate() {
             let trimmed = line.trim_start();
-            match fence {
-                Some((marker, run, language, state)) => {
+            match fence.take() {
+                Some(mut open) => {
+                    let language = open.language;
                     let closes = fence_marker(trimmed).is_some_and(|(next, next_run, info)| {
-                        next == marker && next_run >= run && info.is_empty()
+                        next == open.marker && next_run >= open.run && info.is_empty()
                     });
                     if closes {
                         blocks.push(BlockStart::Fence);
-                        fence = None;
+                        if open.renderable {
+                            let source_hash = text_hash(&open.source);
+                            let language_hash = text_hash(&open.language_key);
+                            fenced_blocks.push(FencedBlock {
+                                start_line: open.start_line,
+                                end_line: line_index,
+                                language: open.language_key,
+                                source: open.source,
+                                source_hash,
+                                language_hash,
+                            });
+                        }
                         highlighter = None;
                     } else {
-                        blocks.push(BlockStart::Code(language, state));
+                        blocks.push(BlockStart::Code(language, open.state));
+                        if open.renderable {
+                            open.source.push_str(line);
+                            open.source.push('\n');
+                        }
                         if !highlighter.as_ref().is_some_and(|(active, _)| *active == language) {
                             highlighter = Some((language, BuiltinHighlighter::new(language)));
                         }
                         let next = match highlighter.as_ref() {
-                            Some((_, lexer)) => lexer.highlight_line(line, state).1,
+                            Some((_, lexer)) => lexer.highlight_line(line, open.state).1,
                             // Unreachable: the branch above always installs a lexer.
-                            None => state,
+                            None => open.state,
                         };
-                        fence = Some((marker, run, language, next));
+                        open.state = next;
+                        fence = Some(open);
                     }
                 }
                 None => match fence_marker(trimmed) {
                     Some((marker, run, info)) => {
                         blocks.push(BlockStart::Fence);
                         let language = language_from_info(info);
+                        let language_key = block_language_key(info);
+                        let renderable = self.preview_mode
+                            && !language_key.is_empty()
+                            && self.block_renderers.contains_key(&language_key);
                         highlighter = Some((language, BuiltinHighlighter::new(language)));
-                        fence = Some((marker, run, language, LineState::initial()));
+                        fence = Some(OpenFence {
+                            marker,
+                            run,
+                            language,
+                            state: LineState::initial(),
+                            start_line: line_index,
+                            language_key,
+                            source: String::new(),
+                            renderable,
+                        });
                     }
                     None => blocks.push(BlockStart::Normal),
                 },
             }
         }
+        if let Some(open) = fence {
+            if open.renderable {
+                // An unclosed fence owns every line to the end of the document, exactly as the
+                // line classifier already treated it.
+                let mut source = open.source;
+                // `split('\n')` yields a synthetic empty segment when the text ends with a
+                // newline. That segment was appended as a line above, but it is not part of the
+                // fenced body, so drop exactly one trailing newline in that case.
+                if self.text.ends_with('\n') && source.ends_with('\n') {
+                    source.pop();
+                }
+                let source_hash = text_hash(&source);
+                let language_hash = text_hash(&open.language_key);
+                fenced_blocks.push(FencedBlock {
+                    start_line: open.start_line,
+                    end_line: self.edit_line_count().saturating_sub(1),
+                    language: open.language_key,
+                    source,
+                    source_hash,
+                    language_hash,
+                });
+            }
+        }
         self.blocks = blocks;
+        self.fenced_blocks = fenced_blocks;
         // GFM recognises a table by its *delimiter row*, so whether a line is a header depends on
         // the line after it. Resolving that once per revision keeps the paint path from looking
         // ahead per row.
@@ -1197,6 +1452,12 @@ impl MarkdownEditor {
                 lines.get(index + 1).is_some_and(|next| is_table_divider(next.trim_start()))
             })
             .collect();
+        // An artifact is keyed by content and registry generation, so entries for blocks that left
+        // the document are correct-but-unused. This bound keeps a long editing session from
+        // retaining every artifact it ever rendered; hitting it re-renders only the visible blocks.
+        if self.block_cache.len() > self.fenced_blocks.len().saturating_mul(2).saturating_add(8) {
+            self.block_cache.clear();
+        }
         self.blocks_revision = self.revision;
     }
 

@@ -187,6 +187,18 @@ pub(crate) fn to_capability_value_with_record_schema(
         Some(PropertyValueKind::NumberList) => number_list_from_json(value).map(|values| {
             CapabilityValue::Tuple(values.into_iter().map(CapabilityValue::Float).collect())
         }),
+        // A colour list is an array of CSS colour spellings — the same grammar a single `Color`
+        // property accepts — carried as a tuple of parsed colours. The list kind is what tells a
+        // swatch grid's palette apart from one colour.
+        Some(PropertyValueKind::ColorList) => value.as_array().and_then(|array| {
+            let mut items = crate::compat::Vec::with_capacity(array.len());
+            for item in array {
+                let text = item.as_str()?;
+                items
+                    .push(CapabilityValue::Color(crate::style::CssParser::parse_color(text).ok()?));
+            }
+            Some(CapabilityValue::Tuple(items))
+        }),
         None => match value {
             Value::Null => Some(CapabilityValue::Null),
             Value::Bool(b) => Some(CapabilityValue::Bool(*b)),

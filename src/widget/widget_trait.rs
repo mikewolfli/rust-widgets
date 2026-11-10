@@ -420,6 +420,16 @@ pub trait Widget: EventHandler + Any {
             return;
         }
         self.base_mut().set_enabled(enabled);
+        // A disabled control is inert, so a gesture that was in flight when it was disabled can
+        // never receive its release here. Clearing the interaction flags with the enabled bit is
+        // what keeps a re-enable from restoring the stale `Pressed`/`Hover` state: before this,
+        // press -> `set_enabled(false)` -> `set_enabled(true)` with no further pointer event left
+        // `is_pressed()` true and `widget_state()` reporting `Pressed` forever.
+        if !enabled {
+            self.base_mut().set_pressed(false);
+            self.base_mut().set_grabbed(false);
+            self.base_mut().set_hovered(false);
+        }
         // B2-01: disabling the focused control takes it out of the input path. The tab chain already
         // skips disabled controls when it *moves* focus; this is the other half — a control that
         // loses its enabled state while holding focus must not keep receiving keys and IME input.
@@ -1176,7 +1186,8 @@ pub trait Widget: EventHandler + Any {
     ///
     /// # Where the three values come from
     ///
-    /// * `pref` is [`Widget::size_hint`], unchanged.
+    /// * `pref` is [`Widget::size_hint`], lowered to the explicit upper bound when the widget's
+    ///   own measurement exceeds it — the declared ceiling wins over the measurement.
     /// * `min` is the larger of [`Widget::minimum_size_hint`] (a widget's content floor)
     ///   and the explicit lower bound from `BaseWidget::min_size`.
     /// * `max` is the explicit upper bound from `BaseWidget::max_size`, or unbounded.
@@ -1184,6 +1195,16 @@ pub trait Widget: EventHandler + Any {
     /// `BaseWidget`'s bounds are the single authoritative store (G-301): `Window`'s
     /// host-facing `min_size`/`max_size` pair forwards to the same values, so a platform
     /// request and this layout hint cannot diverge.
+    ///
+    /// # Why the preferred size is lowered here
+    ///
+    /// [`crate::layout::AxisHints::new`] anchors on `pref` and raises `max` up to it. Passing the
+    /// raw measurement therefore made a declared ceiling unrepresentable: a control that measured
+    /// 300 px and then declared `max = 120` reported `{min, 300, 300}` to the layout while
+    /// `set_geometry` clamped the stored rectangle to 120 — a row reserved 300 px and the control
+    /// painted 120. Lowering `pref` to the ceiling before handing it to `AxisHints` keeps the
+    /// store authoritative; a content floor above the ceiling is narrowed to the ceiling by the
+    /// same normalisation.
     ///
     /// A widget that overrides neither `minimum_size_hint` nor the base setters therefore
     /// reports exactly what it reported before: `min == pref`, `max == u32::MAX`. Once a
@@ -1194,16 +1215,18 @@ pub trait Widget: EventHandler + Any {
         let minimum = self.minimum_size_hint();
         let lower = self.base().min_size();
         let upper = self.base().max_size();
+        let upper_width = upper.map(|size| size.width).unwrap_or(u32::MAX);
+        let upper_height = upper.map(|size| size.height).unwrap_or(u32::MAX);
         crate::layout::Hints {
             width: crate::layout::AxisHints::new(
                 minimum.width.max(lower.map(|size| size.width).unwrap_or(0)),
-                preferred.width,
-                upper.map(|size| size.width).unwrap_or(u32::MAX),
+                preferred.width.min(upper_width),
+                upper_width,
             ),
             height: crate::layout::AxisHints::new(
                 minimum.height.max(lower.map(|size| size.height).unwrap_or(0)),
-                preferred.height,
-                upper.map(|size| size.height).unwrap_or(u32::MAX),
+                preferred.height.min(upper_height),
+                upper_height,
             ),
         }
     }
@@ -1307,8 +1330,10 @@ pub trait Widget: EventHandler + Any {
 mod tests {
     use super::Widget;
     use crate::compat::{MiniToString, String};
-    use crate::core::{Rect, Size};
+    use crate::core::{Point, Rect, Size};
+    use crate::event::{mouse_button, Event, EventHandler};
     use crate::widget::base_widgets::button::Button;
+    use crate::widget::input_widgets::text_entry::lineedit::LineEdit;
 
     #[test]
     fn widget_accessible_name_prefers_the_label_then_the_tooltip() {
@@ -1366,6 +1391,69 @@ mod tests {
         assert_eq!(bounded.height.min, 50);
         assert_eq!(bounded.width.max, 300);
         assert_eq!(bounded.height.max, 80);
+    }
+
+    /// A declared ceiling lowers the preferred hint instead of being raised to it.
+    ///
+    /// # The defect this pins
+    ///
+    /// `hints()` passed the raw `size_hint` as `pref`, and `AxisHints::new` anchors on `pref` and
+    /// raises `max` up to it. A control that measured 300 px and then declared `max = 120`
+    /// therefore reported `{min, 300, 300}` to the layout while `set_geometry` stored 120: a row
+    /// reserved 300 px for a control that painted 120. The two numbers must be the same store, so
+    /// the ceiling has to win.
+    #[test]
+    fn a_declared_ceiling_lowers_the_preferred_hint_instead_of_being_raised() {
+        let mut button = Button::new(
+            "A label that is certainly wider than the declared ceiling".to_string(),
+            Rect::new(0, 0, 300, 40),
+        );
+        assert!(
+            button.size_hint().width > 120,
+            "the fixture must prefer more than the ceiling, got {}",
+            button.size_hint().width
+        );
+        button.set_max_size(Some(Size::new(120, 40)));
+        let width = button.hints().width;
+        assert_eq!(width.max, 120, "the declared ceiling must not be raised to the measurement");
+        assert_eq!(width.pref, 120, "the preferred size is lowered to the ceiling");
+        assert!(width.min <= width.pref, "the floor is narrowed to keep min <= pref <= max");
+    }
+
+    /// Disabling a control ends a gesture that was in flight, so re-enabling does not
+    /// resurrect the stale `Pressed`/`Hover` state.
+    ///
+    /// # The defect this pins
+    ///
+    /// `set_enabled` cleared keyboard focus but left `pressed`, `grabbed` and `hovered` alone.
+    /// Only a release or a grabbed move clears those, and a disabled control receives neither —
+    /// so press, disable, re-enable with no pointer event left `is_pressed()` true and
+    /// `widget_state()` reporting `Pressed` forever. `LineEdit` is used because it inherits the
+    /// trait default (`Button` cancels its gesture in its own override).
+    #[test]
+    fn disabling_a_control_clears_a_gesture_in_flight() {
+        let mut edit = LineEdit::new(Rect::new(0, 0, 100, 32));
+        edit.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+        edit.handle_event(&Event::MousePress {
+            pos: Point::new(5, 5),
+            button: mouse_button::PRIMARY,
+            modifiers: 0,
+        });
+        assert!(edit.base().is_pressed(), "the press arms the gesture");
+        assert!(edit.base().is_grabbed());
+        assert!(edit.base().is_hovered());
+
+        edit.set_enabled(false);
+        assert!(!edit.base().is_pressed(), "a disabled control cannot keep painting pressed");
+        assert!(!edit.base().is_grabbed(), "the gesture has no owner to deliver a release to");
+        assert!(!edit.base().is_hovered(), "a disabled control is not hovered");
+
+        edit.set_enabled(true);
+        assert_eq!(
+            edit.widget_state(),
+            crate::style::WidgetState::Normal,
+            "re-enabling recomputes the state instead of restoring the stale one"
+        );
     }
 
     #[test]

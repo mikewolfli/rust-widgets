@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::compat::Rc;
@@ -136,6 +136,12 @@ pub struct VirtualTable {
     /// `true` when the bound source has `revision() > 0` or a `data_changed` signal, i.e. the
     /// window cache has an invalidation contract and may be kept between calls.
     data_is_observable: bool,
+    /// Set by a source change signal; drained before row/column state is read.
+    ///
+    /// The signal cannot borrow the control mutably, so it only records that a structural change is
+    /// pending. The drain clamps the scroll, drops stale hover and re-encodes the selection once,
+    /// which keeps the repair O(selected) instead of running in every accessor.
+    data_dirty: Arc<AtomicBool>,
     /// The row the pointer is over, as the data source's own **absolute** row index.
     ///
     /// Stored absolutely like `grid_table` stores its hover, so a scroll moves the
@@ -158,6 +164,13 @@ pub struct VirtualTable {
     pub selection_set_changed: Signal1<Vec<(usize, usize)>>,
     /// The selection set, stored as linearised cell indices so one model serves every mode.
     selection: crate::widget::view_widgets::list_view::SelectionModel,
+    /// The column count the stored selection indices were encoded with.
+    ///
+    /// The model stores one `usize` per cell (`row * columns + column`), so the numbers are only
+    /// meaningful together with the width that produced them. Remembering it lets a source change
+    /// decode the old cell, clamp it and re-encode it under the new count instead of silently
+    /// reinterpreting index 7 as a different cell.
+    selection_columns: usize,
     /// Optional per-cell painter.
     delegate: Option<Arc<dyn VirtualCellDelegate>>,
     /// Labels supplied through [`VirtualTable::set_header_labels`].
@@ -223,6 +236,7 @@ impl VirtualTable {
             data_source_connection_scope: ConnectionScope::new(),
             data_generation: Arc::new(AtomicU64::new(0)),
             data_is_observable: false,
+            data_dirty: Arc::new(AtomicBool::new(false)),
             hovered_row: None,
             visible_window_changed: Signal1::new(),
             show_header: false,
@@ -230,6 +244,7 @@ impl VirtualTable {
             selection_changed: Signal1::new(),
             selection_set_changed: Signal1::new(),
             selection: crate::widget::view_widgets::list_view::SelectionModel::new(),
+            selection_columns: 0,
             delegate: None,
             header_labels: Vec::new(),
             wheel_scroll_mode: WheelScrollMode::PerRow,
@@ -260,10 +275,12 @@ impl VirtualTable {
             let redraw = self.base.redraw_requested_signal().clone();
             let layout = self.base.layout_requested_signal().clone();
             let generation = Arc::clone(&self.data_generation);
+            let dirty = Arc::clone(&self.data_dirty);
             data_changed.connect_scoped(&self.data_source_connection_scope, move || {
                 // The source says its projection changed. Advancing the key is what makes the
                 // next fetch miss; a revision-less source has no other way to invalidate.
                 generation.fetch_add(1, Ordering::Relaxed);
+                dirty.store(true, Ordering::Relaxed);
                 redraw.emit();
                 layout.emit();
             });
@@ -277,6 +294,11 @@ impl VirtualTable {
         self.scroll_row = 0;
         self.scroll_column = 0;
         self.window_cache = None;
+        self.sorted_window_cache = None;
+        self.hovered_row = None;
+        // The old selection was encoded against the previous source's columns, so it is re-encoded
+        // against this one before a paint can read it.
+        self.reseat_selection();
         self.emit_visible_window();
         self.base.request_layout();
         self.base.request_redraw();
@@ -291,6 +313,11 @@ impl VirtualTable {
         self.scroll_row = 0;
         self.scroll_column = 0;
         self.window_cache = None;
+        self.sorted_window_cache = None;
+        self.hovered_row = None;
+        // The row and column counts are now zero, so the selection is empty; the re-encode reports
+        // that loss to a host mirroring it instead of leaving stale linear indices behind.
+        self.reseat_selection();
         self.emit_visible_window();
         self.base.request_layout();
         self.base.request_redraw();
@@ -312,13 +339,25 @@ impl VirtualTable {
     }
 
     /// Returns scroll row.
+    ///
+    /// Clamped to the current projection: a source can shrink without the control having run a
+    /// repair pass yet, and reporting the stale index would both paint a blank body and send a host
+    /// that restores it to a row that no longer exists.
     pub fn scroll_row(&self) -> usize {
-        self.scroll_row
+        if self.data_source.is_some() {
+            self.scroll_row.min(self.row_count().saturating_sub(1))
+        } else {
+            self.scroll_row
+        }
     }
 
-    /// Returns scroll column.
+    /// Returns scroll column, clamped to the current projection for the same reason.
     pub fn scroll_column(&self) -> usize {
-        self.scroll_column
+        if self.data_source.is_some() {
+            self.scroll_column.min(self.column_count().saturating_sub(1))
+        } else {
+            self.scroll_column
+        }
     }
 
     /// Sets scroll row with clamp.
@@ -768,8 +807,8 @@ impl VirtualTable {
             return (0, 0, 0, 0);
         }
 
-        let row_start = self.scroll_row.saturating_sub(self.overscan_rows);
-        let col_start = self.scroll_column.saturating_sub(self.overscan_columns);
+        let row_start = self.scroll_row().saturating_sub(self.overscan_rows);
+        let col_start = self.scroll_column().saturating_sub(self.overscan_columns);
         let visible_rows = (self.base.geometry().height / self.row_height.max(1)) as usize;
         // The width-aware capacity keeps the window wide enough when a column is narrower than
         // the default or a hidden column frees its slot (V-013). With the default uniform width
@@ -804,6 +843,9 @@ impl VirtualTable {
     /// fetch count is unchanged (misses still hit the source), so only the per-redraw copies are
     /// removed.
     fn visible_window_cells(&mut self) -> Option<&Arc<Vec<CachedRow>>> {
+        // A pending source change may have shrunk the row/column counts, so the window is computed
+        // from repaired state rather than from indices the source no longer has.
+        self.drain_data_updates();
         let revision = self.data_source.as_ref()?.revision();
         // A source with a real revision uses it; one without falls back to the generation this
         // widget advances from `data_changed` — the same contract as `VirtualList`/`DataGrid`.
@@ -996,14 +1038,125 @@ impl VirtualTable {
     }
 
     /// Maps a linearised selection index back to `(row, column)`.
+    ///
+    /// The division uses the column count the index was **encoded with**, not the count the source
+    /// happens to have now: when a source changes its columns, the same number means a different
+    /// cell under the new width, so decoding with the live count renamed the user's selection.
     fn decode_cell_index(&self, index: usize) -> Option<(usize, usize)> {
         let columns = self.column_count();
         if columns == 0 {
             return None;
         }
-        let row = index / columns;
-        let column = index % columns;
-        (row < self.row_count()).then_some((row, column))
+        let encoded_columns =
+            if self.selection_columns == 0 { columns } else { self.selection_columns };
+        let row = index / encoded_columns;
+        let column = index % encoded_columns;
+        (row < self.row_count() && column < columns).then_some((row, column))
+    }
+
+    /// Re-encodes the linearised selection against the current row/column counts.
+    ///
+    /// Returns whether the stored set changed. An index that names a row the source no longer has
+    /// is dropped (the cell is gone); a column past the new end is clamped to the last column, so
+    /// the cell the user picked is preserved when only the column count shrank. The single-value
+    /// and set-value signals are emitted when the set really changed, so a host mirroring the
+    /// selection hears the repair rather than keeping an index it can no longer interpret.
+    fn reseat_selection(&mut self) -> bool {
+        let before = self.selection.rows();
+        let old_columns = self.selection_columns;
+        let rows = self.row_count();
+        let columns = self.column_count();
+        let remap = |index: usize| -> Option<usize> {
+            if old_columns == 0 || rows == 0 || columns == 0 {
+                return None;
+            }
+            let row = index / old_columns;
+            if row >= rows {
+                return None;
+            }
+            let column = (index % old_columns).min(columns - 1);
+            Some(row.saturating_mul(columns).saturating_add(column))
+        };
+        let current = self.selection.current_row().and_then(remap);
+        let mut reseated: Vec<usize> = Vec::with_capacity(before.len());
+        for index in &before {
+            if let Some(index) = remap(*index) {
+                if !reseated.contains(&index) {
+                    reseated.push(index);
+                }
+            }
+        }
+        self.selection_columns = columns;
+        // `before` is in ascending order and the remap is monotonic in the index, so `reseated` is
+        // too: an equal vector means the set survived the change, and no signal is due.
+        if reseated == before {
+            return false;
+        }
+        // The current cell is restored last so a mode that records the current row from the last
+        // `select_row` (Multi/Extended) keeps pointing at the cell the user was on.
+        if let Some(current) = current {
+            if let Some(position) = reseated.iter().position(|index| *index == current) {
+                let current = reseated.remove(position);
+                reseated.push(current);
+            }
+        }
+        self.selection.clear();
+        match self.selection.mode() {
+            crate::widget::view_widgets::list_view::SelectionMode::Single => {
+                if let Some(index) = reseated.first().copied() {
+                    self.selection.select_row(index);
+                }
+            }
+            crate::widget::view_widgets::list_view::SelectionMode::Multi => {
+                for index in &reseated {
+                    self.selection.select_row(*index);
+                }
+            }
+            crate::widget::view_widgets::list_view::SelectionMode::Extended => {
+                for index in &reseated {
+                    self.selection.select_with_modifiers(*index, crate::shortcut::Modifiers::CTRL);
+                }
+            }
+            crate::widget::view_widgets::list_view::SelectionMode::None => {}
+        }
+        self.emit_selection_changed();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Applies a pending source change before a paint, an input or a query reads row state.
+    ///
+    /// The change signal only raises a flag (it cannot borrow the control mutably); this is the
+    /// one place that clamps the scroll to the surviving rows, clears a hover that named a removed
+    /// row and re-encodes the selection, then reports the new visible window.
+    fn drain_data_updates(&mut self) {
+        if !self.data_dirty.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        self.window_cache = None;
+        self.sorted_window_cache = None;
+        let rows = self.row_count();
+        let columns = self.column_count();
+        let mut bounds_changed = false;
+        if self.scroll_row > rows.saturating_sub(1) {
+            self.scroll_row = rows.saturating_sub(1);
+            bounds_changed = true;
+        }
+        if self.scroll_column > columns.saturating_sub(1) {
+            self.scroll_column = columns.saturating_sub(1);
+            bounds_changed = true;
+        }
+        let hover_cleared = self.hovered_row.is_some_and(|row| row >= rows);
+        if hover_cleared {
+            self.hovered_row = None;
+        }
+        self.reseat_selection();
+        if bounds_changed {
+            self.emit_visible_window();
+        }
+        if bounds_changed || hover_cleared {
+            self.base.request_redraw();
+        }
     }
 
     /// The selection mode (V-06).
@@ -1016,7 +1169,21 @@ impl VirtualTable {
         &mut self,
         mode: crate::widget::view_widgets::list_view::SelectionMode,
     ) {
+        if self.selection.mode() == mode {
+            return;
+        }
+        let before_current = self.selection.current_row();
+        let before_set = self.selection.rows();
         self.selection.set_mode(mode);
+        if mode == crate::widget::view_widgets::list_view::SelectionMode::None {
+            // `None` accepts no selection, so the surviving indices are not a selection any more.
+            self.selection.clear();
+        }
+        if self.selection.current_row() != before_current || self.selection.rows() != before_set {
+            // `set_mode` trims a Multi set when switching to Single; the host has to hear that the
+            // surviving cell changed, not discover it by polling.
+            self.emit_selection_changed();
+        }
         self.base.request_redraw();
     }
 
@@ -1035,9 +1202,11 @@ impl VirtualTable {
             return false;
         };
         if self.selection.current_row() == Some(index) && self.selection.rows() == vec![index] {
+            self.selection_columns = self.column_count();
             return true;
         }
         self.selection.select_row(index);
+        self.selection_columns = self.column_count();
         self.emit_selection_changed();
         self.base.request_redraw();
         true
@@ -1057,6 +1226,7 @@ impl VirtualTable {
             return false;
         };
         self.selection.select_with_modifiers(index, modifiers);
+        self.selection_columns = self.column_count();
         self.emit_selection_changed();
         self.base.request_redraw();
         true
@@ -1109,6 +1279,7 @@ impl VirtualTable {
     pub fn clear_selection(&mut self) {
         if self.selection.current_row().is_some() || !self.selection.rows().is_empty() {
             self.selection.clear();
+            self.selection_columns = self.column_count();
             self.selection_changed.emit(None);
             self.selection_set_changed.emit(Vec::new());
             self.base.request_redraw();
@@ -1283,6 +1454,11 @@ impl VirtualTable {
             return None;
         }
         let row = self.scroll_row + local as usize;
+        // A point inside the rectangle but below the last row is empty space: without the bound a
+        // 3-row source in a 300 px control answered row 9 and painted a hover stripe over nothing.
+        if self.data_source.as_ref().is_some_and(|source| row >= source.row_count()) {
+            return None;
+        }
         Some(row)
     }
 

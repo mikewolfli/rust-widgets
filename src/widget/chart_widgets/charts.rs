@@ -271,9 +271,14 @@ pub fn draw_y_ticks_configured(
         Y_TICK_LABEL.with(|label| {
             let mut label = label.borrow_mut();
             write_tick_value(&mut label, value, step, config);
+            // Right-anchor the label on the plot's leading edge. The layout's left margin is
+            // widened to the measured widest label, so the ink has to end where that column
+            // ends (`plot_x - 4`); a fixed `plot_x - 44` left edge let a wide value paint over
+            // the plot.
+            let width = context.measure_text(&label, 10.0);
             context.draw_text(
                 &label,
-                Point::from_f32(layout.plot_x - 44.0, y + 4.0),
+                Point::from_f32(layout.plot_x - 4.0 - width, y + 4.0),
                 10.0,
                 label_color,
             );
@@ -708,9 +713,12 @@ pub fn draw_y_ticks(
             let mut label = label.borrow_mut();
             label.clear();
             let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{value:.1}"));
+            // See `draw_y_ticks_configured`: the reserved y-label column ends at the plot's
+            // leading edge, so the label is right-anchored there rather than started 44 px out.
+            let width = context.measure_text(&label, 10.0);
             context.draw_text(
                 &label,
-                Point::from_f32(layout.plot_x - 44.0, y + 4.0),
+                Point::from_f32(layout.plot_x - 4.0 - width, y + 4.0),
                 10.0,
                 label_color,
             );
@@ -1995,5 +2003,38 @@ mod tests {
         let first = ys.first().copied().expect("a label");
         let last = ys.last().copied().expect("a label");
         assert!(first < last, "the reversed minimum is painted at the top: {ys:?}");
+    }
+
+    /// A y tick label is right-anchored inside the column the layout reserved for it.
+    ///
+    /// # The defect this pins
+    ///
+    /// The left margin is widened to the measured `widest_y_label`, but the labels were still
+    /// drawn left-anchored at `plot_x - 44`. A wide value such as `1000000000.0` therefore began
+    /// 44 px before the plot and ran ~26 px into it. Anchoring the label's measured width to
+    /// `plot_x - 4` keeps every label inside the reserved column.
+    #[test]
+    fn y_tick_labels_are_right_anchored_inside_their_column() {
+        let layout =
+            compute_cartesian_layout_measured(Rect::new(0, 0, 300, 300), true, true, 0, 96.0);
+        let mut context = MemoryChartContext::default();
+        draw_y_ticks(&mut context, &layout, 0.0, 1_000_000_000.0, 4, false);
+
+        let mut labels = 0;
+        for command in &context.commands {
+            let Some(rest) = command.strip_prefix("text:") else { continue };
+            let Some((label, position)) = rest.split_once('@') else { continue };
+            let Some((x, _)) = position.split_once(',') else { continue };
+            let x: f32 = x.parse().expect("a recorded x is a number");
+            let width = context.measure_text(label, 10.0);
+            assert!(
+                x + width <= layout.plot_x - 3.0,
+                "label {label:?} reaches {} px, past the column edge {} px",
+                x + width,
+                layout.plot_x - 4.0
+            );
+            labels += 1;
+        }
+        assert!(labels > 0, "the y ticks painted labels");
     }
 }

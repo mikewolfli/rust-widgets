@@ -5,8 +5,10 @@
 //!
 //! The inspector vocabulary lives here: [`PropertyGrid`] is the two-column
 //! name/value table, and [`PropertiesPanel`] is the categorized editor that
-//! builds its rows on top of that grid. The grid is the lower layer and does
-//! not depend on the panel, so the two stay in one folder without a cycle.
+//! builds its rows on top of that grid. The grid does not build on the panel's
+//! editor, but it does share the panel's [`PropertyValue`] type for the typed
+//! value it reports from `property_committed`; that reference is type-level only,
+//! so the two stay in one folder without a cycle.
 
 /// Categorized property editor panel built on [`PropertyGrid`].
 pub mod properties_panel;

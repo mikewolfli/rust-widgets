@@ -46,7 +46,7 @@ pub enum PropertyItemKind {
     Bool,
     /// A `#RRGGBB` colour spelling.
     Color,
-    /// One of a fixed option list; clicking cycles to the next one.
+    /// One of a fixed option list; clicking opens its drop-down (it does not cycle).
     Choice(Vec<String>),
     /// A filesystem path.
     File,
@@ -387,6 +387,29 @@ impl PropertyGrid {
         self.display_rows()
             .iter()
             .position(|row| matches!(row, PropertyRow::Item(item) if *item == index))
+    }
+
+    /// The first selectable row at or after display position `start`, as
+    /// `(property index, display position)`.
+    ///
+    /// Keyboard navigation walks the *painted* rows rather than the property list: a collapsed
+    /// category hides its items, so `index ± 1` could land on a row that is not on screen.
+    fn first_item_from(&self, start: usize) -> Option<(usize, usize)> {
+        let rows = self.display_rows();
+        rows.iter().enumerate().skip(start).find_map(|(position, row)| match row {
+            PropertyRow::Item(index) => Some((*index, position)),
+            PropertyRow::Category(_) => None,
+        })
+    }
+
+    /// The last selectable row before display position `end`, as
+    /// `(property index, display position)`.
+    fn last_item_before(&self, end: usize) -> Option<(usize, usize)> {
+        let rows = self.display_rows();
+        rows.iter().take(end).enumerate().rev().find_map(|(position, row)| match row {
+            PropertyRow::Item(index) => Some((*index, position)),
+            PropertyRow::Category(_) => None,
+        })
     }
 
     /// The largest `scroll_offset` that still shows a row.
@@ -917,9 +940,11 @@ impl PropertyGrid {
                 if let Some(bounds) = item.number_bounds {
                     bounds.validate(number)?;
                 }
-                Ok(if number.fract() == 0.0 {
+                Ok(if number.fract() == 0.0 && number.abs() <= i64::MAX as f64 {
                     format!("{}", number as i64)
                 } else {
+                    // `as i64` saturates: 1e300 became i64::MAX and -1e300 became i64::MIN, so
+                    // an integer-valued float outside the i64 range keeps its float spelling.
                     format!("{number}")
                 })
             }
@@ -1125,7 +1150,7 @@ impl Widget for PropertyGrid {
             "color_picker_requested" => Some(EventSignalRef::mapped(
                 "color_picker_requested",
                 &self.color_picker_requested,
-                // `(row index, property name)` — the declared shape is `Mixed` because the two
+                // `(row index, current hex)` — the declared shape is `Mixed` because the two
                 // components are a number and text.
                 |v| {
                     crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
@@ -1636,37 +1661,43 @@ impl EventHandler for PropertyGrid {
                                 }
                             }
                             if let Some(PropertyRow::Item(row_index)) = display_row {
-                                self.selected_index = Some(row_index);
-                                self.selected.emit(row_index);
-                                self.base.clicked.emit();
-                                // A typed row commits its own gesture on a single click (V-16):
-                                // a flag flips and a choice opens its list. Every other kind
-                                // still needs the double-click editor, so a plain press only
-                                // selects.
-                                if is_press
-                                    && self
+                                // A release is not a second click: it names the same row the
+                                // press already selected, so emitting again duplicated `selected`
+                                // and `clicked` for one click.
+                                if is_press {
+                                    self.selected_index = Some(row_index);
+                                    self.selected.emit(row_index);
+                                    self.base.clicked.emit();
+                                    // A typed row commits its own gesture on a single click
+                                    // (V-16): a flag flips and a choice opens its list. Every
+                                    // other kind still needs the double-click editor, so a
+                                    // plain press only selects.
+                                    if self
                                         .properties
                                         .get(row_index)
                                         .is_some_and(|item| item.editable)
-                                {
-                                    match self.properties[row_index].kind {
-                                        PropertyItemKind::Bool => {
-                                            let _ = self.begin_grid_edit(row_index);
+                                    {
+                                        match self.properties[row_index].kind {
+                                            PropertyItemKind::Bool => {
+                                                let _ = self.begin_grid_edit(row_index);
+                                            }
+                                            PropertyItemKind::Choice(_) => {
+                                                self.choice_popup = Some(row_index);
+                                            }
+                                            _ => {}
                                         }
-                                        PropertyItemKind::Choice(_) => {
-                                            self.choice_popup = Some(row_index);
-                                        }
-                                        _ => {}
                                     }
+                                    self.base.request_redraw();
                                 }
-                                self.base.request_redraw();
                                 return;
                             }
                         }
                     }
 
-                    // Click outside rows — deselect
-                    if self.selected_index.is_some() {
+                    // Click outside rows — deselect. The release of a press that already ran
+                    // this branch (a category header press, for one) must not clear the
+                    // selection the press left standing.
+                    if is_press && self.selected_index.is_some() {
                         self.selected_index = None;
                         self.base.request_redraw();
                     }
@@ -1694,6 +1725,12 @@ impl EventHandler for PropertyGrid {
                 self.base.handle_event(event);
             }
             Event::MouseDoubleClick { pos, button: 1 } => {
+                // A double click is a row gesture like a press, so it needs the same
+                // containment guard: `row_index_at` reads only `y`, and a point beside the grid
+                // at a row's height otherwise opened that row's editor.
+                if !self.base.contains_point_with_touch_expansion(*pos) {
+                    return;
+                }
                 if let Some(row) = self.row_index_at(*pos) {
                     // The public entry point, so a read-only row reports the refusal through
                     // `cell_change_rejected` instead of silently doing nothing (RW-12).
@@ -1794,14 +1831,15 @@ impl EventHandler for PropertyGrid {
                 }
                 match *key {
                     38 => {
-                        // Up arrow — move selection up
-                        let current = self.selected_index.unwrap_or(0);
-                        if current > 0 {
-                            let new_idx = current - 1;
+                        // Up arrow — the previous *painted* row, so a collapsed header is stepped
+                        // over instead of selecting an item that is not on screen (V-17).
+                        let current =
+                            self.selected_index.and_then(|index| self.display_position_of(index));
+                        if let Some((new_idx, new_pos)) =
+                            current.and_then(|position| self.last_item_before(position))
+                        {
                             self.selected_index = Some(new_idx);
                             self.selected.emit(new_idx);
-                            // Scroll if selection moved above viewport
-                            let new_pos = self.display_position_of(new_idx).unwrap_or(new_idx);
                             if new_pos < self.scroll_offset as usize {
                                 self.scroll_offset = new_pos as u32;
                             }
@@ -1809,69 +1847,75 @@ impl EventHandler for PropertyGrid {
                         }
                     }
                     40 => {
-                        // Down arrow — move selection down
-                        let new_idx = match self.selected_index {
-                            None => {
-                                if self.properties.is_empty() {
-                                    return;
-                                }
-                                0 // select first if nothing selected
+                        // Down arrow — the next painted row. A selection naming a collapsed item
+                        // has no display position, which reads as "nothing selected" here.
+                        let start = self
+                            .selected_index
+                            .and_then(|index| self.display_position_of(index))
+                            .map_or(0, |position| position + 1);
+                        if let Some((new_idx, new_pos)) = self.first_item_from(start) {
+                            self.selected_index = Some(new_idx);
+                            self.selected.emit(new_idx);
+                            let visible = self.visible_row_count();
+                            if new_pos >= self.scroll_offset as usize + visible as usize {
+                                self.scroll_offset = (new_pos as u32 + 1).saturating_sub(visible);
                             }
-                            Some(current) if current + 1 < self.properties.len() => current + 1,
-                            _ => return, // already at last row
-                        };
-                        self.selected_index = Some(new_idx);
-                        self.selected.emit(new_idx);
-                        let visible = self.visible_row_count();
-                        // Scroll if selection moved below viewport
-                        let new_pos = self.display_position_of(new_idx).unwrap_or(new_idx);
-                        if new_pos >= self.scroll_offset as usize + visible as usize {
-                            self.scroll_offset = (new_pos as u32 + 1).saturating_sub(visible);
+                            self.base.request_redraw();
                         }
-                        self.base.request_redraw();
                     }
                     36 => {
-                        // Home — jump to first row
-                        if !self.properties.is_empty() {
-                            self.selected_index = Some(0);
-                            self.selected.emit(0);
+                        // Home — the first painted row.
+                        if let Some((new_idx, _)) = self.first_item_from(0) {
+                            self.selected_index = Some(new_idx);
+                            self.selected.emit(new_idx);
                             self.scroll_offset = 0;
                             self.base.request_redraw();
                         }
                     }
                     35 => {
-                        // End — jump to last row
-                        if !self.properties.is_empty() {
-                            let last = self.properties.len() - 1;
-                            self.selected_index = Some(last);
-                            self.selected.emit(last);
+                        // End — the last painted row, so a collapsed tail is not selected.
+                        let end = self.display_rows().len();
+                        if let Some((new_idx, new_pos)) = self.last_item_before(end) {
+                            self.selected_index = Some(new_idx);
+                            self.selected.emit(new_idx);
                             let visible = self.visible_row_count();
-                            let last_pos = self.display_position_of(last).unwrap_or(last);
                             self.scroll_offset =
-                                (last_pos as u32 + 1).saturating_sub(visible).min(max_scroll);
+                                (new_pos as u32 + 1).saturating_sub(visible).min(max_scroll);
                             self.base.request_redraw();
                         }
                     }
                     crate::event::key_codes::PAGE_UP => {
-                        let current = self.selected_index.unwrap_or(0);
+                        let current = self
+                            .selected_index
+                            .and_then(|index| self.display_position_of(index))
+                            .unwrap_or(0);
                         let page = self.visible_row_count().max(1) as usize;
-                        let next = current.saturating_sub(page);
-                        self.selected_index = Some(next);
-                        self.selected.emit(next);
-                        self.scroll_offset = self.display_position_of(next).unwrap_or(next) as u32;
-                        self.base.request_redraw();
+                        let target = current.saturating_sub(page);
+                        let landed = self
+                            .last_item_before(target + 1)
+                            .or_else(|| self.first_item_from(target));
+                        if let Some((new_idx, new_pos)) = landed {
+                            self.selected_index = Some(new_idx);
+                            self.selected.emit(new_idx);
+                            self.scroll_offset = (new_pos as u32).min(max_scroll);
+                            self.base.request_redraw();
+                        }
                     }
                     crate::event::key_codes::PAGE_DOWN => {
-                        if !self.properties.is_empty() {
-                            let current = self.selected_index.unwrap_or(0);
-                            let page = self.visible_row_count().max(1) as usize;
-                            let next = (current + page).min(self.properties.len() - 1);
-                            self.selected_index = Some(next);
-                            self.selected.emit(next);
+                        let page = self.visible_row_count().max(1) as usize;
+                        let start = self
+                            .selected_index
+                            .and_then(|index| self.display_position_of(index))
+                            .map_or(page, |position| position + page);
+                        let landed = self
+                            .first_item_from(start)
+                            .or_else(|| self.last_item_before(self.display_rows().len()));
+                        if let Some((new_idx, new_pos)) = landed {
+                            self.selected_index = Some(new_idx);
+                            self.selected.emit(new_idx);
                             let visible = self.visible_row_count();
-                            let next_pos = self.display_position_of(next).unwrap_or(next);
                             self.scroll_offset =
-                                (next_pos as u32 + 1).saturating_sub(visible).min(max_scroll);
+                                (new_pos as u32 + 1).saturating_sub(visible).min(max_scroll);
                             self.base.request_redraw();
                         }
                     }
@@ -2164,6 +2208,32 @@ mod tests {
         }
     }
 
+    /// A double click beside the grid must not open a row's editor.
+    ///
+    /// The press arm has a containment guard, but the double-click arm called `row_index_at`
+    /// directly. That function reads only `y`, so a double click at `(5000, row0_top)` opened
+    /// row 0's editor although the press at the same point was rejected.
+    #[test]
+    fn property_grid_double_click_beside_the_grid_does_not_edit() {
+        use crate::event::EventHandler;
+
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        let rows_top = pg.content_rect().y + FIRST_ROW_TOP as i32;
+
+        pg.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(5000, rows_top + ROW_HEIGHT as i32 / 2),
+            button: 1,
+        });
+        assert_eq!(pg.editing_entry(), None, "a double click beside the grid must not edit");
+
+        pg.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(60, rows_top + ROW_HEIGHT as i32 / 2),
+            button: 1,
+        });
+        assert_eq!(pg.editing_entry(), Some(0), "the same point inside still edits");
+    }
+
     #[test]
     fn property_grid_property_item_accessors() {
         let item = PropertyItem::new("Name", "value", true);
@@ -2252,6 +2322,35 @@ mod tests {
 
         pg.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
         assert_eq!(pg.selected_index(), Some(2));
+    }
+
+    /// Arrow, Home and End walk the *painted* rows, not the property list.
+    ///
+    /// The arms moved the property index by one. With A/B hidden in a collapsed "General" and
+    /// C/D under "Layout", Down from A selected B — an item `display_rows()` does not contain —
+    /// so nothing was highlighted, and End/Home selected collapsed items.
+    #[test]
+    fn property_grid_keyboard_navigation_walks_the_painted_rows() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 320, 300));
+        pg.add_property_item(PropertyItem::new("A", "1", true).in_category("General"));
+        pg.add_property_item(PropertyItem::new("B", "2", true).in_category("General"));
+        pg.add_property_item(PropertyItem::new("C", "3", true).in_category("Layout"));
+        pg.add_property_item(PropertyItem::new("D", "4", true).in_category("Layout"));
+        pg.set_category_collapsed("General", true);
+
+        // The painted rows are General(header), Layout(header), C, D.
+        pg.set_selected_index(Some(0));
+        pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(2), "Down skips the hidden B");
+        pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(3));
+        pg.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(2), "Up skips back over the hidden items");
+
+        pg.handle_event(&Event::KeyPress { key: 36, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(2), "Home is the first painted item");
+        pg.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+        assert_eq!(pg.selected_index(), Some(3), "End is the last painted item");
     }
 
     #[test]
@@ -2617,6 +2716,40 @@ mod tests {
         assert_eq!(grid.selected_index(), Some(0));
     }
 
+    /// One click emits one selection, and its release neither repeats nor clears it.
+    ///
+    /// `MousePress` and `MouseRelease` share an arm and only some branches consulted `is_press`,
+    /// so a single click emitted `selected` and `clicked` twice. A press on a category header
+    /// toggles the group and returns; the following release then ran the deselect branch and
+    /// cleared the selection the press had left alone.
+    #[test]
+    fn a_release_does_not_repeat_a_selection_or_clear_it() {
+        use crate::event::EventHandler;
+
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 320, 300));
+        grid.add_property_item(PropertyItem::new("A", "1", true).in_category("General"));
+        grid.add_property_item(PropertyItem::new("B", "2", true).in_category("General"));
+        let emitted = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&emitted);
+        grid.selected.connect(move |index: Arc<usize>| {
+            sink.lock().expect("lock").push(*index);
+        });
+
+        let rows_top = grid.content_rect().y + FIRST_ROW_TOP as i32;
+        let row = Point::new(60, rows_top + 2 * ROW_HEIGHT as i32 + 12);
+        grid.handle_event(&Event::MousePress { pos: row, button: 1, modifiers: 0 });
+        grid.handle_event(&Event::MouseRelease { pos: row, button: 1 });
+        assert_eq!(grid.selected_index(), Some(1));
+        assert_eq!(*emitted.lock().expect("lock"), vec![1], "one click announces one selection");
+
+        // A header press toggles its group; the release must not then deselect.
+        let header = Point::new(10, rows_top + 12);
+        grid.handle_event(&Event::MousePress { pos: header, button: 1, modifiers: 0 });
+        grid.handle_event(&Event::MouseRelease { pos: header, button: 1 });
+        assert!(grid.is_category_collapsed("General"));
+        assert_eq!(grid.selected_index(), Some(1), "a release must not clear the selection");
+    }
+
     /// V-012: repeated reads share one row set instead of cloning the table.
     ///
     /// The pointer comparison is the observable form of the change: a caller must receive the
@@ -2727,6 +2860,32 @@ mod tests {
         assert!(grid.set_number_bounds(0, None));
         assert_eq!(grid.number_bounds(0), None);
         assert!(!grid.set_number_bounds(9, Some(NumberBounds::unbounded())));
+    }
+
+    /// An integer-valued float outside the i64 range keeps its float spelling on commit.
+    ///
+    /// The integer path formatted through `as i64`, which saturates: committing `1e300` stored
+    /// `"9223372036854775807"` and `-1e300` stored `i64::MIN`.
+    #[test]
+    fn a_number_commit_outside_the_i64_range_keeps_its_float_spelling() {
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        grid.add_property_item(
+            PropertyItem::new("count", "0", true).with_kind(PropertyItemKind::Number),
+        );
+
+        assert!(grid.commit_property_text(0, "1e300"));
+        let value = grid.value(0).expect("row 0");
+        assert_ne!(value, "9223372036854775807", "a saturating i64 cast must not be used");
+        assert_eq!(value.parse::<f64>().expect("a number"), 1e300);
+
+        assert!(grid.commit_property_text(0, "-1e300"));
+        let value = grid.value(0).expect("row 0");
+        assert_ne!(value, "-9223372036854775808", "nor may a negative value saturate");
+        assert_eq!(value.parse::<f64>().expect("a number"), -1e300);
+
+        // An integer inside the range still takes the compact integer spelling.
+        assert!(grid.commit_property_text(0, "42"));
+        assert_eq!(grid.value(0), Some("42"));
     }
 
     // ── RW-14: typed commit signal ──

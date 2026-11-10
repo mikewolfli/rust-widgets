@@ -8,6 +8,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
 use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{Draw, Widget};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 impl Draw for MarkdownEditor {
@@ -16,6 +17,9 @@ impl Draw for MarkdownEditor {
         // The fence table depends on every line above it, so it is rebuilt once per revision —
         // before the style borrow is taken, because building it needs `&mut self`.
         self.ensure_blocks();
+        // The pointer path searches the geometry this frame paints: a rendered block shifts the
+        // rows below it, so the fixed-row formula is no longer the truth.
+        self.preview_rows.clear();
         if self.show_outline {
             // Reads the same heading list `outline()` reports, and marks the row the caret is in.
             self.sync_outline();
@@ -124,7 +128,9 @@ impl Draw for MarkdownEditor {
         self.header_buffer = header;
 
         let start = self.visible_start();
-        let count = self.visible_line_count();
+        self.preview_rows_revision = self.revision;
+        self.preview_rows_scroll = start;
+        self.preview_rows_geometry = rect;
         // The line total comes from the cached offset tables, not from re-counting the document's
         // newlines on every frame.
         let line_total = self.edit_line_count();
@@ -157,13 +163,61 @@ impl Draw for MarkdownEditor {
             let table_headers = &self.table_header;
             let gfm = self.gfm_extensions;
             let highlight = self.code_highlight;
-            for (row, line) in text.split('\n').skip(start).take(count).enumerate() {
-                let idx = start + row;
-                let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
+            let preview = self.preview_mode;
+            let fenced = &self.fenced_blocks;
+            let renderers = &self.block_renderers;
+            let block_cache = &mut self.block_cache;
+            let generation = self.block_renderer_generation;
+            let preview_rows = &mut self.preview_rows;
+            let spec = MarkdownBlockSpec {
+                max_width: row_width,
+                dpi_scale,
+                surface,
+                ink,
+                accent: cursor_ink,
+            };
+            let bottom = rect.y + rect.height as i32 - TEXT_BOTTOM_INSET;
+            let mut lines = text.split('\n').skip(start);
+            let mut idx = start;
+            let mut y = rect.y + TEXT_TOP;
+            while let Some(line) = lines.next() {
                 // Rows below the control are not painted, which keeps a short editor from drawing
                 // past its own bottom edge.
-                if y > rect.y + rect.height as i32 - TEXT_BOTTOM_INSET {
+                if y > bottom {
                     break;
+                }
+                // A rendered block owns every source row in its fence. The image is placed at the
+                // first row's y and the following rows start below its height. When the viewport
+                // begins inside the block, `before` is the fraction of its source lines already
+                // above the viewport; moving the image up by the same fraction is the honest
+                // approximation a line-addressed viewport can make without a pixel scroll model.
+                let rendered =
+                    if preview { rendered_block_at(fenced, renderers, idx) } else { None };
+                if let Some((block, renderer)) = rendered {
+                    let key = BlockKey::new(block, spec, generation);
+                    let artifact = match block_cache.get(&key) {
+                        Some(artifact) => artifact.clone(),
+                        None => {
+                            let artifact = Rc::new(render_block(renderer, block, spec));
+                            block_cache.insert(key, artifact.clone());
+                            artifact
+                        }
+                    };
+                    if let BlockArtifact::Image { width, height, rgba } = &*artifact {
+                        let span = block.end_line.saturating_sub(block.start_line) + 1;
+                        let before = idx.saturating_sub(block.start_line).min(span);
+                        let scrolled = (*height as i64 * before as i64) / span as i64;
+                        let top = y.saturating_sub(scrolled as i32);
+                        context.draw_image(rect.x + 12, top, *width, *height, rgba);
+                        preview_rows.push((block.start_line, top, *height));
+                        y = top.saturating_add(*height as i32);
+                        let remaining = block.end_line.saturating_sub(idx);
+                        for _ in 0..remaining {
+                            let _ = lines.next();
+                        }
+                        idx = block.end_line + 1;
+                        continue;
+                    }
                 }
                 let color = if idx == self.cursor_line { cursor_ink } else { ink };
                 let band = Rect::new(rect.x + 12, y, row_width, TEXT_ROW_HEIGHT as u32);
@@ -188,7 +242,7 @@ impl Draw for MarkdownEditor {
                     }
                 }
 
-                if self.preview_mode {
+                if preview {
                     let block = blocks.get(idx).copied().unwrap_or(BlockStart::Normal);
                     // The key is the row's content and parse context, never its index, so an
                     // edit that shifts the page keeps every unchanged row parsed.
@@ -229,6 +283,17 @@ impl Draw for MarkdownEditor {
                         HorizontalAlignment::Left,
                     );
                 }
+                if preview {
+                    preview_rows.push((idx, y, TEXT_ROW_HEIGHT as u32));
+                }
+                y += TEXT_ROW_HEIGHT;
+                idx += 1;
+            }
+            // Artifacts produced for a previous width, DPI scale or theme are not reused by this
+            // frame, but they stay allocated until the next text edit rebuilds the block table.
+            // The same bound `ensure_blocks` applies keeps a resize or theme switch bounded.
+            if block_cache.len() > fenced.len().saturating_mul(2).saturating_add(8) {
+                block_cache.clear();
             }
             // The cache is keyed by content and parse context, so entries for rows that moved or
             // changed are simply unused. When the table outgrows its bound only the entries that
@@ -302,4 +367,24 @@ impl Draw for MarkdownEditor {
             self.outline_panel.draw(context);
         }
     }
+}
+
+/// The fenced block that owns `line`, together with the renderer registered for it.
+///
+/// `blocks` is sorted by `start_line` because it is built in document order. A binary search
+/// finds the last block that starts at or before `line`; that block covers the line only when the
+/// line has not passed its closing fence. No registered renderer means the block is not rendered
+/// at all, so the caller falls back to the ordinary source rows.
+fn rendered_block_at<'a>(
+    blocks: &'a [FencedBlock],
+    renderers: &'a HashMap<String, Box<dyn MarkdownBlockRenderer>>,
+    line: usize,
+) -> Option<(&'a FencedBlock, &'a dyn MarkdownBlockRenderer)> {
+    let after = blocks.partition_point(|block| block.start_line <= line);
+    let block = blocks.get(after.checked_sub(1)?)?;
+    if line > block.end_line {
+        return None;
+    }
+    let renderer = renderers.get(&block.language)?;
+    Some((block, renderer.as_ref()))
 }

@@ -142,6 +142,27 @@ fn push_json_value(out: &mut String, value: &CapabilityValue) {
     }
 }
 
+/// Appends a record schema's field list as an array of objects.
+fn push_record_fields(out: &mut String, fields: &[super::designer_manifest::DesignerRecordField]) {
+    out.push('[');
+    if fields.is_empty() {
+        out.push(']');
+        return;
+    }
+    out.push('\n');
+    for (index, field) in fields.iter().enumerate() {
+        out.push_str("        {\"name\":");
+        push_json_string(out, &field.name);
+        out.push_str(",\"kind\":");
+        push_json_string(out, value_kind_token(field.kind));
+        out.push_str(",\"required\":");
+        out.push_str(if field.required { "true" } else { "false" });
+        out.push('}');
+        out.push_str(if index + 1 == fields.len() { "\n      " } else { ",\n        " });
+    }
+    out.push(']');
+}
+
 /// Appends one constraint object (BLUE26 B26.02).
 ///
 /// Optional numeric fields are written as `null` when absent rather than omitted, so every
@@ -186,33 +207,18 @@ fn push_optional_float(out: &mut String, value: Option<f64>) {
     }
 }
 
-/// Appends a signed integer, ensuring the result re-reads as an `Int`.
+/// Appends a signed integer in standard JSON spelling.
 ///
-/// # Why a non-negative `Int` needs more than its digits
+/// # Why there is no `Int`/`UInt` marker
 ///
-/// JSON has one number type and no signed/unsigned distinction, so `Int(100)` and `UInt(100)` are
-/// the same three characters. The reader has to pick one, and it picks `UInt` for a non-negative
-/// value — `UInt` is the only arm that holds a non-negative integer without a lossy cast, and
-/// every non-negative integer default in the capability table is declared `UInt`. That made the
-/// round trip **partial**: `Int(100)` exported as `100` and reloaded as `UInt(100)`, so
-/// export → load → export produced a different value kind from its input.
-///
-/// That path is reachable, not hypothetical: `Slider`'s capability declares `minimum` as `Int(0)`
-/// and `maximum` as `Int(100)` (`access::...`), both non-negative.
-///
-/// A leading `+` is the marker. JSON's grammar allows it (`number = [ "-" ] int [ frac ] [ exp ]`,
-/// and an unsigned int is `digit1-9 *digit`), the reader records whether it saw one, and no
-/// capability default is written with a redundant `+` — so the two arms stay distinguishable
-/// without inventing a second document shape (a wrapper object, a `"100i"` string) that a
-/// consumer would have to learn. `UInt` keeps the bare spelling, so every existing document and
-/// the whole rest of the table is unchanged.
+/// Earlier revisions wrote a non-negative `Int` with a leading `+` to distinguish it from `UInt`.
+/// RFC 8259's grammar has no such number token, so `serde_json`, `JSON.parse`, `jq` and Python's
+/// `json` module all refuse the document this writer produced. A separate encoding would be a
+/// marker every consumer had to learn, so the reader recovers the carrier from the property's
+/// declared [`kind`](super::designer_manifest::keys::KIND) instead — the fact is already in the
+/// same object.
 fn push_json_int(out: &mut String, value: i64) {
-    if value < 0 {
-        out.push_str(&format!("{value}"));
-    } else {
-        out.push('+');
-        out.push_str(&format!("{value}"));
-    }
+    out.push_str(&format!("{value}"));
 }
 
 /// Appends a float, ensuring the result re-reads as a float.
@@ -323,6 +329,21 @@ pub(super) fn write_manifest(out: &mut String, manifest: &DesignerManifest) {
             }
         }
         out.push_str("    ]");
+        if let Some(schema) = &property.record_schema {
+            out.push_str(",\n      ");
+            push_json_string(out, keys::FIELDS);
+            out.push_str(": ");
+            push_record_fields(out, &schema.fields);
+            out.push_str(",\n      ");
+            push_json_string(out, keys::ID_FIELD);
+            out.push_str(": ");
+            push_json_string(out, &schema.id_field);
+            out.push_str(",\n      ");
+            push_json_string(out, keys::IDS_UNIQUE);
+            out.push_str(&format!(": {},\n      ", schema.ids_unique));
+            push_json_string(out, keys::IDS_REQUIRED);
+            out.push_str(&format!(": {}", schema.ids_required));
+        }
         out.push_str("\n    }");
         out.push_str(if index + 1 == manifest.properties.len() { "\n" } else { ",\n" });
     }

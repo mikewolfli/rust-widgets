@@ -262,6 +262,10 @@ impl ScrollBar {
         // clock restarts, which is what keeps the fade from fighting the scroll it is meant to
         // accompany.
         self.touch_activity();
+        // Repaint here as well as in the pointer paths: `touch_activity` deliberately requests no
+        // frame (an already-opaque bar has nothing to animate), so a host write through
+        // `set_value`/the `value` property left the thumb painted at its old position.
+        self.base.request_redraw();
         self.value_changed.emit(self.value);
     }
     /// Returns single step value.
@@ -348,21 +352,28 @@ impl ScrollBar {
             self.base.request_redraw();
         }
     }
+    /// The value span as a float, widened before the subtraction.
+    ///
+    /// A legal `i32::MIN..=i32::MAX` range overflows the `i32` subtraction (a debug-build panic,
+    /// and a negative span in release that reverses the mapping).
+    fn value_span(&self) -> f32 {
+        (i64::from(self.maximum) - i64::from(self.minimum)) as f32
+    }
+
     /// Returns slider size as percentage of visible area.
     pub fn slider_size(&self) -> f32 {
         if self.maximum == self.minimum {
             return 1.0;
         }
         let page_size = self.page_step as f32;
-        let total_range = (self.maximum - self.minimum) as f32;
-        (page_size / total_range).clamp(0.1, 0.9)
+        (page_size / self.value_span()).clamp(0.1, 0.9)
     }
     /// Returns slider position as percentage.
     pub fn slider_position(&self) -> f32 {
         if self.maximum == self.minimum {
             return 0.0;
         }
-        ((self.value - self.minimum) as f32) / ((self.maximum - self.minimum) as f32)
+        ((i64::from(self.value) - i64::from(self.minimum)) as f32) / self.value_span()
     }
     /// Returns the drawn shape of the bar.
     ///
@@ -564,18 +575,19 @@ impl ScrollBar {
         let band = self.track_band();
         let rect = self.paint_band();
         let slider_pos = self.value_to_pixel_pos(self.value);
-        let fraction = self.slider_size();
         match self.orientation {
             Orientation::Horizontal => {
-                let length = ((rect.width as f32) * fraction) as u32;
-                let length = length.max(dimensions::SCROLLBAR_MIN_LENGTH.min(rect.width));
+                // The length comes from `thumb_length`, the same derivation `travel_band` subtracts:
+                // painting `rect.width * fraction` made the grip longer than the room the travel
+                // mapping assumes, so it could cover an arrow cell and its far edge disagreed with
+                // where a drag stops.
+                let length = self.thumb_length() as u32;
                 let length =
                     length.min((band.x + band.width as i32 - slider_pos as i32).max(0) as u32);
                 Rect::from_f32(slider_pos, rect.y as f32, length as f32, rect.height as f32)
             }
             Orientation::Vertical => {
-                let length = ((rect.height as f32) * fraction) as u32;
-                let length = length.max(dimensions::SCROLLBAR_MIN_LENGTH.min(rect.height));
+                let length = self.thumb_length() as u32;
                 let length =
                     length.min((band.y + band.height as i32 - slider_pos as i32).max(0) as u32);
                 Rect::from_f32(rect.x as f32, slider_pos, rect.width as f32, length as f32)
@@ -626,7 +638,7 @@ impl ScrollBar {
     /// The exact inverse of [`Self::value_to_pixel_pos`]: both read [`Self::travel_band`], so the
     /// value a drag reads back is the value the thumb was drawn at.
     fn pixel_pos_to_value(&self, pos: f32) -> i32 {
-        let range = (self.maximum - self.minimum) as f32;
+        let range = self.value_span();
         if range == 0.0 {
             return self.minimum;
         }
@@ -657,12 +669,12 @@ impl ScrollBar {
     /// of **one** geometry rather than derivations that can drift.
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
         let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
-        let range = (self.maximum - self.minimum) as f32;
+        let range = self.value_span();
         let (origin, travel) = self.travel_band();
         if range == 0.0 {
             return origin;
         }
-        let mut relative = (clamped - self.minimum) as f32 / range;
+        let mut relative = (i64::from(clamped) - i64::from(self.minimum)) as f32 / range;
         if self.orientation == Orientation::Horizontal {
             relative = self.direction.begin_fraction_to_left_fraction(relative);
         }
@@ -672,25 +684,25 @@ impl ScrollBar {
     pub fn trigger_action(&mut self, action: ScrollBarAction) {
         match action {
             ScrollBarAction::LineUp => {
-                self.set_value(self.value - self.single_step);
+                self.set_value(self.value.saturating_sub(self.single_step));
             }
             ScrollBarAction::LineDown => {
-                self.set_value(self.value + self.single_step);
+                self.set_value(self.value.saturating_add(self.single_step));
             }
             ScrollBarAction::PageUp => {
-                self.set_value(self.value - self.page_step);
+                self.set_value(self.value.saturating_sub(self.page_step));
             }
             ScrollBarAction::PageDown => {
-                self.set_value(self.value + self.page_step);
+                self.set_value(self.value.saturating_add(self.page_step));
             }
             ScrollBarAction::SliderMove => {
                 // Handled by mouse events
             }
             ScrollBarAction::SliderPageStepAdd => {
-                self.set_value(self.value + self.page_step);
+                self.set_value(self.value.saturating_add(self.page_step));
             }
             ScrollBarAction::SliderPageStepSub => {
-                self.set_value(self.value - self.page_step);
+                self.set_value(self.value.saturating_sub(self.page_step));
             }
             ScrollBarAction::SliderToMinimum => {
                 self.set_value(self.minimum);
@@ -744,6 +756,12 @@ impl ScrollBar {
             return;
         }
         self.idle_opacity_override = Some(opacity);
+        // A bar that has already settled is not moving, so no future tick would ever read the new
+        // floor: retarget now and ask for the frame that renders it.
+        if self.idle_ms >= self.idle_delay_ms {
+            self.opacity.set_target(self.resolved_idle_opacity());
+        }
+        self.base.request_redraw();
     }
 
     /// The style's own idle floor, used by the docs and by tests.
@@ -1237,9 +1255,19 @@ impl EventHandler for ScrollBar {
             self.touch_activity();
         }
         match event {
-            Event::MouseEnter { .. } | Event::MouseLeave { .. } => {
-                // Hover widens an overlay bar, so the arrival and the departure both
-                // change pixels even when the idle fade has nothing to advance.
+            Event::MouseEnter { .. } => {
+                // Hover widens an overlay bar, so the arrival changes pixels even when the idle
+                // fade has nothing to advance.
+                self.request_frame_repaint(None);
+            }
+            Event::MouseLeave { .. } => {
+                // The runtime delivers no release for a pointer that left every control, so a drag
+                // (or a held arrow, which keeps auto-repeating) survived the departure: on re-entry
+                // a plain move dragged the thumb with no button held. Ending the gesture here is
+                // also what honours `slider_released`'s "emitted even if the pointer left".
+                if self.mouse_pressed {
+                    self.end_drag();
+                }
                 self.request_frame_repaint(None);
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
@@ -1285,7 +1313,12 @@ impl EventHandler for ScrollBar {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y != 0 {
                     let before = self.value;
-                    self.set_value(self.value + scroll.lines_y * self.single_step);
+                    // `i32 * i32` overflows for a huge line count, and the sum before the clamp
+                    // overflows at either end of the range.
+                    let step = i64::from(scroll.lines_y) * i64::from(self.single_step);
+                    let next = i64::from(self.value) + step;
+                    let next = next.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+                    self.set_value(next);
                     self.request_frame_repaint(None);
                     // C2-D0: a bar already at its end does not claim the notch.
                     crate::widget::claim_wheel_if_moved(&before, &self.value);
@@ -2464,5 +2497,136 @@ mod tests {
         bar.handle_event(&Event::FocusLost);
         bar.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
         assert_eq!(bar.value(), 51, "losing focus restores the gate");
+    }
+
+    /// A legal `i32::MIN..=i32::MAX` range must not overflow the span subtraction.
+    ///
+    /// The old `maximum - minimum` panicked in a debug build (and produced a negative span in
+    /// release, reversing the mapping). Both derived percentages widen to `i64` before the
+    /// subtraction, so a full-width range is merely a very long one.
+    #[test]
+    fn a_full_width_i32_range_does_not_panic() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_range(i32::MIN, i32::MAX);
+
+        let size = sb.slider_size();
+        let position = sb.slider_position();
+        assert!(size.is_finite(), "slider_size must be finite (got {size})");
+        assert!((0.0..=1.0).contains(&size), "slider_size must be a fraction (got {size})");
+        assert!(position.is_finite(), "slider_position must be finite (got {position})");
+        assert!(
+            (0.0..=1.0).contains(&position),
+            "slider_position must be a fraction (got {position})"
+        );
+
+        sb.set_value(i32::MIN);
+        assert_eq!(sb.slider_position(), 0.0, "the minimum sits at the start");
+        sb.set_value(i32::MAX);
+        assert_eq!(sb.slider_position(), 1.0, "the maximum sits at the end");
+    }
+
+    /// A host writing the value must be given the frame that draws the new thumb.
+    ///
+    /// The repaint is requested by `set_value` itself: `touch_activity` deliberately does not
+    /// ask for a frame (an already-opaque bar has nothing to animate), so a silent write left
+    /// the thumb painted at its old position until some unrelated event moved it.
+    #[test]
+    fn set_value_requests_a_repaint() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let f = std::sync::Arc::clone(&fired);
+            let scope = sb.connection_scope();
+            sb.redraw_requested_signal().connect_scoped(scope, move || {
+                f.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        sb.set_value(50);
+        assert_eq!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a new value must request a repaint"
+        );
+
+        sb.set_value(50);
+        assert_eq!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "setting the same value must not repaint"
+        );
+    }
+
+    /// The thumb the paint pass fills is exactly the length the travel mapping subtracts.
+    ///
+    /// `thumb_rect` used to derive its own `rect.width * fraction` grip while `travel_band`
+    /// subtracted `thumb_length`, so the two disagreed and the grip could cover an arrow cell.
+    /// Both now read `thumb_length`.
+    #[test]
+    fn the_painted_thumb_is_as_long_as_the_travel_band_assumes() {
+        let sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert_eq!(sb.thumb_rect().width as f32, sb.thumb_length());
+
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 16, 200));
+        sb.set_orientation(Orientation::Vertical);
+        assert_eq!(sb.thumb_rect().height as f32, sb.thumb_length());
+    }
+
+    /// A pointer that leaves the control ends the gesture it began there.
+    ///
+    /// The runtime delivers no release for a pointer that left every control, so without the
+    /// `MouseLeave` arm a drag (or a held arrow) survived the departure and a plain move on
+    /// re-entry dragged the thumb with no button held.
+    #[test]
+    fn leaving_the_control_ends_a_drag() {
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        bar.set_range(0, 1000);
+        bar.set_value(500);
+
+        let thumb = bar.thumb_rect();
+        let grab = Point::new(thumb.x + thumb.width as i32 / 2, 8);
+        bar.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+        assert!(bar.mouse_pressed, "the press starts a gesture");
+        assert!(bar.dragging_thumb, "the press landed on the thumb");
+
+        bar.handle_event(&Event::MouseMove { pos: Point::new(grab.x + 20, 8) });
+        let dragged = bar.value();
+        assert!(dragged > 500, "a move while pressed drags the thumb");
+
+        bar.handle_event(&Event::MouseLeave { pos: Point::new(grab.x + 20, 8) });
+        assert!(!bar.mouse_pressed, "leaving releases the held button");
+        assert!(!bar.dragging_thumb, "leaving ends the drag");
+
+        let settled = bar.value();
+        bar.handle_event(&Event::MouseMove { pos: Point::new(grab.x + 60, 8) });
+        assert_eq!(bar.value(), settled, "a move after the pointer left must not drag the thumb");
+    }
+
+    /// A wheel notch over a full-width range stays inside the range.
+    ///
+    /// The line step is an `i32 * i32` product and the sum before the clamp is added in `i32`,
+    /// both of which overflow on a full-width range; widening to `i64` and clamping keeps a
+    /// huge notch from wrapping to the opposite end of the range.
+    #[test]
+    fn a_wheel_over_a_full_width_range_stays_in_range() {
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        bar.set_range(i32::MIN, i32::MAX);
+
+        bar.set_value(0);
+        bar.handle_event(&Event::Wheel { delta: Point::new(0, i32::MAX), modifiers: 0 });
+        assert!(
+            (i32::MIN..=i32::MAX).contains(&bar.value()),
+            "a huge downward notch must stay in range (got {})",
+            bar.value()
+        );
+        assert!(bar.value() > 0, "the notch still moves toward the maximum");
+
+        bar.set_value(i32::MAX);
+        bar.handle_event(&Event::Wheel { delta: Point::new(0, i32::MAX), modifiers: 0 });
+        assert_eq!(bar.value(), i32::MAX, "a bar at its maximum does not wrap");
+
+        bar.set_value(i32::MIN);
+        bar.handle_event(&Event::Wheel { delta: Point::new(0, i32::MIN), modifiers: 0 });
+        assert_eq!(bar.value(), i32::MIN, "a bar at its minimum does not wrap");
     }
 }

@@ -554,9 +554,25 @@ impl MenuBar {
         if index >= self.entries.len() {
             return;
         }
+        let closed_open = self.open_menu_index == Some(index);
         self.entries.remove(index);
         self.active_index = Self::shift_cursor(self.active_index, index);
         self.hovered_index = Self::shift_cursor(self.hovered_index, index);
+        self.open_menu_index = Self::shift_cursor(self.open_menu_index, index);
+        // The attached menus are keyed by entry index, so they must be re-keyed with the
+        // cursors. Leaving a key alone made the entry that took the removed slot open
+        // nothing (the bar still looked for the old key), or made the open menu
+        // unfindable when its entry had gone.
+        self.menus.retain(|(attached, _)| *attached != index);
+        for (attached, _) in self.menus.iter_mut() {
+            if *attached > index {
+                *attached -= 1;
+            }
+        }
+        if closed_open {
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::clear_popup_grab_for(self.id());
+        }
         self.base.request_redraw();
     }
 
@@ -685,10 +701,19 @@ impl MenuBar {
         if !self.entries[index].is_enabled() {
             return false;
         }
-        let bar = self.geometry();
-        let Some(menu) = self.attached_menu_mut(index) else {
+        if self.attached_menu(index).is_none() {
             return false;
-        };
+        }
+        // Opening a second attached menu must take the previous one down. Hiding only the
+        // bar's cursor left the old `Menu` reporting `is_visible() == true` for a popup
+        // the host can no longer reach or close.
+        if let Some(previous) = self.open_menu_index.filter(|open| *open != index) {
+            if let Some(menu) = self.attached_menu_mut(previous) {
+                menu.hide();
+            }
+        }
+        let bar = self.geometry();
+        let menu = self.attached_menu_mut(index).expect("attached above");
         let anchor = Point::new(rect.x, rect.y + rect.height as i32);
         // The bar's own geometry is the popup's viewport unless the host declares a
         // larger one: a menu bar sits at the top of the surface its menus drop into, so
@@ -1048,27 +1073,54 @@ impl MenuBar {
     /// came from instead of guessing an offset. Returns `None` for an out-of-range index.
     pub fn entry_rect(&self, index: usize) -> Option<Rect> {
         let rect = self.band_rect();
+        let end = self.entry_run_end();
         let font = effective_font(self.style());
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = self.entry_width_with(entry.title(), font, entry.icon().is_some()) as i32;
+            let w = (self.entry_width_with(entry.title(), font, entry.icon().is_some()) as i32)
+                .min((end - x).max(0));
             if i == index {
-                return Some(Rect { x, y: rect.y, width: w as u32, height: rect.height });
+                return (w > 0).then_some(Rect {
+                    x,
+                    y: rect.y,
+                    width: w as u32,
+                    height: rect.height,
+                });
             }
             x += w;
+            if x >= end {
+                break;
+            }
         }
         None
     }
+
+    /// The x the entry run must stop at: the corner widget's leading edge when one is
+    /// installed, otherwise the band's trailing edge.
+    fn entry_run_end(&self) -> i32 {
+        let band = self.band_rect();
+        self.corner_rect().map_or(band.x + band.width as i32, |corner| corner.x)
+    }
+
     fn hit_entry(&self, pos: Point) -> Option<usize> {
         // The **painted band**, so a click below a 28 px strip is not a click on the bar.
         let rect = self.band_rect();
         if pos.y < rect.y || pos.y > rect.y + rect.height as f32 as i32 {
             return None;
         }
+        // The corner slot is not an entry: its box belongs to the widget painted there.
+        if self.corner_rect().is_some_and(|corner| corner.contains_point(pos)) {
+            return None;
+        }
+        let end = self.entry_run_end();
         let font = effective_font(self.style());
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = self.entry_width_with(entry.title(), font, entry.icon().is_some()) as i32;
+            let w = (self.entry_width_with(entry.title(), font, entry.icon().is_some()) as i32)
+                .min((end - x).max(0));
+            if w <= 0 {
+                break;
+            }
             if pos.x >= x && pos.x < x + w {
                 return Some(i);
             }
@@ -1284,6 +1336,29 @@ impl EventHandler for MenuBar {
         if !self.base.is_enabled() {
             return;
         }
+        // The corner widget owns the pointer inside its own box. The entry run stops at its
+        // leading edge, so without this branch a press there would resolve against the
+        // entry underneath or be forwarded to an open drop-down.
+        if let Some(corner_rect) = self.corner_rect() {
+            let aimed = match event {
+                Event::MousePress { pos, .. }
+                | Event::MouseMove { pos }
+                | Event::MouseRelease { pos, .. }
+                | Event::MouseLeave { pos } => corner_rect.contains_point(*pos),
+                _ => false,
+            };
+            if aimed {
+                if let Some(corner) = self.corner.as_mut() {
+                    corner.handle_event(event);
+                }
+                if matches!(event, Event::MouseMove { .. } | Event::MouseLeave { .. }) {
+                    self.hovered_index = None;
+                    self.tooltip_source = None;
+                    self.tooltips.note_leave();
+                }
+                return;
+            }
+        }
         // An open drop-down owns every event that is not aimed at the bar itself. The bar
         // still takes presses and moves on its own band, because that is how an entry
         // switches or closes the open menu.
@@ -1486,6 +1561,7 @@ impl Draw for MenuBar {
             separator,
         );
         let mut x = rect.x;
+        let entry_end = self.entry_run_end();
         let font = effective_font(style);
         let widths_key = Self::entry_width_key(&self.entries, font);
         if widths_key != self.entry_widths_key {
@@ -1498,12 +1574,16 @@ impl Draw for MenuBar {
         }
         for (i, entry) in self.entries.iter().enumerate() {
             let has_icon = entry.icon().is_some();
-            let w = self
+            let w = (self
                 .entry_widths
                 .get(i)
                 .copied()
                 .unwrap_or_else(|| self.entry_width_with(entry.title(), font, has_icon))
-                as i32;
+                as i32)
+                .min((entry_end - x).max(0));
+            if w <= 0 {
+                break;
+            }
             let is_hovered = self.hovered_index == Some(i);
             let is_active = self.active_index == Some(i);
             let entry_rect = Rect { x, y: rect.y, width: w as u32, height: rect.height };
@@ -1888,5 +1968,120 @@ mod tests {
 
         assert_eq!(bar.open_menu_index(), None, "the plain entry takes the hover");
         assert_eq!(bar.active_index(), Some(1), "and becomes the active entry");
+    }
+
+    /// Removing an entry re-keys the attached menus with the cursors.
+    ///
+    /// # The defect this pins
+    ///
+    /// `menus` is keyed by entry index, but `remove_menu` only shifted the cursors. The
+    /// entry that moved into the removed slot then had no attached menu (the bar still
+    /// looked for the old key), and an already-open menu could become unfindable.
+    #[test]
+    fn removing_an_entry_rekeys_the_attached_menus() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.add_menu("File");
+        bar.add_menu("Edit");
+        bar.add_menu("View");
+        let mut view = Menu::new("View", Rect::new(0, 0, 160, 100));
+        view.add_action("Zoom");
+        assert!(bar.attach_menu(2, view));
+        assert!(bar.open_attached_menu(2));
+
+        bar.remove_menu(0);
+
+        assert_eq!(bar.open_menu_index(), Some(1), "the open cursor follows View");
+        assert!(
+            bar.active_menu().is_some_and(Menu::is_visible),
+            "and it still finds the menu that moved down with it"
+        );
+        assert!(bar.attached_menu(1).is_some(), "View keeps its menu at its new index");
+        assert!(bar.attached_menu(2).is_none(), "the stale key is gone");
+    }
+
+    /// Opening a second attached menu hides the previous one.
+    #[test]
+    fn opening_a_second_attached_menu_hides_the_first() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.add_menu("File");
+        bar.add_menu("Edit");
+        let mut file = Menu::new("File", Rect::new(0, 0, 160, 100));
+        file.add_action("Open");
+        let mut edit = Menu::new("Edit", Rect::new(0, 0, 160, 100));
+        edit.add_action("Copy");
+        bar.attach_menu(0, file);
+        bar.attach_menu(1, edit);
+
+        assert!(bar.open_attached_menu(0));
+        assert!(bar.attached_menu(0).is_some_and(Menu::is_visible));
+        assert!(bar.open_attached_menu(1));
+
+        assert!(
+            !bar.attached_menu(0).expect("File is still attached").is_visible(),
+            "the previously open menu must not keep reporting itself visible"
+        );
+        assert_eq!(bar.open_menu_index(), Some(1));
+    }
+
+    /// The corner widget takes its own presses and the entry run stops before it.
+    ///
+    /// # The defect this pins
+    ///
+    /// The corner slot was painted but never received input: `hit_entry` resolved a press
+    /// over it to the entry underneath, and entries were laid out across its box.
+    #[test]
+    fn the_corner_widget_takes_its_own_presses_and_reserves_the_run() {
+        struct CornerProbe {
+            base: BaseWidget,
+            presses: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl Widget for CornerProbe {
+            fn base(&self) -> &BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut BaseWidget {
+                &mut self.base
+            }
+            fn size_hint(&self) -> crate::core::Size {
+                crate::core::Size::new(80, 24)
+            }
+        }
+        impl EventHandler for CornerProbe {
+            fn handle_event(&mut self, event: &Event) {
+                if matches!(event, Event::MousePress { .. }) {
+                    self.presses.set(self.presses.get() + 1);
+                }
+            }
+        }
+
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.add_menu("A_very_long_menu_title_that_reaches_the_corner");
+        bar.set_corner_widget(Some(Box::new(CornerProbe {
+            base: BaseWidget::new(WidgetKind::Label, Rect::new(0, 0, 80, 24), "CornerProbe"),
+            presses: std::rc::Rc::clone(&presses),
+        })));
+
+        let corner = bar.corner_rect().expect("the slot is installed");
+        let entry = bar.entry_rect(0).expect("the entry has a box");
+        assert!(
+            entry.x + entry.width as i32 <= corner.x,
+            "the entry run must stop at the corner: {entry:?} vs {corner:?}"
+        );
+
+        let triggered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink = Arc::clone(&triggered);
+        bar.triggered.connect(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let pos =
+            Point::new(corner.x + corner.width as i32 / 2, corner.y + corner.height as i32 / 2);
+        bar.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(presses.get(), 1, "the corner widget receives the press");
+        assert_eq!(
+            triggered.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the entry underneath must not be activated"
+        );
     }
 }

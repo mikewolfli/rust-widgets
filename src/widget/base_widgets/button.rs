@@ -599,6 +599,24 @@ impl Button {
         }
     }
 
+    /// The band the button's face actually occupies.
+    ///
+    /// `draw` clamps the painted height to `size_hint` and centres the result in the geometry,
+    /// because a button's height is its own while its width is the layout's. The icon and label
+    /// slots are derived from **that** band, not from the raw rectangle: deriving them from the
+    /// full geometry put an `IconPosition::Top` icon at `y = 8` on a 200x120 button whose face
+    /// painted at `y = 38..82`, so the icon floated above the pill it belongs to.
+    fn painted_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let painted_height = self.size_hint().height.min(rect.height).max(1);
+        Rect::new(
+            rect.x,
+            rect.y + (rect.height.saturating_sub(painted_height) / 2) as i32,
+            rect.width,
+            painted_height,
+        )
+    }
+
     /// The box the icon occupies, when the button has one.
     ///
     /// The slot is the one [`Self::icon_position`] names. A leading icon is the historical
@@ -617,7 +635,7 @@ impl Button {
             return None;
         }
         let content = ControlMetrics::content_box(
-            self.geometry(),
+            self.painted_rect(),
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
         );
         let size = self.icon_size.min(content.width).min(content.height);
@@ -654,7 +672,7 @@ impl Button {
     /// derived from the sibling's own size": neither slot overlaps the other.
     pub fn label_rect(&self) -> Rect {
         let content = ControlMetrics::content_box(
-            self.geometry(),
+            self.painted_rect(),
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
         );
         let advance = self.icon_advance().min(content.width);
@@ -691,6 +709,18 @@ impl Button {
                 Rect::new(content.x, content.y, content.width, content.height - stacked)
             }
         }
+    }
+
+    /// The ink of the default-button emphasis ring.
+    ///
+    /// The theme's accent when one is active, because an emphasis has to read against a face the
+    /// host may have styled arbitrarily; `bg`'s contrast colour is the fallback for a build with
+    /// no palette, where no accent exists to read.
+    fn emphasis_ring_color(&self, bg: Color) -> Color {
+        crate::style::palette_shared()
+            .as_ref()
+            .map(|theme| theme.accent)
+            .unwrap_or_else(|| bg.contrast_color())
     }
 
     /// Returns current button interaction state.
@@ -903,7 +933,22 @@ impl Button {
             self.press_elapsed = None;
         }
         self.base.set_grabbed(false);
-        self.set_pressed(false);
+        if self.base.is_enabled() {
+            self.set_pressed(false);
+        } else if self.base.is_pressed() || self.signaled_pressed {
+            // `set_pressed` is inert while disabled, and `set_enabled_state(false)` disables
+            // **before** it cancels. Routing cancellation through it there left the painted
+            // latch and the `signaled_pressed` edge set, so re-enabling the button reported
+            // `Pressed` with no pointer down and the next press emitted no `pressed`. The
+            // gesture is over either way, so clear both directly and report the release the
+            // disabled path could not emit.
+            self.base.set_pressed(false);
+            if self.signaled_pressed {
+                self.signaled_pressed = false;
+                self.released_signal.emit();
+                button_group::notify_member_event(self.id(), button_group::MemberEvent::Released);
+            }
+        }
         self.canceled.emit();
     }
 
@@ -1318,6 +1363,21 @@ impl Button {
         }
     }
 
+    /// Claims the group's emphasis for a pointer or touch activation.
+    ///
+    /// A menu button's activation opens its menu rather than selecting the button, which is the
+    /// same exception the keyboard arm makes, so only a plain button claims here.
+    fn claim_pointer_activation(&mut self) {
+        if !self.auto_exclusive {
+            return;
+        }
+        #[cfg(full_widgets)]
+        if !self.menu_items.is_empty() {
+            return;
+        }
+        self.claim_group_selection();
+    }
+
     /// Makes this button the group's emphasised member.
     fn claim_group_selection(&mut self) {
         let Some(key) = self.exclusive_key() else {
@@ -1390,6 +1450,10 @@ impl Button {
         self.menu_open = true;
         self.menu_anchor = None;
         self.active_menu_index = self.menu_items.iter().position(|item| item.enabled);
+        // The open menu owns the press that dismisses it, as every other menu owner does
+        // (`MenuButton`, `ToolButton`, `DropdownMenu`). Without the grab an outside press went
+        // to the control behind, which both fired it and left this menu open.
+        crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
     }
 
@@ -1402,6 +1466,7 @@ impl Button {
         self.menu_open = true;
         self.menu_anchor = Some(pos);
         self.active_menu_index = self.menu_items.iter().position(|item| item.enabled);
+        crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
     }
 
@@ -1414,6 +1479,7 @@ impl Button {
         self.menu_open = false;
         self.menu_anchor = None;
         self.active_menu_index = None;
+        crate::widget::runtime::clear_popup_grab_for(self.id());
         self.base.request_redraw();
     }
 
@@ -2053,9 +2119,12 @@ impl WidgetProperties for Button {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "click" => {
-                self.press();
-                self.release();
-                self.emit_clicked();
+                // Route through the public activation, not through `press`/`release`: both are
+                // inert on a disabled button, so the old arm emitted `clicked` and notified the
+                // group for a control that could not be clicked. `click` also claims the
+                // auto-exclusive group selection, which a programmatic activation must do for
+                // the same reason a keyboard one does.
+                self.click();
                 Ok(())
             }
             _ => self.default_command(name),
@@ -2192,6 +2261,7 @@ impl EventHandler for Button {
                 let inside = self.base.contains_point_with_touch_expansion(*pos);
                 self.release();
                 if inside {
+                    self.claim_pointer_activation();
                     self.emit_clicked();
                     #[cfg(full_widgets)]
                     if !self.menu_items.is_empty() {
@@ -2206,6 +2276,7 @@ impl EventHandler for Button {
                 let inside = self.base.contains_point_with_touch_expansion(*pos);
                 self.release();
                 if inside {
+                    self.claim_pointer_activation();
                     self.emit_clicked();
                     #[cfg(full_widgets)]
                     if !self.menu_items.is_empty() {
@@ -2389,7 +2460,6 @@ impl Draw for Button {
         // Button rendering with style integration (BLUE13 R1.3)
         // Reads style fields (background_color, text_color, border_color, etc.)
         // falling back to state-based defaults when style values are not set.
-        let rect = self.geometry();
         let state = self.state();
         // The icon is composed **before** the style borrow below. Tinting mutates this control's
         // composed-copy cache, and the style is an immutable borrow of the whole control that lasts
@@ -2417,14 +2487,7 @@ impl Draw for Button {
         // 240x120 pill, which is a rectangle shaped like a button rather than a button. The
         // height comes from `size_hint`, the same derivation a layout asks for, so the drawn
         // shape and the reported size cannot disagree.
-        let intrinsic = self.size_hint();
-        let painted_height = intrinsic.height.min(rect.height).max(1);
-        let rect = Rect::new(
-            rect.x,
-            rect.y + (rect.height.saturating_sub(painted_height) / 2) as i32,
-            rect.width,
-            painted_height,
-        );
+        let rect = self.painted_rect();
 
         // ── Background ──
         let bg = style.background_color.unwrap_or_else(|| match state {
@@ -2735,16 +2798,18 @@ impl Draw for Button {
         // It is drawn **between** the border and the focus ring, and inside the control's own
         // rectangle, for the same reason the focus ring is: a ring outside the rect is the
         // "drawing leaves the control and only the raster clip hides it" defect the census catches.
-        // The colour is the theme's accent -- the emphasis has to be visible on a button whose
-        // surface and border the host may have styled arbitrarily, and `style.background_color` is
-        // exactly the resolved value the accent already lands in for an active/primary button.
+        // The colour is the theme's accent: the emphasis has to be visible on a button whose
+        // surface and border the host may have styled arbitrarily, and a contrast colour can be
+        // black on the default light face, which is less of an emphasis than a hairline border.
+        // A build with no palette falls back to that contrast colour, the only ink the resolved
+        // face can guarantee.
         if self.is_default() {
             let ring = FocusRing::for_control(rect, br);
             if ring.is_drawable() {
                 context.draw_rounded_rect_stroke(
                     ring.rect,
                     ring.radius,
-                    bg.contrast_color(),
+                    self.emphasis_ring_color(bg),
                     DEFAULT_EMPHASIS_WIDTH,
                 );
             }
@@ -5127,6 +5192,153 @@ mod tests {
         assert!(
             hint_right > plain_right,
             "the hint sits at the trailing edge, so the ink box grows right ({hint_right} vs {plain_right})"
+        );
+    }
+
+    // ── Regression: a disabled mid-press must not keep the painted latch ──
+
+    /// Disabling while held abandons the gesture **and** clears the latch behind the enabled gate.
+    ///
+    /// `set_enabled_state(false)` disabled before cancelling, and `set_pressed` is inert while
+    /// disabled — so the base press flag and `signaled_pressed` survived. Re-enabling then reported
+    /// `Pressed` with no pointer down, and the next press emitted no `pressed` because the edge was
+    /// still latched.
+    #[test]
+    fn disabling_mid_press_clears_the_latch_and_announces_the_next_press() {
+        let mut b = make_button();
+        let pressed = Arc::new(AtomicBool::new(false));
+        b.pressed_signal.connect({
+            let flag = Arc::clone(&pressed);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+
+        b.press();
+        b.set_enabled_state(false);
+        b.set_enabled_state(true);
+        assert!(!b.is_pressed(), "the abandoned gesture must not come back painted pressed");
+        assert_eq!(b.state(), ButtonState::Normal);
+
+        pressed.store(false, Ordering::SeqCst);
+        b.press();
+        assert!(pressed.load(Ordering::SeqCst), "the next press must announce its rising edge");
+    }
+
+    /// `command("click")` is the enabled-gated activation, not a press/release pair that bypasses it.
+    ///
+    /// The arm called `press()`/`release()` — both inert on a disabled button — and then emitted
+    /// `clicked` unconditionally, so a disabled button reported a click no pointer could produce.
+    #[test]
+    fn the_click_command_obeys_the_enabled_gate() {
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+
+        b.set_enabled_state(false);
+        b.command("click").expect("the command name is known");
+        assert!(!clicked.load(Ordering::SeqCst), "a disabled button cannot be clicked");
+
+        b.set_enabled_state(true);
+        b.command("click").expect("the command name is known");
+        assert!(clicked.load(Ordering::SeqCst), "an enabled command is an activation");
+    }
+
+    /// The command is the same activation as a click, including the group claim.
+    #[test]
+    fn the_click_command_claims_the_auto_exclusive_selection() {
+        let mut first = make_button();
+        let mut second = Button::new("Other".into(), Rect::new(10, 60, 120, 36));
+        first.set_parent(Some(4_242));
+        second.set_parent(Some(4_242));
+        first.set_auto_exclusive(true);
+        second.set_auto_exclusive(true);
+
+        first.click();
+        assert!(first.is_default());
+        second.command("click").expect("the command name is known");
+        assert!(second.is_default(), "a programmatic click moves the emphasis like a real one");
+        assert!(!first.is_default());
+    }
+
+    /// A pointer release claims the auto-exclusive emphasis, as `click()` and the keyboard do.
+    ///
+    /// The release arm emitted `clicked` but never claimed, so a mouse click on a second
+    /// auto-exclusive button left the emphasis painted on the previous member.
+    #[test]
+    fn a_pointer_release_claims_the_auto_exclusive_selection() {
+        let mut first = make_button();
+        let mut second = Button::new("Other".into(), Rect::new(10, 60, 120, 36));
+        first.set_parent(Some(4_243));
+        second.set_parent(Some(4_243));
+        first.set_auto_exclusive(true);
+        second.set_auto_exclusive(true);
+
+        first.click();
+        assert!(first.is_default(), "the fixture starts with the first member emphasised");
+
+        let inside = Point::new(20, 70);
+        second.handle_event(&Event::MousePress {
+            pos: inside,
+            button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0,
+        });
+        second.handle_event(&Event::MouseRelease {
+            pos: inside,
+            button: crate::event::mouse_button::PRIMARY,
+        });
+
+        assert!(second.is_default(), "a pointer activation claims the group's emphasis");
+        assert!(!first.is_default(), "the previous member must lose it");
+    }
+
+    /// A stacked icon and its label are laid out in the band the face actually paints.
+    ///
+    /// `draw` clamps the height to `size_hint` and centres it, but the slot derivations read the
+    /// full geometry: a 200x120 `IconPosition::Top` button painted its face at y=38..82 while the
+    /// icon floated at y=8..28.
+    #[test]
+    fn a_stacked_icon_and_label_stay_inside_the_painted_band() {
+        let mut button = Button::new("Go".into(), Rect::new(0, 0, 200, 120));
+        button.set_icon_source(Some(IconSource::builtin(crate::widget::IconName::Info)));
+        button.set_icon_position(IconPosition::Top);
+
+        let band_height = button.size_hint().height.min(120);
+        let band_y = (120 - band_height) as i32 / 2;
+        let band_bottom = band_y + band_height as i32;
+        let icon = button.icon_rect().expect("the icon has a slot");
+        let label = button.label_rect();
+
+        assert!(icon.y >= band_y, "the icon starts inside the painted face: {icon:?}");
+        assert!(
+            icon.y + icon.height as i32 <= band_bottom,
+            "and ends inside it: {icon:?} vs band bottom {band_bottom}"
+        );
+        assert!(label.y >= icon.y + icon.height as i32, "the label follows the stacked icon");
+        assert!(
+            label.y + label.height as i32 <= band_bottom,
+            "the label stays inside the painted face too: {label:?}"
+        );
+    }
+
+    /// The default emphasis reads as the theme accent, not as the face's contrast colour.
+    ///
+    /// On the default `rgb(240,240,240)` face the contrast colour is black, so the documented
+    /// "theme accent" ring was less visible than the border it sits next to.
+    #[cfg(device_profile)]
+    #[test]
+    fn the_default_emphasis_ring_uses_the_theme_accent() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+
+        let accent = crate::style::palette_shared().expect("an active palette").accent;
+        let button = make_button();
+        assert_eq!(
+            button.emphasis_ring_color(Color::rgb(240, 240, 240)),
+            accent,
+            "the emphasis is the theme accent, with the face contrast only as the no-theme fallback"
         );
     }
 }

@@ -1940,3 +1940,372 @@ fn every_event_alias_reaches_the_signal_its_control_emits() {
         shape.handle_event(&Event::MouseMove { pos: crate::core::Point::new(50, 20) });
     });
 }
+
+// ── Regression tests for the property-seam defects ─────────────────────────────
+
+/// `scroll_x` used to narrow with `as i32`, so `1 << 40` became `0` and a write reported `Ok`.
+///
+/// It is declared `UInt` now (the control clamps to `[0, max]`, so a negative offset is not a
+/// state it can hold), an out-of-`i32` value is refused, and a value the setter clamps is reported
+/// as `OutOfRange` rather than accepted.
+#[test]
+fn scroll_x_refuses_narrowing_and_reports_the_clamp() {
+    use crate::widget::capability::coercion::expect_usize;
+
+    let factory = WidgetFactory::new_with_defaults();
+    let mut field = factory.create("line_edit", Rect::new(0, 0, 90, 30), "").expect("line_edit");
+
+    assert!(
+        expect_usize(CapabilityValue::UInt(1u64 << 41)).is_ok(),
+        "the fixture must be a value that fits `usize` but not `i32` on a 64-bit host"
+    );
+    assert_eq!(
+        factory.write_property(field.as_mut(), "scroll_x", CapabilityValue::UInt(1u64 << 41)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(
+        factory.write_property(field.as_mut(), "scroll_x", CapabilityValue::UInt(u64::MAX)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(
+        factory.write_property(
+            field.as_mut(),
+            "scroll_x",
+            CapabilityValue::Int(i64::from(i32::MAX) + 1)
+        ),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+
+    // Empty text can never scroll, so the control clamps even a small request to zero. The
+    // property seam reports that instead of answering `Ok`.
+    assert_eq!(
+        factory.write_property(field.as_mut(), "scroll_x", CapabilityValue::UInt(5)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(factory.read_property(field.as_ref(), "scroll_x"), Ok(CapabilityValue::UInt(0)));
+
+    // `UInt` is the declared kind, and the write path accepts a non-negative `Int` as the same
+    // numeric value.
+    assert_eq!(factory.write_property(field.as_mut(), "scroll_x", CapabilityValue::Int(0)), Ok(()));
+}
+
+/// A swatch palette is a *list* of colours, and the schema says so.
+#[test]
+fn swatch_colors_is_declared_as_a_colour_list() {
+    use crate::core::Color;
+    use crate::widget::capability::command_schema::{command_schema, CommandSignature};
+    use crate::widget::capability::PropertyValueKind;
+
+    let factory = WidgetFactory::new_with_defaults();
+    let schema = factory
+        .capability("swatch")
+        .expect("swatch is registered")
+        .properties
+        .iter()
+        .find(|schema| schema.name == "colors")
+        .expect("swatch publishes colors");
+    assert_eq!(schema.value_kind, PropertyValueKind::ColorList);
+    assert_eq!(
+        crate::widget::capability::designer_manifest::value_kind_token(schema.value_kind),
+        "color-list"
+    );
+
+    let mut swatch = factory.create("swatch", Rect::new(0, 0, 120, 60), "").expect("swatch");
+    let palette = CapabilityValue::Tuple(crate::compat::Vec::from([
+        CapabilityValue::Color(Color::BLACK),
+        CapabilityValue::Color(Color::WHITE),
+    ]));
+    factory.write_property(swatch.as_mut(), "colors", palette.clone()).expect("a list writes");
+    assert_eq!(factory.read_property(swatch.as_ref(), "colors"), Ok(palette));
+
+    // One colour is not a colour *list*.
+    assert_eq!(
+        factory.write_property(swatch.as_mut(), "colors", CapabilityValue::Color(Color::BLACK)),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+
+    let command = command_schema("set_colors", factory.capability("swatch").unwrap().properties)
+        .expect("set_colors is described");
+    match command.signature {
+        CommandSignature::OneValue { kind, .. } => {
+            assert_eq!(kind, PropertyValueKind::ColorList, "the command advertises the list kind")
+        }
+        other => panic!("set_colors must take one value, got {other:?}"),
+    }
+}
+
+/// Range controls clamp inside their own setters; the property seam must report the move.
+#[test]
+fn range_controls_refuse_a_value_they_would_clamp() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut slider = factory.create("slider", Rect::new(0, 0, 200, 30), "").expect("slider");
+    assert_eq!(
+        factory.write_property(slider.as_mut(), "value", CapabilityValue::Int(1000)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(factory.read_property(slider.as_ref(), "value"), Ok(CapabilityValue::Int(100)));
+    // A value inside the range still lands.
+    assert_eq!(factory.write_property(slider.as_mut(), "value", CapabilityValue::Int(50)), Ok(()));
+    assert_eq!(factory.read_property(slider.as_ref(), "value"), Ok(CapabilityValue::Int(50)));
+
+    let mut progress =
+        factory.create("progress_bar", Rect::new(0, 0, 200, 30), "").expect("progress_bar");
+    assert_eq!(
+        factory.write_property(progress.as_mut(), "value", CapabilityValue::Int(1000)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+
+    let mut dial = factory.create("dial", Rect::new(0, 0, 80, 80), "").expect("dial");
+    assert_eq!(
+        factory.write_property(dial.as_mut(), "value", CapabilityValue::Int(1000)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    // A step of zero is floored to one by the setter, so the seam reports the move too.
+    assert_eq!(
+        factory.write_property(dial.as_mut(), "single_step", CapabilityValue::Int(0)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+}
+
+/// A non-finite numeric write is refused rather than being dropped while answering `Ok`.
+#[test]
+fn spin_box_refuses_a_non_finite_value() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut spin = factory.create("spin_box", Rect::new(0, 0, 120, 30), "").expect("spin_box");
+    assert_eq!(
+        factory.write_property(spin.as_mut(), "value", CapabilityValue::Float(f64::NAN)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(factory.read_property(spin.as_ref(), "value"), Ok(CapabilityValue::Int(0)));
+    assert_eq!(
+        factory.write_property(spin.as_mut(), "value", CapabilityValue::Float(f64::INFINITY)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(factory.write_property(spin.as_mut(), "value", CapabilityValue::Int(5)), Ok(()));
+    assert_eq!(factory.read_property(spin.as_ref(), "value"), Ok(CapabilityValue::Int(5)));
+}
+
+/// A tab-strip width write must not saturate, silently raise the sibling bound, or report success
+/// for a value the control moved.
+#[test]
+fn tab_strip_width_writes_refuse_a_value_the_control_would_move() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut bar = factory.create("tab_bar", Rect::new(0, 0, 320, 32), "").expect("tab_bar");
+    assert_eq!(
+        factory.read_property(bar.as_ref(), "tab_max_width"),
+        Ok(CapabilityValue::UInt(200))
+    );
+    assert_eq!(
+        factory.write_property(bar.as_mut(), "tab_min_width", CapabilityValue::UInt(u64::MAX)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(
+        factory.write_property(bar.as_mut(), "tab_min_width", CapabilityValue::UInt(0)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    // Raising the minimum past the maximum used to answer `Ok` and silently set the maximum too.
+    assert_eq!(
+        factory.write_property(bar.as_mut(), "tab_min_width", CapabilityValue::UInt(500)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(
+        factory.read_property(bar.as_ref(), "tab_max_width"),
+        Ok(CapabilityValue::UInt(200)),
+        "a refused minimum write must not mutate the sibling property"
+    );
+    assert_eq!(
+        factory.write_property(bar.as_mut(), "tab_max_width", CapabilityValue::UInt(10)),
+        Err(CapabilityAccessError::OutOfRange)
+    );
+    assert_eq!(
+        factory.write_property(bar.as_mut(), "tab_min_width", CapabilityValue::UInt(60)),
+        Ok(())
+    );
+}
+
+/// A `Records` property that publishes no schema refuses the value instead of accepting an
+/// unchecked shape.
+#[test]
+fn a_records_property_without_a_schema_is_refused() {
+    use crate::widget::capability::{
+        validate_property_value, CapabilityValue as Value, ConstraintViolation, PropertySchema,
+        PropertyValueKind, RecordList, RecordViolation, EMPTY_RECORD_SCHEMA,
+    };
+
+    let schema = PropertySchema::new("items", PropertyValueKind::Records, true, true);
+    let list = RecordList::from_items(&EMPTY_RECORD_SCHEMA, crate::compat::Vec::new());
+    assert_eq!(
+        validate_property_value("items", &schema, &Value::Records(list)),
+        Err(ConstraintViolation::RecordList {
+            property: "items".into(),
+            cause: RecordViolation::SchemaMissing,
+        })
+    );
+
+    // The real declaration carries the chip schema, so the refusal is a guard rather than
+    // something a registered control can trip.
+    let factory = WidgetFactory::new_with_defaults();
+    let declared = factory
+        .capability("chip_input")
+        .expect("chip_input is registered")
+        .properties
+        .iter()
+        .find(|schema| schema.name == "items")
+        .expect("chip_input publishes items");
+    assert_eq!(declared.value_kind, PropertyValueKind::Records);
+    assert!(
+        declared.record_schema.is_some(),
+        "a `Records` row must publish the schema its validator uses"
+    );
+}
+
+/// The two sibling integer properties on `input_dialog` accept the same carriers.
+#[test]
+fn input_dialog_integer_properties_share_one_coercion_rule() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut dialog =
+        factory.create("input_dialog", Rect::new(0, 0, 320, 160), "").expect("input_dialog");
+
+    assert_eq!(
+        factory.write_property(dialog.as_mut(), "int_value", CapabilityValue::Float(2.5)),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+    assert_eq!(
+        factory.write_property(dialog.as_mut(), "int_step", CapabilityValue::Float(2.5)),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+    assert_eq!(
+        factory.write_property(dialog.as_mut(), "int_value", CapabilityValue::UInt(7)),
+        Ok(())
+    );
+    assert_eq!(factory.read_property(dialog.as_ref(), "int_value"), Ok(CapabilityValue::Int(7)));
+    assert_eq!(
+        factory.write_property(dialog.as_mut(), "int_step", CapabilityValue::UInt(3)),
+        Ok(())
+    );
+    assert_eq!(factory.read_property(dialog.as_ref(), "int_step"), Ok(CapabilityValue::Int(3)));
+    assert_eq!(
+        factory.write_property(dialog.as_mut(), "int_step", CapabilityValue::UInt(u64::MAX)),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+}
+
+/// `legend.entries` and `filter_row.conditions` publish the record shape they actually carry.
+#[test]
+fn legend_and_filter_row_conditions_are_declared_as_records() {
+    use crate::core::Color;
+    use crate::widget::capability::{
+        PropertyValueKind, RecordList, RecordValue, FILTER_CONDITION_SCHEMA, LEGEND_ENTRY_SCHEMA,
+    };
+
+    let factory = WidgetFactory::new_with_defaults();
+    for (control, property) in [("legend", "entries"), ("filter_row", "conditions")] {
+        let schema = factory
+            .capability(control)
+            .unwrap_or_else(|| panic!("{control} is registered"))
+            .properties
+            .iter()
+            .find(|schema| schema.name == property)
+            .unwrap_or_else(|| panic!("{control} publishes {property}"));
+        assert_eq!(schema.value_kind, PropertyValueKind::Records);
+        assert!(schema.record_schema.is_some(), "{control}.{property} must publish its fields");
+    }
+
+    let mut legend = factory.create("legend", Rect::new(0, 0, 160, 40), "").expect("legend");
+    let entries = CapabilityValue::Records(RecordList::from_items(
+        &LEGEND_ENTRY_SCHEMA,
+        crate::compat::Vec::from([RecordValue::new()
+            .with("label", CapabilityValue::String("Revenue".into()))
+            .with("color", CapabilityValue::Color(Color::PRIMARY))
+            .with("visible", CapabilityValue::Bool(true))]),
+    ));
+    factory
+        .write_property(legend.as_mut(), "entries", entries.clone())
+        .expect("a record list writes");
+    assert_eq!(factory.read_property(legend.as_ref(), "entries"), Ok(entries));
+    assert_eq!(
+        factory.write_property(
+            legend.as_mut(),
+            "entries",
+            CapabilityValue::Tuple(crate::compat::Vec::from([CapabilityValue::String("a".into())])),
+        ),
+        Err(CapabilityAccessError::TypeMismatch),
+        "a positional tuple is not the declared record list"
+    );
+
+    let mut row = factory.create("filter_row", Rect::new(0, 0, 320, 32), "").expect("filter_row");
+    let conditions = CapabilityValue::Records(RecordList::from_items(
+        &FILTER_CONDITION_SCHEMA,
+        crate::compat::Vec::from([RecordValue::new()
+            .with("column", CapabilityValue::UInt(0))
+            .with("operator", CapabilityValue::String("contains".into()))
+            .with("operand", CapabilityValue::String("Berlin".into()))]),
+    ));
+    factory
+        .write_property(row.as_mut(), "conditions", conditions.clone())
+        .expect("a condition list writes");
+    assert_eq!(factory.read_property(row.as_ref(), "conditions"), Ok(conditions));
+}
+
+/// `combo_box.direction` publishes the two tokens its parser accepts.
+#[test]
+fn combo_box_direction_is_an_enumerated_property() {
+    use crate::widget::capability::PropertyValueKind;
+
+    let factory = WidgetFactory::new_with_defaults();
+    let schema = factory
+        .capability("combo_box")
+        .expect("combo_box is registered")
+        .properties
+        .iter()
+        .find(|schema| schema.name == "direction")
+        .expect("combo_box publishes direction");
+    assert_eq!(schema.value_kind, PropertyValueKind::Enum);
+    assert_eq!(schema.accepted_tokens, &["ltr", "rtl"]);
+
+    let mut combo = factory.create("combo_box", Rect::new(0, 0, 160, 30), "").expect("combo_box");
+    assert_eq!(
+        factory.write_property(combo.as_mut(), "direction", CapabilityValue::String("rtl".into())),
+        Ok(())
+    );
+    assert_eq!(
+        factory.read_property(combo.as_ref(), "direction"),
+        Ok(CapabilityValue::String("rtl".into()))
+    );
+    assert_eq!(
+        factory.write_property(
+            combo.as_mut(),
+            "direction",
+            CapabilityValue::String("sideways".into())
+        ),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+}
+
+/// The property write path refuses a carrier whose kind the schema did not declare, while keeping
+/// the documented `Null` exception and the numeric widenings.
+#[test]
+fn a_property_write_of_another_kind_is_a_type_mismatch() {
+    use crate::widget::capability::value_matches_property_kind;
+    use crate::widget::capability::PropertyValueKind;
+
+    assert!(!value_matches_property_kind(&CapabilityValue::Bool(true), PropertyValueKind::Int));
+    assert!(!value_matches_property_kind(
+        &CapabilityValue::String("12".into()),
+        PropertyValueKind::Int
+    ));
+    assert!(value_matches_property_kind(&CapabilityValue::Null, PropertyValueKind::Bool));
+    assert!(value_matches_property_kind(&CapabilityValue::UInt(7), PropertyValueKind::Int));
+    assert!(!value_matches_property_kind(&CapabilityValue::Int(-1), PropertyValueKind::UInt));
+
+    let factory = WidgetFactory::new_with_defaults();
+    let mut slider = factory.create("slider", Rect::new(0, 0, 200, 30), "").expect("slider");
+    assert_eq!(
+        factory.write_property(slider.as_mut(), "value", CapabilityValue::Bool(true)),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+    assert_eq!(
+        factory.write_property(slider.as_mut(), "value", CapabilityValue::String("12".into())),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+}
