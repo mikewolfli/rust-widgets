@@ -18,5 +18,7 @@ existing links still resolve.
 - Presentation-only controls (no events / no commands, with reasons):
   [`docs/PRESENTATION_ONLY_CONTROLS.md`](PRESENTATION_ONLY_CONTROLS.md)
 - Snapshot assets: `snapshots/svg/`
-- Regenerate: `cargo run --example export_control_svgs`, then
-  `python3 tools/generate_control_index.py`
+- Regenerate with the full control set (the editor controls are independent features, so a
+  profile-only build would silently export 240 of the 242 cards):
+  `cargo run --no-default-features --features "desktop,code-editor,markdown-editor,builtin-languages" --example export_control_svgs`,
+  then `python3 tools/generate_control_index.py`

@@ -118,6 +118,10 @@ way an application uses it:
   page-size cells, an eased bar chart, and an in-memory save/restore demonstration
 - `demo/code_editor` — project tree plus editor, wired through the layout managers
 - `demo/finance` — candlestick / depth / order-book widgets over live-shaped data
+- `demo/wasm_gallery` — every registered control kind as a card, in a browser. It names the
+  editor features explicitly (`mobile,wasm,code-editor,markdown-editor,builtin-languages`)
+  because the card list *is* the registry: a feature left off would silently remove a card.
+  See its `README.md` for the `wasm-pack` command.
 
 Run one with `cd demo/control && cargo run`.
 
@@ -130,6 +134,8 @@ one sitting and are what CI builds and runs:
 - `examples/control_property_uniform.rs` — the property contract across controls
 - `examples/widget_reachability.rs` — machine-readable registry report, consumed by the
   registration-fidelity gate
+- `examples/generated_project/` — a project document plus its committed generated sources;
+  `crates/rust-widgets-cli` (`rwui check`, `json2rust --check`) validates and regenerates them
 
 ## Next Steps
 

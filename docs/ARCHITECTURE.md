@@ -211,6 +211,32 @@ and absent on a build with no device profile.
 | `src/core/` | Core types (Rect, Color, etc.) | ~9 .rs files |
 | `src/wgpu_backend/` | WGPU renderer | ~5 .rs files |
 
+### Editor layer and its features (BLUE31)
+
+`src/widget/special_widgets/editor/` is the **shared lower layer** of the two editor controls.
+It is not a third public editor:
+
+| Path | Contents |
+|---|---|
+| `editor::syntax` | `LanguageId` (21 families), `LineState`, `TokenKind`, `TokenSpan`, `SyntaxHighlighter`, `BuiltinHighlighter` |
+| `editor::caret` | `CaretStyle` |
+| `editor::companions` | `FindBar` (the control that used to live in `markdown_editor`) |
+| `editor::text` (private) | `TextPosition`, `DEFAULT_TAB_WIDTH` |
+
+Dependency direction is one-way: `editor ← code_editor`, `editor ← markdown_editor`,
+`editor ← crates/rust-widgets-suites`; the two widgets do not depend on each other. Each widget
+re-exports the shared types, so `code_editor::syntax::*`, `code_editor::CaretStyle` and
+`markdown_editor::FindBar` remain valid paths.
+
+Cargo features: `code-editor`, `markdown-editor` and `builtin-languages` are independent; the
+`default` set enables all three, while a profile-only build
+(`--no-default-features --features desktop`) compiles neither editor. `builtin-languages` off
+leaves `BuiltinHighlighter` as a stub that reports its language and produces no tokens.
+
+`crates/rust-widgets-cli` (`rwui`) is the host-side tool built on the same generator: `check`
+validates a project bundle, `json2rust --check` compares committed sources, and `fmt` normalises a
+document.
+
 ## BLUE11 Improvements
 
 ### Completed

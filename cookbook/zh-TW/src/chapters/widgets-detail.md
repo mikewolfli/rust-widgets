@@ -2758,6 +2758,19 @@ toast 堆疊前的有界、會過期佇列：最大可見、最大排隊、預�
 
 帶行號、標記、摺疊與游標事件的原始碼文字用 `CodeEditor`；帶預覽分欄的散文用 `MarkdownEditor`；宿主想自建尋找介面時用 `FindBar`；標題導覽用 `MarkdownOutlinePanel`。不要用它們編輯單行值（`LineEdit`）或富格式文字（`RichEdit`），需要語法標記或行槽時也不要退回 `TextArea`。
 
+**特性開關。** 兩個控制項與它們共用的詞法分析器都是獨立的 Cargo feature：
+
+| 特性 | 編譯內容 | 說明 |
+|---|---|---|
+| `code-editor` | `CodeEditor` 及其 capability、建構子與事件 | 關閉即不存在該控制項 |
+| `markdown-editor` | `MarkdownEditor`、工具列與大綱面板 | 不依賴 `code-editor` |
+| `builtin-languages` | `BuiltinHighlighter` 背後的真正詞法分析器（21 個語言族） | 關閉時為樁，回傳空 token，圍欄程式碼顯示為純文字 |
+
+`rust_widgets` 的預設特性集三項全開。**只給 device profile** 的建置
+（`--no-default-features --features desktop`）兩個編輯器都不編譯。`editor` 是共用下層
+（token/語言詞彙、`CaretStyle`、`FindBar`），不是第三個編輯器控制項；兩個控制項仍以舊路徑
+再匯出全部型別，既有 import 不需改動。詳見[快速開始 § 第四軸](getting-started.md#第四軸編輯器控制項獨立預設開啟)。
+
 | 控制項族 | 原始碼目錄 | 控制項數 |
 |---|---|---|
 | `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 |

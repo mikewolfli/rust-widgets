@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust_widgets = { path = "../..", features = ["runtime-fonts"] }
+rust_widgets = { path = "../..", features = ["runtime-fonts", "code-editor", "builtin-languages"] }
 preview-common = { path = "../preview_common" }

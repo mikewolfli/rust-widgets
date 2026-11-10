@@ -5,6 +5,62 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## Unreleased — editor layering, editor features, and the `rwui` CLI (BLUE31)
+
+The round is recorded in `docs/log/log-20261110-1.md`. It gives the two editor controls a shared
+lower layer, makes them (and the lexer they share) independent Cargo features, and adds a host-side
+designer CLI. No public type was removed and no historical import path changed.
+
+### Added
+
+- **`editor`, the shared editor layer** — `widget::special_widgets::editor` owns the tokenizer seam
+  and language vocabulary (`syntax`), `CaretStyle` (`caret`) and the reusable `FindBar`
+  (`companions`). `CodeEditor` and `MarkdownEditor` both build on it and no longer depend on each
+  other; `markdown_editor` therefore compiles without `code_editor`.
+- **`crates/rust-widgets-cli`, binary `rwui`** — `check` validates a project bundle or document and
+  reports `RWCLI-*` diagnostics; `json2rust` generates the committed sources from the library's own
+  generator (`--check` compares instead of writing, and refuses a hand-written file); `fmt`
+  normalises key order and indentation. `--json` emits one diagnostic per line and `--strict`
+  promotes style gaps to errors. Exit status is `0` clean, `1` error diagnostics, `2` the tool could
+  not run. CSS cascade, `json2css`, `rust2json` and `roundtrip` are later BLUE31 stages and are not
+  in this binary yet.
+- **`examples/generated_project/rwui.json`** — the bundle manifest that names the existing
+  `project.json`, so `rwui check examples/generated_project` works without renaming the example.
+
+### Changed
+
+- **`CodeEditor`, `MarkdownEditor` and the built-in lexer are independent features.**
+  `code-editor` gates the code editor's module, capability entries, constructor and events;
+  `markdown-editor` does the same for the Markdown control, its toolbar and outline panel;
+  `builtin-languages` gates the real lexer behind `BuiltinHighlighter` (21 language families).
+  The `default` set is now
+  `["desktop", "code-editor", "markdown-editor", "builtin-languages"]`, so an ordinary dependency
+  behaves as before. A **profile-only** build (`--no-default-features --features desktop`)
+  compiles neither control; with `builtin-languages` off, `BuiltinHighlighter` is a stub that still
+  reports its language and produces no tokens, and Markdown fenced code renders as plain text.
+- **`crates/rust-widgets-suites` no longer names `code_editor`.** `diff_viewer` and `terminal_view`
+  import the shared `editor::syntax` / `editor::CaretStyle`, and the web find bar's module comment
+  points at `editor::companions::FindBar`.
+- **Registry-driven tools ask for the editor features.** `export_control_svgs` and
+  `control_rendering_census` carry `required-features = ["desktop", "code-editor",
+  "markdown-editor", "builtin-languages"]`, so a build missing them is skipped rather than silently
+  exporting 240 of the 242 cards. `demo/wasm_gallery` names the same features, and the documented
+  regeneration command, `control.md` and `snapshots/svg/README.md` follow.
+- **CI and the contributor commands name the editor features.** `cargo test`/`cargo clippy` with
+  `--features desktop` alone would now skip the editor suites, so the workflow, README, CONTRIBUTING
+  and cookbook commands list `code-editor,markdown-editor,builtin-languages` explicitly.
+
+### Fixed
+
+- `markdown_editor`'s binary search for the caret's column used `(low + high + 1) / 2`; it is now
+  `div_ceil`, clearing a `clippy::manual_div_ceil` failure under `-D warnings`.
+- `SignaturePad::set_strokes` is classified in `PROGRAMMATIC_ONLY_SETTERS` (B: host-supplied stroke
+  geometry with no property carrier yet), clearing the RW-44 setter-census gate. The regenerated
+  `docs/reports/setter_census.md` reports **242 controls scanned, 0 unclassified**.
+- The documented control count is unified on the registry's own value: README (en/zh), the
+  maintainer skill and the setter census now all say **242 core controls** (231 `WidgetKind`
+  variants) instead of the stale 240.
+
 ## 4.2.0 (2026-11-09) — the completeness round
 
 The `docs/issues/issue-20261108.md` round is recorded in `docs/log/log-20261109-1.md`: the hot paths

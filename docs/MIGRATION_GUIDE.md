@@ -698,7 +698,7 @@ cargo check --target wasm32-unknown-unknown --no-default-features --features was
 ```toml
 [features]
 # Device-class profiles
-default = ["desktop"]
+default = ["desktop", "code-editor", "markdown-editor", "builtin-languages"]
 desktop = ["desktop-runtime", "wgpu", "quality-management", "controls-native", "controls-custom", "advanced-widgets", "print", "pdf", "chart"]
 tablet  = ["touch", "wgpu", "quality-management", "controls-native", "controls-custom"]
 mobile  = ["touch", "wgpu", "quality-management", "mobile-api", "controls-native", "controls-custom"]
@@ -724,7 +724,54 @@ print  = []
 pdf    = []
 chart  = []
 advanced-widgets = []
+
+# Editor controls and the lexer they share — independent features (BLUE31).
+# All three are in the default set; a profile-only build compiles none of them.
+code-editor       = []
+markdown-editor   = []
+builtin-languages = []
 ```
+
+---
+
+## Editor controls are features now (BLUE31)
+
+`CodeEditor`, `MarkdownEditor` and the built-in lexer used to be compiled whenever a device
+profile was on. They are now three independent features:
+
+| Feature | What it gates |
+|---|---|
+| `code-editor` | the `CodeEditor` control, its capability entries, constructor and events |
+| `markdown-editor` | the `MarkdownEditor` control, its toolbar and outline panel |
+| `builtin-languages` | the real lexer behind `BuiltinHighlighter` (21 language families) |
+
+**Who is affected:** only callers that build with `default-features = false`. The crate's
+`default` set is `["desktop", "code-editor", "markdown-editor", "builtin-languages"]`, so a
+plain `rust_widgets = "4.2.0"` dependency behaves as before.
+
+**Migration:** name the features you use.
+
+```toml
+# No editor, smallest build (what `--features desktop` used to mean):
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop"] }
+
+# Code editor, with syntax highlighting:
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
+
+# Markdown only, with fenced-code highlighting:
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
+```
+
+No source change is needed: every historical import path still resolves
+(`code_editor::LanguageId`, `code_editor::syntax::TokenSpan`, `markdown_editor::FindBar`, …).
+The new shared layer is `widget::special_widgets::editor` (`syntax`, `caret`, `companions`); it is
+not a third editor control. With `builtin-languages` off, `BuiltinHighlighter` still reports its
+language but returns no token spans — the honest "no highlighting compiled in" answer — and
+Markdown fenced code renders as plain text.
+
+**Designer tooling:** `crates/rust-widgets-cli` builds `rwui`, which validates a project bundle
+and regenerates the committed sources through the library's own generator:
+`cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle>`.
 
 ---
 

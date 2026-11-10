@@ -2758,6 +2758,20 @@ This family groups the editors whose content is structured text: the code editor
 
 Choose `CodeEditor` for source text with line numbers, markers, folds and cursor events; `MarkdownEditor` for prose with a preview split; `FindBar` when a host wants its own find UI; `MarkdownOutlinePanel` for heading navigation. Do not use them for single-line values (`LineEdit`) or rich formatted text (`RichEdit`), and do not use `TextArea` when syntax markers or line gutters are required.
 
+**Features.** Both controls and the lexer they share are independent Cargo features:
+
+| Feature | Compiles | Notes |
+|---|---|---|
+| `code-editor` | `CodeEditor` plus its capability, constructor and events | off → the control does not exist |
+| `markdown-editor` | `MarkdownEditor`, its toolbar and the outline panel | independent of `code-editor` |
+| `builtin-languages` | the real lexer behind `BuiltinHighlighter` (21 language families) | off → the lexer is a stub that produces no tokens, so fenced code is plain text |
+
+`rust_widgets`'s default feature set enables all three. A **profile-only** build
+(`--no-default-features --features desktop`) compiles neither control. `editor` is the shared
+lower layer (token/language vocabulary, `CaretStyle`, `FindBar`); it is not a third editor
+control, and both widgets re-export every type their old paths exposed, so existing imports keep
+working. See [Getting Started § Axis 4](getting-started.md#axis-4-editor-controls-independent-on-by-default).
+
 | Family | Source directory | Controls |
 |---|---|---|
 | `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 |

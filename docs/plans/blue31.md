@@ -845,3 +845,28 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p rust-widgets-cli --no-deps
 - 不在 CLI 内渲染控件（没有窗口/渲染上下文）；`--preview` 明确不做。
 - 不改变 mode 1（运行时 JSON）的既有语义；CLI 只增加生成期解析。
 - 不新增 crate 依赖；不引入 `syn`/`clap`/`regex`。
+
+---
+
+## 3. 实施状态回写（2026-11-10，第一轮）
+
+完整证据见 `docs/log/log-20261110-1.md`。
+
+| 阶段 | 状态 | 说明 |
+|---|---|---|
+| §1 P0 | 完成（`plugin` 除外） | `editor::{syntax, caret, companions}` 建立；旧路径全部保留；`plugin` 待 P1/P2 有消费者时再建（原则 #49） |
+| §1 P1 / P2 | 未开始 | `Editor` 内核抽取与两个门面的委托 |
+| §1 P3 | 完成 | 三个 feature + 全链路门控；6 格编译矩阵实跑通过 |
+| §1 P4 | 完成 | suites 源码不再 import `code_editor` |
+| §1 P5 | 部分 | 快照门禁、编译矩阵、grep 门禁通过；CHANGELOG 已写 “Unreleased” 条目 |
+| §2 P0 | 完成 | `rwui check` + 诊断模型 + 样例零错误 |
+| §2 P1 | 部分 | `json2rust` 与已提交产物逐字节一致；CSS 静态级联未实现，存在样式表时报 `RWCLI-006` |
+| §2 P2–P6 | 未开始 | 共享选择器纯函数、主题/`!important`/`json2css`、反向两种方言、`roundtrip`、CI 接入 |
+
+已确认的行为边界：`--features desktop` 不再编译两个编辑器；需要它们时显式列出
+`code-editor`/`markdown-editor`，需要语法高亮时再加 `builtin-languages`。
+仓库内所有依赖注册表的工具与文档已按此校正（`control.md`、`snapshots/svg/README.md`、
+`demo/wasm_gallery`、README/ cookbook / CI 命令）。
+
+待人工确认项（见日志 §7）：`regenerate_into` 与 `function_name` 的互斥、
+`cross_profile_caveats` 的诊断码、§2.9 验收的「零诊断」口径、bundle 文档名约定、CI 口径。

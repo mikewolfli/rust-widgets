@@ -7,10 +7,10 @@ Every `pub fn set_*` a registered control exposes is either published as a comma
 `src/widget/capability/programmatic_setters.rs` with a reason. The table below is the
 unclassified remainder, with the suggested exit from BLUE30 §1.2.
 
-- Controls scanned: **240**
+- Controls scanned: **242**
 - Unclassified setters: **0**
 - Unresolved constructor/capability rows: **0**
-- Ledger entries: **777** (B 683, C 85, D 9)
+- Ledger entries: **769** (B 680, C 82, D 7)
 
 | control | struct | setter | exit | why |
 |---|---|---|---|---|

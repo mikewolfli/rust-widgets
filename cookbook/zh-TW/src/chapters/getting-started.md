@@ -59,9 +59,10 @@ rust_widgets = "4.2.0"
 
 ---
 
-## 功能選擇 — 三軸系統
+## 功能選擇 — 四軸系統
 
-rust-widgets 使用**三軸功能系統**，讓你可以組合出你真正需要的二進位檔案。請從每個軸線中選擇一個選項：
+rust-widgets 使用**四軸功能系統**，讓你可以組合出你真正需要的二進位檔案。第 1 軸選一個裝置設定、
+第 2 軸選一個 OS 後端，第 3、4 軸自由組合：
 
 ### 軸線 1：裝置設定檔（互斥 — 僅選一個）
 
@@ -107,6 +108,31 @@ rust-widgets 使用**三軸功能系統**，讓你可以組合出你真正需要
 | **無障礙存取** | `a11y` | 透過 zbus 的 AT-SPI 橋接 |
 | **全像投影** | `holographic` | 全像顯示支援 |
 | **投影** | `projection` | 投影機/簡報顯示 |
+
+### 第四軸：編輯器控制項（獨立，預設開啟）
+
+兩個編輯器控制項與它們共用的詞法分析器都是獨立特性。預設特性集三項全開；**只給 device profile** 的
+建置（`--no-default-features --features desktop`）一個都不編譯。
+
+| 能力 | 特性開關 | 拉入內容 |
+|---|---|---|
+| **程式碼編輯器** | `code-editor` | `CodeEditor`——行號槽、minimap、摺疊、補全、診斷 |
+| **Markdown 編輯器** | `markdown-editor` | `MarkdownEditor` 及其工具列與大綱面板 |
+| **內建詞法分析器** | `builtin-languages` | 21 個語言族的真正分詞器；關閉則無 token |
+
+```toml
+# 只編譯 Markdown：沒有程式碼編輯器，也沒有詞法分析器
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor"] }
+
+# Markdown + 圍欄程式碼高亮
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
+
+# 程式碼編輯器 + 內建語言
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
+```
+
+`editor` 是兩者共用的下層（token/語言詞彙、`CaretStyle`、`FindBar`），不是第三個公開的編輯器控制項。
+兩個控制項保留歷史 import 路徑，因此這樣拆分建置不需要改動呼叫端原始碼。
 
 ### 範例 `Cargo.toml` 選擇
 

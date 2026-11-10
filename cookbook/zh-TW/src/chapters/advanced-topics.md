@@ -696,13 +696,14 @@ fn test_widget_rendering() {
 
 ## 功能旗標矩陣與組合測試
 
-rust-widgets 使用三軸功能系統：
+rust-widgets 使用四軸功能系統：
 
 | 軸 | 範例旗標 | 說明 |
 |------|--------------|-------------|
 | 裝置設定檔 | `desktop`、`mini`、`embedded` | 功能集範圍 |
 | 作業系統後端 | `linux`、`windows`、`macos`、`wasm` | 平台後端 |
 | 功能模組 | `gpu-wgpu`、`chart`、`pdf`、`i18n` | 選擇性模組 |
+| 編輯器控制項 | `code-editor`、`markdown-editor`、`builtin-languages` | 兩個編輯器控制項與它們共用的詞法分析器；三項都在 `default` 中 |
 
 **測試組合：**
 
@@ -726,6 +727,29 @@ fn test_std_only_feature() {
     // 此測試僅在 desktop/embedded 設定檔下執行，不包含 mini
 }
 ```
+
+## 設計器命令列：`rwui`
+
+`crates/rust-widgets-cli` 建置宿主端工具 `rwui`。它直接呼叫函式庫自身的產生器，因此不會與設計器在行程內
+產生的結果產生分歧：
+
+```sh
+# 驗證專案 bundle（含 `ui.json`/`rwui.json` 的目錄）或單一文件
+cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check examples/generated_project
+
+# 產生已提交原始碼；`--check` 只比較不寫入
+cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- \
+    json2rust examples/generated_project --check
+
+# 穩定鍵序與縮排，不改變任何值
+cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- fmt path/to/ui.json -o /tmp/ui.json
+```
+
+診斷帶穩定編號（`RWCLI-001` …），`--json` 每行輸出一個 JSON 物件，`--strict` 把樣式缺口升為錯誤。
+退出碼：`0` 無錯誤、`1` 有錯誤診斷、`2` 工具無法執行。
+
+> CSS 級聯、`json2css`、`rust2json` 與 `roundtrip` 屬於 BLUE31 後續階段，尚未進入該二進位檔。
+> 帶樣式表的 bundle 會收到 `RWCLI-006` 提示，而不是被靜默忽略。
 
 ## 建置為 no_std / mini 設定檔
 

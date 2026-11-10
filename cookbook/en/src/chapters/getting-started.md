@@ -63,10 +63,11 @@ PDF/printing, accessibility, and advanced widgets.
 
 ---
 
-## Feature Selection — The Three-Axis System
+## Feature Selection — The Four-Axis System
 
-rust-widgets uses a **three-axis feature system** that lets you compose exactly
-the binary you need. Pick one option from each axis:
+rust-widgets uses a **four-axis feature system** that lets you compose exactly
+the binary you need. Pick one device profile (axis 1) and one OS backend (axis 2), then
+compose axes 3 and 4 freely:
 
 ### Axis 1: Device Profile (mutually exclusive — pick ONE)
 
@@ -113,6 +114,33 @@ the binary you need. Pick one option from each axis:
 | **Accessibility** | `a11y` | AT-SPI bridge via zbus |
 | **Holographic** | `holographic` | Holographic display support |
 | **Projection** | `projection` | Projector/presentation display |
+
+### Axis 4: Editor controls (independent, on by default)
+
+The two editor controls and the lexer they share are their own features. They are on in the
+default feature set; a **profile-only** build (`--no-default-features --features desktop`)
+compiles none of them.
+
+| Capability | Feature Flag | Pulls In |
+|---|---|---|
+| **Code editor** | `code-editor` | `CodeEditor` — gutter, minimap, folds, completion, diagnostics |
+| **Markdown editor** | `markdown-editor` | `MarkdownEditor` plus its toolbar and outline panel |
+| **Built-in lexer** | `builtin-languages` | real tokenizers for 21 language families; off → no tokens |
+
+```toml
+# Markdown only at compile time — no code editor, no lexer:
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor"] }
+
+# Markdown with fenced-code highlighting:
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
+
+# Code editor with the built-in languages:
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
+```
+
+`editor` is the shared lower layer both build on (token/language vocabulary, `CaretStyle`,
+`FindBar`); it is not a third public editor control. Both widgets keep their historical import
+paths, so splitting a build this way needs no source change from a caller.
 
 ### Example `Cargo.toml` Selections
 

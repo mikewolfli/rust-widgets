@@ -2758,6 +2758,19 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 带行号、标记、折叠与光标事件的源码文本用 `CodeEditor`；带预览分栏的散文用 `MarkdownEditor`；宿主想自建查找界面时用 `FindBar`；标题导航用 `MarkdownOutlinePanel`。不要用它们编辑单行值（`LineEdit`）或富格式文本（`RichEdit`），需要语法标记或行槽时也不要退回 `TextArea`。
 
+**特性开关。** 两个控件与它们共享的词法器都是独立的 Cargo feature：
+
+| 特性 | 编译内容 | 说明 |
+|---|---|---|
+| `code-editor` | `CodeEditor` 及其 capability、构造器与事件 | 关闭即不存在该控件 |
+| `markdown-editor` | `MarkdownEditor`、工具栏与大纲面板 | 不依赖 `code-editor` |
+| `builtin-languages` | `BuiltinHighlighter` 背后的真实词法器（21 个语言族） | 关闭时词法器为桩，返回空 token，围栏代码显示为纯文本 |
+
+`rust_widgets` 的默认特性集三项全开。**只给 device profile** 的构建
+（`--no-default-features --features desktop`）两个编辑器都不编译。`editor` 是共享下层
+（token/语言词汇、`CaretStyle`、`FindBar`），不是第三个编辑器控件；两个控件仍按旧路径
+再导出全部类型，既有 import 无需改动。详见[快速开始 § 第四轴](getting-started.md#第四轴编辑器控件独立默认开启)。
+
 | 控件族 | 源码目录 | 控件数 |
 |---|---|---|
 | `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 |

@@ -746,6 +746,10 @@ pub trait Draw {
 | `TerminalView` | 终端模拟器 |
 | `TimelineWidget` | 时间线显示 |
 
+> `CodeEditor`、`MarkdownEditor`、`FindBar` 与 `MarkdownOutlinePanel` 只在 `code-editor` /
+> `markdown-editor` 特性下编译；语法高亮还需要 `builtin-languages`。三个特性都在 crate 的
+> `default` 集合中；详见[快速开始 § 第四轴](getting-started.md#第四轴编辑器控件独立默认开启)。
+
 ### 控件能力系统
 
 ```rust
@@ -3196,7 +3200,7 @@ let image = job.wait()?;           // 或每帧一次 job.try_take()
 
 ## 特性标志参考
 
-库使用**三轴特性系统** — 从每个轴中选择一个：
+库使用**四轴特性系统** — 第 1、2 轴各选一个，第 3、4 轴自由组合：
 
 ### 轴 1：设备配置文件（互斥）
 
@@ -3252,6 +3256,18 @@ let image = job.wait()?;           // 或每帧一次 job.try_take()
 | `web-http` | Web 能力的 HTTP 客户端（ureq） |
 | `unstable-pipeline-routing` | 实验性管线路由 |
 | `unstable-special-widgets` | 实验性特殊控件 |
+
+### 第四轴：编辑器控件（独立，默认开启）
+
+| 特性 | 说明 |
+|---|---|
+| `code-editor` | `CodeEditor`：行号槽、minimap、折叠、补全、诊断 |
+| `markdown-editor` | `MarkdownEditor` 及其工具栏与大纲面板 |
+| `builtin-languages` | `BuiltinHighlighter` 背后的真实词法器（21 个语言族）；关闭则无 token |
+
+三项都在 `default` 集合中。**只给 device profile** 的构建
+（`--no-default-features --features desktop`）不编译任何一个编辑器；宿主用到哪个就显式点名。
+`editor` 是共享下层，不是第三个编辑器控件。
 
 ### 配置文件便利
 

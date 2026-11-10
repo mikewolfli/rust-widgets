@@ -43,16 +43,26 @@ If `wasm-pack` cannot download `binaryen` (the `wasm-opt` size step), add
 
 ## Features
 
-The crate depends on the library with the browser set the cookbook names:
+The crate depends on the library with the browser set the cookbook names, plus the two editor
+controls and the lexer they share. The gallery enumerates the registry, so it must ask for every
+group it shows — otherwise a card silently disappears from the page:
 
 ```toml
-rust_widgets = { path = "../..", default-features = false, features = ["mobile", "wasm"] }
+rust_widgets = { path = "../..", default-features = false, features = [
+    "mobile",
+    "wasm",
+    "code-editor",
+    "markdown-editor",
+    "builtin-languages",
+] }
 ```
 
 `mobile` is the device profile — it brings `touch`, the vector text faces and the
-full widget set — and `wasm` selects the browser backend. `wasm32-unknown-unknown`
-is the only target this demo ships to; the host (`cargo check`) build exists so the
-crate stays inside `tools/check_demo_crates.sh`.
+full widget set — and `wasm` selects the browser backend. The last three are independent
+features (BLUE31): without them the factory registers no `code_editor`/`markdown_editor`
+card and the built-in lexer is an honest stub, so the gallery would show 240 cards instead
+of 242. `wasm32-unknown-unknown` is the only target this demo ships to; the host
+(`cargo check`) build exists so the crate stays inside `tools/check_demo_crates.sh`.
 
 ## Limitations
 

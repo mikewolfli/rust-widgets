@@ -59,9 +59,10 @@ rust_widgets = "4.2.0"
 
 ---
 
-## 功能选择——三轴系统
+## 功能选择——四轴系统
 
-`rust-widgets` 使用**三轴功能系统**，让你能够精确组合所需的二进制产物。从每个轴中选择一个选项：
+`rust-widgets` 使用**四轴功能系统**，让你能够精确组合所需的二进制产物。第 1 轴选一个设备配置、
+第 2 轴选一个 OS 后端，第 3、4 轴自由组合：
 
 ### 轴 1：设备配置文件（互斥——只选一个）
 
@@ -107,6 +108,31 @@ rust_widgets = "4.2.0"
 | **辅助功能** | `a11y` | 通过 zbus 的 AT-SPI 桥接 |
 | **全息显示** | `holographic` | 全息显示支持 |
 | **投影** | `projection` | 投影仪/演示显示 |
+
+### 第四轴：编辑器控件（独立，默认开启）
+
+两个编辑器控件与它们共享的词法器都是独立特性。默认特性集三项全开；**只给 device profile** 的
+构建（`--no-default-features --features desktop`）一个都不编译。
+
+| 能力 | 特性开关 | 拉入内容 |
+|---|---|---|
+| **代码编辑器** | `code-editor` | `CodeEditor`——行号槽、minimap、折叠、补全、诊断 |
+| **Markdown 编辑器** | `markdown-editor` | `MarkdownEditor` 及其工具栏与大纲面板 |
+| **内置词法器** | `builtin-languages` | 21 个语言族的真实分词器；关闭则无 token |
+
+```toml
+# 只编译 Markdown：没有代码编辑器，也没有词法器
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor"] }
+
+# Markdown + 围栏代码高亮
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
+
+# 代码编辑器 + 内置语言
+rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
+```
+
+`editor` 是两者共享的下层（token/语言词汇、`CaretStyle`、`FindBar`），不是第三个公开的编辑器控件。
+两个控件保留历史 import 路径，因此这样拆分构建不需要改动调用方源码。
 
 ### 示例 `Cargo.toml` 选择
 

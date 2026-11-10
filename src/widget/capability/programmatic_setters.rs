@@ -691,6 +691,9 @@ pub(crate) static PROGRAMMATIC_ONLY_SETTERS: &[ProgrammaticSetter] = &[
     ProgrammaticSetter { name: "set_stroke_color", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_stroke_limit", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_stroke_width", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
+    // The stroke list is host-supplied geometry (points + width + colour). No records schema carries
+    // it yet, so it stays programmatic; the scalar setters above cover the brush defaults.
+    ProgrammaticSetter { name: "set_strokes", reason: "B: host-supplied stroke geometry with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_style", reason: "D: theme/style channel, not a scalar property" },
     ProgrammaticSetter { name: "set_style_variant", reason: "D: theme/style channel, not a scalar property" },
     ProgrammaticSetter { name: "set_sub_window_minimized", reason: "B: scalar state with no property carrier yet (A-class backlog)" },

@@ -14,7 +14,8 @@ categories = ["gui", "development-tools"]
 # A nested package inside the main crate's tree, like `rust-widgets-suites`: the parent's
 # `include` excludes `crates/**/*`, so this tool is not part of the parent's published tarball
 # (BLUE31 §2.1). A host builds it from the repository.
-include = ["/src/**/*"]
+include = ["/src/**/*", "/README.md"]
+readme = "README.md"
 
 [[bin]]
 name = "rwui"
@@ -22,7 +23,8 @@ path = "src/main.rs"
 
 [dependencies]
 # The CLI is a **desktop host tool**: the generator, the loader and the `designer` module only
-# exist under the desktop profile (`src/lib.rs`), which is what BLUE31 §2.1 records. It does not
-# enable the editor controls: the CLI never constructs a widget.
+# exist under the desktop profile (`src/lib.rs`), which is what BLUE31 §2.1 records. It never
+# constructs a widget, so it does not *use* the editor controls — they are compiled only because
+# this dependency keeps `default` features on (the plan's dependency line).
 rust_widgets = { path = "../..", features = ["desktop"] }
 serde_json = "1.0"

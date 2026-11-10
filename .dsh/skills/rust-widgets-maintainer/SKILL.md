@@ -9,7 +9,7 @@ metadata:
 
 # rust-widgets maintainer
 
-`rust-widgets` is a dependency-light Rust GUI library with around 240 controls,
+`rust-widgets` is a dependency-light Rust GUI library with around 242 controls,
 several platform backends, a JSON layout loader, a designer, and a source-code
 editor. Work is governed by `docs/plans/principle.md`; read it before touching
 code.
@@ -40,7 +40,8 @@ code.
 | `src/widget/` | Controls, capability metadata, registries |
 | `src/widget/base.rs` | `BaseWidget`: geometry, signals, redraw/damage |
 | `src/widget/runtime/` | Mounted-widget registry, frame driver, repaint |
-| `src/widget/special_widgets/code_editor/` | Source editor: buffer, lexer, render, IME |
+| `src/widget/special_widgets/code_editor/` | Source editor: buffer, render, IME (feature `code-editor`) |
+| `src/widget/special_widgets/editor/` | Shared editor layer: `syntax` vocabulary + lexer (`builtin-languages`), `caret`, `companions::FindBar` |
 | `src/layout/` | Layout engines (`BoxLayout`, `Grid`, `Flex`, `Flow`, …) |
 | `src/render/` | Render commands, software backend, SVG backend |
 | `src/platform/` | OS backends behind the semantic `Platform` trait |
@@ -94,8 +95,11 @@ code.
 
 ## The code editor
 
-`src/widget/special_widgets/code_editor/syntax.rs` owns the built-in lexer and the
-`SyntaxHighlighter` plugin seam.
+`src/widget/special_widgets/editor/syntax/` owns the built-in lexer and the
+`SyntaxHighlighter` plugin seam. The two editor controls and the lexer are independent features
+(`code-editor`, `markdown-editor`, `builtin-languages`); all three are in `default`, and a
+profile-only build compiles none of them. `code_editor` re-exports the shared types, so
+`code_editor::syntax::*` and `code_editor::LanguageId` remain valid paths.
 
 - Language families are `LanguageId` variants; each must supply `name()`,
   keyword and type tables (byte-sorted, because lookup is a binary search), and

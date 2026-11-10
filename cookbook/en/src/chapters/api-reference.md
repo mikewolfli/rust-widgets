@@ -763,6 +763,11 @@ Associated types: `WebEngineContextMenuRequest`, `WebEngineCookieStore`,
 | `TerminalView` | Terminal emulator |
 | `TimelineWidget` | Timeline display |
 
+> `CodeEditor`, `MarkdownEditor`, `FindBar` and `MarkdownOutlinePanel` are compiled only with the
+> `code-editor` / `markdown-editor` features. Syntax highlighting additionally needs
+> `builtin-languages`. All three features are in the crate's `default` set; see
+> [Getting Started § Axis 4](getting-started.md#axis-4-editor-controls-independent-on-by-default).
+
 ### Widget Capability System
 
 ```rust
@@ -3262,7 +3267,8 @@ with its delay. `ImageDecodeJob::try_take` returns `None` while the decode is st
 
 ## Feature Flags Reference
 
-The library uses a **three-axis feature system** — pick one from each axis:
+The library uses a **four-axis feature system** — pick one from axes 1 and 2, and compose axes 3
+and 4 freely:
 
 ### Axis 1: Device Profile (mutually exclusive)
 
@@ -3318,6 +3324,18 @@ The library uses a **three-axis feature system** — pick one from each axis:
 | `web-http` | HTTP client for web capabilities (ureq) |
 | `unstable-pipeline-routing` | Experimental pipeline routing |
 | `unstable-special-widgets` | Experimental special widgets |
+
+### Axis 4: Editor controls (independent, on by default)
+
+| Feature | Description |
+|---|---|
+| `code-editor` | `CodeEditor`: gutter, minimap, folds, completion, diagnostics |
+| `markdown-editor` | `MarkdownEditor`, its toolbar and the outline panel |
+| `builtin-languages` | the real lexer behind `BuiltinHighlighter` (21 language families); off → no tokens |
+
+All three are in the `default` set. A profile-only build
+(`--no-default-features --features desktop`) compiles neither editor; add the features a host uses.
+`editor` is the shared lower layer, not a third editor control.
 
 ### Profile Convenience
 

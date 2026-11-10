@@ -701,13 +701,14 @@ fn test_widget_rendering() {
 
 ## Feature Flag Matrix and Combinatorial Testing
 
-rust-widgets uses a three-axis feature system:
+rust-widgets uses a four-axis feature system:
 
 | Axis | Example Flags | Description |
 |------|--------------|-------------|
 | Device Profile | `desktop`, `mini`, `embedded` | Feature set scope |
 | OS Backend | `linux`, `windows`, `macos`, `wasm` | Platform backend |
 | Capabilities | `gpu-wgpu`, `chart`, `pdf`, `i18n` | Optional modules |
+| Editor controls | `code-editor`, `markdown-editor`, `builtin-languages` | The two editor widgets and the lexer they share; all three are in `default` |
 
 **Testing combinations:**
 
@@ -731,6 +732,31 @@ fn test_std_only_feature() {
     // This test only runs on desktop/embedded profiles, not mini
 }
 ```
+
+## Designer CLI: `rwui`
+
+`crates/rust-widgets-cli` builds a host-side tool named `rwui`. It calls the library's own
+generator, so it cannot disagree with what a designer produces in-process:
+
+```sh
+# Validate a project bundle (directory with `ui.json`/`rwui.json`) or a bare document.
+cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check examples/generated_project
+
+# Generate the committed sources; `--check` compares instead of writing.
+cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- \
+    json2rust examples/generated_project --check
+
+# Stable key order and indentation, without changing any value.
+cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- fmt path/to/ui.json -o /tmp/ui.json
+```
+
+Findings carry stable codes (`RWCLI-001` …), `--json` emits one JSON object per line, and
+`--strict` turns style gaps into errors. Exit status is `0` clean, `1` diagnostics with an error,
+`2` the tool could not run.
+
+> CSS cascade, `json2css`, `rust2json` and `roundtrip` are later BLUE31 stages and are not in
+> the binary yet. A bundle that ships stylesheets is told so (`RWCLI-006`) rather than silently
+> generating without them.
 
 ## Building for no_std / mini Profile
 

@@ -15,7 +15,7 @@ services at all.
 
 ## Highlights
 
-- **231 widget kinds / 240 core controls** — inputs, tables, trees, docks, dialogs, media, charts,
+- **231 widget kinds / 242 core controls** — inputs, tables, trees, docks, dialogs, media, charts,
   editors and more, with one implementation shared by every platform. The optional suites add
   **39 more controls in 7 groups**, installed into the same `WidgetFactory`.
 - **Cascading menus and real session state** — dropdowns, menu buttons and menus open up to four
@@ -50,7 +50,8 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = { version = "4.2.0", features = ["desktop"] }                       # default
+rust_widgets = "4.2.0"                                                             # default set
+rust_widgets = { version = "4.2.0", features = ["desktop"] }                       # desktop profile only
 rust_widgets = { version = "4.2.0", default-features = false, features = ["tablet"] }
 rust_widgets = { version = "4.2.0", default-features = false, features = ["mobile"] }
 rust_widgets = { version = "4.2.0", default-features = false, features = ["embedded"] }
@@ -64,6 +65,21 @@ rust_widgets = { version = "4.2.0", default-features = false, features = ["mini"
 | `mobile` | iOS, Android, HarmonyOS — touch, wgpu, mobile platform services |
 | `embedded` | Software rasteriser only, no OS services |
 | `mini` | The smallest core, `no_std`-oriented |
+
+The two editor controls and the lexer they share are **independent features**, and the default
+feature set enables all three:
+
+| Feature | Compiles | In `default` |
+|---|---|---|
+| `code-editor` | `CodeEditor` — gutter, minimap, folds, completion, diagnostics | yes |
+| `markdown-editor` | `MarkdownEditor` plus its toolbar and outline panel | yes |
+| `builtin-languages` | the real lexer behind `BuiltinHighlighter` (21 language families) | yes |
+
+A **profile-only** build (`--no-default-features --features desktop`) compiles neither editor, so a
+`default-features = false` caller that wants one must name it — and add `builtin-languages` when it
+wants syntax highlighting (without it the lexer is an honest stub that produces no tokens). Both
+widgets keep every historical import path; `editor` is the shared lower layer they build on, not a
+third editor control. See cookbook → Getting Started → *Axis 4*.
 
 > `cargo check --features embedded` is **wrong**, and quietly so: `desktop` is a default feature, so
 > that command switches on two mutually exclusive profiles at once. Pass `--no-default-features`
@@ -122,7 +138,7 @@ into the same `WidgetFactory` and owns its names, schemas and constructors.
 
 ## What lives under `crates/`
 
-Three packages sit beside the library. None of them is compiled into the core `rust_widgets`
+Four packages sit beside the library. None of them is compiled into the core `rust_widgets`
 package; a host opts in explicitly.
 
 | Crate | What it is | How a host uses it |
@@ -130,10 +146,11 @@ package; a host opts in explicitly.
 | `rust-widgets-font` | The OFL font payloads behind the `fonts-*` features, split out so the core package stays under crates.io's 10 MiB ceiling. | Implicitly, by enabling a `fonts-*` feature. Do not depend on it directly. |
 | `rust-widgets-suites` | Seven optional control groups — `form`, `webview`, `finance`, `maps`, `project`, `devtools`, `media-playback` — **39 controls** with the same property, event, layout, wiring and accessibility surfaces as a core control. The web family that used to be the separate `rust-widgets-webview` crate is now the `webview` group. | `rust_widgets_suites::install(&mut factory)`, or one group's `install_*_group`. |
 | `mobile-services` | Mobile application-shell services for Android, iOS and HarmonyOS: keep-awake, haptics, permissions, notifications, share, deep links, safe-area insets and orientation lock. Not GUI core. | `rust_widgets_mobile_services::*` on a mobile target; a desktop build never links it. |
+| `rust-widgets-cli` | The designer CLI, binary `rwui`: validate a project bundle (`check`), generate committed Rust from it (`json2rust`, with `--check` for drift), and normalise a document (`fmt`). It drives the library's own generator, so it cannot disagree with it. CSS cascade and reverse parsing are later BLUE31 stages, not part of this binary yet. | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`. |
 
 The suites crate is not a workspace member: it depends on `rust_widgets`, never the reverse, and
 the parent package's `include` list excludes `crates/**`, so `cargo package` at the root neither
-ships nor compiles it.
+ships nor compiles it. The CLI is packaged the same way.
 
 ## Text, fonts and icons
 
@@ -218,6 +235,7 @@ exercised in CI, and the generated header is checked for drift by `tools/check_a
 | [`docs/log/`](docs/log/) | Per-round engineering logs |
 | [`docs/reports/`](docs/reports/) | Audit and quality reports |
 | [`control.md`](control.md) | The widget gallery, generated from the registry |
+| [`crates/rust-widgets-cli`](crates/rust-widgets-cli) | `rwui` — check a project bundle, generate Rust from it, normalise a document |
 
 ## Agent skills (DSH)
 

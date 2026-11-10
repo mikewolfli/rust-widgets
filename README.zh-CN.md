@@ -13,7 +13,7 @@
 
 ## 特点
 
-- **231 种控件 / 240 个核心控件名**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。可选 suites 另外提供 **7 组、39 个控件**，安装到同一个 `WidgetFactory`。
+- **231 种控件 / 242 个核心控件名**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。可选 suites 另外提供 **7 组、39 个控件**，安装到同一个 `WidgetFactory`。
 - **输出可复现**——每个控件、每种外观都有提交到仓库的 SVG 与像素快照，视觉变化因此是可审阅的 diff，
   而不是聊天窗口里的一张截图。
 - **能力诚实**——宿主提供不了的服务返回 `false` / `None`；不会先假装成功再报告“已完成”。
@@ -39,7 +39,8 @@ rust_widgets = "4.2.0"
 与 `desktop` 叠加不是“取最小公共集”，而是一个无法工作的构建。
 
 ```toml
-rust_widgets = { version = "4.2.0", features = ["desktop"] }                       # 默认
+rust_widgets = "4.2.0"                                                             # 默认特性集
+rust_widgets = { version = "4.2.0", features = ["desktop"] }                       # 仅 desktop profile
 rust_widgets = { version = "4.2.0", default-features = false, features = ["tablet"] }
 rust_widgets = { version = "4.2.0", default-features = false, features = ["mobile"] }
 rust_widgets = { version = "4.2.0", default-features = false, features = ["embedded"] }
@@ -53,6 +54,19 @@ rust_widgets = { version = "4.2.0", default-features = false, features = ["mini"
 | `mobile` | iOS、Android、HarmonyOS——触摸、wgpu、移动平台服务 |
 | `embedded` | 只有软件光栅，不依赖操作系统服务 |
 | `mini` | 最小核心，面向 `no_std` |
+
+两个编辑器控件与它们共享的词法器都是**独立特性**，默认特性集三项全开：
+
+| 特性 | 编译内容 | 默认开启 |
+|---|---|---|
+| `code-editor` | `CodeEditor`——行号槽、minimap、折叠、补全、诊断 | 是 |
+| `markdown-editor` | `MarkdownEditor` 及其工具栏与大纲面板 | 是 |
+| `builtin-languages` | `BuiltinHighlighter` 背后的真实词法器（21 个语言族） | 是 |
+
+**只给 device profile** 的构建（`--no-default-features --features desktop`）不编译任何一个编辑器；
+用 `default-features = false` 且需要编辑器时，必须显式点名特性，需要语法高亮时再加上
+`builtin-languages`（不开时词法器是诚实的桩，不产生任何 token）。两个控件保留全部历史 import 路径；
+`editor` 是它们共享的下层，不是第三个编辑器控件。详见 cookbook → 快速开始 → *第四轴*。
 
 > `cargo check --features embedded` 是**错误**的，而且错得很安静：`desktop` 是默认特性，这条命令会同时
 > 打开两个互斥配置。选择 `desktop` 以外的配置时，必须加 `--no-default-features`。
@@ -104,18 +118,19 @@ fn main() {
 地图、项目、开发工具、媒体播放）。每个组都安装到同一个 `WidgetFactory`，并拥有自己的名字、schema
 与构造器。
 
-## `crates/` 下的三个包
+## `crates/` 下的四个包
 
-库旁边有三个包。它们都不会被编译进核心 `rust_widgets` 包；宿主按需显式接入。
+库旁边有四个包。它们都不会被编译进核心 `rust_widgets` 包；宿主按需显式接入。
 
 | 包 | 是什么 | 宿主如何使用 |
 |---|---|---|
 | `rust-widgets-font` | `fonts-*` 特性背后的 OFL 字体数据，单独拆出以让核心包低于 crates.io 的 10 MiB 上限。 | 间接使用：开启某个 `fonts-*` 特性即可；不要直接依赖它。 |
 | `rust-widgets-suites` | 七个可选控件组——`form`、`webview`、`finance`、`maps`、`project`、`devtools`、`media-playback`——共 **39 个控件**，具备与核心控件相同的属性、事件、布局、接线与无障碍面。原先独立的 `rust-widgets-webview` 包现在是 `webview` 组。 | `rust_widgets_suites::install(&mut factory)`，或单个组的 `install_*_group`。 |
 | `mobile-services` | 面向 Android、iOS、HarmonyOS 的移动应用外壳服务：常亮、触感反馈、权限、通知、分享、深链、安全区与方向锁定。不属于 GUI 核心。 | 在移动目标上使用 `rust_widgets_mobile_services::*`；桌面构建不会链接它。 |
+| `rust-widgets-cli` | 设计器命令行工具，二进制名 `rwui`：校验项目 bundle（`check`）、由它生成并校验已提交的 Rust（`json2rust`，`--check` 查漂移）、规范化文档（`fmt`）。它直接调用库自身的生成器，因此不会与库产生分歧。CSS 级联与反向解析属于 BLUE31 后续阶段，尚不在这个二进制里。 | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`。 |
 
 suites 包不是 workspace 成员：它依赖 `rust_widgets`，反过来不成立；父包的 `include` 列表排除了
-`crates/**`，所以根目录的 `cargo package` 既不会打包也不会编译它。
+`crates/**`，所以根目录的 `cargo package` 既不会打包也不会编译它。CLI 包以同样方式打包。
 
 ## 文本、字体与图标
 
@@ -194,6 +209,7 @@ SVG 才能作为评审材料，而不是一个会悄悄给出不同结果的第�
 | [`docs/log/`](docs/log/) | 每一轮的工程记录 |
 | [`docs/reports/`](docs/reports/) | 审计与质量报告 |
 | [`control.md`](control.md) | 由注册表生成的控件画廊 |
+| [`crates/rust-widgets-cli`](crates/rust-widgets-cli) | `rwui`——校验项目 bundle、由它生成 Rust、规范化文档 |
 
 ## 验证改动
 

@@ -746,6 +746,10 @@ pub trait Draw {
 | `TerminalView` | 終端機模擬器 |
 | `TimelineWidget` | 時間軸顯示 |
 
+> `CodeEditor`、`MarkdownEditor`、`FindBar` 與 `MarkdownOutlinePanel` 只在 `code-editor` /
+> `markdown-editor` 特性下編譯；語法高亮還需要 `builtin-languages`。三個特性都在 crate 的
+> `default` 集合中；詳見[快速開始 § 第四軸](getting-started.md#第四軸編輯器控制項獨立預設開啟)。
+
 ### 控制項能力系統
 
 ```rust
@@ -3194,7 +3198,7 @@ let image = job.wait()?;           // 或每幀一次 job.try_take()
 
 ## 功能旗標參考
 
-此函式庫使用**三軸功能系統** — 從每個軸各選一個：
+此函式庫使用**四軸功能系統** — 第 1、2 軸各選一個，第 3、4 軸自由組合：
 
 ### 軸 1：裝置設定檔（互斥）
 
@@ -3250,6 +3254,18 @@ let image = job.wait()?;           // 或每幀一次 job.try_take()
 | `web-http` | Web 能力的 HTTP 用戶端（ureq） |
 | `unstable-pipeline-routing` | 實驗性管線路由 |
 | `unstable-special-widgets` | 實驗性特殊控制項 |
+
+### 第四軸：編輯器控制項（獨立，預設開啟）
+
+| 特性 | 說明 |
+|---|---|
+| `code-editor` | `CodeEditor`：行號槽、minimap、摺疊、補全、診斷 |
+| `markdown-editor` | `MarkdownEditor` 及其工具列與大綱面板 |
+| `builtin-languages` | `BuiltinHighlighter` 背後的真正詞法分析器（21 個語言族）；關閉則無 token |
+
+三項都在 `default` 集合中。**只給 device profile** 的建置
+（`--no-default-features --features desktop`）不編譯任何一個編輯器；宿主用到哪個就顯式點名。
+`editor` 是共用下層，不是第三個編輯器控制項。
 
 ### 設定檔便利旗標
 
