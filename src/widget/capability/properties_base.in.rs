@@ -17,6 +17,14 @@ macro_rules! impl_properties_base {
             PropertySchema::new("default", PropertyValueKind::Bool, true, true),
             PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("icon_size", PropertyValueKind::UInt, true, true),
+            // Which of the four slots the icon occupies. A geometry input like `icon_size`, not a
+            // paint switch: the draw path and the intrinsic size both read it (WC6-05).
+            PropertySchema::enumerated(
+                "icon_position",
+                true,
+                true,
+                &["leading", "trailing", "top", "bottom"],
+            ),
             // The icon's own colour channel; `null` means "follow the label ink".
             PropertySchema::new("icon_tint", PropertyValueKind::Color, true, true),
             // The shortcut reads as its canonical text and writes as the same spelling; an
@@ -65,6 +73,10 @@ macro_rules! impl_properties_base {
 
         pub(crate) const CHECK_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
+            // Whether a long caption wraps instead of being elided. The state is consumed by both
+            // the painter and the hit area, so it is a real geometry input, not a paint switch
+            // (WC6-04).
+            PropertySchema::new("word_wrap", PropertyValueKind::Bool, true, true),
             // The tokens are the **reader's** vocabulary, not the writer's.
             //
             // This published `off` / `indeterminate` / `on` while `check_state_to_str` returns
@@ -95,6 +107,8 @@ macro_rules! impl_properties_base {
 
         pub(crate) const RADIO_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
+            // Same state, same consumers as `CHECK_BOX_PROPERTIES::word_wrap` (WC6-04).
+            PropertySchema::new("word_wrap", PropertyValueKind::Bool, true, true),
             PropertySchema::new("checked", PropertyValueKind::Bool, true, true),
             PropertySchema::new("group_id", PropertyValueKind::String, true, true),
             PropertySchema::new("auto_exclusive", PropertyValueKind::Bool, true, true),

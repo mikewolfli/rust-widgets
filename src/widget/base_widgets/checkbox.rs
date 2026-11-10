@@ -827,6 +827,7 @@ impl WidgetProperties for CheckBox {
             "auto_repeat" => Ok(CapabilityValue::Bool(self.is_auto_repeat())),
             "auto_repeat_delay" => Ok(CapabilityValue::UInt(self.auto_repeat_delay() as u64)),
             "auto_repeat_interval" => Ok(CapabilityValue::UInt(self.auto_repeat_interval() as u64)),
+            "word_wrap" => Ok(CapabilityValue::Bool(self.word_wrap())),
             _ => base_property_get(self, name),
         }
     }
@@ -865,6 +866,10 @@ impl WidgetProperties for CheckBox {
                 self.set_auto_repeat_interval(expect_u32(value)?);
                 Ok(())
             }
+            "word_wrap" => {
+                self.set_word_wrap(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -887,6 +892,7 @@ impl WidgetProperties for CheckBox {
             "auto_repeat",
             "auto_repeat_delay",
             "auto_repeat_interval",
+            "word_wrap",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -2290,6 +2296,21 @@ mod tests {
         box_.set("auto_exclusive", CapabilityValue::Bool(true)).expect("writable");
         assert!(box_.is_auto_exclusive());
         assert_eq!(box_.get("auto_exclusive"), Ok(CapabilityValue::Bool(true)));
+    }
+
+    /// WC6-04: `word_wrap` is a real state (paint **and** hit area read it), so a host must be
+    /// able to read and write it through the property layer, as it already can on `Label`.
+    #[test]
+    fn word_wrap_is_published_and_writable() {
+        let mut box_ = CheckBox::new(Rect::new(0, 0, 80, 40));
+        assert_eq!(box_.get("word_wrap"), Ok(CapabilityValue::Bool(false)));
+        box_.set("word_wrap", CapabilityValue::Bool(true)).expect("writable");
+        assert!(box_.word_wrap());
+        assert_eq!(box_.get("word_wrap"), Ok(CapabilityValue::Bool(true)));
+        assert!(
+            box_.property_names().contains(&"word_wrap"),
+            "the published name set and the read/write arms must agree"
+        );
     }
 
     // ── Indicator icon and wrapped label (B-005) ───────────────────────

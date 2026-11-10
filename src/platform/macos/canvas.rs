@@ -1523,9 +1523,9 @@ impl MacOSPlatform {
             rect.width,
             rect.height,
         );
-        self.handles
-            .lock()
-            .expect("macos handle lock poisoned")
+        // Poison recovery, not a panic cascade (PL6-01): `unmount_surface_impl` already reads the
+        // same lock this way, so one panic cannot make every later mount fail.
+        crate::compat::lock(&self.handles)
             .insert(id, CocoaHandle { ptr: view as usize, kind: HandleKind::Canvas });
         log::debug!(
             "[macos] mount_surface: id={id} mounted at ({}, {}, {}, {})",

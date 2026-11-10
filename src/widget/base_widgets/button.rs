@@ -78,6 +78,33 @@ pub enum IconPosition {
     Bottom,
 }
 
+impl IconPosition {
+    /// Returns the token this position is published under.
+    ///
+    /// The property layer reads and writes exactly these spellings, so the token set is the
+    /// enum's own vocabulary rather than a second table that could drift (WC6-05).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Leading => "leading",
+            Self::Trailing => "trailing",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    /// Parses an [`IconPosition`] from its published token, or `None` when the token names no
+    /// position.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "leading" => Some(Self::Leading),
+            "trailing" => Some(Self::Trailing),
+            "top" => Some(Self::Top),
+            "bottom" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+}
+
 /// The inputs [`Button::implicit_size`] derives its answer from.
 ///
 /// # Why the key is the inputs, not a bare dirty flag
@@ -1909,6 +1936,9 @@ impl WidgetProperties for Button {
             "pressed" => Ok(CapabilityValue::Bool(self.is_pressed())),
             "default" => Ok(CapabilityValue::Bool(self.is_default())),
             "icon_size" => Ok(CapabilityValue::UInt(self.icon_size() as u64)),
+            "icon_position" => {
+                Ok(CapabilityValue::String(self.icon_position().as_str().to_string()))
+            }
             "shortcut" => match self.shortcut() {
                 Some(shortcut) => Ok(CapabilityValue::String(shortcut.format_shortcut())),
                 None => Ok(CapabilityValue::Null),
@@ -1961,6 +1991,14 @@ impl WidgetProperties for Button {
             }
             "icon_size" => {
                 self.set_icon_size(expect_u32(value)?);
+                Ok(())
+            }
+            "icon_position" => {
+                let token = expect_string(value)?;
+                let Some(position) = IconPosition::from_token(&token) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_icon_position(position);
                 Ok(())
             }
             "shortcut" => {
@@ -2073,6 +2111,7 @@ impl WidgetProperties for Button {
             "icon_source",
             "icon_tint",
             "icon_size",
+            "icon_position",
             "shortcut",
             "auto_default",
             "auto_exclusive",
@@ -2095,6 +2134,7 @@ impl WidgetProperties for Button {
             "icon_source",
             "icon_tint",
             "icon_size",
+            "icon_position",
             "shortcut",
             "auto_default",
             "auto_exclusive",
@@ -4941,6 +4981,38 @@ mod tests {
         clicked.store(false, Ordering::SeqCst);
         button.handle_event(&Event::KeyPress { key: 83, modifiers: 0 });
         assert!(!clicked.load(Ordering::SeqCst), "the bare key is not the declared chord");
+    }
+
+    /// WC6-05: the icon slot's position is readable and writable through the property layer.
+    ///
+    /// The three sibling icon rows (`icon_source`/`icon_size`/`icon_tint`) were already published,
+    /// so the one property that says *where* the icon goes was the only unreachable member of the
+    /// family — and it is a geometry input the painter and the hit test both read.
+    #[test]
+    fn icon_position_is_published_with_the_enum_tokens() {
+        let mut button = make_button();
+        assert_eq!(
+            button.get("icon_position"),
+            Ok(CapabilityValue::String("leading".into())),
+            "the default is the enum's default"
+        );
+
+        for (token, expected) in [
+            ("trailing", IconPosition::Trailing),
+            ("top", IconPosition::Top),
+            ("bottom", IconPosition::Bottom),
+            ("leading", IconPosition::Leading),
+        ] {
+            button.set("icon_position", CapabilityValue::String(token.into())).expect("writable");
+            assert_eq!(button.icon_position(), expected);
+            assert_eq!(button.get("icon_position"), Ok(CapabilityValue::String(token.into())));
+        }
+
+        assert_eq!(
+            button.set("icon_position", CapabilityValue::String("sideways".into())),
+            Err(CapabilityAccessError::TypeMismatch),
+            "an unknown token is refused rather than silently ignored"
+        );
     }
 
     #[test]

@@ -280,24 +280,16 @@ impl Platform for AndroidMobilePlatform {
             return 0;
         }
         let id = self.insert_widget(MobileHandleKind::Menu, text, x, y, width, height);
-        self.menus
-            .lock()
-            .expect("mobile menu lock poisoned")
-            .menu_children
-            .entry(parent)
-            .or_default()
-            .push(id);
+        // Poison recovery, not a panic cascade (PL6-01): a panic while holding this lock must not
+        // make every later menu creation fail. `destroy_widget` already reads it this way.
+        crate::compat::lock(&self.menus).menu_children.entry(parent).or_default().push(id);
         id
     }
     fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {
         if matches!(self.kind_of(window), Some(MobileHandleKind::Window))
             && matches!(self.kind_of(menu_bar), Some(MobileHandleKind::MenuBar))
         {
-            self.menus
-                .lock()
-                .expect("mobile menu lock poisoned")
-                .attached_menu_bar
-                .insert(window, menu_bar);
+            crate::compat::lock(&self.menus).attached_menu_bar.insert(window, menu_bar);
             return true;
         }
         false
@@ -313,9 +305,7 @@ impl Platform for AndroidMobilePlatform {
             return 0;
         }
         let item_id = self.insert_widget(MobileHandleKind::MenuItem, text, 0, 0, 0, 0);
-        self.menus
-            .lock()
-            .expect("mobile menu lock poisoned")
+        crate::compat::lock(&self.menus)
             .menu_children
             .entry(parent_menu)
             .or_default()

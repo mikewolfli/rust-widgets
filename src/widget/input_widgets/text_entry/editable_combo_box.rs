@@ -141,6 +141,11 @@ pub struct EditableComboBox {
     selection_anchor: Option<usize>,
     /// The caret's blink state, shared with the crate's other carets.
     cursor_blink: crate::style::CursorBlink,
+    /// The uncommitted IME composition drawn inline at the caret (WC6-03).
+    ///
+    /// Held apart from `text` so `text_changed`, `editing_finished` and the undo stack never see
+    /// characters the user has not confirmed.
+    preedit: String,
     /// Maximum rows the open list shows at once. `None` shows them all.
     max_visible: Option<usize>,
     /// The candidate-list engine the open list is painted from (I-129).
@@ -192,6 +197,7 @@ impl EditableComboBox {
             cursor: 0,
             selection_anchor: None,
             cursor_blink: crate::style::CursorBlink::new(),
+            preedit: String::new(),
             max_visible: None,
             popup: SuggestionPopup::new(geometry),
             items_revision: 0,
@@ -911,18 +917,47 @@ impl Draw for EditableComboBox {
         );
 
         // Caret at the field's own insertion point, clipped to the value's box.
+        let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
+        let caret_x = value_origin.x + context.measure_text(&self.text[..caret], font).width as i32;
+        let caret_x = caret_x
+            .min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
+            .max(geometry.text_box.x);
         if is_enabled && self.cursor_blink.is_visible() {
-            let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
-            let caret_x =
-                value_origin.x + context.measure_text(&self.text[..caret], font).width as i32;
-            let caret_x = caret_x
-                .min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
-                .max(geometry.text_box.x);
             context.draw_line(
                 Point::new(caret_x, value_line.y),
                 Point::new(caret_x, value_line.y + value_line.height as i32),
                 text_color,
             );
+        }
+
+        // The uncommitted composition is painted where it will land when committed, underlined,
+        // and independently of the blink: it is ink the user is reading (WC6-03).
+        if !self.preedit.is_empty() {
+            let max_x = geometry.text_box.x + geometry.text_box.width as i32 - 1;
+            let preedit_x = caret_x.min(max_x).max(geometry.text_box.x);
+            let width = (context.measure_text(&self.preedit, font).width as i32)
+                .min(max_x - preedit_x)
+                .max(0);
+            context.push_clip(
+                geometry.text_box.x,
+                value_line.y,
+                geometry.text_box.width,
+                value_line.height,
+            );
+            context.draw_text(
+                Point::new(preedit_x, value_line.y),
+                &self.preedit,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+            let underline_y = value_line.y + value_line.height as i32 + 1;
+            context.draw_line(
+                Point::new(preedit_x, underline_y),
+                Point::new(preedit_x + width, underline_y),
+                text_color,
+            );
+            context.pop_clip();
         }
 
         // Draw the dropdown indicator inside its own derived box.
@@ -1223,11 +1258,24 @@ impl EventHandler for EditableComboBox {
             // `append_committed_text`, which drives `set_text` — the same entry point the printable
             // key arm uses. The `is_enabled` guard above already ran.
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                // A commit ends the composition: the input method may deliver it before its
+                // `preedit_end`, and a stale preview would otherwise paint beside the value.
+                self.preedit.clear();
                 self.append_committed_text(text);
+            }
+            // The uncommitted composition is painted at the caret and never reaches the value
+            // (WC6-03).
+            Event::ImePreedit { text, .. } => {
+                if self.preedit != *text {
+                    self.preedit = text.clone();
+                    self.base.request_redraw();
+                }
             }
             Event::FocusLost => {
                 // The field finishing an edit is the event a form validates on; the list also
-                // collapses so a focus change cannot leave a popup pinned open.
+                // collapses so a focus change cannot leave a popup pinned open. A composition
+                // belongs to the focused field, so it is withdrawn with the focus (WC6-03).
+                self.preedit.clear();
                 self.base.handle_event(event);
                 if self.expanded {
                     self.collapse();
@@ -1364,6 +1412,37 @@ mod tests {
         let svg = render_to_svg(&mut cb);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// WC6-03: an uncommitted composition is previewed without entering the value.
+    #[test]
+    fn an_ime_composition_is_previewed_without_changing_the_value() {
+        let mut plain = EditableComboBox::new(Rect::new(0, 0, 200, 30));
+        plain.set_text("Bar");
+        let without = crate::widget::svg::text_subpath_count(&render_to_svg(&mut plain));
+
+        let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 30));
+        cb.set_text("Bar");
+        cb.handle_event(&Event::ImePreedit { text: "ka".to_string(), cursor: 0 });
+        assert_eq!(cb.preedit, "ka");
+        assert_eq!(cb.text(), "Bar", "an uncommitted composition leaves the value alone");
+
+        let with = crate::widget::svg::text_subpath_count(&render_to_svg(&mut cb));
+        assert!(with > without, "the composition is drawn at the caret: {without} -> {with}");
+
+        cb.handle_event(&Event::ImeCommit { text: "に".to_string() });
+        assert!(cb.preedit.is_empty(), "the commit ends the preview");
+        assert_eq!(cb.text(), "Barに");
+    }
+
+    /// A blur withdraws a composition the field no longer owns.
+    #[test]
+    fn a_blur_drops_the_ime_composition() {
+        let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 30));
+        cb.handle_event(&Event::ime_preedit("ka", 0));
+        assert_eq!(cb.preedit, "ka");
+        cb.handle_event(&Event::FocusLost);
+        assert!(cb.preedit.is_empty());
     }
 
     #[test]

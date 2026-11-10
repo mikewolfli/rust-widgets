@@ -22,7 +22,8 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
-    expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
+    expect_bool, expect_horizontal_alignment, expect_string, expect_usize,
+    horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -163,6 +164,12 @@ pub struct MaskedEdit {
     /// Edge-triggered: the signal means "the last empty cell was just filled", so a further edit
     /// that still leaves the mask complete must not repeat it.
     completion_announced: bool,
+    /// The uncommitted IME composition drawn inline at the caret (WC6-03).
+    ///
+    /// The value is untouched until the input method commits: a composition is a preview, and
+    /// writing it into `raw_text` would run the mask, the undo stack and `text_changed` for text
+    /// the user has not confirmed. `SearchBar` and `TagInput` hold the same buffer the same way.
+    preedit: String,
     /// The caret cell's blink state, advanced by [`MaskedEdit::tick`] (I-26).
     ///
     /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's
@@ -247,6 +254,7 @@ impl MaskedEdit {
             restoring_history: false,
             suppress_history: false,
             completion_announced: false,
+            preedit: String::new(),
             cursor_blink: crate::style::CursorBlink::new(),
             raw_chars_cache: RefCell::new(None),
         }
@@ -973,6 +981,36 @@ impl MaskedEdit {
         (index as usize).min(self.segments.len())
     }
 
+    /// Paints the uncommitted IME composition at the caret (WC6-03).
+    ///
+    /// The string is drawn where it will land on commit, underlined, so an East-Asian user can
+    /// read the composition before confirming it. The anchor is [`Self::caret_query`]'s caret
+    /// rectangle — the same one a native candidate window is placed on — so the ink and the
+    /// platform's own overlay agree about where the insertion point is.
+    fn draw_composition(&self, context: &mut RenderContext, field: Rect, ink: Color) {
+        if self.preedit.is_empty() || !self.focused || self.read_only || !self.base.is_enabled() {
+            return;
+        }
+        let font = mask_font();
+        let line = context.text_line(field, font);
+        let caret = self.caret_query().caret_rect;
+        let max_x = field.x + field.width as i32 - 1;
+        let x = caret.x.min(max_x).max(field.x);
+        let width = (context.measure_text(&self.preedit, font).width as i32).min(max_x - x).max(0);
+        context.push_clip(field.x, field.y, field.width, field.height);
+        context.draw_text(
+            Point::new(x, line.y),
+            &self.preedit,
+            font,
+            ink,
+            HorizontalAlignment::Left,
+        );
+        // One pixel below the glyph box, over the composition's own width.
+        let underline_y = line.y + line.height as i32 + 1;
+        context.draw_line(Point::new(x, underline_y), Point::new(x + width, underline_y), ink);
+        context.pop_clip();
+    }
+
     /// The caret's window rectangle and byte offset, as a native IME asks for them (X-001).
     ///
     /// A masked field has no per-character shaping: every segment occupies one cell of
@@ -1091,6 +1129,8 @@ impl WidgetProperties for MaskedEdit {
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
+            "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
+            "cursor_position" => Ok(CapabilityValue::UInt(self.cursor_pos() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -1109,12 +1149,27 @@ impl WidgetProperties for MaskedEdit {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            "read_only" => {
+                self.set_read_only(expect_bool(value)?);
+                Ok(())
+            }
+            "cursor_position" => {
+                self.set_cursor_pos(expect_usize(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "mask", "alignment", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "mask",
+            "alignment",
+            "read_only",
+            "cursor_position",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `masked_edit` publishes.
@@ -1300,6 +1355,8 @@ impl Draw for MaskedEdit {
                     self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
                 );
             }
+            // The composition sits at the caret on top of the value it will extend.
+            self.draw_composition(context, geom, text_color);
             // The ring is painted last in *both* branches, so the ink and the selection band cannot
             // cover its edge.
             self.draw_focus_ring(context, geom, bg_color);
@@ -1485,6 +1542,10 @@ impl Draw for MaskedEdit {
             }
         }
 
+        // The composition sits at the caret on top of the value it will extend. The helper
+        // refuses a disabled or unfocused field itself, so the ink is the enabled colour.
+        self.draw_composition(context, geom, ink);
+
         // The ring is painted after every glyph and the selection band, so neither can cover it.
         self.draw_focus_ring(context, geom, bg_color);
     }
@@ -1507,6 +1568,9 @@ impl EventHandler for MaskedEdit {
                 self.focused = false;
                 // A blurred field has a steady caret and owes no further frames.
                 self.cursor_blink.stop();
+                // A composition belongs to the field that had the focus; the input method
+                // withdraws it when the caret leaves, so the preview goes with it (WC6-03).
+                self.preedit.clear();
                 // Losing focus ends the edit, the same way Enter does; a host validating per
                 // finished edit needs to hear about the gesture that did not press Enter.
                 self.editing_finished.emit();
@@ -1575,9 +1639,23 @@ impl EventHandler for MaskedEdit {
                 self.base.request_redraw();
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                // A commit ends the composition as well as inserting its text; an input method may
+                // deliver the commit before its `preedit_end`, and the field would otherwise paint
+                // both the committed characters and a stale preview.
+                self.preedit.clear();
                 if self.focused && !self.read_only {
                     self.insert_committed_text(text);
                 }
+            }
+            // The uncommitted composition belongs to the focused field: only the inline preview
+            // changes, never `raw_text`, so the mask, the undo stack and `text_changed` stay quiet
+            // until the commit (WC6-03). A read-only field accepts no edit path, composition
+            // included.
+            Event::ImePreedit { text, .. }
+                if self.focused && !self.read_only && self.preedit != *text =>
+            {
+                self.preedit = text.clone();
+                self.base.request_redraw();
             }
             Event::KeyPress { key, modifiers } => {
                 if !self.focused {
@@ -2429,6 +2507,70 @@ mod tests {
         me.focused = true;
         me.handle_event(&Event::ime_commit("9876"));
         assert_eq!(me.raw_text(), "9876");
+    }
+
+    /// WC6-06: the two text-family names a masked field was missing are read/write through the
+    /// property contract, so JSON, bindings and the designer can reach them.
+    #[test]
+    fn read_only_and_cursor_position_are_published() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("0000");
+        me.set_text("12");
+
+        assert_eq!(me.get("read_only"), Ok(CapabilityValue::Bool(false)));
+        me.set("read_only", CapabilityValue::Bool(true)).expect("writable");
+        assert!(me.is_read_only());
+        assert_eq!(me.get("read_only"), Ok(CapabilityValue::Bool(true)));
+
+        assert_eq!(me.get("cursor_position"), Ok(CapabilityValue::UInt(me.cursor_pos() as u64)));
+        me.set("cursor_position", CapabilityValue::UInt(2)).expect("writable");
+        assert_eq!(me.cursor_pos(), 2);
+        assert!(me.property_names().contains(&"read_only"));
+        assert!(me.property_names().contains(&"cursor_position"));
+    }
+
+    /// WC6-03: an uncommitted composition is painted without entering the value.
+    ///
+    /// The focus of this test is the separation, not the mask: a composition is a preview, so
+    /// the raw value and the emitted changes must stay exactly as they were until the commit.
+    #[test]
+    fn an_ime_composition_is_previewed_without_changing_the_value() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("000-0000");
+        me.focused = true;
+
+        me.handle_event(&Event::ime_preedit("に", 0));
+        assert_eq!(me.preedit, "に");
+        assert_eq!(me.raw_text(), "", "an uncommitted composition is not a value");
+
+        me.handle_event(&Event::ime_commit("1"));
+        assert!(me.preedit.is_empty(), "the commit ends the preview");
+        assert_eq!(me.raw_text(), "1", "the committed text takes the mask path");
+    }
+
+    /// The preview follows the field's focus and its read-only state, and the composition is
+    /// painted as ink rather than only stored.
+    #[test]
+    fn an_ime_composition_is_painted_only_for_an_editable_focused_field() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("0000");
+        // Unfocused: the composition belongs to whoever holds the focus.
+        me.handle_event(&Event::ime_preedit("に", 0));
+        assert!(me.preedit.is_empty(), "an unfocused field owns no composition");
+
+        me.focused = true;
+        // Latin preedit here: text leaves the renderer as `font8x8` geometry, so a string the
+        // bundled face covers is the one whose ink an SVG assertion can count.
+        let without =
+            crate::widget::svg::text_subpath_count(&crate::widget::svg::render_to_svg(&mut me));
+        me.handle_event(&Event::ime_preedit("ka", 0));
+        let with =
+            crate::widget::svg::text_subpath_count(&crate::widget::svg::render_to_svg(&mut me));
+        assert!(with > without, "the composition is drawn at the caret: {without} -> {with}");
+
+        me.set_read_only(true);
+        me.handle_event(&Event::ime_preedit("ho", 0));
+        assert_eq!(me.preedit, "ka", "a read-only field accepts no composition");
     }
 
     /// A committed character that does not match the mask is rejected, exactly as a keystroke is.

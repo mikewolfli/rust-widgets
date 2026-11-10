@@ -882,6 +882,7 @@ impl WidgetProperties for RadioButton {
             "auto_repeat" => Ok(CapabilityValue::Bool(self.is_auto_repeat())),
             "auto_repeat_delay" => Ok(CapabilityValue::UInt(self.auto_repeat_delay() as u64)),
             "auto_repeat_interval" => Ok(CapabilityValue::UInt(self.auto_repeat_interval() as u64)),
+            "word_wrap" => Ok(CapabilityValue::Bool(self.word_wrap())),
             _ => base_property_get(self, name),
         }
     }
@@ -919,6 +920,10 @@ impl WidgetProperties for RadioButton {
                 self.set_auto_repeat_interval(expect_u32(value)?);
                 Ok(())
             }
+            "word_wrap" => {
+                self.set_word_wrap(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -940,6 +945,7 @@ impl WidgetProperties for RadioButton {
             "auto_repeat",
             "auto_repeat_delay",
             "auto_repeat_interval",
+            "word_wrap",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -2425,6 +2431,18 @@ mod tests {
             single_svg, wrapped_svg,
             "wrapping must reshape a caption that does not fit its width"
         );
+    }
+
+    /// WC6-04: the wrapping state is read by the painter and the hit area, so it belongs on the
+    /// property contract rather than only on the widget's own API.
+    #[test]
+    fn word_wrap_is_published_and_writable() {
+        let mut radio = RadioButton::new(Rect::new(0, 0, 80, 40));
+        assert_eq!(radio.get("word_wrap"), Ok(CapabilityValue::Bool(false)));
+        radio.set("word_wrap", CapabilityValue::Bool(true)).expect("writable");
+        assert!(radio.word_wrap());
+        assert_eq!(radio.get("word_wrap"), Ok(CapabilityValue::Bool(true)));
+        assert!(radio.property_names().contains(&"word_wrap"));
     }
 
     /// Every wrapped line is part of the click target, not just the indicator's own strip.

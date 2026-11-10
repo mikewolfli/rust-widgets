@@ -130,8 +130,12 @@ fn main() {
         not(any(feature = "mini", feature = "embedded"))
     ))]
     {
-        let out_dir = std::env::args().nth(1).unwrap_or_else(|| "widget_gallery".to_string());
-        let out_path = PathBuf::from(&out_dir);
+        // A directory path needs no UTF-8 decoding: `args_os()` yields it as an `OsString`, so a
+        // name with an unusual byte is used as-is rather than panicking (DM6-04).
+        let out_path = std::env::args_os()
+            .nth(1)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("widget_gallery"));
         fs::create_dir_all(&out_path).unwrap();
 
         // Every published control, exactly once: the factory's own name list is the authority.

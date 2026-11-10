@@ -17,7 +17,7 @@ pub use walk::{rasterize_draw_commands_into_rgba8, rasterize_draw_commands_rgba8
 
 pub(crate) use fills::{
     bbox_for_circle, bbox_for_path, blend_mode_from_id, clip_segment_to_rect, for_each_line_stamp,
-    gradient_ramp, path_bounds, path_fan_vertices, rect_for_line, rounded_rect_row_spans,
+    gradient_ramp, path_bounds, path_fan_vertices_into, rect_for_line, rounded_rect_row_spans,
     rounded_rect_row_spans_radii, rounded_ring_row_spans, stroke_rect_edges, GradientAxis,
 };
 pub(crate) use text::text_coverage_into;

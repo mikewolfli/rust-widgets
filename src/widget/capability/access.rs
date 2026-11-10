@@ -503,6 +503,9 @@ pub fn default_widget_property_default_value(
             "icon_size" => {
                 CapabilityValue::UInt(crate::widget::metrics::dimensions::BUTTON_ICON_SIZE as u64)
             }
+            // `IconPosition::Leading` is the enum's own default, so a fresh button and the
+            // schema's default agree (WC6-05).
+            "icon_position" => CapabilityValue::String("leading".to_string()),
             "shortcut" => CapabilityValue::Null,
             "auto_default" => CapabilityValue::Bool(false),
             "auto_exclusive" => CapabilityValue::Bool(false),
@@ -534,6 +537,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::CheckBox => match property_name {
             "text" => CapabilityValue::String(String::new()),
+            "word_wrap" => CapabilityValue::Bool(false),
             "state" => CapabilityValue::String("unchecked".to_string()),
             "checked" => CapabilityValue::Bool(false),
             "tristate_enabled" => CapabilityValue::Bool(false),
@@ -545,6 +549,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::RadioButton => match property_name {
             "text" => CapabilityValue::String(String::new()),
+            "word_wrap" => CapabilityValue::Bool(false),
             "checked" => CapabilityValue::Bool(false),
             "group_id" => CapabilityValue::Null,
             // A radio is exclusive by construction; see `RadioButton::new`.
@@ -637,6 +642,7 @@ pub fn default_widget_property_default_value(
             "display_text" | "value_text" => CapabilityValue::String("0".to_string()),
             "special_value_text" => CapabilityValue::Null,
             "wrapping" => CapabilityValue::Bool(false),
+            "thousands_grouping" => CapabilityValue::Bool(false),
             "keyboard_tracking" => CapabilityValue::Bool(true),
             // A fresh spin box is left-to-right, the same default `SpinBox::new` sets. Declared here as
             // well as in the schema because `schema_defaults_are_readable_and_writable_when_declared`
@@ -2254,6 +2260,9 @@ pub fn default_widget_property_default_value(
             "text" => CapabilityValue::String(String::new()),
             "mask" => CapabilityValue::String(String::new()),
             "alignment" => CapabilityValue::String("left".to_string()),
+            // WC6-06: a fresh field is editable and its caret sits at display position 0.
+            "read_only" => CapabilityValue::Bool(false),
+            "cursor_position" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::MenuButton => match property_name {

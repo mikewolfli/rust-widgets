@@ -390,11 +390,30 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
 ///
 /// Shared with the app layer's Resized warning: one switch turns the whole resize recount on, so a
 /// reproduction collects both the stall line and the reason a size was missing.
+///
+/// # Why a thread-local memo and not a `OnceLock`
+///
+/// The widget layer must stay lock-free (`tools/check_locking.sh`): its registries are thread-local,
+/// so a process-wide lock here is the one thing that could make a paint path block — and this
+/// function is called from the app layer's resize path as well as from every `drive_frame`.
+/// The memoised value is a debug switch, and the environment does not change under a running
+/// process, so caching it per thread answers the same question the process-wide cell did: one
+/// `std::env::var` probe per thread instead of one per call, with a steady-state cost of one
+/// thread-local read per frame.
 #[cfg(not(alloc_frugal))]
 pub(crate) fn resize_trace_enabled() -> bool {
-    use std::sync::OnceLock;
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("RW_RESIZE_TRACE").ok().as_deref() == Some("1"))
+    thread_local! {
+        /// `None` until this thread has probed the environment once.
+        static ENABLED: core::cell::Cell<Option<bool>> = const { core::cell::Cell::new(None) };
+    }
+    ENABLED.with(|slot| match slot.get() {
+        Some(enabled) => enabled,
+        None => {
+            let enabled = std::env::var("RW_RESIZE_TRACE").ok().as_deref() == Some("1");
+            slot.set(Some(enabled));
+            enabled
+        }
+    })
 }
 
 /// Prints the previous frame's ledger once when the host loop stalled between frames (GV4-01).

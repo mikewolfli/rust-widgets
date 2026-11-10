@@ -101,12 +101,14 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
         "help" => Command::Help,
         "check" => {
             let input = first_positional(&mut args)?;
-            parse_flags(args, &mut shared, false)?;
+            // `check` writes nothing, so the generate-only flags are rejected there rather than
+            // accepted and dropped (DM6-02).
+            parse_flags(args, &mut shared, false, false)?;
             Command::Check { input }
         }
         "json2rust" => {
             let input = first_positional(&mut args)?;
-            parse_flags(args, &mut shared, true)?;
+            parse_flags(args, &mut shared, true, true)?;
             Command::Json2Rust {
                 input,
                 overrides: shared.overrides,
@@ -145,17 +147,25 @@ fn parse_flags(
     mut args: impl Iterator<Item = String>,
     shared: &mut Shared,
     allow_targets: bool,
+    allow_generate: bool,
 ) -> Result<(), String> {
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--json" => shared.json = true,
             "--strict" => shared.strict = true,
-            "--check" => shared.check = true,
-            "--css" => shared
+            // `--check`, `--css` and `-o` are generate-only: they decide what `json2rust` writes.
+            // `check` writes nothing, so accepting them there was a promise it could not keep —
+            // `rwui check x.ui --css theme.css` looked as if the command line took part in the
+            // validation while only the manifest's own sheets were read (DM6-02). A flag this
+            // command cannot honour falls through to the same “unknown argument” path `--target`
+            // already takes, because the crate's contract is “unknown things are reported, not
+            // silently ignored”.
+            "--check" if allow_generate => shared.check = true,
+            "--css" if allow_generate => shared
                 .overrides
                 .stylesheets
                 .push(PathBuf::from(args.next().ok_or("--css needs a file path")?)),
-            "-o" | "--output" => {
+            "-o" | "--output" if allow_generate => {
                 shared.overrides.output_dir =
                     Some(PathBuf::from(args.next().ok_or("-o needs a directory")?));
             }

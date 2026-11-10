@@ -136,6 +136,7 @@ pub(crate) fn spin_box_capability() -> WidgetCapability {
             "set_alignment",
             "set_direction",
             "set_special_value_text",
+            "set_thousands_grouping",
             "set_wrapping",
         ],
     }
@@ -629,7 +630,7 @@ pub(crate) fn masked_edit_capability() -> WidgetCapability {
         aliases: &["masked_input"],
         properties: MASKED_EDIT_PROPERTIES,
         events: events_of!("masked_edit"),
-        commands: &["set_text", "set_mask", "set_alignment"],
+        commands: &["set_text", "set_mask", "set_alignment", "set_read_only"],
     }
 }
 

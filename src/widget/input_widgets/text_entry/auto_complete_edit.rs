@@ -175,6 +175,12 @@ pub struct AutoCompleteEdit {
     placeholder: String,
     /// Whether the field owns keyboard focus, which drives the caret blink (X-003).
     focused: bool,
+    /// The uncommitted IME composition drawn inline at the caret (WC6-03).
+    ///
+    /// Held apart from `text` for the same reason every other field holds it apart: a composition
+    /// is a preview, so `text_changed`, the suggestion filter and the undo stack must not see
+    /// characters the user has not confirmed.
+    preedit: String,
     /// The caret's blink state, advanced by [`AutoCompleteEdit::tick`].
     cursor_blink: crate::style::CursorBlink,
     /// The host's available area, which makes the drop-down flip measurable (I-009).
@@ -221,6 +227,7 @@ impl AutoCompleteEdit {
             restoring_history: false,
             placeholder: String::new(),
             focused: false,
+            preedit: String::new(),
             cursor_blink: crate::style::CursorBlink::new(),
             viewport: None,
             text_revision: 0,
@@ -1373,6 +1380,8 @@ impl Draw for AutoCompleteEdit {
 
         // Inline completion: the completed remainder follows the caret, dimmed, so the
         // suggestion is readable at the insertion point rather than only in the list.
+        let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
+        let caret_x = text_x + self.cached_prefix_advance(font, caret);
         if !self.text.is_empty() {
             let font_width = self.cached_prefix_advance(font, self.text.len());
             if !self.inline_suffix.is_empty() {
@@ -1387,14 +1396,38 @@ impl Draw for AutoCompleteEdit {
             // The caret at its own byte offset, for the same reason the other fields draw one:
             // a focused text entry with no visible insertion point does not say where typing lands.
             if self.focused && self.cursor_blink.is_visible() {
-                let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
-                let caret_x = text_x + self.cached_prefix_advance(font, caret);
                 context.draw_line(
                     Point::new(caret_x, text_y),
                     Point::new(caret_x, text_y + input_line.height as i32),
                     text_color,
                 );
             }
+        }
+
+        // The uncommitted composition is painted where it will land when committed, underlined.
+        // It is drawn independently of the blink, because a composition is ink the user is
+        // reading, not the caret's own marker.
+        if !self.preedit.is_empty() {
+            let max_x = rect.x + rect.width as i32 - 1;
+            let preedit_x = caret_x.min(max_x).max(rect.x);
+            let width = (context.measure_text(&self.preedit, font).width as i32)
+                .min(max_x - preedit_x)
+                .max(0);
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+            context.draw_text(
+                Point::new(preedit_x, text_y),
+                &self.preedit,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+            let underline_y = text_y + input_line.height as i32 + 1;
+            context.draw_line(
+                Point::new(preedit_x, underline_y),
+                Point::new(preedit_x + width, underline_y),
+                text_color,
+            );
+            context.pop_clip();
         }
 
         // Draw dropdown if visible
@@ -1474,7 +1507,11 @@ impl EventHandler for AutoCompleteEdit {
                 self.press_with_pointer(*pos);
             }
             Event::FocusGained { .. } => self.set_focused(true),
-            Event::FocusLost => self.set_focused(false),
+            Event::FocusLost => {
+                self.set_focused(false);
+                // The composition belongs to the focused field; a blur withdraws it (WC6-03).
+                self.preedit.clear();
+            }
             Event::KeyPress { key, modifiers } => {
                 if *key == key_codes::ENTER {
                     if self.show_dropdown {
@@ -1560,7 +1597,19 @@ impl EventHandler for AutoCompleteEdit {
             // `append_committed_text`, which filters control characters and drives `set_text`, the
             // same entry point the printable key arm uses. The `is_enabled` guard above already ran.
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                // A commit ends the composition: an input method may deliver it before its
+                // `preedit_end`, and the field would otherwise paint a stale preview beside the
+                // characters it just committed.
+                self.preedit.clear();
                 self.append_committed_text(text);
+            }
+            // The uncommitted composition is painted at the caret and never reaches the value, so
+            // the suggestion filter does not run on half-built text (WC6-03).
+            Event::ImePreedit { text, .. } => {
+                if self.preedit != *text {
+                    self.preedit = text.clone();
+                    self.base.request_redraw();
+                }
             }
             _ => {
                 self.base.handle_event(event);
@@ -1692,6 +1741,40 @@ mod tests {
         let svg = render_to_svg(&mut edit);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// WC6-03: an uncommitted composition is previewed without entering the value.
+    ///
+    /// The composition must not reach `text`, because that would run the suggestion filter and
+    /// `text_changed` against characters the user has not confirmed.
+    #[test]
+    fn an_ime_composition_is_previewed_without_changing_the_value() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_focused(true);
+        edit.add_suggestion("にほん".to_string());
+
+        edit.handle_event(&Event::ImePreedit { text: "に".to_string(), cursor: 3 });
+        assert_eq!(edit.preedit, "に");
+        assert_eq!(edit.text(), "", "an uncommitted composition is not a value");
+        assert!(!edit.is_showing_dropdown(), "half-built text must not filter the list");
+
+        edit.handle_event(&Event::ImeCommit { text: "に".to_string() });
+        assert!(edit.preedit.is_empty(), "the commit ends the preview");
+        assert_eq!(edit.text(), "に");
+    }
+
+    /// The composition is painted at the caret, and a blur withdraws it.
+    #[test]
+    fn the_ime_composition_is_painted_and_dropped_on_blur() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_focused(true);
+        let without = crate::widget::svg::text_subpath_count(&render_to_svg(&mut edit));
+        edit.handle_event(&Event::ime_preedit("ka", 0));
+        let with = crate::widget::svg::text_subpath_count(&render_to_svg(&mut edit));
+        assert!(with > without, "the composition is drawn at the caret: {without} -> {with}");
+
+        edit.handle_event(&Event::FocusLost);
+        assert!(edit.preedit.is_empty(), "a blurred field owns no composition");
     }
 
     /// The contract describes the control's *state*, not just the size of its list.

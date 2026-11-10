@@ -55,7 +55,25 @@ const EXIT_DRIFT: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 
 fn main() -> ExitCode {
-    let options = match Options::parse(std::env::args().skip(1)) {
+    // `std::env::args()` panics on a non-Unicode argument, which made a path with an unusual byte
+    // a panic in a tool whose contract is a usage error and exit 2 (DM6-04). `args_os()` hands the
+    // raw value over so the report can name it instead.
+    let mut decoded = Vec::new();
+    for (index, arg) in std::env::args_os().enumerate().skip(1) {
+        match arg.into_string() {
+            Ok(text) => decoded.push(text),
+            Err(raw) => {
+                eprintln!(
+                    "designer_generate: argument {index} is not valid UTF-8: {}",
+                    raw.to_string_lossy()
+                );
+                eprintln!();
+                eprintln!("{USAGE}");
+                return ExitCode::from(EXIT_USAGE);
+            }
+        }
+    }
+    let options = match Options::parse(decoded.into_iter()) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("designer_generate: {error}");

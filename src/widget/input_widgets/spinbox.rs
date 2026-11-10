@@ -1797,6 +1797,7 @@ impl WidgetProperties for SpinBox {
                 None => Ok(CapabilityValue::Null),
             },
             "wrapping" => Ok(CapabilityValue::Bool(self.wrapping())),
+            "thousands_grouping" => Ok(CapabilityValue::Bool(self.thousands_grouping())),
             "keyboard_tracking" => Ok(CapabilityValue::Bool(self.keyboard_tracking())),
             "direction" => {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
@@ -1903,6 +1904,10 @@ impl WidgetProperties for SpinBox {
                 self.set_wrapping(expect_bool(value)?);
                 Ok(())
             }
+            "thousands_grouping" => {
+                self.set_thousands_grouping(expect_bool(value)?);
+                Ok(())
+            }
             "direction" => {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
@@ -1930,6 +1935,7 @@ impl WidgetProperties for SpinBox {
             "suffix",
             "special_value_text",
             "wrapping",
+            "thousands_grouping",
             "keyboard_tracking",
             "direction",
             "alignment",
@@ -3349,6 +3355,18 @@ mod tests {
         assert_eq!(spin.display_text(), "1,234,567.50");
         spin.set_value_f64(-1_234.0);
         assert_eq!(spin.display_text(), "-1,234.00");
+    }
+
+    /// WC6-07: grouping changes the drawn value as well as `display_text`, so it is part of the
+    /// property contract rather than only of the widget's own API.
+    #[test]
+    fn thousands_grouping_is_published_and_writable() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        assert_eq!(spin.get("thousands_grouping"), Ok(CapabilityValue::Bool(false)));
+        spin.set("thousands_grouping", CapabilityValue::Bool(true)).expect("writable");
+        assert!(spin.thousands_grouping());
+        assert_eq!(spin.get("thousands_grouping"), Ok(CapabilityValue::Bool(true)));
+        assert!(spin.property_names().contains(&"thousands_grouping"));
     }
 
     #[test]

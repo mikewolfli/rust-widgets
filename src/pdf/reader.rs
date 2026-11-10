@@ -112,6 +112,13 @@ fn parse_permission_value(text: &str) -> u32 {
     0
 }
 
+/// The smallest number of file bytes one page can be described by.
+///
+/// A guard rather than a format rule: a classic page object (`N 0 obj<</Type/Page>>endobj`) needs
+/// well over this, so it never truncates a document whose pages the parser could actually read. It
+/// exists to bound the allocation a declared `/Count` may ask for (PL6-02).
+const MIN_BYTES_PER_PAGE: usize = 16;
+
 /// PDF reader
 pub struct PdfReader {
     /// Backend profile name used by reader diagnostics.
@@ -147,6 +154,22 @@ impl PdfReader {
             }
         }
         let parsed_pages = parse_pdf_pages(&text);
+        // `/Count N` and the legacy `pages:` line are untrusted input, and the branch below used to
+        // allocate `N` page objects verbatim — a document declaring `/Count 1000000000` that carries
+        // no classic page objects (an xref-stream file, or an outline dictionary whose `/Count` was
+        // read as a page count) asked for a billion `Box` allocations before drawing anything
+        // (PL6-02). The file's own size is the honest ceiling: a page object cannot be smaller than
+        // a handful of bytes, so a count beyond what the bytes could describe is truncated with an
+        // explicit warning rather than trusted.
+        let page_limit = (text.len() / MIN_BYTES_PER_PAGE).max(1);
+        if page_count > page_limit {
+            log::warn!(
+                "[pdf] declared {page_count} page(s) but {} byte(s) can describe at most \
+                 {page_limit}; truncating",
+                text.len()
+            );
+            page_count = page_limit;
+        }
         let mut doc = PdfDocumentImpl {
             pages: Vec::new(),
             metadata: PdfMetadata::default(),

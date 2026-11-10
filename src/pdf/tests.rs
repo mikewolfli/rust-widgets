@@ -116,6 +116,23 @@ fn reader_keeps_pages_in_object_order() {
 }
 
 #[test]
+fn reader_bounds_a_declared_page_count_by_the_file_size() {
+    // An outline dictionary's `/Count` and a cross-reference-stream document both land on the
+    // "no classic page objects" branch, which allocates one page per declared count. A count of a
+    // billion used to mean a billion allocations from a file of a few dozen bytes (PL6-02).
+    let bomb = "%PDF-1.5\n1 0 obj\n<</Type /Outlines /Count 1000000000>>\nendobj\n%%EOF\n";
+    let reader = PdfReader::new();
+    let doc = reader.load_from_bytes(bomb.as_bytes()).expect("load bytes");
+    let pages = doc.page_count();
+    assert!(pages >= 1, "a document still reports at least one page");
+    assert!(
+        pages as usize <= bomb.len() / 16,
+        "the count must be bounded by what the bytes can describe, got {pages} for {} bytes",
+        bomb.len()
+    );
+}
+
+#[test]
 fn reader_roundtrip_preserves_page_stream_and_media_box() {
     let writer = PdfWriter::new();
     let mut doc = writer.create_document(Size { width: 612, height: 792 });

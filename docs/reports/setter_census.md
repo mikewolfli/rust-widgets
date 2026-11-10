@@ -10,7 +10,7 @@ unclassified remainder, with the suggested exit from BLUE30 §1.2.
 - Controls scanned: **242**
 - Unclassified setters: **0**
 - Unresolved constructor/capability rows: **0**
-- Ledger entries: **769** (B 680, C 82, D 7)
+- Ledger entries: **766** (B 677, C 82, D 7)
 
 | control | struct | setter | exit | why |
 |---|---|---|---|---|

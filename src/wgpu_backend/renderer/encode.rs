@@ -6,7 +6,7 @@
 use super::super::commands::WgpuDrawCommand;
 use super::super::raster::{
     bbox_for_circle, blend_mode_from_id, combine, effective_clip, gradient_ramp, path_bounds,
-    path_fan_vertices, GradientAxis,
+    path_fan_vertices_into, GradientAxis,
 };
 use super::super::types::PixelRect;
 use super::dispatch::{
@@ -1417,8 +1417,18 @@ impl WgpuRenderer {
                             ));
                             run_start = pack.instances.len() / INSTANCE_BYTES;
                         }
-                        let draw =
-                            self.upload_image_draw(*rect, rgba8, *image_width, *image_height);
+                        // Images ride the same content-keyed upload as the scaled arm (RD2-01): the
+                        // recorded command hands the pixels over as a shared `Arc`, and the
+                        // nearest pipeline ignores the sample step in `source.zw`, so the draw is
+                        // byte-identical while a steady frame uploads the texture only once.
+                        let draw = self.upload_image_draw_with_sample(
+                            *rect,
+                            rgba8,
+                            *image_width,
+                            *image_height,
+                            (1.0, 1.0),
+                            false,
+                        );
                         image_draws.push(draw);
                         pack.plan.push(DrawStep::Scissor(scissor));
                         pack.plan.push(DrawStep::Image(image_draws.len() - 1));
@@ -1530,7 +1540,8 @@ impl WgpuRenderer {
                         else {
                             continue;
                         };
-                        let fan = path_fan_vertices(points, contours);
+                        let fan = &mut pack.path_fan;
+                        path_fan_vertices_into(points, contours, fan);
                         if fan.is_empty() {
                             continue;
                         }
@@ -1542,7 +1553,7 @@ impl WgpuRenderer {
                             run_start = pack.instances.len() / INSTANCE_BYTES;
                         }
                         let first_vertex = pack.path_vertices.len() as u32 / 8;
-                        for (x, y) in &fan {
+                        for &(x, y) in fan.iter() {
                             pack.path_vertices.extend_from_slice(&x.to_le_bytes());
                             pack.path_vertices.extend_from_slice(&y.to_le_bytes());
                         }
@@ -1570,7 +1581,8 @@ impl WgpuRenderer {
                         // A filled `DrawPath` is one implicitly closed contour and uses the
                         // even-odd rule, which is what the command documents.
                         let contours = [(0usize, points.len())];
-                        let fan = path_fan_vertices(points, &contours);
+                        let fan = &mut pack.path_fan;
+                        path_fan_vertices_into(points, &contours, fan);
                         if fan.is_empty() {
                             continue;
                         }
@@ -1582,7 +1594,7 @@ impl WgpuRenderer {
                             run_start = pack.instances.len() / INSTANCE_BYTES;
                         }
                         let first_vertex = pack.path_vertices.len() as u32 / 8;
-                        for (x, y) in &fan {
+                        for &(x, y) in fan.iter() {
                             pack.path_vertices.extend_from_slice(&x.to_le_bytes());
                             pack.path_vertices.extend_from_slice(&y.to_le_bytes());
                         }

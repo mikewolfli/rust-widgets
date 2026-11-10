@@ -144,25 +144,53 @@ fn parse_manifest(text: &str, path: &Path) -> Result<Manifest, String> {
         }
     }
 
+    // The two declared dimensions are the CLI's own input, so a value it cannot honour is an
+    // error here rather than a silent fall back to "no size declared" (DM6-03).
+    let width = dimension(object, "width", path)?;
+    let height = dimension(object, "height", path)?;
+
     Ok(Manifest {
         version: object.get("version").and_then(|value| value.as_u64()),
         document: object.get("document").and_then(|value| value.as_str()).map(String::from),
         stylesheets,
         targets,
-        width: object
-            .get("width")
-            .and_then(|value| value.as_u64())
-            .and_then(|value| u32::try_from(value).ok()),
-        height: object
-            .get("height")
-            .and_then(|value| value.as_u64())
-            .and_then(|value| u32::try_from(value).ok()),
+        width,
+        height,
         function_name: object
             .get("function_name")
             .and_then(|value| value.as_str())
             .map(String::from),
         output_dir: object.get("output_dir").and_then(|value| value.as_str()).map(String::from),
         strict: object.get("strict").and_then(|value| value.as_bool()),
+    })
+}
+
+/// Reads one optional pixel dimension from the manifest, reporting a value that is not a `u32`.
+///
+/// An absent or `null` field means "not declared". A present field must be a non-negative integer
+/// that fits a `u32`; the earlier `as_u64().and_then(u32::try_from).ok()` collapsed all three cases
+/// into `None`, so `"width": 5000000000` silently became the documented default size — the same
+/// kind of quiet loss the `version` check in `load_directory` refuses for its own field.
+fn dimension(
+    object: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    path: &Path,
+) -> Result<Option<u32>, String> {
+    let Some(value) = object.get(name) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(number) = value.as_u64() else {
+        return Err(format!("{}: `{name}` must be a non-negative integer", path.display()));
+    };
+    u32::try_from(number).map(Some).map_err(|_| {
+        format!(
+            "{}: `{name}` is {number}, above the supported maximum {}",
+            path.display(),
+            u32::MAX
+        )
     })
 }
 

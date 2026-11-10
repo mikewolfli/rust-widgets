@@ -77,7 +77,7 @@ Several controls also expose a string spelling of an enum through a property who
 | `menu_toolbar` | `src/widget/menu_toolbar/` | 10 | Menus, toolbars, status bars and command items |
 | `dialog` | `src/widget/dialog/` | 17 | Modal decisions and transient panels |
 | `special` | `src/widget/special_widgets/` | 39 | Whole application surfaces and their companions |
-| `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 | Structured-text editors and their navigation chrome |
+| `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor/` | 5 | Structured-text editors and their navigation chrome |
 | `finance` | `src/widget/chart_widgets/finance/` | 6 | Market data: candles, depth, ladder and indicators |
 | `advanced` | `src/widget/advanced_widgets/` | 10 | Date/time, dial, tabs, ribbon, pie menu and shortcuts |
 | `misc` | `src/widget/misc_widgets/` | 9 | Utility and mobile controls |
@@ -2774,7 +2774,7 @@ working. See [Getting Started § Axis 4](getting-started.md#axis-4-editor-contro
 
 | Family | Source directory | Controls |
 |---|---|---|
-| `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 |
+| `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor/` | 5 |
 
 ### RichEdit (`code_editor`)
 

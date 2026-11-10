@@ -566,6 +566,12 @@ pub(crate) struct PackScratch {
     pub(crate) circle_uniforms: Vec<u8>,
     /// Path fan vertices, two `f32` per point, appended after the instances and circle quads.
     pub(crate) path_vertices: Vec<u8>,
+    /// The triangle fan of the path command being encoded.
+    ///
+    /// The encoder used to build a fresh `Vec<(f32, f32)>` per path command and drop it once the
+    /// vertices reached `path_vertices`; this keeps that scratch across commands and frames, so a
+    /// steady frame encodes a path without allocating (RD6-02).
+    pub(crate) path_fan: Vec<(f32, f32)>,
     /// The instanced records of the shadow bodies, one `INSTANCE_BYTES` record per blurred shadow,
     /// appended after the path vertices. They are painted into offscreen layers, never into the
     /// frame, so they are kept out of the main instance run.

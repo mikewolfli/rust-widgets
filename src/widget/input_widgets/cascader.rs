@@ -259,6 +259,10 @@ pub struct Cascader {
     filterable: bool,
     /// The filter text, when filtering is on.
     filter: String,
+    /// The uncommitted IME composition of the filter, drawn in the field (WC6-03).
+    ///
+    /// Held apart from `filter` so the row projection does not run on half-built text.
+    preedit: String,
     /// Emitted when the committed selection changes, with the selected path.
     ///
     /// Its payload and its emission points are unchanged by multi-select mode: a toggle
@@ -336,6 +340,7 @@ impl Cascader {
             separator: "/".to_string(),
             filterable: false,
             filter: String::new(),
+            preedit: String::new(),
             selection_changed: Signal1::new(),
             selection_set_changed: Signal1::new(),
             load_requested: Signal1::new(),
@@ -1481,16 +1486,28 @@ impl Cascader {
         }
 
         let text = self.cached_display_text();
-        let is_empty = text.is_empty();
+        // While a filterable list is open the field shows the query being typed. That is the text
+        // the user is editing, and it is the anchor an inline IME composition needs (WC6-03);
+        // with no query — and no composition — the field shows the selection exactly as before.
+        let filtering = self.expanded
+            && self.filterable
+            && (!self.filter.is_empty() || !self.preedit.is_empty());
+        let placeholder_shown = !filtering && text.is_empty();
         // The hint is the host's string, which defaults to the `"Select…"` the field used to
         // hardcode (I-11).
-        let display: &str = if is_empty { self.placeholder.as_str() } else { text.as_str() };
+        let display: &str = if filtering {
+            self.filter.as_str()
+        } else if placeholder_shown {
+            self.placeholder.as_str()
+        } else {
+            text.as_str()
+        };
         // A placeholder is dimmer than a real value, so an empty field cannot be
         // mistaken for a field whose value happens to be that word. It is the *resolved
         // ink* dimmed toward the field, not a fixed grey: the literal `150,154,162` did not
         // move with the appearance at all, so it measured 2.48:1 on the light field and sat
         // at the wrong end of the ramp on the dark one.
-        let color = if is_empty {
+        let color = if placeholder_shown {
             // A placeholder reads as a hint rather than a value: the resolved ink dimmed
             // toward the field, but still above the 4.5:1 floor, since a hint the user cannot
             // read is not a hint. (The literal it replaced was a fixed grey that did not move
@@ -1506,18 +1523,47 @@ impl Cascader {
         let font = crate::widget::metrics::role_font(self.style(), 12.0);
         let text_h = context.measure_text(display, &font).height as i32;
         let label_width = ((rect.width as i32) - 8 - 22).max(0) as u32;
-        context.draw_text_fitted_ellipsis(
-            Rect::new(
-                rect.x + 8,
-                rect.y + (rect.height as i32 - text_h) / 2,
-                label_width,
-                text_h.max(1) as u32,
-            ),
-            display,
-            &font,
-            color,
-            HorizontalAlignment::Left,
+        let line_rect = Rect::new(
+            rect.x + 8,
+            rect.y + (rect.height as i32 - text_h) / 2,
+            label_width,
+            text_h.max(1) as u32,
         );
+        if !display.is_empty() {
+            context.draw_text_fitted_ellipsis(
+                line_rect,
+                display,
+                &font,
+                color,
+                HorizontalAlignment::Left,
+            );
+        }
+
+        // The uncommitted composition follows the query, underlined, so a CJK composition is
+        // visible before it is confirmed (WC6-03).
+        if !self.preedit.is_empty() {
+            let max_x = rect.x + rect.width as i32 - 1;
+            let query_width = context.measure_text(display, &font).width as i32;
+            let preedit_x = (line_rect.x + query_width).min(max_x);
+            let width = (context.measure_text(&self.preedit, &font).width as i32)
+                .min(max_x - preedit_x)
+                .max(0);
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+            context.draw_text(
+                Point::new(preedit_x, line_rect.y),
+                &self.preedit,
+                &font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+            let underline_y = line_rect.y + text_h + 1;
+            context.draw_line(
+                Point::new(preedit_x, underline_y),
+                Point::new(preedit_x + width, underline_y),
+                text_color,
+            );
+            context.pop_clip();
+        }
 
         // A chevron pointing down when closed and up when open, which is the one
         // piece of state a user needs from the field itself.
@@ -1987,8 +2033,19 @@ impl EventHandler for Cascader {
             Event::TextInput { text } | Event::ImeCommit { text }
                 if self.filterable && self.expanded && text.chars().all(|ch| !ch.is_control()) =>
             {
+                // A commit ends the composition; the input method may deliver it before its
+                // `preedit_end`, and a stale preview would otherwise trail the committed query.
+                self.preedit.clear();
                 self.filter.push_str(text);
                 self.invalidate_level_rows();
+                self.base.request_redraw();
+            }
+            // The uncommitted composition is drawn in the field and never enters the filter
+            // (WC6-03), so the rows are not projected on half-built text.
+            Event::ImePreedit { text, .. }
+                if self.filterable && self.expanded && self.preedit != *text =>
+            {
+                self.preedit = text.clone();
                 self.base.request_redraw();
             }
             _ => {}
@@ -2458,6 +2515,37 @@ mod tests {
 
         c.filter = "2".to_string();
         assert_eq!(c.filtered_indices(0), vec![1], "only Province 2 matches");
+    }
+
+    /// WC6-03: an uncommitted composition is previewed without entering the filter.
+    ///
+    /// The projection is what makes the separation matter: half-built text must not narrow the
+    /// rows, and the commit must then take the same branch a printable `TextInput` does.
+    #[test]
+    fn an_ime_composition_is_previewed_without_filtering() {
+        let mut c = cascader();
+        c.set_filterable(true);
+        c.expand();
+
+        c.handle_event(&Event::ime_preedit("2", 0));
+        assert_eq!(c.preedit, "2");
+        assert_eq!(c.filter(), "", "an uncommitted composition is not a filter");
+        assert_eq!(c.filtered_indices(0), vec![0, 1], "the rows are not projected yet");
+
+        c.handle_event(&Event::ime_commit("2"));
+        assert!(c.preedit.is_empty(), "the commit ends the preview");
+        assert_eq!(c.filter(), "2");
+        assert_eq!(c.filtered_indices(0), vec![1], "the committed query filters");
+    }
+
+    /// A composition only belongs to an open, filterable list — that is the only state in which
+    /// the control consumes typed text at all.
+    #[test]
+    fn a_composition_is_ignored_while_the_list_is_closed() {
+        let mut c = cascader();
+        c.set_filterable(true);
+        c.handle_event(&Event::ime_preedit("2", 0));
+        assert!(c.preedit.is_empty());
     }
 
     #[test]

@@ -77,7 +77,7 @@ factory
 | `menu_toolbar` | `src/widget/menu_toolbar/` | 10 | 菜单、工具栏、状态栏与命令项 |
 | `dialog` | `src/widget/dialog/` | 17 | 模态决策与临时面板 |
 | `special` | `src/widget/special_widgets/` | 39 | 完整应用界面及其配套控件 |
-| `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 | 结构化文本编辑器及其导航外壳 |
+| `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor/` | 5 | 结构化文本编辑器及其导航外壳 |
 | `finance` | `src/widget/chart_widgets/finance/` | 6 | 行情：蜡烛、深度、阶梯与指标 |
 | `advanced` | `src/widget/advanced_widgets/` | 10 | 日期时间、旋钮、标签、功能区、饼菜单与快捷键 |
 | `misc` | `src/widget/misc_widgets/` | 9 | 工具与移动控件 |
@@ -2773,7 +2773,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 | 控件族 | 源码目录 | 控件数 |
 |---|---|---|
-| `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor.rs` | 5 |
+| `code_editor` | `src/widget/special_widgets/code_editor/` and `src/widget/special_widgets/markdown_editor/` | 5 |
 
 ### RichEdit (`code_editor`)
 

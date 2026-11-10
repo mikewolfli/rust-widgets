@@ -30,6 +30,7 @@ pub(crate) fn button_capability() -> WidgetCapability {
             "set_auto_exclusive",
             "set_default",
             "set_drag_enabled",
+            "set_icon_position",
             "set_icon_size",
             "set_icon_tint",
             "set_shortcut",
@@ -86,6 +87,7 @@ pub(crate) fn check_box_capability() -> WidgetCapability {
             "set_auto_repeat_delay",
             "set_auto_repeat_interval",
             "set_text",
+            "set_word_wrap",
         ],
     }
 }
@@ -105,6 +107,7 @@ pub(crate) fn radio_button_capability() -> WidgetCapability {
             "set_auto_repeat_delay",
             "set_auto_repeat_interval",
             "set_text",
+            "set_word_wrap",
         ],
     }
 }

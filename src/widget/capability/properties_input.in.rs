@@ -158,6 +158,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("value_text", PropertyValueKind::String, true, false),
             PropertySchema::new("special_value_text", PropertyValueKind::String, true, true),
             PropertySchema::new("wrapping", PropertyValueKind::Bool, true, true),
+            // WC6-07: grouping changes the drawn value as well as `display_text`, so a host has to
+            // be able to read it back.
+            PropertySchema::new("thousands_grouping", PropertyValueKind::Bool, true, true),
             // Whether arrow/page keys move the value immediately or wait for the edit to commit.
             PropertySchema::new("keyboard_tracking", PropertyValueKind::Bool, true, true),
             // The direction the field runs in. It moves the step column to the leading edge and
@@ -588,6 +591,11 @@ macro_rules! impl_properties_input {
             // the characters are centred vertically in the field band by the field's own layout, so a
             // `top`/`bottom` write would be one the control could never honour.
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
+            // WC6-06: the two names every other text control publishes. Read-only is the state the
+            // painter and every edit path consult; the caret position is the field's own display
+            // position, which `set_cursor_pos` already accepts.
+            PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

@@ -659,12 +659,14 @@ impl ListBox {
                 self.selected_indices.clear();
                 self.selected_indices.push(index);
                 self.current_row = Some(index);
+                self.base.request_redraw();
                 self.item_selected.emit(index);
                 self.selection_changed.emit();
             }
             SelectionMode::Multi => {
                 if self.add_to_selection(index) {
                     self.current_row = Some(index);
+                    self.base.request_redraw();
                     self.item_selected.emit(index);
                     self.selection_changed.emit();
                 }
@@ -712,6 +714,7 @@ impl ListBox {
             self.selected_indices.clear();
             self.selected_indices.extend(low..=high);
             self.current_row = Some(index);
+            self.base.request_redraw();
             self.item_selected.emit(index);
             self.selection_changed.emit();
             return;
@@ -728,6 +731,7 @@ impl ListBox {
             }
             self.current_row = Some(index);
             self.anchor = Some(index);
+            self.base.request_redraw();
             self.selection_changed.emit();
             return;
         }
@@ -745,6 +749,7 @@ impl ListBox {
             if self.current_row == Some(index) {
                 self.current_row = None;
             }
+            self.base.request_redraw();
             self.selection_changed.emit();
         }
     }
@@ -754,6 +759,7 @@ impl ListBox {
             self.selected_indices.clear();
             self.current_row = None;
             self.anchor = None;
+            self.base.request_redraw();
             self.selection_changed.emit();
         }
     }
@@ -771,6 +777,7 @@ impl ListBox {
         if let Some(first) = self.selected_indices.first().copied() {
             self.current_row = Some(first);
         }
+        self.base.request_redraw();
         self.selection_changed.emit();
     }
     /// Returns current row.

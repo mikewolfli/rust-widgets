@@ -272,6 +272,10 @@ pub struct EmojiPicker {
     search: String,
     /// The search text lowercased once, so a projection does not lowercase per glyph.
     search_lower: String,
+    /// The uncommitted IME composition drawn in the search box (WC6-03).
+    ///
+    /// Held apart from `search` so the glyph projection does not run on half-built text.
+    preedit: String,
     /// Recently chosen glyph ids, most recent first.
     recent: Vec<String>,
     /// How many recent ids the control remembers.
@@ -353,6 +357,7 @@ impl EmojiPicker {
             active_tab: 0,
             search: String::new(),
             search_lower: String::new(),
+            preedit: String::new(),
             recent: Vec::new(),
             recent_capacity: MAX_RECENT,
             glyph_index: HashMap::new(),
@@ -1227,6 +1232,33 @@ impl EmojiPicker {
             color,
             HorizontalAlignment::Left,
         );
+
+        // The uncommitted IME composition follows the query in the search box, underlined, so a
+        // CJK composition is visible before it is confirmed (WC6-03).
+        if !self.preedit.is_empty() {
+            let line_y = rect.y + (rect.height as i32 - text_h as i32) / 2;
+            let query_width = context.measure_text(&self.search, font).width as i32;
+            let max_x = rect.x + rect.width as i32 - 1;
+            let preedit_x = (rect.x + 28 + query_width).min(max_x);
+            let width = (context.measure_text(&self.preedit, font).width as i32)
+                .min(max_x - preedit_x)
+                .max(0);
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+            context.draw_text(
+                Point::new(preedit_x, line_y),
+                &self.preedit,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+            let underline_y = line_y + text_h as i32 + 1;
+            context.draw_line(
+                Point::new(preedit_x, underline_y),
+                Point::new(preedit_x + width, underline_y),
+                ink,
+            );
+            context.pop_clip();
+        }
     }
 
     /// Draws the category tab strip.
@@ -1472,10 +1504,25 @@ impl EventHandler for EmojiPicker {
                     }
                 }
             }
-            Event::TextInput { text } if text.chars().all(|ch| !ch.is_control()) => {
+            // Committed text enters the query. `ImeCommit` is the same user action as a
+            // printable `TextInput`; accepting only the latter dropped every composed run.
+            Event::TextInput { text } | Event::ImeCommit { text }
+                if text.chars().all(|ch| !ch.is_control()) =>
+            {
+                // A commit ends the composition; the input method may deliver it before its
+                // `preedit_end`, and a stale preview would otherwise sit beside the query.
+                self.preedit.clear();
                 let mut search = self.search.clone();
                 search.push_str(text);
                 self.set_search(&search);
+            }
+            // The uncommitted composition is shown in the search box and never entered into it
+            // (WC6-03).
+            Event::ImePreedit { text, .. } => {
+                if self.preedit != *text {
+                    self.preedit = text.clone();
+                    self.base.request_redraw();
+                }
             }
             // A pointer over a cell names that glyph; a pointer off the grid clears the
             // caption. The signal fires only on a change, so a sweep across one cell does
@@ -1951,6 +1998,30 @@ mod tests {
         let mut p = picker();
         p.handle_event(&Event::TextInput { text: "\u{7}".to_string() });
         assert_eq!(p.search(), "", "a control character must not enter the query");
+    }
+
+    /// WC6-03: an uncommitted composition is drawn in the search box without entering it.
+    ///
+    /// The projection is the reason this matters: half-built text must not narrow the grid, and
+    /// the commit must then take the same path a printable `TextInput` does.
+    #[test]
+    fn an_ime_composition_is_previewed_without_changing_the_search() {
+        let mut p = picker();
+        p.handle_event(&Event::ime_preedit("ch", 0));
+        assert_eq!(p.preedit, "ch");
+        assert_eq!(p.search(), "", "an uncommitted composition is not a query");
+        assert_eq!(p.visible_glyphs().len(), 2, "the grid is not filtered by the preview");
+
+        let without = crate::widget::svg::text_subpath_count(&crate::widget::svg::render_to_svg(
+            &mut picker(),
+        ));
+        let with =
+            crate::widget::svg::text_subpath_count(&crate::widget::svg::render_to_svg(&mut p));
+        assert!(with > without, "the composition is drawn in the search box: {without} -> {with}");
+
+        p.handle_event(&Event::ime_commit("check"));
+        assert!(p.preedit.is_empty(), "the commit ends the preview");
+        assert_eq!(p.search(), "check");
     }
 
     #[test]

@@ -951,7 +951,8 @@ where
     // dispatch. They are called by the macos, mobile, and stub platform backends.
 
     /// Push menu trigger event.
-    /// Reserved for menu system integration (not yet wired to platform backends).
+    ///
+    /// The macos, mobile and stub backends all call this; see the section note above.
     pub fn push_menu_event(&self, item_id: ObjectId) {
         lock(&self.menu_events).push_back(item_id);
     }
@@ -964,7 +965,8 @@ where
         lock(&self.menu_events).pop_front()
     }
     /// Push typed widget trigger event.
-    /// Reserved for event system integration (not yet wired to platform backends).
+    ///
+    /// The macos, mobile and stub backends all call this; see the section note above.
     pub fn push_widget_event(&self, event: WidgetTriggerEvent) {
         lock(&self.widget_events).push_back(event);
     }

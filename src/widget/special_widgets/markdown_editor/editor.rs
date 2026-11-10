@@ -1101,9 +1101,25 @@ impl MarkdownEditor {
                 && self.preview_rows_geometry == rect;
             let visible = layout_fresh
                 && self.preview_rows.iter().any(|(painted, top, height)| {
-                    *painted == line
-                        && *top >= top_of_viewport
-                        && top.saturating_add(*height as i32) <= bottom
+                    let entry_bottom = top.saturating_add(*height as i32);
+                    let fully_visible = *top >= top_of_viewport && entry_bottom <= bottom;
+                    if *painted == line {
+                        return fully_visible;
+                    }
+                    // A rendered block pushes one entry for its **first** row and consumes the rest
+                    // of its fence, so an interior source row can never match `painted` exactly.
+                    // Without this the fallback below forced that row to the top on every keystroke
+                    // or arrow move inside the block (ED6-01). The block covers the line when the
+                    // line lies inside the fence it was pushed for; the entry is then visible when
+                    // its painted box intersects the viewport (a block taller than the viewport is
+                    // never *fully* visible, and must still not re-anchor the view).
+                    self.fenced_blocks.iter().any(|block| {
+                        block.start_line == *painted
+                            && line > block.start_line
+                            && line <= block.end_line
+                            && entry_bottom > top_of_viewport
+                            && *top < bottom
+                    })
                 });
             if !visible {
                 self.first_visible_line = line;

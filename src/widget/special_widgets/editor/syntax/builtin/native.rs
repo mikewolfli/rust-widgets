@@ -115,12 +115,9 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                     state = LineState::Clean;
                 }
                 LineState::RawString { hashes } => {
-                    // A Rust raw string closes on `"` followed by `hashes` `#`.
-                    let mut close = String::with_capacity(1 + hashes as usize);
-                    close.push('"');
-                    for _ in 0..hashes {
-                        close.push('#');
-                    }
+                    // A Rust raw string closes on `"` followed by `hashes` `#`. The closer is built
+                    // by the same helper the opening path uses, so the two cannot drift (ED6-02).
+                    let close = raw_string_closer(hashes);
                     let end = match line.find(&close) {
                         Some(offset) => offset + close.len(),
                         None => {

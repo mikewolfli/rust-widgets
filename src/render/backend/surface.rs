@@ -730,6 +730,18 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static PATH_POINT_CACHE: RefCell<Vec<PathPointCacheEntry>> =
         const { RefCell::new(Vec::new()) };
+    /// Images whose owning copy was recorded into a damage bucket recently.
+    ///
+    /// A bucketed frame records [`RenderCommand::DrawImage`]/[`RenderCommand::DrawImageScaled`],
+    /// and those commands carry the pixels by ownership — so the borrowed slice a widget draws
+    /// from was copied in full on every frame. The copy is only needed once: an image's decoded
+    /// pixels are the same allocation, with the same contents, on the next frame too. This keeps
+    /// the `Arc` that was built so later frames share it, which is also what lets the GPU backend
+    /// find the texture it already uploaded (RD2-01). Bounded by
+    /// [`RECORDED_IMAGE_CACHE_DEPTH`].
+    #[allow(clippy::missing_const_for_thread_local)]
+    static RECORDED_IMAGE_CACHE: RefCell<Vec<RecordedImageCacheEntry>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// How many elided labels the process keeps at once.
@@ -746,6 +758,60 @@ const PATH_POINT_CACHE_DEPTH: usize = 16;
 
 /// One cached translated path: translation, original vertices, closed flag and shared slice.
 type PathPointCacheEntry = (i32, i32, Vec<Point>, bool, Arc<[Point]>);
+
+/// How many recorded images the process keeps at once.
+///
+/// The same bounded-FIFO shape — and the same size — as the crate's other content caches
+/// (`GRADIENT_LUT_CACHE_LIMIT`, `COLOR_GLYPH_CACHE_LIMIT`): a screen shows a small set of images,
+/// and a host that streams frames allocates one entry per frame while the oldest is dropped.
+const RECORDED_IMAGE_CACHE_DEPTH: usize = 32;
+
+/// One cached recorded image: the borrowed buffer's identity, its grid and the shared copy.
+struct RecordedImageCacheEntry {
+    /// Address of the caller's slice when it was recorded.
+    ptr: usize,
+    /// Its length in bytes.
+    len: usize,
+    /// The source grid the draw declares.
+    width: u32,
+    height: u32,
+    /// The bytes a recorded command owns, shared with every frame that records it again.
+    data: Arc<[u8]>,
+}
+
+/// Returns an `Arc` holding `data`, reusing the copy recorded for the same buffer last frame.
+///
+/// The address, length and grid narrow the lookup to one entry; the bytes are then compared, the
+/// same way [`RenderContext::translated_path_points`] compares its vertices. Comparison is what
+/// makes a reused buffer safe: a caller may rewrite a `Vec` in place — animated frames, a
+/// re-rendered canvas cache — and the allocator may hand a freed address to a different image, so
+/// identity alone would serve stale pixels. Only a miss allocates.
+fn recorded_image(data: &[u8], width: u32, height: u32) -> Arc<[u8]> {
+    let ptr = data.as_ptr() as usize;
+    let len = data.len();
+    RECORDED_IMAGE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let existing = cache.iter().position(|entry| {
+            entry.ptr == ptr && entry.len == len && entry.width == width && entry.height == height
+        });
+        if let Some(index) = existing {
+            if cache[index].data.as_ref() == data {
+                return Arc::clone(&cache[index].data);
+            }
+            // Same buffer identity, different pixels: replace the stale copy in place so the
+            // entry keeps its position and the cache does not grow a duplicate per rewrite.
+            let shared: Arc<[u8]> = Arc::from(data);
+            cache[index].data = Arc::clone(&shared);
+            return shared;
+        }
+        let shared: Arc<[u8]> = Arc::from(data);
+        if cache.len() >= RECORDED_IMAGE_CACHE_DEPTH {
+            cache.remove(0);
+        }
+        cache.push(RecordedImageCacheEntry { ptr, len, width, height, data: Arc::clone(&shared) });
+        shared
+    })
+}
 
 /// One cached fitted label and the complete inputs it was built from.
 struct FittedLabelEntry {
@@ -2922,6 +2988,11 @@ impl<'a> RenderContext<'a> {
     /// slice never needs to outlive the call on any backend. The earlier form always built an
     /// owning `RenderCommand::DrawImage` (a `to_vec()`), which cost one full-image allocation and
     /// copy per draw even when nothing retained it.
+    ///
+    /// A region-bucketed pass must record an owning command, but it records the copy only once:
+    /// [`recorded_image`] reuses the `Arc` it built for the same unchanged buffer on the next
+    /// frame, so a steady frame copies nothing and the GPU backend keeps sampling the texture it
+    /// already uploaded for that allocation.
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
         let x = x + self.offset_x;
         let y = y + self.offset_y;
@@ -2931,7 +3002,7 @@ impl<'a> RenderContext<'a> {
                 y,
                 width,
                 height,
-                data: crate::compat::Arc::from(data),
+                data: recorded_image(data, width, height),
             });
         } else {
             self.backend.draw_image(x, y, width, height, data);
@@ -2974,7 +3045,9 @@ impl<'a> RenderContext<'a> {
         let y = y + self.offset_y;
         if self.bucket_recording() {
             // The command carries the source grid and the pixels, so a bucket replay resamples
-            // once per region at most — and pays one owning copy, not a resampled temporary.
+            // once per region at most — and pays one owning copy, not a resampled temporary. The
+            // copy is shared with the previous frame through `recorded_image`, so the identity is
+            // stable and the GPU backend's content-keyed upload actually hits (RD2-01).
             self.dispatch_owned(RenderCommand::DrawImageScaled {
                 x,
                 y,
@@ -2982,7 +3055,7 @@ impl<'a> RenderContext<'a> {
                 height,
                 source_width,
                 source_height,
-                data: crate::compat::Arc::from(data),
+                data: recorded_image(data, source_width, source_height),
             });
         } else {
             self.backend.draw_image_scaled(x, y, width, height, source_width, source_height, data);
@@ -5134,5 +5207,60 @@ mod tests {
             rgba.as_chunks::<4>().0.iter().filter(|pixel| pixel[0] < 128).count() > 50,
             "the recorded path covers an area, not a single pixel"
         );
+    }
+
+    /// RD6-01: the recording path shares one `Arc` per unchanged buffer, and never serves stale
+    /// pixels for a buffer that was rewritten in place.
+    ///
+    /// This is the observable form of the change: a bucketed frame used to copy the whole image
+    /// into a fresh `Arc` on every draw. The second frame must reuse the allocation (that identity
+    /// is also what lets the GPU backend find the texture it already uploaded), and a buffer whose
+    /// contents changed under the same address must **not** hit.
+    #[test]
+    fn a_recorded_image_is_shared_across_frames_and_rechecked_against_the_buffer() {
+        fn record(pixels: &[u8]) -> crate::compat::Arc<[u8]> {
+            let mut backend = SoftwarePaintBackend::new(Size::new(4, 4), 1.0);
+            backend.begin_frame(Color::WHITE);
+            let recorded = {
+                let mut ctx = RenderContext::new(&mut backend);
+                ctx.begin_region_buckets(&[Rect::new(0, 0, 4, 4)]);
+                ctx.draw_image(0, 0, 2, 2, pixels);
+                let recorded = ctx
+                    .buckets
+                    .as_ref()
+                    .expect("the traversal is recording")
+                    .groups
+                    .iter()
+                    .flat_map(|group| &group.commands)
+                    .find_map(|command| match command {
+                        RenderCommand::DrawImage { data, .. } => {
+                            Some(crate::compat::Arc::clone(data))
+                        }
+                        _ => None,
+                    })
+                    .expect("the image was recorded as an owning command");
+                ctx.end_region_buckets();
+                recorded
+            };
+            backend.end_frame();
+            recorded
+        }
+
+        let mut pixels = [10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 1, 2, 3, 255];
+        let first = record(&pixels);
+        let second = record(&pixels);
+        assert!(
+            crate::compat::Arc::ptr_eq(&first, &second),
+            "an unchanged buffer must reuse the recorded allocation"
+        );
+
+        // A rewritten buffer is a different picture, not a stale hit on the same address.
+        pixels[0] = 200;
+        let third = record(&pixels);
+        assert!(
+            !crate::compat::Arc::ptr_eq(&second, &third),
+            "a rewritten buffer must be recorded again"
+        );
+        assert_eq!(&third[..4], &[200, 20, 30, 255], "the recorded bytes follow the buffer");
     }
 }

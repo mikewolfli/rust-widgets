@@ -8,7 +8,7 @@
 //! contains text. It also supports placeholder text that is shown when the
 //! field is empty and unfocused.
 
-use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -123,6 +123,11 @@ pub struct FloatingLabel {
     /// character twice — or insert a key code that a non-Latin layout never meant as
     /// that character.
     text_input_seen: bool,
+    /// The uncommitted IME composition drawn inline after the value (WC6-03).
+    ///
+    /// Held apart from `text` so `text_changed` never fires for a word the user has not
+    /// confirmed.
+    preedit: String,
 }
 
 /// The resolved field chrome for one theme revision (D2-005).
@@ -164,6 +169,7 @@ impl FloatingLabel {
             text_changed: Signal1::new(),
             chrome_cache: crate::compat::RefCell::new(None),
             text_input_seen: false,
+            preedit: String::new(),
         }
     }
 
@@ -293,6 +299,10 @@ impl FloatingLabel {
             // The float state is *derived* from focus, so the write above is not complete until it
             // is re-derived — `update_label_state` is what turns focus into the animated target.
             self.update_label_state();
+            // A composition belongs to the focused field; a blur withdraws it (WC6-03).
+            if !focused {
+                self.preedit.clear();
+            }
             self.base.request_redraw();
         }
     }
@@ -785,6 +795,34 @@ impl Draw for FloatingLabel {
                 HorizontalAlignment::Left,
             );
         }
+
+        // The uncommitted IME composition follows the value on the input line, underlined, so an
+        // East-Asian user can read the string being built before it is committed (WC6-03).
+        if !self.preedit.is_empty() {
+            let text_color = self.base.disabled_ink_on(ink, bg_color);
+            let value_width =
+                crate::widget::metrics::estimate_text_width(&self.text, &input_font, 1.0) as i32;
+            let max_x = rect.x + rect.width as i32 - 1;
+            let preedit_x = (rect.x + LABEL_PADDING + value_width).min(max_x);
+            let width = (context.measure_text(&self.preedit, &input_font).width as i32)
+                .min(max_x - preedit_x)
+                .max(0);
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+            context.draw_text(
+                Point::new(preedit_x, input_line.y),
+                &self.preedit,
+                &input_font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+            let underline_y = input_line.y + input_line.height as i32 + 1;
+            context.draw_line(
+                Point::new(preedit_x, underline_y),
+                Point::new(preedit_x + width, underline_y),
+                text_color,
+            );
+            context.pop_clip();
+        }
     }
 }
 
@@ -874,8 +912,19 @@ impl EventHandler for FloatingLabel {
             // derivable from a raw key code.
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 self.text_input_seen = true;
+                // A commit ends the composition; the input method may deliver it before its
+                // `preedit_end`, and a stale preview would otherwise sit beside the value.
+                self.preedit.clear();
                 if self.is_focused() {
                     self.append_committed_text(text);
+                }
+            }
+            // The uncommitted composition is painted after the value and never joined to it
+            // (WC6-03).
+            Event::ImePreedit { text, .. } => {
+                if self.is_focused() && self.preedit != *text {
+                    self.preedit = text.clone();
+                    self.base.request_redraw();
                 }
             }
             _ => {
@@ -1100,6 +1149,31 @@ mod tests {
         // The ASCII fallback is gone once a commit has been seen.
         fl.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
         assert_eq!(fl.text(), "日本語");
+    }
+
+    /// WC6-03: an uncommitted composition is previewed without entering the value.
+    #[test]
+    fn an_ime_composition_is_previewed_without_changing_the_value() {
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        fl.set_focused(true);
+        fl.set_text("A".to_string());
+        let changes = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&changes);
+        fl.text_changed.connect(move |text| sink.lock().unwrap().push((*text).clone()));
+
+        fl.handle_event(&Event::ime_preedit("ka", 0));
+        assert_eq!(fl.preedit, "ka");
+        assert_eq!(fl.text(), "A", "an uncommitted composition is not a value");
+        assert!(changes.lock().unwrap().is_empty(), "no change while composing");
+
+        fl.handle_event(&Event::ime_commit("に"));
+        assert!(fl.preedit.is_empty(), "the commit ends the preview");
+        assert_eq!(fl.text(), "Aに");
+
+        // A blur withdraws a composition the field no longer owns.
+        fl.handle_event(&Event::ime_preedit("ka", 0));
+        fl.set_focused(false);
+        assert!(fl.preedit.is_empty());
     }
 
     #[test]

@@ -1169,6 +1169,7 @@ impl RichEdit {
         }
         self.selection = None;
         self.selection_changed.emit(None);
+        self.base.request_redraw();
     }
 
     /// Moves the caret to `target` (a byte offset), honouring the modifier keys held.

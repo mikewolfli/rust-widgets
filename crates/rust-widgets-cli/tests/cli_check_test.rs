@@ -157,6 +157,40 @@ fn writing_then_checking_is_clean() {
     assert_eq!(code(&again), 0, "{}", stderr(&again));
 }
 
+/// DM6-01: `--json` keeps stdout a pure NDJSON stream on the **write** path too.
+///
+/// The writer printed `created …` / `updated …` / `unchanged …` to stdout unconditionally, so a
+/// consumer that parses stdout line by line — exactly what the README promises works — broke on
+/// the success path. The progress lines still have to reach a person, so they go to stderr.
+#[test]
+fn json_mode_keeps_the_write_progress_off_stdout() {
+    let scratch = Scratch::new("ndjson-write");
+    scratch.write("ui.json", PROJECT);
+    let dir = scratch.path().to_str().expect("utf8");
+
+    let first = rwui(&["json2rust", dir, "--json"]);
+    assert_eq!(code(&first), 0, "{}", stderr(&first));
+    for line in stdout(&first).lines() {
+        serde_json::from_str::<serde_json::Value>(line)
+            .unwrap_or_else(|error| panic!("stdout must be NDJSON, got `{line}`: {error}"));
+    }
+    assert!(
+        stderr(&first).contains("created "),
+        "the progress line is still reported, on stderr: {}",
+        stderr(&first)
+    );
+
+    // A second run takes the `unchanged` path, which printed to stdout as well. The diagnostic
+    // stream may still carry real notes there — every line just has to be JSON.
+    let second = rwui(&["json2rust", dir, "--json"]);
+    assert_eq!(code(&second), 0, "{}", stderr(&second));
+    for line in stdout(&second).lines() {
+        serde_json::from_str::<serde_json::Value>(line)
+            .unwrap_or_else(|error| panic!("stdout must be NDJSON, got `{line}`: {error}"));
+    }
+    assert!(stderr(&second).contains("unchanged "), "{}", stderr(&second));
+}
+
 /// `fmt` reorders keys and preserves every value.
 #[test]
 fn fmt_is_stable_and_semantics_preserving() {
@@ -170,10 +204,81 @@ fn fmt_is_stable_and_semantics_preserving() {
     assert!(pretty.contains("\n  \"window\""), "indented: {pretty}");
 }
 
+/// DM6-04: a non-UTF-8 argument is a reported usage failure, not a panic.
+///
+/// `std::env::args()` panics on an argument that is not valid Unicode, so a path with an unusual
+/// byte crashed a tool whose contract is structured diagnostics plus exit code 2.
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_argument_is_reported_instead_of_panicking() {
+    use std::os::unix::ffi::OsStrExt;
+    let output = Command::new(env!("CARGO_BIN_EXE_rwui"))
+        .arg("check")
+        .arg(std::ffi::OsStr::from_bytes(b"bad-\xff.json"))
+        .output()
+        .expect("rwui must run");
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
+    assert!(stderr(&output).contains("RWCLI-012"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("not valid UTF-8"), "{}", stderr(&output));
+}
+
 /// An unknown command is a usage failure (exit 2), not a silent success.
 #[test]
 fn an_unknown_command_is_a_usage_failure() {
     let output = rwui(&["preview", "whatever"]);
     assert_eq!(code(&output), 2);
     assert!(stderr(&output).contains("unknown command"), "{}", stderr(&output));
+}
+
+/// DM6-03: a manifest dimension the CLI cannot honour is reported, not dropped.
+///
+/// `"width": 5000000000` used to parse to `None`, which the generator reads as "no size
+/// declared" — a declaration that vanished without a word, in a tool whose own module note says
+/// manifest errors are reported here rather than in the diagnostic stream.
+#[test]
+fn a_malformed_manifest_dimension_is_a_tool_failure() {
+    let scratch = Scratch::new("manifest-size");
+    scratch.write("rwui.json", "{ \"version\": 1, \"width\": 5000000000, \"height\": 480 }");
+    scratch.write("ui.json", PROJECT);
+    let dir = scratch.path().to_str().expect("utf8");
+
+    let output = rwui(&["check", dir]);
+    assert_eq!(code(&output), 2, "a manifest error is a tool failure: {}", stderr(&output));
+    assert!(stderr(&output).contains("width"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("4294967295"), "{}", stderr(&output));
+}
+
+/// DM6-02: `check` refuses the generate-only flags instead of accepting and dropping them.
+///
+/// They were parsed into the shared options and then thrown away, so `check x.ui --css theme.css`
+/// appeared to make the stylesheet part of the validation while only the manifest's own sheets
+/// were read — the silent divergence the crate's own module note forbids.
+#[test]
+fn check_rejects_the_generate_only_flags() {
+    let scratch = Scratch::new("check-flags");
+    scratch.write("ui.json", PROJECT);
+    scratch.write("theme.css", "Button { background-color: #ff0000; }");
+    let dir = scratch.path().to_str().expect("utf8");
+    let css = scratch.path().join("theme.css");
+    let css = css.to_str().expect("utf8");
+    let out = scratch.path().join("out");
+    let out = out.to_str().expect("utf8");
+
+    for args in [
+        vec!["check", dir, "--css", css],
+        vec!["check", dir, "-o", out],
+        vec!["check", dir, "--check"],
+    ] {
+        let output = rwui(&args);
+        assert_eq!(code(&output), 2, "{args:?} must be a usage failure: {}", stderr(&output));
+        assert!(
+            stderr(&output).contains("unknown argument"),
+            "{args:?} must name the flag: {}",
+            stderr(&output)
+        );
+    }
+
+    // The same flags are still accepted by the command they belong to.
+    let accepted = rwui(&["json2rust", dir, "--css", css, "-o", out]);
+    assert_eq!(code(&accepted), 0, "{}", stderr(&accepted));
 }

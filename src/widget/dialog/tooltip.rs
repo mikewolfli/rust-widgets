@@ -810,6 +810,48 @@ impl Widget for Tooltip {
         &mut self.base
     }
 
+    /// Disabling the tooltip retires everything it has in flight (WC6-08).
+    ///
+    /// `handle_event` returns before every arm while disabled, so the disable gate alone only
+    /// stopped a *new* `MouseEnter` from arming a countdown. Two states outlived it:
+    ///
+    /// * an already armed show countdown kept elapsing on `tick` and faded the bubble in over a
+    ///   disabled anchor;
+    /// * a bubble that was already shown never received the `MouseLeave` that would hide it (the
+    ///   gate swallowed it), so `hovering` stayed set and the fade stayed at its shown end.
+    ///
+    /// Clearing the hover flag and calling [`Tooltip::hide`] — which cancels both countdowns and
+    /// jumps the fade to its hidden end — is the same shape `AppBar::set_enabled` uses for a press
+    /// that is still armed. The default body is repeated because an override cannot call it.
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.base.is_enabled() == enabled {
+            return;
+        }
+        if !enabled {
+            self.hovering = false;
+            self.hide();
+        }
+        self.base.set_enabled(enabled);
+        if !enabled {
+            self.base.set_pressed(false);
+            self.base.set_grabbed(false);
+            self.base.set_hovered(false);
+        }
+        #[cfg(not(alloc_frugal))]
+        if !enabled
+            && crate::widget::runtime::focused_widget()
+                == crate::widget::runtime::registry_id_of(self.base.id())
+        {
+            crate::widget::runtime::clear_focus();
+        }
+        self.set_state_theme_hook();
+        self.base.request_redraw();
+        #[cfg(not(alloc_frugal))]
+        if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+            crate::widget::a11y_submit::submit_state_changed(id);
+        }
+    }
+
     fn size_hint(&self) -> Size {
         crate::core::Size::new(
             crate::widget::metrics::dimensions::TOOLTIP_DEFAULT_WIDTH,
@@ -1322,6 +1364,39 @@ mod tests {
         tooltip.tick(1);
         assert!(tooltip.is_visible());
         assert!(!tooltip.show_pending);
+    }
+
+    /// WC6-08: disabling the tooltip retires a countdown and a bubble that are already in flight.
+    ///
+    /// The disabled gate alone only stopped a *new* entry, so an armed show countdown faded the
+    /// bubble in over a disabled anchor, and a shown bubble never received the `MouseLeave` that
+    /// would hide it — `hovering` stayed set and the fade stayed at its shown end.
+    #[test]
+    fn disabling_retires_an_armed_countdown_and_a_shown_bubble() {
+        // (a) An armed show countdown must not complete after the disable.
+        let mut armed = Tooltip::new("Tooltip", Rect::new(0, 0, 100, 40));
+        armed.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        assert!(armed.show_pending, "the entry armed the countdown");
+        armed.set_enabled(false);
+        assert!(!armed.show_pending, "the countdown is retired with the disable");
+        assert!(!armed.tick(DEFAULT_SHOW_DELAY_MS as u32), "and nothing is left to step");
+        assert!(!armed.is_visible(), "the bubble must not appear on a disabled anchor");
+
+        // (b) A bubble that is already shown must be retired, not stranded.
+        let mut shown = Tooltip::new("Tooltip", Rect::new(0, 0, 100, 40));
+        shown.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        shown.tick(DEFAULT_SHOW_DELAY_MS as u32);
+        assert!(shown.is_visible());
+        shown.set_enabled(false);
+        assert!(!shown.hovering, "the hover flag goes with the disable");
+        assert!(!shown.is_visible(), "the bubble is off screen immediately");
+        assert_eq!(shown.fade_progress(), 0.0, "and the fade is snapped to its hidden end");
+        assert!(!shown.is_animating(), "a retired tooltip owes no frames");
+
+        // Re-enabling does not resurrect any of it.
+        shown.set_enabled(true);
+        assert!(!shown.is_visible());
+        assert!(!shown.hovering);
     }
 
     /// The full lifecycle, with both delays measured in milliseconds and a fade through it.

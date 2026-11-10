@@ -85,6 +85,11 @@ pub struct OtpInput {
     digits_only: bool,
     /// Whether the next keystroke replaces the whole code (I-106).
     select_all_active: bool,
+    /// The uncommitted IME composition, drawn in the box the next character lands in (WC6-03).
+    ///
+    /// Held apart from `value` so an unconfirmed composition cannot fire `value_changed` or
+    /// `completed` for text the user is still building.
+    preedit: String,
 }
 
 impl OtpInput {
@@ -105,6 +110,7 @@ impl OtpInput {
             // The default is the verification-code scenario: letters must not slip in.
             digits_only: true,
             select_all_active: false,
+            preedit: String::new(),
         }
     }
 
@@ -725,6 +731,10 @@ impl EventHandler for OtpInput {
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
+                // A commit ends the composition; the input method may deliver it before its
+                // `preedit_end`, and a stale preview would otherwise sit in the box beside the
+                // character it just committed.
+                self.preedit.clear();
                 for ch in text.chars() {
                     if !ch.is_alphanumeric() {
                         continue;
@@ -733,6 +743,12 @@ impl EventHandler for OtpInput {
                         break;
                     }
                 }
+            }
+            // The uncommitted composition is shown in the focused box and never reaches `value`
+            // (WC6-03). A read-only field accepts no edit path, composition included.
+            Event::ImePreedit { text, .. } if !self.read_only && self.preedit != *text => {
+                self.preedit = text.clone();
+                self.base.request_redraw();
             }
             _ => {}
         }
@@ -933,6 +949,33 @@ impl Draw for OtpInput {
                 // shares it: a cell with a character and a cell without differ by the
                 // glyph, not by the outline, so the two branches collapsed into one.
                 context.draw_rect(slot, hairline);
+            }
+
+            // The uncommitted IME composition is painted in the box the next character will
+            // land in, underlined and clipped to that box, so a multi-character composition
+            // cannot spill into its neighbours (WC6-03). It is drawn before the glyph
+            // branch because an empty cell `continue`s there.
+            if is_focused && !self.preedit.is_empty() {
+                context.push_clip(slot.x, slot.y, slot.width, slot.height);
+                let center_x = slot.x + (slot.width as i32) / 2;
+                let preedit_width = (context.measure_text(&self.preedit, &font).width as i32)
+                    .min(slot.width as i32)
+                    .max(0);
+                context.draw_text(
+                    Point::new(center_x, line.y),
+                    &self.preedit,
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Center,
+                );
+                let underline_y = line.y + line.height as i32 + 1;
+                let left = center_x - preedit_width / 2;
+                context.draw_line(
+                    Point::new(left, underline_y),
+                    Point::new(left + preedit_width, underline_y),
+                    text_color,
+                );
+                context.pop_clip();
             }
 
             // A masked cell draws a **filled dot**, not the `U+2022` bullet: no bundled face
@@ -1496,6 +1539,41 @@ mod tests {
         otp.handle_event(&Event::TextInput { text: "123".to_string() });
         assert_eq!(otp.value(), "123");
         assert_eq!(otp.focused_index(), 3);
+    }
+
+    /// WC6-03: an uncommitted composition is shown without entering the code.
+    ///
+    /// The separation matters most here: `value_changed` and `completed` drive a verification
+    /// flow, so an unfinished word must not look like a submitted digit.
+    #[test]
+    fn an_ime_composition_is_previewed_without_changing_the_code() {
+        let mut otp = otp();
+        let changes = sink(&otp.value_changed);
+
+        otp.handle_event(&Event::ime_preedit("ka", 0));
+        assert_eq!(otp.preedit, "ka");
+        assert_eq!(otp.value(), "", "an uncommitted composition is not a code");
+        assert!(changes.lock().unwrap().is_empty(), "no value changed while composing");
+
+        otp.handle_event(&Event::ime_commit("12"));
+        assert!(otp.preedit.is_empty(), "the commit ends the preview");
+        assert_eq!(otp.value(), "12");
+    }
+
+    /// A read-only control refuses the composition, and the commit is painted rather than only
+    /// stored.
+    #[test]
+    fn a_read_only_otp_refuses_the_composition() {
+        let mut read_only = otp();
+        read_only.set_read_only(true);
+        read_only.handle_event(&Event::ime_preedit("ka", 0));
+        assert!(read_only.preedit.is_empty(), "a read-only field accepts no composition");
+
+        let mut editable = otp();
+        editable.handle_event(&Event::ime_preedit("ka", 0));
+        let plain = crate::widget::svg::render_to_svg(&mut otp());
+        let painted = crate::widget::svg::render_to_svg(&mut editable);
+        assert_ne!(painted, plain, "the composition is drawn in the focused box");
     }
 
     /// Primary+V pastes the clipboard into the boxes.

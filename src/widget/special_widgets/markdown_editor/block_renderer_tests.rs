@@ -159,6 +159,40 @@ fn a_malformed_image_falls_back_instead_of_panicking() {
     assert!(!frame.windows(4).any(|window| window == [255, 0, 255, 255].as_slice()));
 }
 
+/// ED6-01: a caret inside a rendered block must not re-anchor the viewport.
+///
+/// `preview_rows` records one entry for a block's **first** row and consumes the rest of its
+/// fence, so an interior source line can never match the entry exactly. The old visibility test
+/// required that exact match, concluded "not visible", and put the line at the top of the
+/// viewport — which meant every keystroke or arrow move inside a rendered image jumped the scroll
+/// position. The block now covers the lines inside its fence, and is visible when its painted box
+/// intersects the viewport.
+#[test]
+fn a_caret_inside_a_rendered_block_does_not_reanchor_the_viewport() {
+    let mut editor = editor_with_mermaid_block();
+    let (renderer, _reply, _calls) =
+        TestRenderer::with_reply(Reply::Image { height: 24, color: [1, 2, 3, 255] });
+    editor.register_block_renderer("mermaid", Box::new(renderer));
+    draw(&mut editor);
+
+    assert_eq!(editor.first_visible_line, 0, "the document starts at its first line");
+    assert_eq!(editor.fenced_blocks.len(), 1, "the block is registered as one fence");
+    let block = &editor.fenced_blocks[0];
+    assert_eq!((block.start_line, block.end_line), (1, 4));
+
+    // An interior source line of the block: the fence is on screen, so revealing it must not
+    // scroll.
+    editor.reveal_line(2);
+    assert_eq!(
+        editor.first_visible_line, 0,
+        "a line inside a visible block must not be forced to the top"
+    );
+
+    // The last row of the fence behaves the same way.
+    editor.reveal_line(4);
+    assert_eq!(editor.first_visible_line, 0);
+}
+
 #[test]
 fn a_pending_artifact_is_retried_after_the_host_signals_ready() {
     let mut editor = editor_with_mermaid_block();

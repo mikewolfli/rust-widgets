@@ -15,9 +15,40 @@ use rust_widgets::designer::{is_generated, ArtifactPaths, TargetProfile, GENERAT
 use std::path::Path;
 use std::process::ExitCode;
 
+/// The command line, decoded to UTF-8, or the argument that could not be.
+///
+/// `std::env::args()` panics on an argument that is not valid Unicode, so a file name carrying an
+/// unusual byte turned a tool that promises structured diagnostics and exit code 2 into a panic
+/// (DM6-04). `args_os()` hands the raw value over, and this reports the position instead.
+fn utf8_args() -> Result<Vec<String>, (usize, std::ffi::OsString)> {
+    std::env::args_os()
+        .enumerate()
+        .skip(1)
+        .map(|(index, arg)| arg.into_string().map_err(|raw| (index, raw)))
+        .collect()
+}
+
 /// Entry point.
 pub fn run() -> ExitCode {
-    let options = match cli::parse(std::env::args().skip(1)) {
+    let args = match utf8_args() {
+        Ok(args) => args,
+        Err((index, raw)) => {
+            // The existing I/O-class diagnostic and the existing exit code: an argument the tool
+            // cannot decode is an input problem, not a different kind of failure (DM6-04).
+            eprintln!(
+                "{}",
+                Diagnostic::file(
+                    IO_FAILED,
+                    Severity::Error,
+                    "<argv>",
+                    format!("argument {index} is not valid UTF-8: {}", raw.to_string_lossy()),
+                )
+                .to_text()
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let options = match cli::parse(args.into_iter()) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("rwui: {error}\n");
@@ -48,7 +79,7 @@ fn execute(options: &Options) -> (Vec<Diagnostic>, bool) {
     match &options.command {
         Command::Check { input } => run_check(input, options.strict),
         Command::Json2Rust { input, overrides, targets, check } => {
-            run_json2rust(input, overrides, targets, *check, options.strict)
+            run_json2rust(input, overrides, targets, *check, options.strict, options.json)
         }
         Command::Fmt { input, output } => (run_fmt(input, output.as_deref()), false),
         Command::Help => (Vec::new(), false),
@@ -96,6 +127,7 @@ fn run_json2rust(
     cli_targets: &[TargetProfile],
     check: bool,
     strict: bool,
+    json: bool,
 ) -> (Vec<Diagnostic>, bool) {
     let mut diagnostics = Vec::new();
     let bundle = match bundle::load(input, overrides) {
@@ -138,7 +170,7 @@ fn run_json2rust(
                 return (diagnostics, true);
             }
         }
-    } else if let Err(error) = write_all(&outcome.generated, &root) {
+    } else if let Err(error) = write_all(&outcome.generated, &root, json) {
         diagnostics.push(io_diagnostic(&root, error));
         return (diagnostics, true);
     }
@@ -231,7 +263,10 @@ fn function_name(bundle: &Bundle) -> &str {
 /// Mirrors `designer::artifact::write_one`: compare before writing so an unchanged run does not
 /// touch an mtime, and refuse a source without the generated marker so the drift gate can always
 /// recognise what this tool wrote.
-fn write_all(generated: &[Generated], root: &Path) -> Result<(), String> {
+///
+/// The progress line for each artifact is routed through [`progress`], so `--json` keeps stdout a
+/// pure NDJSON stream (DM6-01).
+fn write_all(generated: &[Generated], root: &Path, json: bool) -> Result<(), String> {
     for artifact in generated {
         if !artifact.source.contains(GENERATED_MARKER) {
             return Err(format!(
@@ -242,7 +277,7 @@ fn write_all(generated: &[Generated], root: &Path) -> Result<(), String> {
         let absolute = root.join(ArtifactPaths::path_for(artifact.target));
         if let Ok(existing) = std::fs::read_to_string(&absolute) {
             if existing == artifact.source {
-                println!("unchanged {}", absolute.display());
+                progress(json, format!("unchanged {}", absolute.display()));
                 continue;
             }
             if !is_generated(&existing) {
@@ -259,9 +294,26 @@ fn write_all(generated: &[Generated], root: &Path) -> Result<(), String> {
         let existed = absolute.exists();
         std::fs::write(&absolute, &artifact.source)
             .map_err(|error| format!("could not write {}: {error}", absolute.display()))?;
-        println!("{} {}", if existed { "updated" } else { "created" }, absolute.display());
+        progress(
+            json,
+            format!("{} {}", if existed { "updated" } else { "created" }, absolute.display()),
+        );
     }
     Ok(())
+}
+
+/// Prints one progress line: stdout normally, stderr under `--json`.
+///
+/// The README promises that `--json` writes one diagnostic object per line (NDJSON) to stdout, so
+/// a progress line there breaks every consumer that parses stdout line by line — and it did so on
+/// the *success* path, which is the automation path (DM6-01). The information still has to reach
+/// a person, so it moves to stderr instead of being dropped.
+fn progress(json: bool, line: String) {
+    if json {
+        eprintln!("{line}");
+    } else {
+        println!("{line}");
+    }
 }
 
 fn io_diagnostic(path: &Path, error: impl std::fmt::Display) -> Diagnostic {

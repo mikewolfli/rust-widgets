@@ -393,6 +393,12 @@ impl Widget for WheelProbe {
 
 impl EventHandler for WheelProbe {
     fn handle_event(&mut self, event: &Event) {
+        // The containers this stands in for consult `enabled` before consuming a wheel, so a
+        // disabled probe must not count one either — otherwise the fixture would model a widget
+        // the crate's enabled contract forbids.
+        if !self.base.is_enabled() {
+            return;
+        }
         if matches!(event, Event::Wheel { .. }) {
             self.wheels.fetch_add(1, Ordering::SeqCst);
         }

@@ -1023,11 +1023,12 @@ fn gradient_stop(gradient_data: &[u8], stops: usize, t: f32) -> Rgba8 {
 ///
 /// Contours are `(start, end)` ranges into `points`; a contour with fewer than three points
 /// contributes no triangles.
-pub(crate) fn path_fan_vertices(
+pub(crate) fn path_fan_vertices_into(
     points: &[(i32, i32)],
     contours: &[(usize, usize)],
-) -> Vec<(f32, f32)> {
-    let mut fan = Vec::new();
+    fan: &mut Vec<(f32, f32)>,
+) {
+    fan.clear();
     for &(start, end) in contours {
         let end = end.min(points.len());
         if end.saturating_sub(start) < 3 {
@@ -1041,6 +1042,21 @@ pub(crate) fn path_fan_vertices(
             fan.push((b.0 as f32, b.1 as f32));
         }
     }
+}
+
+/// [`path_fan_vertices_into`] into a fresh `Vec`.
+///
+/// Kept as the reference form, like the other owned/`_into` pairs in this crate: the GPU encoder
+/// writes into its retained scratch (see `PackScratch::path_fan`), so a steady frame does not
+/// allocate per path command, and this owned form exists so a test can assert the two agree byte
+/// for byte.
+#[cfg(test)]
+pub(crate) fn path_fan_vertices(
+    points: &[(i32, i32)],
+    contours: &[(usize, usize)],
+) -> Vec<(f32, f32)> {
+    let mut fan = Vec::new();
+    path_fan_vertices_into(points, contours, &mut fan);
     fan
 }
 
@@ -1908,4 +1924,25 @@ pub(crate) fn blend_cpu_rgba8_with_mode(
     pixels[offset + 1] = out.g;
     pixels[offset + 2] = out.b;
     pixels[offset + 3] = out.a;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RD6-02: the retained-scratch form is byte for byte the owned reference form.
+    ///
+    /// The scratch is reused across commands, so the test also seeds it with stale vertices: a
+    /// `clear` the encoder forgot would show up as extra geometry here.
+    #[test]
+    fn the_into_form_matches_the_owned_fan() {
+        let points = [(0, 0), (10, 0), (10, 10), (0, 10), (2, 2), (4, 2), (4, 4)];
+        let contours = [(0usize, 4usize), (4, 7)];
+        let owned = path_fan_vertices(&points, &contours);
+        assert!(!owned.is_empty(), "two contours with three points each produce triangles");
+
+        let mut scratch = vec![(-1.0f32, -1.0f32); 3];
+        path_fan_vertices_into(&points, &contours, &mut scratch);
+        assert_eq!(scratch, owned, "the scratch form must not keep stale vertices");
+    }
 }
