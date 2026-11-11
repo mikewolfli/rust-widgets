@@ -242,7 +242,7 @@ pub fn chooser_families() -> Vec<String> {
 
 /// Registers the readable font file backing `family`, when the host reported one.
 ///
-/// [`register_face`](crate::render::text::register_face) needs `'static` bytes, so the file is
+/// [`register_face`] needs `'static` bytes, so the file is
 /// read once and leaked: a registered face lives for the rest of the process by contract, and the
 /// registry holds a small fixed number of them. Returns `false` when the family is not in the
 /// snapshot, the backend reported no file (AppKit and GDI report families only), the file cannot
@@ -336,7 +336,7 @@ pub const SYSTEM_CJK_FAMILIES: &[&str] = &[
 /// # Two consequences worth knowing
 ///
 /// * **A registered face is consulted first**, for every character it covers — that is
-///   [`register_face`](crate::render::text::register_face)'s documented precedence. A CJK family
+///   [`register_face`]'s documented precedence. A CJK family
 ///   also carries Latin glyphs, so the UI's Latin text will be drawn (and measured) by this family
 ///   rather than by the compiled Latin face. That is one consistent typography choice, not a bug,
 ///   but it is a visible change and the reason this is an opt-in call rather than an automatic

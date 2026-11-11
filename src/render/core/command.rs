@@ -863,7 +863,7 @@ pub enum RenderCommand {
     /// Stroke a polyline with a repeating dash pattern (G-014).
     ///
     /// This is the stroked form of [`RenderCommand::DrawPath`] with a
-    /// [`DashPattern`]: each open run between vertices is broken into alternating
+    /// `DashPattern`: each open run between vertices is broken into alternating
     /// `mark` and `gap` pixel runs (a closed path also dashes the closing edge).
     /// It is a separate variant rather than an `Option<DashPattern>` field on
     /// `DrawPath` so every existing `DrawPath` construction and destructure stays

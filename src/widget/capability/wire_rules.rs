@@ -270,7 +270,7 @@ pub struct EventBinding {
 ///
 /// A designer's inspector wants to show "this control has N signal wires". The capability table
 /// is the only registry-level description of a control, but it is static metadata: there is no
-/// subscriber count on [`WidgetCapability`], so a capability-level query has no runtime fact to
+/// subscriber count on `WidgetCapability`, so a capability-level query has no runtime fact to
 /// report. Rather than inventing one, this function states the limitation in its return type:
 /// every row carries `wired: false`, documented as "unknown", and a caller that holds a mounted
 /// widget asks the binder instead.
@@ -283,7 +283,7 @@ pub struct EventBinding {
 /// declaration a designer reads before anything is mounted.
 ///
 /// A live **count** per control and event is
-/// [`crate::signal::subscription_counts(widget_id)`] (or
+/// `crate::signal::subscription_counts(widget_id)` (or
 /// [`crate::signal::subscriber_count(widget_id, name)`]). Those read the control's own
 /// `EventSignalRef::slot_count`, which is the runtime fact this static table cannot carry.
 pub fn bindings_of(

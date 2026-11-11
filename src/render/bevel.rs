@@ -163,14 +163,14 @@ pub struct Bevel {
     pub direction: BevelDirection,
     /// How each edge's ends terminate (G-017).
     ///
-    /// The default is [`LineCap::Butt`], which is what every bevel has always
+    /// The default is `LineCap::Butt`, which is what every bevel has always
     /// drawn: the brush stops at the endpoint's own coordinate. Exposed because
     /// a theme that rounds a face's corners should be able to round the bevel's
     /// line ends the same way.
     pub cap: LineCap,
     /// How two edges meeting at a corner connect (G-017).
     ///
-    /// The default is [`LineJoin::Miter`], the historical behaviour: the two
+    /// The default is `LineJoin::Miter`, the historical behaviour: the two
     /// segments' own brushes overlap over the corner pixel, with the trailing
     /// pair's tone winning, exactly as the hand-written call sites drew.
     pub join: LineJoin,

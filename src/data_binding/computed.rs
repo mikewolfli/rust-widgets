@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 ///
 /// # Dependency tracking (BIND-011)
 ///
-/// [`depend_on`](Self::depend_on) subscribes the computed value to a [`Binding`], so a model change
+/// [`depend_on`](Self::depend_on) subscribes the computed value to a `Binding`, so a model change
 /// marks it dirty without the caller remembering an `invalidate` call. A computed value with no
 /// dependencies keeps the old manual behaviour exactly: nothing is observed and only an explicit
 /// [`invalidate`](Self::invalidate) schedules a recomputation.

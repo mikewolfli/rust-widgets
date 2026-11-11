@@ -4,7 +4,7 @@
 //! Companion controls shared by the editor widgets.
 //!
 //! A companion is a control the editor family reuses but that is not part of a
-//! document model — [`FindBar`](self::FindBar) is the first. It lives here rather than in
+//! document model — `FindBar` is the first. It lives here rather than in
 //! `markdown_editor` so the Markdown widget no longer owns a control that the
 //! code editor also needs (BLUE31 §1.9.4).
 

@@ -1677,7 +1677,7 @@ impl BarChart {
     ///
     /// The chart family has two layers: this control, which paints through a
     /// [`RenderContext`], and the engine renderers in `chart_widgets::charts`, which paint through
-    /// a [`ChartContext`](crate::widget::chart_widgets::types::ChartContext) and therefore need no
+    /// a [`ChartContext`]] and therefore need no
     /// window at all. The engine layer's export entry point
     /// ([`render_chart_to_svg_file`](crate::widget::chart_widgets::svg::render_chart_to_svg_file))
     /// is what turns it into a file, and this method is the control-side door to it: a host that has

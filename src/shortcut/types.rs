@@ -971,7 +971,7 @@ pub fn format_shortcut_for_platform(shortcut: &Shortcut, style: PlatformShortcut
 /// [`Modifiers::PRIMARY`] is set only by the event's Command bit, so on a
 /// Desktop host (Windows/Linux) a Control press — the platform's own
 /// accelerator convention — would read as "no primary". This is the same lift
-/// [`ShortcutManager::matches_binding`] applies to keyboard chords, as a
+/// `ShortcutManager::matches_binding` applies to keyboard chords, as a
 /// predicate for handlers that test modifier bits directly (a modified click,
 /// a chord routed to a widget) instead of going through the registry.
 pub fn event_carries_primary(modifier_bits: u32) -> bool {

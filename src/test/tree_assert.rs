@@ -5,7 +5,7 @@
 //!
 //! # Why the existing kit is not enough
 //!
-//! [`TestHarness`](crate::test::TestHarness) and [`WidgetTester`](crate::test::WidgetTester) test
+//! [`TestHarness`] and [`WidgetTester`] test
 //! **one control**: they own a widget, drive events into it and compare its own state. A designer
 //! generates a whole tree, and the questions a test of that tree asks are different — "does the
 //! node I keyed `save` exist?", "what text did the generator give it?", "where did the layout put
@@ -14,7 +14,7 @@
 //!
 //! # Two trees, two questions
 //!
-//! * [`TreeAssert`] reads the **declaration**: a [`Node`] tree, which is what a generated program
+//! * [`TreeAssert`] reads the **declaration**: a `Node` tree, which is what a generated program
 //!   builds before anything is mounted. Keys and properties are exactly what the generator wrote.
 //! * [`MountedTreeAssert`] reads the **live** tree: it resolves a key to the control the engine
 //!   created and reads that control's rectangle from the widget runtime. This is the half a

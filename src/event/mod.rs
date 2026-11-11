@@ -41,7 +41,7 @@ pub mod timer;
 #[cfg(feature = "touch")]
 pub mod translator;
 pub mod types;
-/// Wheel-event normalization: converts an [`Event::Wheel`](types::Event::Wheel)
+/// Wheel-event normalization: converts an [`Event::Wheel`]
 /// delta into signed line counts under one shared unit rule.
 pub mod wheel;
 // Re-export public types

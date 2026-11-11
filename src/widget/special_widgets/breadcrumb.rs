@@ -348,7 +348,7 @@ impl Breadcrumb {
 
     /// Shows the full path even when it is wider than the band.
     ///
-    /// The extra segments are laid out past the band, but the paint and [`Self::hit_index`] both
+    /// The extra segments are laid out past the band, but the paint and `Self::hit_index` both
     /// clamp to the band: only the part inside the band is painted or clickable. A host showing
     /// its own overflow popup can still read the layout, which is what keeps that use case. A
     /// caller that wants the automatic fold back calls [`Self::collapse`].

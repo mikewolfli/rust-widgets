@@ -2454,11 +2454,11 @@ impl<'a> RenderContext<'a> {
     /// expanded into the primitives that already exist, all in this recording
     /// layer:
     ///
-    /// * [`LineCap::Butt`] is the plain stroke — the historical picture, byte for
+    /// * `LineCap::Butt` is the plain stroke — the historical picture, byte for
     ///   byte, which is also what the `Default` impl produces;
-    /// * [`LineCap::Round`] adds one [`RenderCommand::FillCircle`] of radius
+    /// * `LineCap::Round` adds one [`RenderCommand::FillCircle`] of radius
     ///   `width / 2` centred on each endpoint, so the stroke ends in half-discs;
-    /// * [`LineCap::Square`] extends the segment by `width / 2` past each
+    /// * `LineCap::Square` extends the segment by `width / 2` past each
     ///   endpoint along its own direction, so the stroke ends in a square the
     ///   width of the line.
     pub fn draw_line_stroke_styled(
@@ -3172,7 +3172,7 @@ impl<'a> RenderContext<'a> {
     /// copy per draw even when nothing retained it.
     ///
     /// A region-bucketed pass must record an owning command, but it records the copy only once:
-    /// [`recorded_image`] reuses the `Arc` it built for the same unchanged buffer on the next
+    /// `recorded_image` reuses the `Arc` it built for the same unchanged buffer on the next
     /// frame, so a steady frame copies nothing and the GPU backend keeps sampling the texture it
     /// already uploaded for that allocation.
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {

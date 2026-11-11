@@ -37,7 +37,7 @@
 //! long as the tree does not change. To re-query after an update, rebuild the index with
 //! [`ViewEngine::tree_index`](crate::view::ViewEngine::tree_index). A stale index does not silently
 //! answer wrongly: it answers about the tree it was built from, and
-//! [`TreeIndex::generation`](TreeIndex::generation) lets a caller detect that the engine has moved
+//! [`TreeIndex::generation`] lets a caller detect that the engine has moved
 //! on.
 //!
 //! # `ObjectId` is not a `NodeId`
@@ -270,7 +270,7 @@ impl<Id: IndexId> TreeIndex<Id> {
 ///
 /// # The gap this closes
 ///
-/// A designer canvas keeps durable node ids and is not mounted on a [`ViewEngine`], so
+/// A designer canvas keeps durable node ids and is not mounted on a `ViewEngine`, so
 /// [`ViewEngine::tree_index`](crate::view::ViewEngine::tree_index) cannot describe it: that method
 /// only knows the engine's runtime handles. Without a public construction path a host either
 /// reimplemented the whole key-scoping rule (two implementations that drift) or gave up on

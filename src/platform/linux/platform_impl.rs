@@ -481,7 +481,7 @@ impl Platform for LinuxPlatform {
         crate::platform::external::program_is_on_path("xdg-open")
     }
 
-    /// The displays GDK reports; see [`super::gdk_displays`].
+    /// The displays GDK reports; see `super::gdk_displays`.
     ///
     /// Gated with this backend's GTK code: without `gtk-native` there is no window and no display
     /// to enumerate, so the trait default (an empty list) is the honest answer and stays in place.
@@ -494,7 +494,7 @@ impl Platform for LinuxPlatform {
     ///
     /// `gtk::Window::position()` gives the toplevel's screen-space origin, which is the same point
     /// GDK uses to decide where a window at that location lands, and
-    /// [`super::gdk_displays::display_index_at`] resolves it to the index [`Self::displays`] hands
+    /// `super::gdk_displays::display_index_at` resolves it to the index [`Self::displays`] hands
     /// out. An id that names no GTK window (a control, or an unregistered window) answers `None`.
     ///
     /// # Why the id is translated first
@@ -521,13 +521,13 @@ impl Platform for LinuxPlatform {
         super::gdk_displays::display_index_at(x, y).map(DisplayId::new)
     }
 
-    /// A revision of GDK's current display set; see [`super::gdk_displays::generation`].
+    /// A revision of GDK's current display set; see `super::gdk_displays::generation`.
     #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn display_generation(&self) -> u64 {
         super::gdk_displays::generation()
     }
 
-    /// Metadata for one GDK monitor; see [`super::gdk_displays::info`].
+    /// Metadata for one GDK monitor; see `super::gdk_displays::info`.
     #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn display_info(&self, display: DisplayId) -> Option<crate::platform::types::DisplayInfo> {
         super::gdk_displays::info(display)
@@ -544,7 +544,7 @@ impl Platform for LinuxPlatform {
     ///
     /// The reading is cached through the shared TTL wrapper: the style layer re-reads the
     /// environment revision on a 250 ms poll and each read is a `gtk::Settings` lookup. The
-    /// `notify::gtk-theme-name` handler installed by [`watch_environment_settings`] bumps the
+    /// `notify::gtk-theme-name` handler installed by `watch_environment_settings` bumps the
     /// shared revision, which drops this cache immediately rather than a second later (P-02 /
     /// P-201).
     #[cfg(all(unix_desktop, feature = "gtk-native"))]
@@ -612,7 +612,7 @@ impl Platform for LinuxPlatform {
     ///
     /// # Push, not poll (P-208)
     ///
-    /// [`watch_environment_settings`] connects `notify::gtk-application-prefer-dark-theme` to the
+    /// `watch_environment_settings` connects `notify::gtk-application-prefer-dark-theme` to the
     /// shared environment revision, so a change is visible on the next poll immediately instead of
     /// waiting for the TTL to expire. The 250 ms style-layer poll remains the backstop for a session
     /// whose toolkit was not initialised on this thread; it is not the only signal.

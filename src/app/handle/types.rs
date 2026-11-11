@@ -200,7 +200,7 @@ impl WidgetHandle for SurfaceHandle {
     /// This used to record an unwired binding on the grounds that a library-painted control
     /// "emits its own signals rather than a platform click callback". The premise was wrong:
     /// every control's [`BaseWidget`](crate::widget::BaseWidget) carries `clicked`, and that is
-    /// exactly the signal [`register_click_callback`] connects to for every other handle. A
+    /// exactly the signal `register_click_callback` connects to for every other handle. A
     /// mounted surface therefore has a real click channel; refusing it made a callback registered
     /// here unreachable while the same callback on a `ButtonHandle` worked — the asymmetry this
     /// closes. There is still one definition of "what a click is" (`base.clicked`), so this is the
@@ -711,7 +711,7 @@ pub trait WidgetHandle: Sized {
     /// Moves a row container's selection to `row` (RW-122).
     ///
     /// The control's own capability table decides which property carries its selection; see
-    /// [`super::scroll::write_selection_row`] for the rule and why it is one entry rather than a
+    /// `super::scroll::write_selection_row` for the rule and why it is one entry rather than a
     /// fourth property spelling.
     fn set_selection_row(&self, row: usize) -> bool {
         super::scroll::write_selection_row(self.raw_id(), row)

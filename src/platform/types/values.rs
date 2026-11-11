@@ -568,7 +568,7 @@ pub enum PathPurpose {
 ///
 /// # Why the platform layer repeats a shape the widget layer also has
 ///
-/// [`crate::widget::dialog::FileFilter`] is the **library-painted** dialog's type, and the platform
+/// `crate::widget::dialog::FileFilter` is the **library-painted** dialog's type, and the platform
 /// layer must not depend on the widget layer (the dependency runs the other way). The two are
 /// deliberately the same shape — a user-facing description plus extension suffixes written without
 /// the leading dot, with the single entry `*` meaning "every file" — so a host translates one into

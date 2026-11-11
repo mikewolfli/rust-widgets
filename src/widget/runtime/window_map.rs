@@ -44,14 +44,14 @@ pub fn surface_window_for(surface: ObjectId) -> Option<ObjectId> {
 ///
 /// # Why a control inside a surface needs this
 ///
-/// [`crate::Platform::invalidate_surface`] answers only for the id the host mounted; the controls
+/// `crate::Platform::invalidate_surface` answers only for the id the host mounted; the controls
 /// that make up that surface's content are not mount points. A child of an `MdiArea` is the
 /// clearest case: it was added with `add_child_linked`, so it has a parent link but no surface of
 /// its own, and `invalidate_surface(child)` reaches nothing. Without this walk the child's repaint
 /// request — a hover, a caret, a text change — stops at a backend that truthfully says "I do not
 /// know that id", and the surface shows the old pixels.
 ///
-/// The walk is bounded by [`TOP_WINDOW_MAX_DEPTH`] for the reason the window walk is: a corrupted
+/// The walk is bounded by `TOP_WINDOW_MAX_DEPTH` for the reason the window walk is: a corrupted
 /// parent chain must not hang a paint path. `None` means the widget lives in an ordinary window
 /// tree (the common case), where the window invalidation already covers it.
 pub fn surface_root_of(id: ObjectId) -> Option<ObjectId> {

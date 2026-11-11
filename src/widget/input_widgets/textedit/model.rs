@@ -251,7 +251,7 @@ pub struct TextEdit {
     ///
     /// The editor does not build a menu: the host owns the cut/copy/paste implementation and
     /// decides which items apply. The payload is the request position in window coordinates,
-    /// matching [`TextArea::context_menu_requested`](super::textarea::TextArea).
+    /// matching `TextArea::context_menu_requested`.
     pub context_menu_requested: Signal1<Point>,
     /// Last undo/redo availability announced, so both signals are edge-triggered.
     undo_available_announced: bool,

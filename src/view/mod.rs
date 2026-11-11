@@ -89,7 +89,7 @@
 //! second registry.
 //!
 //! The forward has landed for the JSON front end: `json::JsonViewSession` converts a project
-//! document to a [`Node`] tree and drives it through `mount_tree_shared` / `update_tree_shared`,
+//! document to a `Node` tree and drives it through `mount_tree_shared` / `update_tree_shared`,
 //! reporting the controls an edit removed and leaving unchanged controls (and therefore their
 //! focus, scroll and selection) alive. The runtime loader's own layout registration remains the
 //! **full-mount** path: it is what applies every loader-owned key (geometry, spacing, colours,

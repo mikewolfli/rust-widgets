@@ -11,7 +11,7 @@
 //!
 //! # Wiring
 //!
-//! A host routes Ctrl+F to [`GridFindBar::open`] and forwards `match_found` to the grid's
+//! A host routes Ctrl+F to `GridFindBar::open` and forwards `match_found` to the grid's
 //! selection + `ensure_visible`. The bar owns no table, so it works with every member of the
 //! family (DataGrid, GridTable, VirtualTable).
 

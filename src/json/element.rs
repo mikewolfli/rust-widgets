@@ -148,7 +148,7 @@ impl BoundJsonLayout {
     /// first-wins rule) and a warning names the collision, so a duplicate is fixable rather than
     /// mysterious. Re-registering the *same* (name, id) pair is not a collision and stays quiet.
     ///
-    /// The name text is stored once, as the [`Self::name_map`] key's `Arc<str>`: when
+    /// The name text is stored once, as the `Self::name_map` key's `Arc<str>`: when
     /// [`Self::register_node`] later records the same text as the node's key (the loader's
     /// shape), it derives its face from this allocation rather than duplicating the string.
     pub fn register(&mut self, name: impl Into<String>, id: ObjectId) {
@@ -180,7 +180,7 @@ impl BoundJsonLayout {
     /// one node, so two entries for it would make every query ambiguous.
     ///
     /// A `key` that is a registered name of this same id (the loader's shape: the document's
-    /// `"id"` attribute doubles as the key) shares the [`Self::name_map`] entry's text
+    /// `"id"` attribute doubles as the key) shares the `Self::name_map` entry's text
     /// allocation rather than storing a second copy (G-502).
     pub fn register_node(
         &mut self,

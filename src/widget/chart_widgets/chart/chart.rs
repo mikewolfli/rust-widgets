@@ -915,7 +915,7 @@ impl ChartWidget {
     }
 
     /// Hands the hover read-out to a companion such as
-    /// [`ChartTooltip`](crate::widget::companions::ChartTooltip).
+    /// [`ChartTooltip`]].
     ///
     /// The inline bubble is the default because a chart without a host is still readable; this
     /// switch turns it off so a host that owns one tooltip for several controls has a single

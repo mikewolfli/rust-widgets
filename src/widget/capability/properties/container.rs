@@ -224,7 +224,7 @@ pub(crate) fn dock_widget_capability() -> WidgetCapability {
 
 /// The dock host's published events (C-001).
 ///
-/// [`DockArea`](crate::widget::container_widgets::DockArea) is a layout owner rather than a
+/// [`DockArea`] is a layout owner rather than a
 /// `Widget`: it holds child ids and arranges the docks registered with it, so it has no
 /// `WidgetKind` of its own and cannot carry a capability row under its own kind. Its three
 /// host-facing signals therefore travel on this row, which shares the dock family's kind and

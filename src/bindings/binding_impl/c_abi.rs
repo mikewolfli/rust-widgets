@@ -77,7 +77,7 @@ pub extern "C" fn rw_quit() {
 /// `Platform::run` documents for a backend whose loop is externally driven.
 ///
 /// Returns whether another frame is owed. The answer is
-/// [`FrameOutcome::wants_fast_cadence`], the same predicate every platform loop uses: it is
+/// `FrameOutcome::wants_fast_cadence`, the same predicate every platform loop uses: it is
 /// `true` while an animation is still settling **and** while this frame dispatched a trigger
 /// (a resize, a move), because such a frame needs display-rate frames even though nothing is
 /// animating — a host that paced itself on the animation bit alone would fall back to its idle

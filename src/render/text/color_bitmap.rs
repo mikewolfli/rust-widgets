@@ -402,7 +402,7 @@ impl<'a> ColorBitmapFace<'a> {
     ///
     /// So the decoded image gets its own allocation, and only the scaled result reaches the caller.
     /// The scaled bytes are also kept in a thread-local FIFO bounded by
-    /// [`COLOR_GLYPH_CACHE_LIMIT`]: the face's "no glyph is ever resident" intent is preserved as a
+    /// `COLOR_GLYPH_CACHE_LIMIT`: the face's "no glyph is ever resident" intent is preserved as a
     /// *bounded* constant rather than an unbounded table, and the next frame's identical emoji skips
     /// the inflate entirely.
     ///

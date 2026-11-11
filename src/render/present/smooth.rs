@@ -561,6 +561,7 @@ fn variant_name(command: &RenderCommand) -> &'static str {
         RenderCommand::DrawCircle { .. } => "DrawCircle",
         RenderCommand::DrawCircleStroke { .. } => "DrawCircleStroke",
         RenderCommand::DrawText { .. } => "DrawText",
+        RenderCommand::DrawTextRotated { .. } => "DrawTextRotated",
         RenderCommand::DrawTextDecorated { .. } => "DrawTextDecorated",
         RenderCommand::DrawImage { .. } => "DrawImage",
         RenderCommand::DrawImageScaled { .. } => "DrawImageScaled",

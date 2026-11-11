@@ -112,7 +112,7 @@ impl Widget for TextEdit {
 
 /// A selected run of text is the editor's drag payload.
 ///
-/// Mirrors [`TextArea`](super::textarea::TextArea): the item id and label both hold the text, so
+/// Mirrors `TextArea`: the item id and label both hold the text, so
 /// a `text/plain` target can read either field without a rule about which is authoritative.
 impl DragSource for TextEdit {
     fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
@@ -140,7 +140,7 @@ impl DragSource for TextEdit {
 /// `TextEdit`'s property contract.
 ///
 /// `WidgetKind::TextEdit` is the kind the capability layer pairs with the
-/// [`TerminalView`](crate::widget::TerminalView) control
+/// `TerminalView` control
 /// (`capability::properties::terminal_view_capability`), so the old centralised
 /// `TextEdit` arms were answered by `TerminalView`, not by this widget — despite
 /// `TEXT_EDIT_PROPERTIES` existing, its names are all marked non-readable and

@@ -120,7 +120,7 @@ pub struct NodeView {
     pub expanded: bool,
     /// An icon token painted before the label (RW-10).
     ///
-    /// The token is the same named-icon spelling [`ListModel::icon`] uses, so a tree and a list
+    /// The token is the same named-icon spelling `ListModel::icon` uses, so a tree and a list
     /// resolve their glyphs through one registry. `None` keeps a text-only node unchanged.
     pub icon: Option<String>,
 }

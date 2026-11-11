@@ -245,7 +245,7 @@ impl TextArea {
 
     /// Places `line` at the top of the viewport, clamped so the field never scrolls past its end.
     ///
-    /// The same clamp [`Self::scroll_lines`] applies: a line past the last window is pinned to
+    /// The same clamp `Self::scroll_lines` applies: a line past the last window is pinned to
     /// the last window, and a line that is already first is a no-op with no repaint.
     pub fn set_first_visible_line(&mut self, line: usize) {
         let next = line.min(self.max_first_visible_line());

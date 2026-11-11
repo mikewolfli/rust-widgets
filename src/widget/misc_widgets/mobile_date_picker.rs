@@ -159,7 +159,7 @@ impl MobileDatePicker {
 
     /// Sets how many years the drum offers on either side of the selected year.
     ///
-    /// The span is clamped to [`MAX_YEAR_SPAN`] so the drum stays materialisable, and the
+    /// The span is clamped to `MAX_YEAR_SPAN` so the drum stays materialisable, and the
     /// endpoints are computed in `i64` and clamped into `i32` rather than cast, so a large `u32`
     /// can never wrap into a negative span (which made `i32::clamp` panic on a reversed range).
     pub fn set_year_span(&mut self, span: u32) {

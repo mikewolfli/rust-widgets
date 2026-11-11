@@ -1,3 +1,4 @@
+#![allow(rustdoc::redundant_explicit_links)]
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
@@ -523,7 +524,7 @@ impl Carousel {
     /// Sets the current page by index. Clamped to valid range.
     /// Emits `page_changed` if the index actually changes.
     ///
-    /// A programmatic change slides over [`page_transition_ms`] unless
+    /// A programmatic change slides over `page_transition_ms` unless
     /// [`Self::set_page_transition`] turned the slide off (C-010). The index itself changes
     /// immediately, so `selected_index` is the destination for the whole animation.
     pub fn set_current(&mut self, index: usize) {

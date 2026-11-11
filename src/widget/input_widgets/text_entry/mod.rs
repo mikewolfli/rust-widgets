@@ -46,7 +46,7 @@ pub mod lineedit;
 /// Gated on `widgets_unstripped` because it is a **widget kind**: the profile's
 /// [`WidgetKind`](crate::widget::WidgetKind) census decides which controls a build carries, and
 /// `mini` does not carry this one. The *grammar* it is built on is not gated —
-/// [`mask_engine`](super::mask_engine) is what a single-line field needs.
+/// `mask_engine` is what a single-line field needs.
 #[cfg(widgets_unstripped)]
 pub mod masked_edit;
 pub mod recent_values_popup;

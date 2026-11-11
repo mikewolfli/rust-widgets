@@ -27,8 +27,8 @@
 //! | File-system, workspace, VCS integration | host application |
 //!
 //! The widget therefore exposes *extension hooks* rather than pretending to be
-//! those systems: [`SyntaxHighlighter`] (pluggable tokenizer, defaulting to a
-//! keyword/string/comment/`fn`-name lexer), [`CompletionSource`] (pluggable
+//! those systems: `SyntaxHighlighter` (pluggable tokenizer, defaulting to a
+//! keyword/string/comment/`fn`-name lexer), `CompletionSource` (pluggable
 //! completion-provider, defaulting to document identifiers), and
 //! [`DiagnosticMarker`] (host/LSP-pushed inline diagnostics).
 //!
@@ -54,7 +54,7 @@
 //! |--------|----------------|
 //! | `types` | Positions, cursor, markers, tokens, palette, config, find/completion/menu state |
 //! | `overlays` | Inlay hints, code lenses and snippet-session data |
-//! | `syntax` | Built-in lexer, [`LanguageId`], [`SyntaxHighlighter`] plugin seam |
+//! | `syntax` | Built-in lexer, `LanguageId`, `SyntaxHighlighter` plugin seam |
 //! | `buffer` | Line-indexed document model, tabs, folds, splice primitive |
 //! | `coords` | Document ↔ screen coordinate map (`B3`/`B4`) |
 //! | `grid` | Char index ↔ grid column ↔ byte offset (wide chars, tabs) |
@@ -68,9 +68,9 @@
 //! # Rust design notes (principle.md #28..#34)
 //!
 //! * No trait objects on the hot path: highlighting is a plain `enum` dispatch
-//!   plus a tiny [`SyntaxHighlighter`] trait for the pluggable case.
+//!   plus a tiny `SyntaxHighlighter` trait for the pluggable case.
 //! * All state is owned; no manual allocation, no `unsafe`.
-//! * Configuration is a Builder-style type ([`CodeEditorConfig`]) rather than a
+//! * Configuration is a Builder-style type (`CodeEditorConfig`) rather than a
 //!   varargs setter cluster.
 //! * Invalid configuration is rejected through `Result`, never silently ignored.
 //!

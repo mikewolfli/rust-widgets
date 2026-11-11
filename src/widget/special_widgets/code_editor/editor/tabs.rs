@@ -93,7 +93,7 @@ impl CodeEditor {
     /// Activates a buffer, restoring that buffer's own view and history.
     ///
     /// A tab switch is navigation, not an edit, so it pushes no undo entry. Each buffer
-    /// keeps its own caret and scroll in this view's [`BufferViewState`], and its undo
+    /// keeps its own caret and scroll in this view's `BufferViewState`, and its undo
     /// timeline lives in the shared document — so two views on the same buffer undo the
     /// same edits.
     pub fn activate_buffer(&mut self, index: usize) -> bool {

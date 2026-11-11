@@ -1694,7 +1694,7 @@ macro_rules! impl_properties_other {
 
         /// Markdown formatting strip beside a markdown editor (SP-022).
         ///
-        /// Mirrors [`MarkdownToolbar`](crate::widget::special_widgets::markdown_editor::MarkdownToolbar)'s
+        /// Mirrors [`MarkdownToolbar`]'s
         /// property contract: the enabled action tokens, which side the icon is drawn on and whether
         /// labels are shown. The action list is writable because the control validates every token in
         /// `set_actions` and refuses an unknown one rather than painting a dead cell.

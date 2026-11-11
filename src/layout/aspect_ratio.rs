@@ -232,7 +232,7 @@ impl Layout for AspectRatioLayout {
         self.arrange(rect, children, widgets);
     }
 
-    /// The single child's fitted rectangle, from the same [`Self::compute_child_rect`] the
+    /// The single child's fitted rectangle, from the same `Self::compute_child_rect` the
     /// update paths use (LAY-005): the layout's model answers a one-child query directly
     /// instead of the trait default's full solve-and-capture pass.
     fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {

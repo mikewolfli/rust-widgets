@@ -27,8 +27,8 @@
 //!
 //! # Reused models instead of local copies
 //!
-//! * [`FilterRow`] stores [`FilterCondition`](crate::widget::view_widgets::filter_expr::FilterCondition)
-//!   and [`FilterOperator`](crate::widget::view_widgets::filter_expr::FilterOperator), so a
+//! * [`FilterRow`] stores [`FilterCondition`]
+//!   and [`FilterOperator`], so a
 //!   filter row, `DataGrid` and a query builder evaluate one filter model. Its published
 //!   `filter_changed` payload is the same structured condition list (`CAP-1`).
 //! * [`ToastHost`] accepts `Toast` and `ToastItem` from the existing toast module and reuses its

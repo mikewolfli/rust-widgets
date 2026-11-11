@@ -36,7 +36,7 @@ static LANGUAGE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The current catalogue/language generation.
 ///
-/// See [`LANGUAGE_GENERATION`]; controls that cache translated text compare this before reusing
+/// See `LANGUAGE_GENERATION`; controls that cache translated text compare this before reusing
 /// a label built under an older catalogue.
 pub fn language_generation() -> u64 {
     LANGUAGE_GENERATION.load(Ordering::Relaxed)

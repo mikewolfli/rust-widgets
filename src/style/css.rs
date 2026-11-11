@@ -2217,7 +2217,7 @@ impl CssParser {
     ///
     /// A selector that uses a descendant or child combinator is a fact about the tree, so an
     /// inline `css` declaration can only match one when the caller supplies the chain. This is
-    /// the same context entry [`crate::style::StyleSheet::apply_to_context`] uses (STY-002).
+    /// the same context entry `crate::style::StyleSheet::apply_to_context` uses (STY-002).
     pub fn parse_and_apply_in(
         css: &str,
         element: ElementRef<'_>,

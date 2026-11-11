@@ -377,7 +377,7 @@ pub struct DesignerManifest {
     pub control: String,
     /// The designer-palette section this control belongs in.
     ///
-    /// One token per control, from [`WidgetKind::designer_category`]. A palette that had only the
+    /// One token per control, from `WidgetKind::designer_category`. A palette that had only the
     /// control name could group by spelling (`l`, `li`, `lis`…), which is alphabetic rather than
     /// functional; this is the fact it needs instead. Empty when the document predates protocol 5
     /// — a reader that sees an empty string groups the row under "other" rather than guessing.
@@ -412,7 +412,7 @@ pub struct DesignerManifest {
     /// map overview — has no meaning by itself, and a designer that knew only its category could
     /// insert it but not pair it. The list names the host(s) the companion was built for; it is a
     /// pairing fact, not proof that a specific `attach_*` method exists (see
-    /// [`companion_hosts`](super::designer_manifest::companion_hosts)).
+    /// [`companion_hosts`]]).
     pub companion_of: Vec<String>,
 }
 
@@ -1485,7 +1485,7 @@ fn read_icon_spec(
 ///
 /// The manifest describes properties, and this reader has no schema in hand — the same situation the
 /// JSON loader and the C ABI are in. The list therefore carries
-/// [`EMPTY_RECORD_SCHEMA`](crate::widget::capability::EMPTY_RECORD_SCHEMA) and the *property* is what
+/// [`EMPTY_RECORD_SCHEMA`] and the *property* is what
 /// supplies the record shape; see
 /// [`RecordList::validate_against`](crate::widget::capability::RecordList::validate_against).
 fn read_record_list(

@@ -106,7 +106,7 @@ impl crate::undo::UndoCommand for DocumentEditCommand {
 ///
 /// `src/undo/` already owns capacity pruning, merge policy, save-point tracking and the
 /// failed-undo restore rule. A designer-specific stack would be a second implementation of those
-/// rules and would drift. This wrapper only adapts a document edit into an [`UndoCommand`] and
+/// rules and would drift. This wrapper only adapts a document edit into an `UndoCommand` and
 /// forwards the operations the designer exposes.
 pub struct DesignerHistory {
     stack: crate::undo::UndoStack,

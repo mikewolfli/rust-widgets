@@ -2251,7 +2251,7 @@ impl ToolBar {
     ///
     /// The hint is the [`ToolBarItem::tooltip`] value, the same text the item-level tooltip
     /// pipeline reads; this method exposes the hit test so a host-level
-    /// [`TooltipManager`](crate::widget::companions::TooltipManager) can resolve an entry hint
+    /// [`TooltipManager`]] can resolve an entry hint
     /// without mirroring the item list.
     pub fn entry_tooltip_at(&self, pos: Point) -> Option<(usize, &str)> {
         let index = self.hit_item(pos)?;

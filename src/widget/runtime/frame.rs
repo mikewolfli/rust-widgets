@@ -113,7 +113,7 @@ pub struct FrameStats {
     /// repainted, which is why "no anonymous repaint" (BLUE24 §8 criterion 4) is a statement
     /// about this map being complete rather than about it being non-empty.
     ///
-    /// The map is moved out of [`FRAME_REPAINT_REASONS`] rather than collected into a second
+    /// The map is moved out of `FRAME_REPAINT_REASONS` rather than collected into a second
     /// container, so a frame that repainted pays one allocation for its messages and not two
     /// (RT-03).
     pub last_repaint_reason: alloc::collections::BTreeMap<ObjectId, RepaintReason>,

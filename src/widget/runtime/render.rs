@@ -1008,7 +1008,7 @@ pub fn paint_widget_into(
 /// surfaces and the damage replay lives in that backend. A caller that wants the frame's
 /// **commands** rather than its pixels therefore has no entry point — which is exactly what the
 /// `Smooth` presentation path needs, since it records the tree into a
-/// [`crate::render::present::GpuPaintBackend`] and hands the stream to the pipelines. This is that
+/// `crate::render::present::GpuPaintBackend` and hands the stream to the pipelines. This is that
 /// entry point: the same traversal `render_frame_tree` uses (root first, then the root's children
 /// in paint order, each carrying the clip its ancestors impose, everything translated by the frame
 /// origin), drawn straight into `backend`.
@@ -1218,7 +1218,7 @@ thread_local! {
     /// Before this the table was a per-frame memo: the layer cache saved rasterising unchanged
     /// subtrees, but every repaint still re-walked the whole tree to compute their bounds. The key
     /// pairs the tree's root with the **structure generation**
-    /// ([`structure_epoch`](crate::widget::runtime::cache::structure_epoch)) and the global repaint
+    /// ([`structure_epoch`]) and the global repaint
     /// generation. The structure generation is bumped by the events that change a subtree's shape
     /// (geometry, visibility, popups, mount, teardown) and deliberately not by per-frame animation
     /// damage, so an animating control's frames reuse the table while any structural change drops

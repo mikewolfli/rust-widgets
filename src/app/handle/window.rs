@@ -280,12 +280,12 @@ impl WindowHandle {
     ///
     /// The backend's own paint path, when it has one: on macOS both canvases
     /// (`src/platform/macos/canvas.rs` and `macos_objc2/native.rs`) offer each finished frame to
-    /// [`crate::render::present::present_window_frame`] before blitting it, and blit only when that
+    /// `crate::render::present::present_window_frame` before blitting it, and blit only when that
     /// path refuses the frame (occluded, timed out, no target). A backend whose canvas still blits
     /// unconditionally answers `false` from `canvas_presents_frames`, so this method returns
     /// `false` there rather than promising a change that would not happen.
     ///
-    /// A host can also drive [`crate::render::present::FramePresenter`] directly when it wants to
+    /// A host can also drive `crate::render::present::FramePresenter` directly when it wants to
     /// control the frame it hands over.
     pub fn set_frame_presentation(
         &self,
@@ -330,7 +330,7 @@ impl WindowHandle {
     /// for a window that never asked, and for one whose
     /// request was refused — the two states are the same to a caller, which is the point: a
     /// refused request must not look like an accepted one. The **consumer** of the value is
-    /// [`crate::render::present::FramePresenter`]; see [`Self::set_frame_presentation`].
+    /// `crate::render::present::FramePresenter`; see [`Self::set_frame_presentation`].
     pub fn frame_presentation(&self) -> crate::render::present::FramePresentation {
         crate::render::present::requested(self.id)
     }
@@ -1303,7 +1303,7 @@ impl WindowHandle {
     /// Whether this window is the one that most recently gained keyboard focus.
     ///
     /// The platform trait has no focus query, so this reads the active-window record maintained by
-    /// [`crate::platform::window_control::notify_window_focus`] — the same notification the
+    /// `crate::platform::window_control::notify_window_focus` — the same notification the
     /// `focus_gained`/`focus_lost` signals fire from (HB-12).
     pub fn is_active(&self) -> bool {
         crate::platform::window_control::active_window_id() == Some(self.raw_id())
@@ -1677,7 +1677,7 @@ impl WindowHandle {
     /// mirror would otherwise never change when the user drags the window. A host that *does* learn
     /// the new position — from its own compositor integration, a platform channel, or a toolkit
     /// callback — reports it here. The call routes through the same
-    /// [`notify_window_moved`](crate::platform::window_control) every backend uses, so the mirror
+    /// `notify_window_moved` every backend uses, so the mirror
     /// and the window's `moved` signal agree regardless of how the fact arrived.
     ///
     /// This is the counterpart of [`Self::set_position`] for a move the library did not request:

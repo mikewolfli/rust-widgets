@@ -3,9 +3,9 @@
 
 //! Conversions and layout facts shared by the input family's companion popups (COMP-B01..B03).
 //!
-//! The three companions — [`SuggestionPopup`](super::suggestion_popup::SuggestionPopup) (which
-//! is also the single home of COMP-C01), [`ValidationBubble`](super::validation_bubble::ValidationBubble)
-//! and [`RecentValuesPopup`](super::recent_values_popup::RecentValuesPopup) — paint the same row
+//! The three companions — [`SuggestionPopup`] (which
+//! is also the single home of COMP-C01), [`ValidationBubble`]
+//! and [`RecentValuesPopup`] — paint the same row
 //! rhythm and publish the same rectangle representation. Keeping both here is what makes
 //! "COMP-B03 shares COMP-B01's row spec" a fact rather than a comment: they call one function.
 

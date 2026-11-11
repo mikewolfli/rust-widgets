@@ -19,9 +19,9 @@
 //! # Layering
 //!
 //! These three files are all **control layer** code. The drawing engine they share stays
-//! its own sibling module — [`super::charts`] (concrete renderers), [`super::layout`]
-//! (cartesian plot area, axes, ticks, legend), [`super::types`] (engine data model),
-//! [`super::svg`] (an SVG `ChartContext`) and [`super::adapter`] (a `ChartContext` over a
+//! its own sibling module — `super::charts` (concrete renderers), `super::layout`
+//! (cartesian plot area, axes, ticks, legend), `super::types` (engine data model),
+//! [`super::svg`] (an SVG `ChartContext`) and `super::adapter` (a `ChartContext` over a
 //! widget `RenderContext`). Grouping the control and moving the engine in with it would
 //! make two layers share one path (principle #49), so only the family moves here.
 //!

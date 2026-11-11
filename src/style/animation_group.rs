@@ -7,8 +7,8 @@
 //! # Reachability (issue §9 item #5)
 //!
 //! This is a **retained public capability with no in-crate control consumer**. The engine it drives
-//! ([`AnimationDriver`](crate::style::AnimationDriver)) *is* on the production path — controls reach
-//! it through [`PropertyDriver`](crate::style::PropertyDriver) / [`Transition`](crate::style::Transition)
+//! ([`AnimationDriver`]) *is* on the production path — controls reach
+//! it through [`PropertyDriver`] / [`Transition`]
 //! — but a *named timeline group* is a different feature: it composes `AnimationGroup`'s parallel
 //! and sequential sets by name, which no control's property transition needs. Keeping it exported
 //! and tested (rather than deleting it) is the explicit decision the issue asked for: a host that
@@ -26,7 +26,7 @@ use crate::compat::{String, Vec};
 /// # Example
 ///
 /// A host drives the group from its own frame loop. This example is compiled and run as a
-/// doctest, so the documented pairing with [`AnimationClock`] cannot drift silently.
+/// doctest, so the documented pairing with `AnimationClock` cannot drift silently.
 ///
 /// ```
 /// use core::time::Duration;

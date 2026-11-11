@@ -317,7 +317,7 @@ pub struct TimerManager {
 /// # Why the loop thread needs this
 ///
 /// A long press produces no further touch event while the finger is held still: the only thing
-/// that changes is time, so the recogniser needs a [`Event::Timer`](crate::event::Event::Timer)
+/// that changes is time, so the recogniser needs a [`Event::Timer`]
 /// tick to fire. The event loop owns its `TimerManager` on the host thread but dispatches on the
 /// loop thread, and the manager cannot be cloned (it owns the worker's join handle). This handle
 /// shares only the timer set, so the loop can arm the deadline its recognisers are waiting for

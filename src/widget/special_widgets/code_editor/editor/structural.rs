@@ -62,7 +62,7 @@ impl CodeEditor {
     ///
     /// Repeated calls walk back out of the expansions in reverse order, ending at the original
     /// caret. The history is cleared by every document change (see
-    /// [`Self::structural_selection_history`]), so a stale position is never restored. Returns
+    /// `Self::structural_selection_history`), so a stale position is never restored. Returns
     /// `false` when there is nothing to undo, leaving the selection untouched.
     pub fn shrink_selection(&mut self) -> bool {
         let Some((anchor, head)) = self.structural_selection_history.pop() else {

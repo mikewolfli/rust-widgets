@@ -6,7 +6,7 @@
 //! # Reachability
 //!
 //! **State:** Production caller: the declarative document path. A `"absolute"` layout node
-//! builds an [`AbsoluteLayout`], and each child's `x`/`y`/`width`/`height`/`anchor` attributes are
+//! builds an `AbsoluteLayout`, and each child's `x`/`y`/`width`/`height`/`anchor` attributes are
 //! stored on it through [`place_widget_in_absolute_layout`](crate::layout::declarative)
 //! (API2-01). The solver is therefore reachable from a saved document, not only from tests.
 //!
@@ -593,7 +593,7 @@ crate::impl_default_via_new!(Constraint);
 /// # Why the layout does not own widgets
 ///
 /// The entry list used to hold `Option<Box<dyn Widget>>`, which made this layout
-/// `!Send` (so it could not join [`SharedLayoutRegistry`](super::declarative::SharedLayoutRegistry))
+/// `!Send` (so it could not join `SharedLayoutRegistry`)
 /// and bypassed the crate's id-based layout protocol. The widget's own size hint is captured
 /// when it is added — the one fact this layout needed from it — and the box is dropped.
 /// Geometry therefore flows through `ObjectId` + an `update` callback like every other

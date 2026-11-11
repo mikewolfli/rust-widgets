@@ -299,8 +299,8 @@ impl FlowLayout {
 
     /// The hint-aware arrangement with the gap and padding as parameters (LAY-003).
     ///
-    /// [`Layout::arrange`](Layout::arrange) passes the configured values (the nominal path),
-    /// and [`Layout::arrange_with_context`](Layout::arrange_with_context) passes the
+    /// [`Layout::arrange`] passes the configured values (the nominal path),
+    /// and [`Layout::arrange_with_context`] passes the
     /// device-scaled ones; the child-size resolution and the solver are shared so the two
     /// entries cannot disagree about anything but the scale.
     fn arrange_sized_with(

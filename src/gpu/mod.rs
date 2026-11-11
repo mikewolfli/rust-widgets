@@ -33,7 +33,7 @@
 //!
 //! **State:** Production callers: `src/render/gpu/mod.rs:1` (the software renderer reads the GPU
 //! capability report) and `src/wgpu_backend/renderer/build.rs` (`gpu_manager`, RD-04): the live
-//! `WgpuRenderer` owns one [`GpuManager`] per device, built from the adapter facts `wgpu` already
+//! `WgpuRenderer` owns one `GpuManager` per device, built from the adapter facts `wgpu` already
 //! reported, and brackets every offscreen frame with `begin_frame`/`end_frame`. Its operation mode,
 //! performance samples, trap recommendations and quality advice are read through the renderer's own
 //! accessors (`gpu_adapter_info`, `gpu_performance_stats`, ...).

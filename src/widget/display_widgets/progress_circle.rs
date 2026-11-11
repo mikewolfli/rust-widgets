@@ -143,7 +143,7 @@ impl ProgressCircle {
     /// still the no-theme fallback, so a build without a theme renders what it used to.
     ///
     /// That initial value is also the **fallback** for a build with no active theme: see
-    /// [`ProgressCircle::resolved_progress_color`], which re-resolves the role on every draw so
+    /// `ProgressCircle::resolved_progress_color`, which re-resolves the role on every draw so
     /// an appearance switch reaches the arc.
     pub fn new(geometry: Rect) -> Self {
         Self {

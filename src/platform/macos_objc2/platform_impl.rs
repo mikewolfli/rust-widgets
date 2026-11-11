@@ -778,7 +778,7 @@ impl Platform for MacOSObjc2Platform {
     }
 
     /// Reads installed physical memory via `sysconf(_SC_PHYS_PAGES)` in
-    /// [`crate::platform::darwin_probes`].
+    /// `crate::platform::darwin_probes`.
     ///
     /// # Why this is gated, and what the other branch means
     ///
@@ -816,7 +816,7 @@ impl Platform for MacOSObjc2Platform {
     }
 
     /// Samples RSS over VSZ for this process from `ps`, in
-    /// [`crate::platform::darwin_probes`].
+    /// `crate::platform::darwin_probes`.
     fn process_memory_utilization(&self) -> Option<f32> {
         #[cfg(target_vendor = "apple")]
         {

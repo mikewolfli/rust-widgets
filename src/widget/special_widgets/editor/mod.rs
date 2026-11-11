@@ -5,17 +5,17 @@
 //!
 //! This is **not** a third public editor control. It is the lower layer both
 //! [`CodeEditor`](crate::widget::special_widgets::code_editor::CodeEditor) and
-//! [`MarkdownEditor`](crate::widget::special_widgets::markdown_editor::MarkdownEditor)
+//! [`MarkdownEditor`]
 //! build on, and the place a host finds the types it shares with them:
 //!
 //! | Module | Contents | Gate |
 //! |--------|----------|------|
-//! | [`syntax`] | `LanguageId`, `LineState`, `TokenKind`, `TokenSpan`, `SyntaxHighlighter`, `BuiltinHighlighter` | always (under `full_widgets`) |
-//! | [`caret`] | `CaretStyle` | always |
-//! | [`companions`] | `FindBar` | either editor feature |
+//! | `syntax` | `LanguageId`, `LineState`, `TokenKind`, `TokenSpan`, `SyntaxHighlighter`, `BuiltinHighlighter` | always (under `full_widgets`) |
+//! | `caret` | `CaretStyle` | always |
+//! | `companions` | `FindBar` | either editor feature |
 //!
-//! `text` is private: it carries [`TextPosition`], which is reachable through
-//! [`syntax`] because it appears in `SyntaxHighlighter`'s public signature.
+//! `text` is private: it carries `TextPosition`, which is reachable through
+//! `syntax` because it appears in `SyntaxHighlighter`'s public signature.
 //!
 //! # Feature independence
 //!

@@ -881,7 +881,7 @@ impl ActiveAnimation {
 /// library maps a control to the platform's ability; it does not invent a timeline the host never
 /// asked for), not an unfinished wiring. A host that drives timeline choreography does so from its
 /// own frame loop: [`AnimationClock`] is the ready-made pairing, and the runnable doctest on
-/// [`AnimationGroup`](crate::style::animation_group::AnimationGroup) exercises that path in-tree.
+/// [`AnimationGroup`]] exercises that path in-tree.
 pub struct AnimationDriver {
     animations: HashMap<AnimationId, ActiveAnimation>,
     property_animations: HashMap<AnimationId, PropertyAnimation>,

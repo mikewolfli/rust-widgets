@@ -223,7 +223,7 @@ pub trait Layout {
     /// silent: a wrapper that forgot to forward `arrange` to its inner layout kept
     /// "working" while every `ChildInfo` the caller passed — sizing hints, margins,
     /// fill/stretch — was dropped on the floor (G-403). With no default, a wrapper that
-    /// misses the entry fails to compile; [`impl_layout_forward!`] generates the four
+    /// misses the entry fails to compile; `impl_layout_forward!` generates the four
     /// forwards for wrappers that do forward, and each solver states explicitly what it
     /// does with the hint channel.
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect));
@@ -243,7 +243,7 @@ pub trait Layout {
     /// The default forwarded to [`Layout::arrange`] with the context dropped, which is
     /// exactly the failure mode G-403 records: a wrapper that skipped this entry silently
     /// lost the device scale and the touch floor on the context-aware path. Requiring the
-    /// entry turns that silent loss into a compile error; [`impl_layout_forward!`]
+    /// entry turns that silent loss into a compile error; `impl_layout_forward!`
     /// generates the forward for wrappers that do forward.
     fn arrange_with_context(
         &self,
@@ -261,7 +261,7 @@ pub trait Layout {
     /// [`ArrangeReport`] from it would be a source-breaking change for every implementor outside
     /// this crate, including the C ABI's wrappers. A default body costs no implementor a line:
     /// it runs the solver exactly as `arrange` does, records each emitted rectangle with
-    /// [`LayoutInspector::record_geometry`] (a no-op unless the inspector is enabled), and
+    /// `LayoutInspector::record_geometry` (a no-op unless the inspector is enabled), and
     /// compares the results against the children's hints.
     ///
     /// A solver that clamps *inside* its own arithmetic still gets a correct report, because the
@@ -365,7 +365,7 @@ pub trait Layout {
     /// The default ignored the context and delegated to [`Layout::update`], so a wrapper
     /// that forgot to forward this entry silently laid out with nominal spacing — no
     /// `layout_scale`, no `font_scale`, no touch floor (G-403). With the entry required
-    /// the miss is a compile error, and [`impl_layout_forward!`] generates the forward
+    /// the miss is a compile error, and `impl_layout_forward!` generates the forward
     /// for wrappers that do forward.
     fn update_with_context(
         &self,

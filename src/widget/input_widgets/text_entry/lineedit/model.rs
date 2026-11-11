@@ -1836,7 +1836,7 @@ impl LineEdit {
 
     /// Installs or removes an input mask.
     ///
-    /// The mask is parsed by [`crate::widget::input_widgets::mask_engine`], the same grammar the
+    /// The mask is parsed by `crate::widget::input_widgets::mask_engine`, the same grammar the
     /// dedicated masked control uses. With a
     /// mask installed the value is kept in its formatted form and typing fills the next cell;
     /// removing it leaves the current text untouched. `None` (the default) is the previous
@@ -1941,7 +1941,7 @@ impl LineEdit {
     /// Copies the current selection to the platform clipboard.
     ///
     /// This is the public entry point for a host toolbar or context menu; it runs the same
-    /// [`Self::clipboard_selection`] path as the primary+C shortcut, so a masked field copies its
+    /// `Self::clipboard_selection` path as the primary+C shortcut, so a masked field copies its
     /// mask and an empty selection is a no-op.
     pub fn copy(&mut self) {
         #[cfg(not(alloc_frugal))]

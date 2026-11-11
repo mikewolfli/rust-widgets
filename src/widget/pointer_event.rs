@@ -13,12 +13,12 @@
 //! type keeps it and emits the typed one alongside it: old subscribers still fire, and a dynamic
 //! subscriber receives the payload the capability schema declares.
 //!
-//! [`PointerEvent`] derefs to the legacy [`GenericSignal`], so every existing method call
+//! `PointerEvent` derefs to the legacy `GenericSignal`, so every existing method call
 //! (`connect`, `connect_scoped`, `disconnect`, `slot_count`, …) keeps compiling unchanged.
 //!
 //! # One type, one wire form
 //!
-//! Every control that publishes a pointer gesture resolves it through [`pointer_capability_value`],
+//! Every control that publishes a pointer gesture resolves it through `pointer_capability_value`,
 //! so `"mouse_pressed"` means the same thing — `["x,y", button]` — on every surface (principle
 //! #54: one representation per semantic, no per-control copies that can drift).
 

@@ -24,7 +24,7 @@
 //!
 //! Two layers, because there are two costs:
 //!
-//! 1. **The read** — [`cached_from_path_with_key`] answers "these are the bytes this path produces" from a
+//! 1. **The read** — `cached_from_path_with_key` answers "these are the bytes this path produces" from a
 //!    `stat` when the file has not changed, so twelve tool buttons on one icon read it once. This is
 //!    the one place a **path** is a key, and only because it sits *before* the identity question: a
 //!    stat is what a filesystem answers without reading, and identity is still settled by content one
@@ -651,7 +651,7 @@ fn path_key(path: &std::path::Path) -> std::path::PathBuf {
 /// copy happens once, and every later request is an `Arc` bump — which is what "shared" has to mean
 /// to be worth anything.
 ///
-/// # And why it reads through [`cached_from_path_with_key`] rather than `std::fs::read`
+/// # And why it reads through `cached_from_path_with_key` rather than `std::fs::read`
 ///
 /// Reading directly here made the decode cache cheaper than it looked: a request whose pixels were
 /// already cached still paid a full file read to find that out. The read is now the layer below, so

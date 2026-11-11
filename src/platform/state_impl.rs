@@ -238,7 +238,7 @@ macro_rules! impl_platform_state_properties {
             self.state.set_visible(widget_id, true)
         }
 
-        /// Hides a control. See [`show_widget`](Self::show_widget) for why this is here and
+        /// Hides a control. See `show_widget` for why this is here and
         /// what a native-surface backend must do instead.
         fn hide_widget(&self, widget_id: $crate::core::ObjectId) -> bool {
             self.state.set_visible(widget_id, false)

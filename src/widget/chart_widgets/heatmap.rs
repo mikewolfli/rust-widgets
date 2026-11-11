@@ -473,7 +473,7 @@ impl Heatmap {
     }
 
     /// Hands the hover read-out to a companion such as
-    /// [`ChartTooltip`](crate::widget::companions::ChartTooltip).
+    /// [`ChartTooltip`]].
     pub fn set_hover_readout_external(&mut self, external: bool) {
         if self.hover_readout_external == external {
             return;

@@ -569,7 +569,7 @@ impl DropTarget for DropZone {
     /// Clears the highlight when the drag leaves without dropping.
     ///
     /// The exit is only *announced* for a drag that was really over the zone, and only after the
-    /// drop-or-not question is settled (see [`Self::exit_pending`]); `clear_hover` records that
+    /// drop-or-not question is settled (see `Self::exit_pending`); `clear_hover` records that
     /// leave.
     fn report_leave(&mut self) {
         self.clear_hover();

@@ -615,7 +615,7 @@ impl MdiArea {
     /// z-order (C-001).
     ///
     /// A sub-window is a record rather than a mounted control, so the format is a compact
-    /// position-indexed table instead of a tree walk. Entries follow [`Self::subwindows`]
+    /// position-indexed table instead of a tree walk. Entries follow `Self::subwindows`
     /// order; a restore applies to the same number of windows the caller re-added, exactly as
     /// [`super::splitter::Splitter::restore_state`] refuses a different pane count.
     pub fn save_state(&self) -> Vec<u8> {
@@ -818,8 +818,8 @@ impl MdiArea {
 
     /// Moves the `TabbedView` tab strip to `position`.
     ///
-    /// The strip and the body are one derivation ([`Self::tab_strip_rect`] and
-    /// [`Self::subwindow_placement`]), so moving the strip moves the body it leaves behind.
+    /// The strip and the body are one derivation (`Self::tab_strip_rect` and
+    /// `Self::subwindow_placement`), so moving the strip moves the body it leaves behind.
     pub fn set_tab_strip_position(&mut self, position: TabStripPosition) {
         if self.tab_strip_position == position {
             return;

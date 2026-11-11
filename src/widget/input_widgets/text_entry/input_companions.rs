@@ -11,7 +11,7 @@
 //!
 //! COMP-C01's candidate-list host and COMP-B01's candidate-list widget were two implementations of
 //! one concept, so they were merged into `super::suggestion_popup` (principle #101). This module
-//! re-exports the merged [`SuggestionPopup`], [`PopupItem`] and [`MatchMode`] so COMP-C01's
+//! re-exports the merged `SuggestionPopup`, `PopupItem` and `MatchMode` so COMP-C01's
 //! documented path still resolves, while filtering, flipping, the scroll window and outside
 //! dismissal are implemented exactly once.
 //!

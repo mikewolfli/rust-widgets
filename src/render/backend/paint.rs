@@ -97,7 +97,7 @@ pub trait PaintBackend {
     /// passes a slot size while handing over native pixels gets nothing (smaller source) or the
     /// top-left corner (larger source). Fitting an icon into a slot means resampling, and this is
     /// the entry that says so. Source and destination the same size delegates to `draw_image`, so
-    /// an image already at its slot size is byte-identical. See [`super::image_scale`] for the two
+    /// an image already at its slot size is byte-identical. See `super::image_scale` for the two
     /// strategies (portable resample-then-blit, software sample-during-blit).
     fn draw_image_scaled(
         &mut self,

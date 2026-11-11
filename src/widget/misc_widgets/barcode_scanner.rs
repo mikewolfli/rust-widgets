@@ -185,7 +185,7 @@ impl BarcodeScanner {
     /// Returns `true` when a symbol was decoded **and accepted by this scanner's format
     /// filter**, which also emits `barcode_detected`. A frame with no symbol returns `false` and
     /// leaves the previous result in place, so a viewfinder that misses for a few frames does not
-    /// blank the readout. A symbol whose format [`Self::accepts_format`] refuses is the same
+    /// blank the readout. A symbol whose format `Self::accepts_format` refuses is the same
     /// answer: nothing was stored and no signal fired, so reporting `true` would promise a
     /// result the caller cannot read back. A malformed frame (length not `width * height`) is
     /// refused for the same reason rather than being decoded from whatever bytes happened to be

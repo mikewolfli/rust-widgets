@@ -689,7 +689,7 @@ impl Dialog {
     ///
     /// The size is recomputed from the gesture's origin rather than accumulated, so moving the
     /// pointer back restores the original size exactly. The top-left corner is fixed and both
-    /// dimensions are clamped to [`DIALOG_RESIZE_MIN`].
+    /// dimensions are clamped to `DIALOG_RESIZE_MIN`.
     pub fn resize_to(&mut self, pos: Point) {
         let (Some(origin), Some(start)) = (self.resize_origin, self.resize_geometry) else {
             return;

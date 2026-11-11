@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 // ── Token styling ────────────────────────────────────────────────────────────
 
-/// Token categories produced by a [`SyntaxHighlighter`].
+/// Token categories produced by a `SyntaxHighlighter`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TokenKind {
     /// Unstyled source text.

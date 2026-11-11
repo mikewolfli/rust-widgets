@@ -294,7 +294,7 @@ impl Widget for Stepper {
 
     /// Repeats the held button (C-021).
     ///
-    /// The shared [`AutoRepeat`] owns the delay/interval arithmetic; this method only turns each
+    /// The shared `AutoRepeat` owns the delay/interval arithmetic; this method only turns each
     /// due repeat into one step in the held direction.
     fn tick(&mut self, delta_ms: u32) -> bool {
         let held = self.base.is_enabled() && self.hold.is_some();

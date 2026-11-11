@@ -10,7 +10,7 @@
 //! # Reachability
 //!
 //! **State:** Production caller: the declarative document path. A `"constraint"` layout node
-//! builds a [`ConstraintLayout`], and each child's `constraints` list is resolved against the
+//! builds a `ConstraintLayout`, and each child's `constraints` list is resolved against the
 //! document's node ids and stored on it through
 //! [`apply_constraints_to_layout`](crate::layout::declarative) (API2-01). The solver is therefore
 //! reachable from a saved document, not only from tests.

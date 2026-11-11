@@ -226,7 +226,7 @@ impl App {
         changed
     }
 
-    /// Emits a [`LifecycleEvent::MemoryWarning`] to every lifecycle listener (APP-010).
+    /// Emits a `LifecycleEvent::MemoryWarning` to every lifecycle listener (APP-010).
     ///
     /// The platform layer has no memory-warning notification to subscribe to, so the reachable
     /// channel is an explicit call: a host that receives the OS warning (or whose
@@ -307,7 +307,7 @@ impl App {
 
     /// Whether this application's accessibility subsystem was enabled at [`init`](App::init).
     ///
-    /// Mirrors [`AppConfig::enable_accessibility`](AppConfig::enable_accessibility): the
+    /// Mirrors [`AppConfig::enable_accessibility`]: the
     /// config switch is a declaration, and this reports the value the running application
     /// actually recorded when it initialised. Before `init` it reports the process default
     /// (`true`).
@@ -317,7 +317,7 @@ impl App {
 
     /// Run the platform main event loop (blocks).
     ///
-    /// While the loop runs, every polled [`WidgetTriggerEvent`] is dispatched
+    /// While the loop runs, every polled `WidgetTriggerEvent` is dispatched
     /// to the callbacks registered via `WidgetHandle::on_click` /
     /// `WidgetHandle::on_value_changed`.
     pub fn run(&self) {
@@ -456,7 +456,7 @@ static SHUTDOWN: OnceLock<Mutex<Vec<ShutdownCallback>>> = OnceLock::new();
 ///
 /// A DPI change, a clipboard write and a completed drop are facts about the **application**: they
 /// have no single target widget, and a host may need to react even when no control is focused.
-/// Reporting them through [`WidgetTriggerEvent`] would invent a widget id for a fact that has none,
+/// Reporting them through `WidgetTriggerEvent` would invent a widget id for a fact that has none,
 /// so they travel this channel instead.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicationEvent {

@@ -35,7 +35,7 @@
 //!
 //! The fix is a real export: each widget for which [`AccessibilityBridge::submit_node_state`] runs
 //! is served on the bus as an `org.a11y.atspi.Accessible` object at exactly the path the events
-//! name, backed by the widget's [`A11yState`] (see [`AtspiAccessible`]). `unregister_node` removes
+//! name, backed by the widget's [`A11yState`] (see `AtspiAccessible`). `unregister_node` removes
 //! the object. Events are emitted **only** for objects that are exported, so an event's source path
 //! always resolves to an application object a client can query.
 //!

@@ -17,7 +17,7 @@
 //! `cascade_sub_windows`/`tile_sub_windows` mutate that private record list, so they cannot move
 //! top-level windows. Calling them from here would require fabricating an `MdiArea` and copying
 //! rectangles back out — a second, lossy representation of the same set. The offset/step math is
-//! therefore implemented once in [`cascade_layout`] and [`tile_layout`], using the same formula
+//! therefore implemented once in `cascade_layout` and `tile_layout`, using the same formula
 //! `MdiArea` uses, and applied through `WindowHandle::set_geometry`.
 //!
 //! # What the workbench is not

@@ -185,7 +185,7 @@ impl TabElideMode {
     /// Alias for [`TabElideMode::ElideMiddle`], the spelling `TabBar` published.
     pub const Middle: Self = Self::ElideMiddle;
 
-    /// Parses a property token, accepting exactly the spellings [`elide_token`] publishes.
+    /// Parses a property token, accepting exactly the spellings `elide_token` publishes.
     pub fn from_token(token: &str) -> Option<Self> {
         match token {
             "none" => Some(TabElideMode::None),

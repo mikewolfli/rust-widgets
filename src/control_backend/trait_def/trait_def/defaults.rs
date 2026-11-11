@@ -32,7 +32,7 @@ macro_rules! default_widget_creation {
 
         /// Mount an already-built widget box under `parent`.
         ///
-        /// # Why this exists alongside [`create_widget`](ControlBackend::create_widget)
+        /// # Why this exists alongside `create_widget`
         ///
         /// `create_widget` takes a *name* and builds the control inside the backend. A caller that
         /// has already built the widget — the JSON layout loader, which applies a document's whole
@@ -168,7 +168,7 @@ macro_rules! default_menu_dialog_view_widgets {
         /// Reports that the entry at `index` of `menu` was chosen by the user.
         ///
         /// Backends that own a menu-trigger queue implement this so a **self-drawn** menu
-        /// selection reaches [`poll_menu_triggered`](Self::poll_menu_triggered), the same way a
+        /// selection reaches `poll_menu_triggered`, the same way a
         /// native menu's selection does. The default is a no-op: a backend whose menus are host
         /// objects (`NSMenu`, `HMENU`) already has the host feeding that queue.
         ///
@@ -178,7 +178,7 @@ macro_rules! default_menu_dialog_view_widgets {
         fn note_menu_selection(&self, _menu: ObjectId, _index: usize) {}
         /// Whether the native menu bar behind this backend can present an icon on an item.
         ///
-        /// Mirrors [`Platform::supports_menu_item_icons`](crate::platform::Platform::supports_menu_item_icons),
+        /// Mirrors `Platform::supports_menu_item_icons`,
         /// the same way [`ControlBackend::menu_add_item`] mirrors `Platform::menu_add_item`: the control
         /// layer is what callers hold, and the answer is the platform's. `false` by default, because a
         /// backend that has not said otherwise has no icon surface to promise.
@@ -699,7 +699,7 @@ macro_rules! default_advanced_widgets {
         /// optional `rust-widgets-suites` webview group, which contributes them through
         /// `rust_widgets_suites::install_webview_group(&mut WidgetFactory)`. This crate no longer carries the
         /// control, so a backend that mounts **by name** from
-        /// [`WidgetFactory::shared`](crate::widget::capability::WidgetFactory::shared) answers `0`
+        /// `WidgetFactory::shared` answers `0`
         /// here — the same "no web support" answer
         /// [`ControlBackend::create_web_engine_page`] documents, rather than resolving
         /// `WidgetKind::WebEngineView` to the `media_player` that also carries that kind.

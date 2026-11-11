@@ -809,7 +809,7 @@ impl TabView {
     /// The draw path used to compute each tab's x as `rect.x + i * tab_width`, and the hit test
     /// re-derived the same expression from a separate bookkeeping run — two accumulators of one
     /// fact. The run was then assembled through
-    /// [`CompositeBuilder`](crate::widget::composite::CompositeBuilder), which built a `label`
+    /// [`CompositeBuilder`], which built a `label`
     /// widget per tab on every call — once per painted tab and once more per pointer event. The
     /// relation itself needs no assembly: [`TabView::tab_sizes`] resolves the widths and this method
     /// walks them, so the paint and the hit test still read one result.

@@ -269,7 +269,7 @@ static BASE_EVENT_SCHEMAS: &[EventSchema] =
 /// designer generator and `connect_event` each used to spell the same `normalize_key` comparison.
 /// An exact match is tried first, so the common already-canonical spelling allocates nothing.
 ///
-/// A capability's own list is consulted first; [`BASE_EVENT_SCHEMAS`] then supplies the focus
+/// A capability's own list is consulted first; `BASE_EVENT_SCHEMAS` then supplies the focus
 /// events every control inherits from [`BaseWidget`](crate::widget::BaseWidget).
 pub fn find_event_schema<'a>(
     capability: &'a WidgetCapability,

@@ -671,8 +671,8 @@ impl NavigationStack {
     ///
     /// [`EdgeSwipeRecognizer`](crate::gesture::EdgeSwipeRecognizer) emits the ordinary
     /// [`Event::Swipe`] rather than a bespoke event, so this is the stack's consumer for it: a
-    /// swipe counts only when it begins inside the leading edge strip [`Self::edge_band`] describes
-    /// and travels inward. That is the same strip [`Self::begin_edge_drag`] claims for pointer
+    /// swipe counts only when it begins inside the leading edge strip `Self::edge_band` describes
+    /// and travels inward. That is the same strip `Self::begin_edge_drag` claims for pointer
     /// drags, so a recognised swipe and a direct drag cannot disagree about what "back" means.
     /// Returns `true` when a page was popped.
     #[cfg(feature = "touch")]

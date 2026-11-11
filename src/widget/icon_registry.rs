@@ -5,7 +5,7 @@
 //!
 //! # The gap this closes
 //!
-//! [`IconName`](crate::widget::IconName) is a closed enum generated from
+//! [`IconName`] is a closed enum generated from
 //! `tools/icon_tokens.txt` — a *fixed* set. That is the right shape for the crate's own icons
 //! (a compile-time table, no lookup cost, no missing-icon surprise), but it leaves a host with no
 //! way to draw **its own** icon: an application-specific glyph, a brand mark, a product icon set

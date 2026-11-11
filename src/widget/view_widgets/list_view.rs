@@ -1045,7 +1045,7 @@ impl ListView {
 
     /// The row height the current view mode lays rows out with.
     ///
-    /// Derived from [`Self::list_layout`] so the advertised height and the painted height cannot
+    /// Derived from `Self::list_layout` so the advertised height and the painted height cannot
     /// disagree across the list/icon/details modes.
     pub fn row_height(&self) -> u32 {
         self.list_layout().row_height
@@ -1308,7 +1308,7 @@ impl ListView {
     /// Installs the edit delegate, replacing any previous one.
     ///
     /// The delegate speaks the shared
-    /// [`ItemDelegate`](crate::widget::view_widgets::table_widget::ItemDelegate) protocol, with
+    /// [`ItemDelegate`] protocol, with
     /// `column == 0` because a list has one column. Returns the replaced delegate, if any.
     pub fn set_editor_delegate(
         &mut self,
@@ -1330,7 +1330,7 @@ impl ListView {
     /// Begins an in-place edit of `(row, column)`, returning the editor the delegate built.
     ///
     /// The sequence is the table's: create, seed from the delegate, then place the editor over the
-    /// row's own band (from the same [`Self::item_rect`] the paint and the hit test read). A list
+    /// row's own band (from the same `Self::item_rect` the paint and the hit test read). A list
     /// has one column, so any `column` other than `0` is meaningless and answers `None` — the
     /// two-argument signature exists so a host can drive a list and a tree table with one call
     /// shape (RW-18). Returns `None` when there is no delegate or model, or the row does not exist.

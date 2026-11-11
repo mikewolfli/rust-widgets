@@ -984,7 +984,7 @@ impl SoftwareSurface {
     /// Draws an arc (partial circle).
     ///
     /// The command-level angles are normalised to `(start, sweep)` and the arc is then walked
-    /// by [`for_each_arc_sample`], the same kernel [`crate::render::draw_arc_segments`] uses.
+    /// by `for_each_arc_sample`, the same kernel [`crate::render::draw_arc_segments`] uses.
     /// The old path sampled with a fixed `0.02` rad step into a `Vec` allocated on every call;
     /// it also read a whole turn (start 0, end 2π) as a zero sweep and painted a single line
     /// instead of a circle. Both defects are gone because there is no second sampler left to

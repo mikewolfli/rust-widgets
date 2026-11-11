@@ -1030,7 +1030,7 @@ impl PropertyGrid {
 
     /// Installs a custom editor for the property at `index`.
     ///
-    /// The delegate is consulted before the plain-text path: [`Self::begin_grid_edit`] asks it for
+    /// The delegate is consulted before the plain-text path: `Self::begin_grid_edit` asks it for
     /// an editor and holds that editor until [`Self::commit_delegate_edit`]. Returns `false` when
     /// the index does not name a property.
     pub fn set_entry_delegate(

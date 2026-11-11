@@ -70,7 +70,7 @@ impl Platform for IosMobilePlatform {
     }
 
     /// Reads installed physical memory via `sysconf(_SC_PHYS_PAGES)` in
-    /// [`crate::platform::darwin_probes`]. iOS does not mount `/proc/meminfo`.
+    /// `crate::platform::darwin_probes`. iOS does not mount `/proc/meminfo`.
     ///
     /// # Why the probe is gated rather than the whole module
     ///
@@ -327,7 +327,7 @@ impl Platform for IosMobilePlatform {
     }
 
     /// Samples RSS over VSZ for this process from `ps`, in
-    /// [`crate::platform::darwin_probes`].
+    /// `crate::platform::darwin_probes`.
     fn process_memory_utilization(&self) -> Option<f32> {
         #[cfg(target_vendor = "apple")]
         {

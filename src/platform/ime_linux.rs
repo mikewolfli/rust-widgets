@@ -567,7 +567,7 @@ impl ImeBridge for LinuxImeBridge {
     /// widget merely gained focus, so a host that gates its own IME UI on this would enable it over a
     /// bridge that can never deliver a composition. This reports the conjunction — focus **and** a
     /// live IBus connection — which is what `is_active` promises (see
-    /// [`ImeBridge::is_active`](crate::platform::ime::ImeBridge::is_active)).
+    /// [`ImeBridge::is_active`]]).
     fn is_active(&self) -> bool {
         if !*lock(&self.active) {
             return false;

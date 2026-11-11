@@ -563,7 +563,7 @@ impl AdaptiveScaffold {
 
     /// Shows the snackbar slot.
     ///
-    /// A [`MaterialSnackbar`] is shown through its own `show`, so its duration and queued
+    /// A `MaterialSnackbar` is shown through its own `show`, so its duration and queued
     /// messages keep working. Any other widget is shown through its base visibility. Returns
     /// `false` when the slot is empty or an id slot cannot be reached.
     pub fn show_snackbar(&mut self) -> bool {
@@ -600,7 +600,7 @@ impl AdaptiveScaffold {
 
     /// Dismisses the snackbar slot immediately.
     ///
-    /// A [`MaterialSnackbar`] is dismissed through its own `dismiss`, which emits its `dismissed`
+    /// A `MaterialSnackbar` is dismissed through its own `dismiss`, which emits its `dismissed`
     /// signal; any other widget is hidden. Returns `false` when no slot can be reached.
     pub fn dismiss_snackbar(&mut self) -> bool {
         if let Some(widget) = self.snackbar.as_deref_mut() {
@@ -647,7 +647,7 @@ impl AdaptiveScaffold {
 
     /// Opens the bottom-sheet slot.
     ///
-    /// A [`BottomSheet`] is opened through its own `open`, so its rise animation and drag handle
+    /// A `BottomSheet` is opened through its own `open`, so its rise animation and drag handle
     /// keep working; any other widget is shown. Returns `false` when no slot can be reached.
     pub fn show_bottom_sheet(&mut self) -> bool {
         if let Some(widget) = self.bottom_sheet.as_deref_mut() {
@@ -682,7 +682,7 @@ impl AdaptiveScaffold {
 
     /// Dismisses (closes) the bottom-sheet slot.
     ///
-    /// A [`BottomSheet`] is dismissed through its own `dismiss`, so its rise animation is kept;
+    /// A `BottomSheet` is dismissed through its own `dismiss`, so its rise animation is kept;
     /// any other widget is hidden. Returns `false` when no slot can be reached.
     pub fn dismiss_bottom_sheet(&mut self) -> bool {
         if let Some(widget) = self.bottom_sheet.as_deref_mut() {

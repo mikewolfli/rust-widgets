@@ -505,7 +505,7 @@ impl DataGrid {
     /// The stored unit is the cell itself in `Cells` behaviour, `(row, 0)` in `Rows` behaviour and
     /// `(0, column)` in `Columns` behaviour (V-004): one accessor serves all three by handing back
     /// what the selection stores, and whether a whole row or column is covered is
-    /// [`Self::selection_contains`]'s lookup. A `select_all` keeps no units, so it is expanded
+    /// `Self::selection_contains`'s lookup. A `select_all` keeps no units, so it is expanded
     /// here; a caller that needs the distinct rows or columns should prefer
     /// [`Self::selected_indexes`].
     pub fn selected_cells(&self) -> Vec<(usize, usize)> {

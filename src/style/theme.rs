@@ -476,7 +476,7 @@ pub fn motion_tokens() -> (u32, u32, u32) {
 /// The half-period of a text cursor's blink, in milliseconds (X-004).
 ///
 /// Zero means "hold the caret steady": the user's reduced-motion preference collapses every
-/// duration, and a light-sensitive user may set the token to zero explicitly. [`CursorBlink::tick`]
+/// duration, and a light-sensitive user may set the token to zero explicitly. `CursorBlink::tick`
 /// treats zero as the settled state and stops asking for frames.
 #[cfg(device_profile)]
 pub fn cursor_blink_half_period_ms() -> u32 {

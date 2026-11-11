@@ -1193,7 +1193,7 @@ impl TreeTable {
     /// Begins an in-place edit of `(row, column)`, returning the editor the delegate built.
     ///
     /// The editor is placed over the cell's painted rectangle, derived from the same
-    /// [`Self::column_span`] and header offset the paint loop reads, so an editor cannot land on a
+    /// `Self::column_span` and header offset the paint loop reads, so an editor cannot land on a
     /// cell it was not opened for. Returns `None` when there is no delegate or model, or the
     /// address is out of range.
     pub fn begin_edit(&mut self, row: usize, column: usize) -> Option<Box<dyn Widget>> {

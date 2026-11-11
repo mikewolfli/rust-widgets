@@ -422,7 +422,7 @@ impl MarkdownEditor {
 
     /// Returns headings in document order, as navigation targets.
     ///
-    /// Uses the one heading rule in [`heading_of`], which the metrics and the preview also
+    /// Uses the one heading rule in `heading_of`, which the metrics and the preview also
     /// read: the three used to disagree about `#no-space`, 7+ hashes and trailing whitespace,
     /// so the outline could list a row the preview did not render as a heading.
     pub fn outline(&self) -> Vec<MarkdownOutlineEntry> {
@@ -551,7 +551,7 @@ impl MarkdownEditor {
     /// The match becomes the selection and the caret moves to its end, which is what makes
     /// repeated calls step through the document instead of finding the same match again.
     ///
-    /// The ranges come from the mounted [`FindBar`]'s matcher ([`literal_matches`]) under the
+    /// The ranges come from the mounted [`FindBar`]'s matcher (`literal_matches`) under the
     /// bar's own case and whole-word policy, the same engine that paints the bar's counter. The
     /// editor used to run `str::find` here, so a case or whole-word policy set on the bar and the
     /// match this command selected were two different answers to the same question.

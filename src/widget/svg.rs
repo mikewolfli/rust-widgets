@@ -237,7 +237,7 @@ fn is_text_path(d: &str) -> bool {
 /// the string laid down — enough to tell `"OK"` from `""`, or to notice that a longer string
 /// produced no more ink than a shorter one (which is what a lost advance looks like).
 ///
-/// The text/shape discrimination is [`is_text_path_element`], the same predicate
+/// The text/shape discrimination is `is_text_path_element`, the same predicate
 /// [`text_ink_boxes`] and [`first_shape_bounds`] use. Reading every `<path>` counted a control's
 /// chevron or other drawn shape as text, so "did the text change" assertions could move on a
 /// shape edit alone.
