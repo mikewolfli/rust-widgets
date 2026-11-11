@@ -3,7 +3,7 @@
 
 //! Layout manager parsing for JSON declarative layouts.
 //!
-//! Converts JSON `"layout"` objects into concrete [`Layout`](crate::layout::Layout) trait objects.
+//! Converts JSON `"layout"` objects into concrete [`Layout`] trait objects.
 
 use serde_json::Value;
 

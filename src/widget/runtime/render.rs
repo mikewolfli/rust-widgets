@@ -1218,7 +1218,7 @@ thread_local! {
     /// Before this the table was a per-frame memo: the layer cache saved rasterising unchanged
     /// subtrees, but every repaint still re-walked the whole tree to compute their bounds. The key
     /// pairs the tree's root with the **structure generation**
-    /// ([`structure_epoch`]) and the global repaint
+    /// ([`structure_epoch`](crate::widget::runtime::cache::structure_epoch)) and the global repaint
     /// generation. The structure generation is bumped by the events that change a subtree's shape
     /// (geometry, visibility, popups, mount, teardown) and deliberately not by per-frame animation
     /// damage, so an animating control's frames reuse the table while any structural change drops

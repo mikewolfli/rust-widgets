@@ -101,7 +101,7 @@ pub struct FloatingLabel {
     /// [`FloatingLabel::tick`] and consumed by the draw pass. `0.0` draws the
     /// label inline; `1.0` draws it fully above the field.
     ///
-    /// Held as the shared [`PropertyDriver`] rather than as a bare
+    /// Held as the shared [`PropertyDriver`](crate::style::PropertyDriver) rather than as a bare
     /// `f32`: the travel needs a *duration* and an *easing curve*, and both are theme
     /// decisions this control used to hardcode (see `tick`). The driver also holds the
     /// target, so the `target_progress` field this control used to keep in step beside it

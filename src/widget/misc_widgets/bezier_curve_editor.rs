@@ -155,7 +155,7 @@ pub struct BezierCurveEditor {
     undo_stack: UndoStack,
     /// The point set the history commands write to.
     ///
-    /// An [`UndoCommand`] cannot reach a field of this widget, so the
+    /// An [`UndoCommand`](crate::undo::UndoCommand) cannot reach a field of this widget, so the
     /// editor keeps the authoritative set in a shared cell the `ValueCommand` can restore — the
     /// same `Rc<RefCell<T>>` pattern the date and key-sequence editors use. `segments` stays the
     /// readable field every drawing path uses; `restore_history_segments` copies the cell back

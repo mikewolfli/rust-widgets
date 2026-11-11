@@ -315,7 +315,7 @@ pub struct RichEdit {
     /// `None` is the default, which is what keeps this control's paint byte-identical to the
     /// strip-less editor: with no toolbar the body occupies the whole geometry and no extra
     /// pixels are touched. When a control is here, it is the **standard**
-    /// [`FormatToolbar`] rather than a private copy —
+    /// [`FormatToolbar`](super::input_companions::FormatToolbar) rather than a private copy —
     /// the strip and a host-driven toolbar therefore share one action set, one cell layout, one
     /// hit test and one preview rule. The editor applies a pressed action itself, so the strip
     /// is functional without host wiring; `format_requested` still fires for observers.

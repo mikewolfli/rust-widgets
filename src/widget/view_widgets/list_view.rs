@@ -1308,7 +1308,7 @@ impl ListView {
     /// Installs the edit delegate, replacing any previous one.
     ///
     /// The delegate speaks the shared
-    /// [`ItemDelegate`] protocol, with
+    /// [`ItemDelegate`](crate::widget::view_widgets::table_widget::ItemDelegate) protocol, with
     /// `column == 0` because a list has one column. Returns the replaced delegate, if any.
     pub fn set_editor_delegate(
         &mut self,

@@ -8,7 +8,7 @@
 //!
 //! `break_lines` and `place_lines` are the crate's only implementation of "where does a
 //! wrapped line end and where do its items sit". [`WrapLayout`] calls them with the sizes it was
-//! told; [`FlowLayout`](crate::layout::FlowLayout) calls them with the sizes its children report.
+//! told; [`FlowLayout`] calls them with the sizes its children report.
 //! The two layouts keep their own size sources and configuration surfaces, but not two
 //! algorithms — see LAY-N08.
 use super::types::ChildPlacements;

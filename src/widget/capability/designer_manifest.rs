@@ -1485,7 +1485,7 @@ fn read_icon_spec(
 ///
 /// The manifest describes properties, and this reader has no schema in hand — the same situation the
 /// JSON loader and the C ABI are in. The list therefore carries
-/// [`EMPTY_RECORD_SCHEMA`] and the *property* is what
+/// [`EMPTY_RECORD_SCHEMA`](crate::widget::capability::EMPTY_RECORD_SCHEMA) and the *property* is what
 /// supplies the record shape; see
 /// [`RecordList::validate_against`](crate::widget::capability::RecordList::validate_against).
 fn read_record_list(

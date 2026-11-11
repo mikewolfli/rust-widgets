@@ -1136,7 +1136,7 @@ pub(crate) fn note_window_root(id: ObjectId, is_window: bool) {
 
 #[cfg(full_widgets)]
 thread_local! {
-    /// Mounted [`TooltipManager`] ids.
+    /// Mounted [`TooltipManager`](crate::widget::companions::TooltipManager) ids.
     ///
     /// A hover transition used to filter the whole [`MOUNTED`] map for this kind, which is
     /// O(every mounted control) per pointer boundary crossing while the number of managers is

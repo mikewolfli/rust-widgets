@@ -1354,7 +1354,7 @@ impl Icon {
 
     /// Paints the current animation frame into the icon's square box.
     ///
-    /// The frame is fitted exactly like [`draw_icon_image`] fits a
+    /// The frame is fitted exactly like [`draw_icon_image`](super::icon::draw_icon_image) fits a
     /// single image, so switching between a still image and a movie does not move the ink. A
     /// disabled or selected state tints the pixels through a reused scratch buffer: the tint is the
     /// same desaturation and alpha reduction [`Icon::draw_color`] applies to vector outlines, so the
@@ -1492,7 +1492,7 @@ impl Icon {
     }
 
     /// Draws an icon from the generated fallback geometry
-    /// ([`IconFallback`]).
+    /// ([`IconFallback`](rust_widgets_icons::IconFallback)).
     ///
     /// The token's geometry is looked up in [`ICON_FALLBACK`](rust_widgets_icons::icon_fallback());
     /// all contours are filled together, so oppositely-wound counters remain empty. A name that is

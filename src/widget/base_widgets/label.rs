@@ -40,7 +40,7 @@ const LABEL_PADDING: EdgeOffsets = EdgeOffsets { left: 2, top: 2, right: 2, bott
 /// The floor a label claims.
 ///
 /// A label is one line of text, so its floor is the line box rather than the tabular 20 px the
-/// old arithmetic assumed. The height comes from [`estimate_line_height`],
+/// old arithmetic assumed. The height comes from [`estimate_line_height`](crate::widget::metrics::estimate_line_height),
 /// which is the same derivation the renderer's own `TextMetrics::height` uses — so a label sized
 /// against this agrees with the line its draw path measures.
 const LABEL_MIN_WIDTH: u32 = 16;
@@ -205,7 +205,7 @@ impl TextElideMode {
 /// `ElideRight` and `ElideMiddle` delegate to the shared width-budget primitives, so the
 /// search over character boundaries — and its CJK/emoji safety — lives in one place.
 /// `ElideLeft` keeps a private search because `text_utils` publishes the *character*-budget
-/// [`elide_start`] but no pixel-budget form of it;
+/// [`elide_start`](crate::widget::text_utils::elide_start) but no pixel-budget form of it;
 /// this control's budget is pixels, and converting one to the other would be an approximation
 /// of the renderer's advance. An empty result means not even an ellipsis fits, which is the
 /// honest answer [`elide_to_width`] already gives for that case.

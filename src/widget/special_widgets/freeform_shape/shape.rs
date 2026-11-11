@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! [`FreeformShapeWidget`] — the control that draws a [`ShapePath`](super::ShapePath).
+//! [`FreeformShapeWidget`] — the control that draws a [`ShapePath`].
 
 use super::types::{BubbleTailDirection, PathSegment, ShapePath};
 use crate::core::{Color, ObjectId, Point, Rect};

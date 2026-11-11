@@ -30,7 +30,7 @@
 //! had the flow reversed.
 //!
 //! [`Hints`] and [`ChildInfo`] are that channel: a widget states its own wish, and
-//! [`Layout::arrange`](crate::layout::Layout::arrange) receives it.
+//! [`Layout::arrange`] receives it.
 //!
 //! # Why three values per axis, and not the four-function model
 //!
