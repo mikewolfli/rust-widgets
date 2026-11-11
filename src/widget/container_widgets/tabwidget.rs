@@ -157,6 +157,12 @@ pub struct TabWidget {
 /// The variants name the end that is replaced by the ellipsis, matching
 /// [`crate::widget::text_utils::ElideMode`] and the `elide` token vocabulary Button and Label
 /// publish. `None` is the historical clip behaviour.
+///
+/// # Canonical definition
+///
+/// This is the single definition (principle #54). `TabBar`'s `TabElideMode` re-exports it, and
+/// the associated constants below keep TabBar's historical `Right`/`Left`/`Middle` spellings
+/// usable. The canonical spellings are the `Elide*` variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabElideMode {
     /// Clip the title (the historical behaviour).
@@ -170,7 +176,15 @@ pub enum TabElideMode {
     ElideMiddle,
 }
 
+#[allow(non_upper_case_globals)]
 impl TabElideMode {
+    /// Alias for [`TabElideMode::ElideRight`], the spelling `TabBar` published.
+    pub const Right: Self = Self::ElideRight;
+    /// Alias for [`TabElideMode::ElideLeft`], the spelling `TabBar` published.
+    pub const Left: Self = Self::ElideLeft;
+    /// Alias for [`TabElideMode::ElideMiddle`], the spelling `TabBar` published.
+    pub const Middle: Self = Self::ElideMiddle;
+
     /// Parses a property token, accepting exactly the spellings [`elide_token`] publishes.
     pub fn from_token(token: &str) -> Option<Self> {
         match token {

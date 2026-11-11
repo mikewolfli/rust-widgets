@@ -564,6 +564,11 @@ macro_rules! impl_properties_container {
             PropertySchema::new("expanded_count", PropertyValueKind::UInt, true, false),
             // Open/close animation. Off by default, which keeps the historical instant fold.
             PropertySchema::new("animated", PropertyValueKind::Bool, true, true),
+            // R-23: the ids of the open sections. Writing the list pre-expands a document's
+            // sections; `set_expanded_sections` is the derived command (a `set_` command's
+            // payload is written through the property it names). In single-expand mode only
+            // the first id can be open, which is the control's own policy.
+            PropertySchema::new("expanded_sections", PropertyValueKind::StringList, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

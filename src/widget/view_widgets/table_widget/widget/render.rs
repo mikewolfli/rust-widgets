@@ -48,6 +48,12 @@ impl Draw for TableWidget {
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
+        // A disabled table used to gate input only (its event handler returns early), so the
+        // surface, grid and text stayed at full contrast. The ink recedes toward the surface it
+        // is painted on — the crate's one disabled-ink rule — and the grid, header band and
+        // border below are all derived from that ink and surface, so they move together while the
+        // rows keep their geometry. `table:disabled` carries the palette's own disabled token.
+        let ink = self.base.disabled_ink_on(ink, surface);
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))

@@ -1839,32 +1839,39 @@ impl Draw for PieMenu {
             } else {
                 let label_text =
                     if item.icon_text().is_empty() { item.text() } else { item.icon_text() };
-                // The label is **centred on the wedge**, in a box bounded by the wedge's own
-                // geometry: the chord at the label radius is what two neighbouring labels may
-                // share, and the radial band is how tall the run can be. The previous call used
-                // the wedge centre as a *left* origin, so every label began at its wedge's middle
-                // and ran outward — the two top labels met over the hub and the right one left the
-                // control. Fitting the box also elides a label that genuinely cannot fit instead
-                // of overlapping its neighbour.
+                // The label runs **along the wedge's radius**: the run is rotated about the centre
+                // of the box that holds it, so a slice on the right reads horizontally and one at
+                // the top or bottom reads vertically. A radius pointing left gets half a turn, or
+                // the word would read bottom-to-top on that side.
+                //
+                // The box is still bounded by the wedge's own geometry: the chord at the label
+                // radius is what two neighbouring labels may share. Fitting it also elides a label
+                // that genuinely cannot fit instead of overlapping its neighbour.
                 let sweep = (item.angle_end() - item.angle_start()).abs();
                 let half_chord = (label_r * (sweep * 0.5).sin()).abs();
-                // `draw_text_fitted` insets both ends by `TEXT_FIT_MARGIN`, so a box sized to the
-                // bare chord asks it to fit the label into 6 px less than the chord — which
-                // elided `Rename` to `Rena…` in a wedge that had room for the whole word.
                 let box_w = ((half_chord * 2.0) + 2.0 * TEXT_FIT_MARGIN as f32).max(1.0) as u32;
-                let box_h = ((outer_r - inner_r) * 0.8).max(1.0) as u32;
-                let label_box = Rect::new(
-                    (lx - box_w as f32 / 2.0).round() as i32,
-                    (ly - box_h as f32 / 2.0).round() as i32,
-                    box_w,
-                    box_h,
-                );
-                context.draw_text_fitted_ellipsis(
-                    label_box,
+                let available = (box_w as i32 - 2 * TEXT_FIT_MARGIN as i32).max(0) as u32;
+                let fitted = crate::widget::text_utils::elide_to_width(
                     label_text,
+                    available,
+                    &mut |candidate| context.measure_text(candidate, font).width,
+                );
+                let line_height = context.measure_text(&fitted, font).height;
+                let origin =
+                    Point::new(lx.round() as i32, (ly - line_height as f32 / 2.0).round() as i32);
+                let pivot = Point::new(lx.round() as i32, ly.round() as i32);
+                let mut radians = mid_angle;
+                if radians.cos() < 0.0 {
+                    radians += core::f32::consts::PI;
+                }
+                context.draw_text_rotated(
+                    origin,
+                    &fitted,
                     font,
                     text_color,
                     HorizontalAlignment::Center,
+                    pivot,
+                    radians,
                 );
             }
             // The shortcut hint sits nearer the rim than the label, in the weaker ink: it

@@ -9,14 +9,12 @@
 //! Connect `ShortcutManager::shortcut_triggered` → `ActionRouter::route_action_id`.
 
 use crate::action::ActionManager;
-use crate::action::UndoManager;
-use crate::compat::{lock, Mutex, String};
+use crate::compat::String;
 use crate::event::Event;
 use crate::shortcut::Key;
 use crate::shortcut::Modifiers;
 use crate::shortcut::PlatformShortcutStyle;
 use crate::shortcut::Shortcut;
-use alloc::sync::Arc;
 
 /// Routes keyboard shortcuts to registered actions, bridging `shortcut` and `action` modules.
 pub struct ActionRouter<'a> {
@@ -137,9 +135,8 @@ impl<'a> ActionRouter<'a> {
     /// spellings remain available through [`Shortcut::ctrl`] for code that needs the
     /// Control key on every platform.
     ///
-    /// This is the low-level form: it binds two caller-supplied closures. A host that keeps an
-    /// [`UndoManager`] uses [`Self::connect_undo_redo_stack`] instead, which binds the same
-    /// accelerators to the active context's stack-top operations.
+    /// The host owns the undo history and passes the two operations here: this module binds the
+    /// accelerators only, so it does not impose one undo implementation on the application.
     pub fn connect_undo_redo<U, R>(&mut self, undo: U, redo: R) -> bool
     where
         U: FnMut() + Send + Sync + 'static,
@@ -148,25 +145,6 @@ impl<'a> ActionRouter<'a> {
         let undo_ok = self.connect_callback("undo", Shortcut::primary(Key::Z), "Undo", undo);
         let redo_ok = self.connect_callback("redo", Self::redo_shortcut(), "Redo", redo);
         undo_ok && redo_ok
-    }
-
-    /// Binds the undo/redo accelerators to an [`UndoManager`]'s active stack.
-    ///
-    /// This is the W-202 convenience wrapper: the stack owns the command objects, so the host
-    /// only says which manager to drive. The manager is shared rather than borrowed because the
-    /// signal slots outlive this call, and the lock is held only for the duration of one
-    /// undo/redo operation.
-    pub fn connect_undo_redo_stack(&mut self, stack: Arc<Mutex<UndoManager>>) -> bool {
-        let for_undo = Arc::clone(&stack);
-        let for_redo = Arc::clone(&stack);
-        self.connect_undo_redo(
-            move || {
-                lock(&for_undo).undo();
-            },
-            move || {
-                lock(&for_redo).redo();
-            },
-        )
     }
 
     /// The platform's conventional redo accelerator.

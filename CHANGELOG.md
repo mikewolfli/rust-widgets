@@ -20,10 +20,12 @@ designer CLI. No public type was removed and no historical import path changed.
 - **`crates/rust-widgets-cli`, binary `rwui`** — `check` validates a project bundle or document and
   reports `RWCLI-*` diagnostics; `json2rust` generates the committed sources from the library's own
   generator (`--check` compares instead of writing, and refuses a hand-written file); `fmt`
-  normalises key order and indentation. `--json` emits one diagnostic per line and `--strict`
-  promotes style gaps to errors. Exit status is `0` clean, `1` error diagnostics, `2` the tool could
-  not run. CSS cascade, `json2css`, `rust2json` and `roundtrip` are later BLUE31 stages and are not
-  in this binary yet.
+  normalises key order and indentation; `create` scaffolds a runnable project for `desktop`,
+  `tablet`, `mobile`, `embedded` or `mini` (a `ui/app.json` + same-named `ui/app.css` pair plus
+  `src/main.rs`/`src/app.rs`, with a host skeleton for the two sized profiles). `--json` emits one
+  diagnostic per line and `--strict` promotes style gaps to errors. Exit status is `0` clean, `1`
+  error diagnostics, `2` the tool could not run. CSS cascade, `json2css`, `rust2json` and
+  `roundtrip` are later BLUE31 stages and are not in this binary yet.
 - **`examples/generated_project/rwui.json`** — the bundle manifest that names the existing
   `project.json`, so `rwui check examples/generated_project` works without renaming the example.
 

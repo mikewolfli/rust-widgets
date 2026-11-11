@@ -504,10 +504,14 @@ impl Draw for Spinner {
             .unwrap_or_else(|| Color::rgba(220, 220, 220, 200));
         let arc_color = self.arc_color.or(widget_style.background_color).unwrap_or(Color::PRIMARY);
 
-        // Resolve effective colors based on enabled state.
+        // Resolve effective colors based on enabled state. R-21: the disabled arc is derived
+        // from the active surface through the shared `disabled_ink_on` rule, not `#999999`.
+        let chart_surface =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let disabled_arc = self.base.disabled_ink_on(arc_color, chart_surface);
         let effective_track =
             if is_enabled { track_color } else { Color::rgba(200, 200, 200, 100) };
-        let effective_arc = if is_enabled { arc_color } else { Color::DISABLED_FOREGROUND };
+        let effective_arc = if is_enabled { arc_color } else { disabled_arc };
 
         match self.style {
             SpinnerStyle::Arc => {

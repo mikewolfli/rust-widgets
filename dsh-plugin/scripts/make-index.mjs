@@ -19,6 +19,8 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { assertPackageMatchesLibrary } from './version.mjs'
+
 const PACKAGE_PATH = fileURLToPath(new URL('../package.json', import.meta.url))
 const OUTPUT_PATH = fileURLToPath(new URL('../market-index.json', import.meta.url))
 const PACKAGE_DIR = dirname(PACKAGE_PATH)
@@ -35,6 +37,15 @@ const { name, version, description } = packageJson
 function fail(message) {
   console.error(`dsh-skill-rust-widgets: ${message}`)
   process.exit(1)
+}
+
+// The index describes a plugin that ships with the library, so its version is the library's.
+// Enforcing that here means a release cannot publish an index whose version disagrees with the
+// root `Cargo.toml`.
+try {
+  assertPackageMatchesLibrary(packageJson)
+} catch (error) {
+  fail(error.message.replace(/^dsh-skill-rust-widgets: /u, ''))
 }
 
 function run(command, args, cwd) {

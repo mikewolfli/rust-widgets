@@ -118,6 +118,13 @@ pub(super) const MENU_COLUMN_GAP: u32 = 8;
 /// edge at the anchor; [`PopupDirection::Auto`] flips up when the popup would overflow
 /// the viewport's bottom edge, which is what keeps a menu opened near the bottom of the
 /// screen reachable.
+///
+/// # Canonical definition
+///
+/// The menu family owns the single definition (principle #54). `SplitButton` re-exports it, so
+/// a direction read from one control can be given to the other without a conversion. The enum's
+/// [`Default`] is [`PopupDirection::Auto`]; a control that wants a fixed direction states it
+/// explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PopupDirection {
     /// Anchor the popup's top edge at the invocation point (historical behaviour).
@@ -127,6 +134,27 @@ pub enum PopupDirection {
     /// Use [`PopupDirection::Down`] when it fits and [`PopupDirection::Up`] otherwise.
     #[default]
     Auto,
+}
+
+impl PopupDirection {
+    /// The property spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PopupDirection::Down => "down",
+            PopupDirection::Up => "up",
+            PopupDirection::Auto => "auto",
+        }
+    }
+
+    /// Parses a property spelling.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "down" => PopupDirection::Down,
+            "up" => PopupDirection::Up,
+            "auto" => PopupDirection::Auto,
+            _ => return None,
+        })
+    }
 }
 
 /// A single item in a menu.

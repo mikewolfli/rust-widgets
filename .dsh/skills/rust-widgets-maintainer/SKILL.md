@@ -1,7 +1,7 @@
 ---
 name: rust-widgets-maintainer
-description: Maintain, extend and audit the rust-widgets Rust GUI library. Use when changing controls, layouts, rendering, platform backends, the code editor, capability metadata, JSON layout loading, or running the repository's validation gates.
-whenToUse: Load when working inside the rust-widgets repository on a coding, review, or validation task.
+description: Maintain, extend and audit the rust-widgets Rust GUI library and everything beside it. Use when changing controls, layouts, rendering, platform backends, the code editor, capability metadata, JSON layout loading, the rust-widgets-cli `rwui` tool (check, json2rust, fmt, create), the suites/font/icon/mobile-services crates, the demo applications, this DSH plugin, or running the repository's validation gates.
+whenToUse: Load when working inside the rust-widgets repository on a coding, review, or validation task, including tasks that touch `crates/`, `demo/`, `examples/`, or `dsh-plugin/`.
 metadata:
   license: MIT
   project: rust-widgets
@@ -10,9 +10,9 @@ metadata:
 # rust-widgets maintainer
 
 `rust-widgets` is a dependency-light Rust GUI library with around 242 controls,
-several platform backends, a JSON layout loader, a designer, and a source-code
-editor. Work is governed by `docs/plans/principle.md`; read it before touching
-code.
+several platform backends, a JSON layout loader, a designer, a source-code
+editor, a designer CLI, and optional companion crates. Work is governed by
+`docs/plans/principle.md`; read it before touching code.
 
 ## Non-negotiable rules
 
@@ -46,11 +46,85 @@ code.
 | `src/render/` | Render commands, software backend, SVG backend |
 | `src/platform/` | OS backends behind the semantic `Platform` trait |
 | `src/json/` | Declarative JSON layout loader |
+| `src/designer/` | In-process designer: generator, artifacts, history |
 | `src/data_binding/` | Model ↔ property bindings |
 | `src/widget/capability/` | Property/event schemas, factory registration |
+| `themes/` | Theme presets (generated; see `themes/generate.sh`) |
+| `crates/` | Companion crates, each a separate package (see below) |
+| `demo/` | Runnable demo applications |
+| `examples/` | Cargo examples, including `paradigm_selection` and `generated_project` |
+| `bindings/` | Language bindings (C ABI surface) |
+| `cookbook/` | Book sources in three languages |
+| `snapshots/` | SVG render baselines |
 | `tools/check_*.sh` | Validation gates |
 | `tests/`, `benches/` | Integration tests and Criterion benchmarks |
-| `docs/plans/principle.md` | The governing engineering rules |
+| `docs/plans/` | Plans, including the governing `principle.md` and `FUTURE.md` |
+| `docs/issues/` | The current issue list; fix from this file |
+| `docs/log/` | Per-day work logs with per-item status and real command output |
+| `dsh-plugin/` | This DSH skill package (see below) |
+
+## Device profiles
+
+Five device profiles are mutually exclusive; never enable two at once. `default`
+is `desktop` plus the three editor features.
+
+| Feature | Adds | Sized? |
+|---|---|---|
+| `desktop` | windowing, `wgpu`, touch, i18n, charts, native+custom controls, image, fonts, icons | no |
+| `tablet` | `wgpu`, touch, i18n, serde, native+custom controls, image, bidi, fonts, icons | no |
+| `mobile` | `tablet`'s set plus `mobile-api` | no |
+| `embedded` | `software`, `controls-custom`, `text-bidi` | yes |
+| `mini` | `embedded`'s set plus `heapless`/`hashbrown`/`spin` | yes |
+
+`serde_json` and the JSON loader exist only under `full_widgets` (the
+desktop/tablet/mobile profiles); `embedded` and `mini` have neither, and
+`crate::app` is not compiled there. `default-features = false` is required
+whenever a single profile is selected, because the library's default set would
+add `desktop` on top of it.
+
+## Companion crates
+
+Every crate under `crates/` is a nested package: the root package's `include`
+list excludes `crates/**/*`, so a published library tarball never carries them.
+
+| Crate | Provides | Notes |
+|---|---|---|
+| `rust-widgets-cli` | the `rwui` binary: `check`, `json2rust`, `fmt`, `create` | Host-side; never linked by a shipping app. Calls `rust_widgets::designer`, so generated sources cannot disagree with the in-process designer. |
+| `rust-widgets-suites` | seven optional control groups behind features (`form`, `webview`, …) | Each group owns its names, schemas and constructors. |
+| `rust-widgets-font` | embedded font payloads for the `fonts-*` features | Split out to stay under crates.io's 10 MiB package ceiling. |
+| `rust-widgets-icons` | `IconName` plus Material Symbols outline geometry | `data` feature carries the path table; a build without it draws flattened polygons. |
+| `mobile-services` (`rust-widgets-mobile-services`) | keep-awake, haptics, permissions, notifications, share, deep links | Application-shell services, not widgets; a desktop build never links it. |
+
+All of them carry the same version as the root package. A change that crosses a
+crate boundary must keep `Cargo.toml` versions identical and the workspace build
+green.
+
+## The `rwui` CLI
+
+Build and run from the repository root:
+
+```sh
+cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- --help
+```
+
+| Command | Purpose |
+|---|---|
+| `rwui check <bundle-or-json>` | Validate a document; writes nothing. `--json` prints NDJSON, `--strict` promotes style/generator gaps to errors. |
+| `rwui json2rust <bundle-or-json> [-o <dir>] [--css <file>]… [--target default\|stripped] [--check]` | Generate Rust; `--check` compares against the committed files instead of writing. |
+| `rwui fmt <document.json> [-o <file>]` | Stable key order and indentation, values preserved. |
+| `rwui create <name> [--profile desktop\|tablet\|mobile\|embedded\|mini] [-o <parent>] [--rust-widgets-path <dir>]` | Scaffold a runnable project. |
+
+`rwui create` writes exactly seven files: `Cargo.toml`, `README.md`,
+`.gitignore`, `ui/app.json`, `ui/app.css` (same base name as the document),
+`src/main.rs` (entry stub calling `app::run()`) and `src/app.rs`. The document
+and stylesheet are one design unit. `desktop`/`tablet`/`mobile` load the pair at
+run time; `embedded`/`mini` get a host skeleton (surface, stride, frame budget,
+queued frame task) and keep `ui/` as the design source. Generated bytes are a
+pure function of the arguments, and the command refuses a non-empty target.
+
+Changing the CLI means changing `src/cli.rs` (parsing and `USAGE`),
+`src/app.rs` (dispatch, exit codes, reporting) and the relevant module; `main.rs`
+stays an entry stub.
 
 ## Standard workflow
 
@@ -79,12 +153,23 @@ code.
 7. Record the result in `docs/log/log-<date>-<n>.md` with per-item status and
    actual command output.
 
+Companion crates are validated separately, because the root `cargo test` does
+not build them:
+
+```sh
+(cd crates/rust-widgets-cli && cargo test && cargo clippy --all-targets)
+(cd crates/rust-widgets-suites && cargo test)
+```
+
 ## Adding or extending a control
 
 - Register the kind in `src/widget/capability/registration.rs` and the factory in
   `src/widget/capability/constructors.rs`.
 - Publish properties in the relevant `properties_*.in.rs` file, then implement
   `get`/`set`/`property_names` in the control.
+- A `pub fn set_*` that is not published as a command must be named in
+  `src/widget/capability/programmatic_setters.rs` with a reason; the setter
+  census fails otherwise.
 - Publish events by adding them to the event census and regenerating payloads:
   ```sh
   python3 tools/derive_event_payloads.py
@@ -96,10 +181,11 @@ code.
 ## The code editor
 
 `src/widget/special_widgets/editor/syntax/` owns the built-in lexer and the
-`SyntaxHighlighter` plugin seam. The two editor controls and the lexer are independent features
-(`code-editor`, `markdown-editor`, `builtin-languages`); all three are in `default`, and a
-profile-only build compiles none of them. `code_editor` re-exports the shared types, so
-`code_editor::syntax::*` and `code_editor::LanguageId` remain valid paths.
+`SyntaxHighlighter` plugin seam. The two editor controls and the lexer are
+independent features (`code-editor`, `markdown-editor`, `builtin-languages`);
+all three are in `default`, and a profile-only build compiles none of them.
+`code_editor` re-exports the shared types, so `code_editor::syntax::*` and
+`code_editor::LanguageId` remain valid paths.
 
 - Language families are `LanguageId` variants; each must supply `name()`,
   keyword and type tables (byte-sorted, because lookup is a binary search), and
@@ -114,7 +200,7 @@ profile-only build compiles none of them. `code_editor` re-exports the shared ty
 ## Validation and benchmarks
 
 ```sh
-cargo test --lib                     # ~9.7k unit tests
+cargo test --lib                     # ~10k unit tests
 cargo test --test path_allocations   # allocation regression
 cargo test --test designer_autosave
 cargo clippy --all-targets -- -D warnings
@@ -129,6 +215,34 @@ cargo check --no-default-features --features embedded --lib
 cargo check --no-default-features --features tablet --lib
 cargo check --no-default-features --features "desktop,gpu-wgpu" --lib
 ```
+
+`bash tools/check_profiles.sh` runs that matrix in one pass.
+
+## This DSH plugin
+
+`dsh-plugin/` is a Cordis plugin that registers the `ctx.skills` provider for
+this skill. The loadable body's source of truth is
+`.dsh/skills/rust-widgets-maintainer/SKILL.md`; `dsh-plugin/assets/` is a copy
+plus the `index.json` the runtime reads without a YAML parser.
+
+```sh
+cd dsh-plugin
+npm run sync-skill    # copy .dsh/skills → assets and rebuild index.json
+npm run check-skill   # fail if the bundled copy drifted
+npm run check-index   # fail if market-index.json drifted from the package
+npm test              # node:test against the provider contract
+```
+
+- Edit the `.dsh/skills/` copy first, then run `npm run sync-skill`. Never edit
+  `dsh-plugin/assets/` by hand.
+- `package.json#version` must equal the root `Cargo.toml` version. The plugin
+  ships with the library, so the two can never diverge.
+- `market-index.json` is generated by `npm run market-index -- --git`, which
+  refuses an uncommitted package and pins the newest commit that changed
+  `dsh-plugin/`. Regenerate it as the last step before publishing a release.
+- `dsh-plugin/lib/index.js` is the whole provider: it reads
+  `assets/index.json` once and loads `assets/<name>/SKILL.md` on demand,
+  stripping the frontmatter because the catalog already carries those fields.
 
 ## Reporting
 

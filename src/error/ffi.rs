@@ -81,6 +81,26 @@ pub fn clear_last_ffi_error() {
     *slot = None;
 }
 
+/// Serialises the crate tests that assert on the process-wide last-error slot.
+///
+/// The slot is deliberately process-wide (it is the C ABI's `errno`), so two tests on different
+/// harness threads can clear or overwrite each other's error between the call that produced it
+/// and the assertion that reads it. Tests that depend on that sequence take this guard; the
+/// slot's production contract is unchanged.
+///
+/// Gated with its consumers: the tests that assert on the slot live in the `bindings` module,
+/// which is compiled only for a profile that exposes an FFI consumer. Without the same gate a
+/// `tablet`/`mini` test build reported this helper as dead code.
+#[cfg(all(
+    test,
+    any(feature = "desktop", feature = "jni", feature = "mobile-api"),
+    not(alloc_frugal)
+))]
+pub(crate) fn ffi_error_test_guard() -> crate::compat::MutexGuard<'static, ()> {
+    static GUARD: crate::compat::Mutex<()> = crate::compat::Mutex::new(());
+    crate::compat::lock(&GUARD)
+}
+
 /// Records a capability-layer refusal as the last FFI error.
 ///
 /// # Why this mapping exists

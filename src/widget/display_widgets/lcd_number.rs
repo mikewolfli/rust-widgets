@@ -558,10 +558,9 @@ impl Draw for LCDNumber {
         // the string is exactly `num_digits` cells (or more, for a value too wide to fit, in which
         // case the panel follows it rather than clipping its leading digits).
         let cells = (self.num_digits.max(1) as usize).max(display_text.chars().count());
-        let cell_width = rect.width / cells.max(1) as u32;
+        let metrics = self.digit_metrics(cells, rect);
         let digit_height = rect.height * 7 / 10;
-        let segment_width = cell_width / 8;
-        let panel_width = cell_width as i32 * cells as i32;
+        let panel_width = metrics.cell_width as i32 * cells as i32;
         let start_x = rect.x + ((rect.width as i32 - panel_width) / 2);
         let start_y = rect.y + ((rect.height as i32 - digit_height as i32) / 2);
         if self.bezel {
@@ -574,16 +573,17 @@ impl Draw for LCDNumber {
             );
         }
         for (i, ch) in display_text.chars().enumerate() {
-            let digit_x = (start_x + i as i32 * cell_width as i32) as u32;
+            let digit_x =
+                (start_x + i as i32 * metrics.cell_width as i32 + metrics.digit_offset) as u32;
             let digit_y = start_y as u32;
             self.draw_digit(
                 context,
                 ch,
                 digit_x,
                 digit_y,
-                cell_width,
+                metrics.digit_width,
                 digit_height,
-                segment_width,
+                metrics.segment_width,
                 fg_color,
             );
         }
@@ -598,7 +598,40 @@ impl Draw for LCDNumber {
     }
 }
 
+/// One digit's horizontal geometry inside the panel's cell grid.
+///
+/// See [`LCDNumber::digit_metrics`] for why a digit does not fill its cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DigitMetrics {
+    /// The full cell width the panel divides its rectangle into.
+    cell_width: u32,
+    /// The width the seven-segment glyph occupies inside the cell.
+    digit_width: u32,
+    /// The left inset from the cell's edge to the glyph's box.
+    digit_offset: i32,
+    /// The thickness of one segment.
+    segment_width: u32,
+}
+
 impl LCDNumber {
+    /// The horizontal geometry of one digit inside its cell.
+    ///
+    /// A digit used to span its whole cell, so two neighbouring digits' vertical segments met
+    /// exactly at the cell boundary: a run of eights painted as one solid block (the committed
+    /// snapshot showed it). The inset is what makes each digit a separate glyph, and it is
+    /// derived from the cell rather than fixed so a small panel still gets one pixel of gap.
+    fn digit_metrics(&self, cells: usize, rect: Rect) -> DigitMetrics {
+        let cell_width = (rect.width / cells.max(1) as u32).max(1);
+        let digit_gap = (cell_width / 8).max(1);
+        let digit_width = cell_width.saturating_sub(digit_gap).max(1);
+        DigitMetrics {
+            cell_width,
+            digit_width,
+            digit_offset: (cell_width.saturating_sub(digit_width) / 2) as i32,
+            segment_width: (digit_width / 8).max(1),
+        }
+    }
+
     /// Paints the recessed frame around the digit area.
     ///
     /// A sunken well is described by two opposite edges: the top and left are
@@ -936,6 +969,31 @@ mod tests {
         assert_eq!(lcd.segment_style(), SegmentStyle::Flat);
         lcd.set_segment_style(SegmentStyle::Filled);
         assert_eq!(lcd.segment_style(), SegmentStyle::Filled);
+    }
+
+    /// Neighbouring digits must not share an edge.
+    ///
+    /// The panel's own snapshot showed `8888` as one solid block: each glyph spanned its whole
+    /// cell, so the right vertical of one digit and the left vertical of the next met at the cell
+    /// boundary. This pins the inset that separates them, at the census rect and at a narrow one
+    /// where the gap has to fall back to one pixel.
+    #[test]
+    fn digits_are_inset_so_neighbours_do_not_touch() {
+        let lcd = LCDNumber::new(Rect::new(0, 0, 240, 120));
+        let metrics = lcd.digit_metrics(6, Rect::new(0, 0, 240, 120));
+        assert_eq!(metrics.cell_width, 40);
+        assert!(metrics.digit_width < metrics.cell_width);
+        assert!(metrics.digit_offset > 0, "the glyph is centred, not left-aligned");
+        // The right edge of one box and the left edge of the next: strictly less than the cell
+        // width, i.e. a real gap rather than a shared boundary.
+        let first_right = metrics.digit_offset as u32 + metrics.digit_width;
+        let second_left = metrics.cell_width + metrics.digit_offset as u32;
+        assert!(first_right < second_left, "{metrics:?}");
+
+        // A narrow panel still leaves one pixel: the gap is floored, not scaled to zero.
+        let narrow = lcd.digit_metrics(32, Rect::new(0, 0, 96, 48));
+        assert!(narrow.digit_width > 0);
+        assert!(narrow.digit_width < narrow.cell_width);
     }
 
     #[test]

@@ -601,7 +601,13 @@ impl Draw for Sparkline {
         let is_enabled = self.base.is_enabled();
         // Resolve both colours before any painting: `semantic_color` takes the theme lock
         // itself and returns an owned `Color`, so nothing holds a lock across the draw calls.
-        let line_color = if is_enabled { self.line_color() } else { Color::DISABLED_FOREGROUND };
+        // R-21: the disabled trace is derived from the active surface by the shared
+        // `disabled_ink_on` rule rather than pinned to `#999999`.
+        let enabled_line = self.line_color();
+        let chart_surface =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let disabled_ink = self.base.disabled_ink_on(enabled_line, chart_surface);
+        let line_color = if is_enabled { enabled_line } else { disabled_ink };
 
         let (y_min, y_max) = self.resolve_y_range();
 
@@ -685,8 +691,7 @@ impl Draw for Sparkline {
 
         // ── Draw last-point highlight dot ──
         if self.show_last_point {
-            let dot_color =
-                if is_enabled { self.last_point_color() } else { Color::DISABLED_FOREGROUND };
+            let dot_color = if is_enabled { self.last_point_color() } else { disabled_ink };
             let last = map_at(n - 1, self.data[n - 1]);
             context.fill_circle(last, dot_radius, dot_color);
         }
@@ -721,8 +726,7 @@ impl Draw for Sparkline {
                     let height = cache.5 as i32;
                     let x = (rect.x + rect.width as i32 - width - 2).max(rect.x);
                     let y = (rect.y + rect.height as i32 - height - 1).max(rect.y);
-                    let ink =
-                        if is_enabled { self.line_color() } else { Color::DISABLED_FOREGROUND };
+                    let ink = if is_enabled { self.line_color() } else { disabled_ink };
                     context.draw_text(
                         Point::new(x, y),
                         cache.3.as_str(),

@@ -98,8 +98,11 @@ pub(crate) fn frame_origin(id: ObjectId) -> (i32, i32) {
 /// nested-mutation refusal as `dispatch_event`, rather than aliasing a live `&mut`.
 pub fn set_geometry(id: ObjectId, geometry: Rect) -> bool {
     let mut changed = false;
+    let mut previous = None;
     let found = with_widget_mut(id, |widget| {
-        changed = widget.geometry() != geometry;
+        let old = widget.geometry();
+        changed = old != geometry;
+        previous = Some(old);
         widget.set_geometry(geometry);
     })
     .is_some();
@@ -110,13 +113,34 @@ pub fn set_geometry(id: ObjectId, geometry: Rect) -> bool {
         // The per-window frame epoch follows the global one, so the window this control lives in
         // repaints its cached frame while the other windows keep theirs (G-311).
         note_renderable_change_for(id);
-        // A resize can leave a parent's layer rect unchanged while the child inside it shrinks,
-        // so the layers are dropped wholesale rather than by rectangle.
-        invalidate_widget_layers();
+        // Drop the layers this write can have made stale: the control's own layer and every
+        // ancestor layer that contains it. The damage is the union of the old and new boxes, so a
+        // move invalidates both where it was and where it now is.
+        //
+        // # Why a rectangle, when this used to drop all 128 layers
+        //
+        // The previous body called `invalidate_widget_layers()` — a whole-thread epoch bump —
+        // because a shrinking child can leave its parent's rect unchanged. That case is covered
+        // here: the overlap scan drops every layer whose rect intersects the union, and an
+        // ancestor's layer necessarily contains the child's old and new rects. A layout pass that
+        // moves one control therefore no longer forces its unrelated siblings to re-rasterise on
+        // the next frame (R-14).
+        if let Some(old) = previous {
+            invalidate_widget_layers_in(id, union_rect(old, geometry));
+        }
         // The subtree-metrics table reads geometry, so a write here makes it stale (RD3-02).
         note_structure_changed();
     }
     found
+}
+
+/// The smallest rectangle containing both inputs, saturating at the coordinate limits.
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = a.right().max(b.right());
+    let y1 = a.bottom().max(b.bottom());
+    Rect::new(x0, y0, x1.saturating_sub(x0).max(0) as u32, y1.saturating_sub(y0).max(0) as u32)
 }
 
 /// Runs `f` with mutable access to a mounted widget.
@@ -135,6 +159,16 @@ pub fn set_geometry(id: ObjectId, geometry: Rect) -> bool {
 ///
 /// Returns `None` when `id` is not mounted, or when a nested call targets the id this call is already
 /// mutating.
+///
+/// # Cost (R-16, measured-by-design)
+///
+/// The detach-and-reinsert is one `HashMap` remove plus one insert per access — the price of
+/// lending a widget out without aliasing the registry's map. A window with a thousand controls
+/// performs a few thousand such pairs per frame, and replacing the map with a `Slab` plus a
+/// borrow bitmap was considered. It is **not** worth doing without a measured allocation/hash
+/// profile: the change touches every registry entry point, and the remove/insert path is not on
+/// any profile recorded so far (`benches/` has no layer-cache or property-write benchmark). The
+/// honest state is "known and bounded", not "optimised away" — revisit with a measurement.
 pub fn with_widget_mut<R>(id: ObjectId, f: impl FnOnce(&mut dyn Widget) -> R) -> Option<R> {
     // A nested mutable access to a widget already lent out for mutation would alias the live `&mut`,
     // so it is refused explicitly. The outer call's marker is a mutable-borrow marker distinct from a

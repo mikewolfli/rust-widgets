@@ -474,11 +474,11 @@ pub(crate) fn repaint_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
 ///
 /// Because otherwise the frame's account is incomplete: `render_dirty_regions` would compute
 /// damage the frame never submitted, the still-frame guarantee would be unprovable, and a
-/// mixed window would submit one interaction twice (BLUE24 §7.2). `notify_native_redraw` is
+/// mixed window would submit one interaction twice (BLUE24 §7.2). `notify_platform_surface_repaint` is
 /// that announcement, and it is unconditional -- unlike `request_repaint`, the platform has
 /// **already** queued the draw, so there is nothing to condition on.
 pub(crate) fn note_canvas_redraw(id: ObjectId) {
-    crate::notify_native_redraw(id, None);
+    crate::notify_platform_surface_repaint(id, None);
 }
 
 /// Queues a redraw of one rectangle of a mounted canvas.

@@ -107,6 +107,20 @@ impl AdaptiveScaffold {
         self.base.request_redraw();
     }
 
+    /// Sets the persistent footer slot by id.
+    pub fn set_persistent_footer_id(&mut self, widget: Option<ObjectId>) {
+        self.persistent_footer_id = self.adopt_id_slot(self.persistent_footer_id, widget);
+        self.base.request_layout();
+        self.sync_id_slots();
+        self.base.request_redraw();
+    }
+
+    /// The persistent footer's id, when the slot was filled by
+    /// [`Self::set_persistent_footer_id`].
+    pub fn persistent_footer_id(&self) -> Option<ObjectId> {
+        self.persistent_footer_id
+    }
+
     /// Links `next` under this control and unlinks the slot's previous occupant.
     ///
     /// The parent/child relation is written in both directions by
@@ -173,15 +187,33 @@ impl AdaptiveScaffold {
                 crate::set_widget_geometry(id, band.x, band.y, band.width, band.height);
             }
         }
+        if let Some(id) = self.persistent_footer_id {
+            match self.persistent_footer_rect() {
+                Some(band) => {
+                    crate::set_widget_visible(id, true);
+                    crate::set_widget_geometry(id, band.x, band.y, band.width, band.height);
+                }
+                None => crate::set_widget_visible(id, false),
+            }
+        }
         if let Some(id) = self.bottom_sheet_id {
+            // A declared sheet decides its own visibility through `open`/`dismiss`; the slot must
+            // not force it visible merely because an id was assigned.
             let band = self.bottom_sheet_rect();
-            crate::set_widget_visible(id, true);
-            crate::set_widget_geometry(id, band.x, band.y, band.width, band.height);
+            let shown = scaffold_bottom_sheet_open(id);
+            crate::set_widget_visible(id, shown);
+            if shown {
+                crate::set_widget_geometry(id, band.x, band.y, band.width, band.height);
+            }
         }
         if let Some(id) = self.snackbar_id {
+            // A declared snackbar decides its own visibility through `show`/`dismiss`/duration.
             let band = self.snackbar_rect();
-            crate::set_widget_visible(id, true);
-            crate::set_widget_geometry(id, band.x, band.y, band.width, band.height);
+            let shown = scaffold_snackbar_visible(id);
+            crate::set_widget_visible(id, shown);
+            if shown {
+                crate::set_widget_geometry(id, band.x, band.y, band.width, band.height);
+            }
         }
         if let Some(id) = self.fab_id {
             match self.fab_rect() {

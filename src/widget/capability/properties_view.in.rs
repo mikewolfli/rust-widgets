@@ -216,6 +216,23 @@ macro_rules! impl_properties_view {
             PropertySchema::new("sorting_enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("sort_role", PropertyValueKind::String, true, true),
             PropertySchema::new("auto_refresh", PropertyValueKind::Bool, true, true),
+            // R-23: the appearance and sizing knobs the control already publishes as
+            // setters. The four colours are authored explicitly (a caller-chosen value equal to
+            // the constructor literal still renders), which is what makes them safe to publish.
+            PropertySchema::new("header_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("alternating_rows", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("multi_select", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_scrollbar", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated(
+                "section_resize_mode",
+                true,
+                true,
+                &["interactive", "stretch", "fixed", "resize_to_contents"],
+            ),
+            PropertySchema::new("grid_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("header_bg", PropertyValueKind::Color, true, true),
+            PropertySchema::new("header_text_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("selected_bg", PropertyValueKind::Color, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]

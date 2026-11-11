@@ -23,11 +23,14 @@
         gap: 10px;
         padding: 16px;
       }
-      /* No CSS scaling: the backend maps pointer coordinates through the
-         canvas's own bounding rectangle, so displaying it at 1:1 keeps the
-         hit-testing honest. */
+      /* The box follows the page so a window resize reaches the library (see the Rust
+         frame loop). The backing store is kept equal to `client_width`x`client_height` by
+         that loop, so displaying at 1:1 keeps hit-testing honest — no CSS scaling. */
       canvas {
         display: block;
+        width: 100%;
+        max-width: 1040px;
+        aspect-ratio: 1040 / 700;
         border-radius: 8px;
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
       }

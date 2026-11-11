@@ -7,7 +7,6 @@ use crate::core::{Rect, Size};
 use crate::pdf::annotation::{Annotation, AnnotationFlags, AnnotationType};
 use crate::pdf::hyperlink::Hyperlink as PdfHyperlink;
 use crate::pdf::hyperlink::LinkAction as HyperlinkLinkAction;
-use crate::pdf::security::serialize_security_diagnostics_entries;
 #[cfg(feature = "pdf-encryption")]
 use crate::pdf::security::{security_profile_encryption, PdfEncryption};
 use crate::pdf::types::*;
@@ -146,8 +145,8 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     // Document-level standard security: a non-default `PdfSecurity` profile under the
     // `pdf-encryption` feature turns into a real `/Encrypt` dictionary and AES-256-CBC
     // encryption (PDF 2.0, V5/R6, `/CFM /AESV3`) of every stream and string. Without the
-    // feature the profile stays intent only (see the `% RW-NOTE` marker below), so the file
-    // is honest either way.
+    // feature such a profile is refused below: writing an unencrypted file was reporting
+    // success for a request that was not honoured (R-30).
     #[cfg(feature = "pdf-encryption")]
     let writer_encryption = match security_profile_encryption(&doc.security) {
         Some(Ok(encryption)) => WriterEncryption::Applied(Box::new(encryption)),
@@ -158,6 +157,17 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     };
     #[cfg(not(feature = "pdf-encryption"))]
     let writer_encryption = WriterEncryption::Open;
+    // Without the `pdf-encryption` feature this build cannot honour a requested security
+    // profile. Emitting the document anyway reported success for a file that is **not**
+    // encrypted (R-30); the honest answer is an error that names the missing capability.
+    #[cfg(not(feature = "pdf-encryption"))]
+    if doc.security != PdfSecurity::default() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "PDF encryption was requested but this build has no `pdf-encryption` feature; the \
+             document was not written",
+        ));
+    }
     let mut objects: Vec<PdfObjectBody> = Vec::new();
 
     // 1: Catalog (filled after objects known)
@@ -394,7 +404,12 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         Some(encryption_id) => format!(
             "% RW-NOTE: PDF encryption applied (standard /Filter /Standard handler, AES-256-CBC, R=6); see /Encrypt {encryption_id} 0 R"
         ),
-        None => serialize_security_diagnostics_entries(&doc.security),
+        None => {
+            // Without the `pdf-encryption` feature this build cannot honour a requested
+            // security profile, and the refusal above already returned an error. `Open` here
+            // therefore means the profile is default, so there is nothing to announce.
+            String::new()
+        }
     };
     if !security_marker.is_empty() {
         out.extend_from_slice(format!("\n{security_marker}\n").as_bytes());

@@ -108,6 +108,12 @@ impl ModelIndex {
 }
 
 /// The order a sortable source was last sorted in.
+///
+/// # Canonical definition
+///
+/// This is the single definition (principle #54). [`crate::widget::view_widgets::data_grid::SortOrder`]
+/// re-exports it, so a sort order read from an [`IncrementalTableDataSource`] can be handed to a
+/// `DataGrid` without a conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SortOrder {
     /// Smallest/root-first ordering.

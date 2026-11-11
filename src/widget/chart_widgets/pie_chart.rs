@@ -7,6 +7,12 @@
 //! labels, percentage annotations, exploded slices, and donut mode.
 //! Each slice has a label, numeric value, color, and optional explosion offset.
 //!
+//! # Which layer this is (principle #49)
+//!
+//! A **control** (capability properties/events, driven by `data_binding/chart.rs`). The data-model
+//! engine is `charts.rs`; the two are kept apart because they serve different consumers
+//! (`docs/issues/issue-20261111.md` R-26).
+//!
 //! # `enabled` and the model signals
 //!
 //! `data_changed` from the slice mutators is **deliberately not gated** by `enabled`: a disabled
@@ -1378,6 +1384,14 @@ impl Draw for PieChart {
         // untouched — those identify the data (rule #108 ③). Shared with `bar_chart` and the
         // cartesian axes so the three cannot drift apart again.
         let slice_label_color = crate::widget::chart_widgets::charts::axis_chrome_color(0.75);
+        // R-21: the disabled border follows the same surface-derived ink rule the enabled
+        // chrome uses, instead of the fixed `#999999` that ignored the appearance.
+        let chart_surface =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let disabled_ink = self.base.disabled_ink_on(
+            crate::widget::chart_widgets::charts::axis_chrome_color(0.45),
+            chart_surface,
+        );
 
         // Draw sectors
         // One reused buffer for the percentage labels: `format!` built a fresh `String` per sector
@@ -1519,7 +1533,7 @@ impl Draw for PieChart {
         let border_color = if is_enabled {
             crate::widget::chart_widgets::charts::axis_chrome_color(0.45)
         } else {
-            Color::DISABLED_FOREGROUND
+            disabled_ink
         };
         context.draw_circle_stroke(center, outer_radius as u32, border_color, 1);
 

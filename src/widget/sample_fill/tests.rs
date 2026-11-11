@@ -283,3 +283,24 @@ fn applying_the_popup_sample_twice_reuses_its_mounted_content() {
     assert!(crate::widget::runtime::is_mounted(first));
     assert!(crate::widget::runtime::unregister(first), "clean up the mounted fixture");
 }
+
+/// The gallery's four sample photographs decode.
+///
+/// The sample bytes are the only photographic content the gallery ships, and the snapshot
+/// silently loses its pictures if a decoder rejects one of them. This asserts the decode the
+/// paint path would do, with the decoder's own message on failure.
+#[cfg(feature = "image")]
+#[test]
+fn the_gallery_sample_photographs_decode() {
+    let samples: [(&str, &[u8]); 4] = [
+        ("coast", include_bytes!("../sample_photos/coast.jpg")),
+        ("forest", include_bytes!("../sample_photos/forest.jpg")),
+        ("city", include_bytes!("../sample_photos/city.jpg")),
+        ("desert", include_bytes!("../sample_photos/desert.jpg")),
+    ];
+    for (name, bytes) in samples {
+        let image = crate::image::Image::from_bytes(bytes)
+            .unwrap_or_else(|error| panic!("{name}.jpg does not decode: {error}"));
+        assert!(image.width() > 0 && image.height() > 0, "{name} decoded to an empty image");
+    }
+}

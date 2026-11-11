@@ -18,6 +18,13 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use core::cell::RefCell;
 
 /// Where a toast stack anchors its rows.
+///
+/// # Why this is not `companions::ToastAnchor`
+///
+/// The stack anchors four corners; `ToastHost` also accepts a centred top and bottom position,
+/// so its six-position enum is a strict superset rather than the same type (principle #49).
+/// Keeping the four-corner set here means the stack's property contract cannot name a centre it
+/// does not implement, while [`From<ToastAnchor>`] maps every variant to its host counterpart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToastAnchor {
     /// Bottom-left, the default.
@@ -31,7 +38,28 @@ pub enum ToastAnchor {
     BottomRight,
 }
 
+/// Maps the stack's four-corner anchors onto the host's six-position set.
+///
+/// The host set is a strict superset, so this direction is total; the reverse would have to
+/// reject the two centred positions and is therefore deliberately not implemented.
+#[cfg(full_widgets)]
+impl From<ToastAnchor> for crate::widget::companions::ToastAnchor {
+    fn from(anchor: ToastAnchor) -> Self {
+        match anchor {
+            ToastAnchor::BottomLeft => Self::BottomLeft,
+            ToastAnchor::TopRight => Self::TopRight,
+            ToastAnchor::TopLeft => Self::TopLeft,
+            ToastAnchor::BottomRight => Self::BottomRight,
+        }
+    }
+}
+
 /// Which end of the stack receives the newest toast.
+///
+/// # Canonical definition
+///
+/// This is the single definition (principle #54). `companions::ToastStackingDirection`
+/// re-exports it, so a direction read from a host can be given to a stack without a conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToastStackingDirection {
     /// The newest toast is the lowest row, the historical behaviour.
@@ -39,6 +67,25 @@ pub enum ToastStackingDirection {
     NewestAtBottom,
     /// The newest toast is the highest row.
     NewestAtTop,
+}
+
+impl ToastStackingDirection {
+    /// The published token.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToastStackingDirection::NewestAtTop => "newest_at_top",
+            ToastStackingDirection::NewestAtBottom => "newest_at_bottom",
+        }
+    }
+
+    /// Parses the published token.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "newest_at_top" => Some(ToastStackingDirection::NewestAtTop),
+            "newest_at_bottom" => Some(ToastStackingDirection::NewestAtBottom),
+            _ => None,
+        }
+    }
 }
 
 /// Toast stack with keyboard/mouse activation and dismiss.

@@ -147,9 +147,17 @@ impl Widget for LineEdit {
                 &self.context_menu_requested,
                 |v| CapabilityValue::String(format!("{v:?}")),
             )),
-            "selection_changed" => {
-                Some(EventSignalRef::unit("selection_changed", &self.selection_changed))
-            }
+            "selection_changed" => Some(EventSignalRef::mapped(
+                "selection_changed",
+                &self.selection_changed,
+                |range| match range {
+                    Some((start, end)) => CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(*start as u64),
+                        CapabilityValue::UInt(*end as u64),
+                    ])),
+                    None => CapabilityValue::Null,
+                },
+            )),
             "cursor_position_changed" => Some(EventSignalRef::mapped(
                 "cursor_position_changed",
                 &self.cursor_position_changed,

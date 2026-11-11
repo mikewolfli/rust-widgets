@@ -102,6 +102,8 @@ pub use widget::ActivityIndicator;
 #[cfg(full_widgets)]
 pub use widget::AdaptiveScaffold;
 #[cfg(full_widgets)]
+pub use widget::AdaptiveScaffoldBuilder;
+#[cfg(full_widgets)]
 pub use widget::AnimatedFrame;
 #[cfg(full_widgets)]
 pub use widget::AnimatedImage;
@@ -389,6 +391,10 @@ pub use widget::MaterialNavigationRail;
 pub use widget::MaterialSnackbar;
 #[cfg(widgets_unstripped)]
 pub use widget::MdiArea;
+#[cfg(widgets_unstripped)]
+pub use widget::MdiWindowMenuAction;
+#[cfg(widgets_unstripped)]
+pub use widget::MdiWindowMenuEntry;
 #[cfg(full_widgets)]
 #[cfg(full_widgets)]
 pub use widget::Mention;
@@ -511,6 +517,8 @@ pub use widget::SafeAreaInsets;
 #[cfg(full_widgets)]
 pub use widget::ScrollArea;
 pub use widget::ScrollBar;
+#[cfg(full_widgets)]
+pub use widget::SdiWorkbench;
 #[cfg(widgets_unstripped)]
 pub use widget::SearchBar;
 #[cfg(widgets_unstripped)]

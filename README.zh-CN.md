@@ -127,7 +127,7 @@ fn main() {
 | `rust-widgets-font` | `fonts-*` 特性背后的 OFL 字体数据，单独拆出以让核心包低于 crates.io 的 10 MiB 上限。 | 间接使用：开启某个 `fonts-*` 特性即可；不要直接依赖它。 |
 | `rust-widgets-suites` | 七个可选控件组——`form`、`webview`、`finance`、`maps`、`project`、`devtools`、`media-playback`——共 **39 个控件**，具备与核心控件相同的属性、事件、布局、接线与无障碍面。原先独立的 `rust-widgets-webview` 包现在是 `webview` 组。 | `rust_widgets_suites::install(&mut factory)`，或单个组的 `install_*_group`。 |
 | `mobile-services` | 面向 Android、iOS、HarmonyOS 的移动应用外壳服务：常亮、触感反馈、权限、通知、分享、深链、安全区与方向锁定。不属于 GUI 核心。 | 在移动目标上使用 `rust_widgets_mobile_services::*`；桌面构建不会链接它。 |
-| `rust-widgets-cli` | 设计器命令行工具，二进制名 `rwui`：校验项目 bundle（`check`）、由它生成并校验已提交的 Rust（`json2rust`，`--check` 查漂移）、规范化文档（`fmt`）。它直接调用库自身的生成器，因此不会与库产生分歧。CSS 级联与反向解析属于 BLUE31 后续阶段，尚不在这个二进制里。 | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`。 |
+| `rust-widgets-cli` | 设计器命令行工具，二进制名 `rwui`：校验项目 bundle（`check`）、由它生成并校验已提交的 Rust（`json2rust`，`--check` 查漂移）、规范化文档（`fmt`）、为单个设备 profile 生成可运行工程（`create`）。它直接调用库自身的生成器，因此不会与库产生分歧。CSS 级联与反向解析属于 BLUE31 后续阶段，尚不在这个二进制里。 | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`。 |
 
 suites 包不是 workspace 成员：它依赖 `rust_widgets`，反过来不成立；父包的 `include` 列表排除了
 `crates/**`，所以根目录的 `cargo package` 既不会打包也不会编译它。CLI 包以同样方式打包。
@@ -209,7 +209,7 @@ SVG 才能作为评审材料，而不是一个会悄悄给出不同结果的第�
 | [`docs/log/`](docs/log/) | 每一轮的工程记录 |
 | [`docs/reports/`](docs/reports/) | 审计与质量报告 |
 | [`control.md`](control.md) | 由注册表生成的控件画廊 |
-| [`crates/rust-widgets-cli`](crates/rust-widgets-cli) | `rwui`——校验项目 bundle、由它生成 Rust、规范化文档 |
+| [`crates/rust-widgets-cli`](crates/rust-widgets-cli) | `rwui`——校验项目 bundle、由它生成 Rust、规范化文档、生成初始工程 |
 
 ## 验证改动
 

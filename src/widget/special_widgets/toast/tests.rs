@@ -632,3 +632,18 @@ fn the_action_width_cache_follows_the_live_rows() {
     let _ = crate::widget::svg::render_to_svg(&mut stack);
     assert_eq!(stack.cached_action_widths(), 1, "the expired row's label was evicted with the row");
 }
+
+/// The stack's `ToastStackingDirection` and the companion host's are one type (principle #54).
+#[cfg(full_widgets)]
+#[test]
+fn toast_stacking_direction_is_the_companion_definition() {
+    fn same_type(
+        direction: ToastStackingDirection,
+    ) -> crate::widget::companions::ToastStackingDirection {
+        direction
+    }
+    assert_eq!(
+        same_type(ToastStackingDirection::NewestAtTop),
+        crate::widget::companions::ToastStackingDirection::NewestAtTop
+    );
+}

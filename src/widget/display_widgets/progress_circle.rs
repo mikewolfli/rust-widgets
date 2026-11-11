@@ -721,6 +721,12 @@ impl Draw for ProgressCircle {
 
         let is_enabled = self.base.is_enabled();
         let stroke_w = self.stroke_width as u32;
+        // R-21: the disabled value ink follows the active surface through the shared
+        // `disabled_ink_on` rule rather than a fixed `#999999`.
+        let enabled_progress = self.resolved_progress_color();
+        let chart_surface =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let disabled_ink = self.base.disabled_ink_on(enabled_progress, chart_surface);
 
         // Draw track (full circle). The track is the ring's empty groove — chrome, not a value — so
         // it follows the theme. `resolved_track_color` owns the precedence (explicit setter, a
@@ -728,8 +734,7 @@ impl Draw for ProgressCircle {
         // theme read inside it takes and releases the manager lock, so no guard is held across the
         // draw (the mutex is not re-entrant).
         let groove = self.resolved_track_color();
-        let track_color =
-            if !is_enabled { groove.blend(&Color::DISABLED_FOREGROUND, 0.5) } else { groove };
+        let track_color = if !is_enabled { groove.blend(&disabled_ink, 0.5) } else { groove };
 
         // Draw track as a circle stroke
         context.draw_circle_stroke(center, radius as u32, track_color, stroke_w.max(1));
@@ -737,8 +742,7 @@ impl Draw for ProgressCircle {
         // The progress arc is the control's value ink: the theme's accent unless the caller chose
         // one, resolved per draw so an appearance switch reaches it. A colour the caller set can
         // still encode a value or a threshold, and then it is data and is left untouched.
-        let prog_color =
-            if is_enabled { self.resolved_progress_color() } else { Color::DISABLED_FOREGROUND };
+        let prog_color = if is_enabled { self.resolved_progress_color() } else { disabled_ink };
 
         if self.indeterminate {
             // The arc sweeps a fixed share of the circle and the whole thing revolves, which is

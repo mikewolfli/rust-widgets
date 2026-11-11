@@ -42,4 +42,4 @@ mod tests;
 
 pub use item::{ToastItem, ToastLevel};
 pub use single::Toast;
-pub use stack::ToastStack;
+pub use stack::{ToastStack, ToastStackingDirection};

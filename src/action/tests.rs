@@ -1,0 +1,497 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
+//! Behavioural tests for the action framework.
+
+use super::*;
+// `mini` is `no_std`, so `to_string` needs the trait named; it lives here rather than at
+// module scope because only the tests use it (a non-test build would report it unused).
+use crate::compat::{MiniToString, String, Vec};
+use crate::shortcut::Key;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+#[test]
+fn shortcut_triggers_action() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("save", "Save"));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = Arc::clone(&counter);
+    mgr.action("save").expect("action exists").connect_triggered(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    });
+    assert!(mgr.bind_shortcut("Ctrl+S", "save"));
+    assert!(mgr.trigger_shortcut("ctrl+s"));
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+/// Rebinding an action releases the chord it was bound to before.
+///
+/// `bind_shortcut` only inserted into `shortcut_to_action`, so an action kept every
+/// chord it had ever been given: binding `Ctrl+S` and then `Ctrl+Shift+S` left **both**
+/// live, and the stale accelerator kept firing after the rebind. `ShortcutManager::register`
+/// already released the previous chord; the action-side registry did not.
+#[test]
+fn rebinding_a_shortcut_releases_the_previous_chord() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("save", "Save"));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = Arc::clone(&counter);
+    mgr.action("save").expect("action exists").connect_triggered(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    });
+
+    assert!(mgr.bind_shortcut("Ctrl+S", "save"));
+    assert!(mgr.trigger_shortcut("Ctrl+S"));
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+    assert!(mgr.bind_shortcut("Ctrl+Shift+S", "save"));
+    assert!(!mgr.trigger_shortcut("Ctrl+S"), "the old chord must be released by the rebind");
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "the stale chord must not fire");
+
+    assert!(mgr.trigger_shortcut("Ctrl+Shift+S"), "the new chord must work");
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+/// The type-based binder follows the same rule as the string-based one.
+#[test]
+fn rebinding_a_shortcut_type_releases_the_previous_chord() {
+    use crate::shortcut::{Key, Shortcut};
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("save", "Save"));
+
+    assert!(mgr.bind_shortcut_type(&Shortcut::primary(Key::S), "save"));
+    assert!(mgr.bind_shortcut_type(&Shortcut::primary_shift(Key::S), "save"));
+
+    assert!(!mgr.trigger_shortcut("Ctrl+S"), "the old chord must be released by the rebind");
+    assert!(mgr.trigger_shortcut("Ctrl+Shift+S"));
+}
+
+/// A type-bound chord must be reachable by its own canonical string spelling.
+///
+/// Pins the defect: `bind_shortcut_type` keyed the map with `shortcut.to_string().to_lowercase()`
+/// while `trigger_shortcut` looked up through `normalize_shortcut`. `Shortcut::to_string`
+/// renders `Modifiers::PRIMARY` as the literal `"Primary"`, so a `primary`-bound chord stored
+/// `"primary+s"` and a lookup of `normalize_shortcut("Primary+S")` -> `"primary+s"` would have
+/// matched only by luck; the string spelling `"Ctrl+S"` (which `from_string` maps to the same
+/// `Modifiers::PRIMARY`) normalizes to `"primary+s"` too, so both spellings must reach it.
+#[test]
+fn a_type_bound_shortcut_is_reachable_by_its_string_spelling() {
+    use crate::shortcut::{Key, Shortcut};
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("save", "Save"));
+
+    assert!(mgr.bind_shortcut_type(&Shortcut::primary(Key::S), "save"));
+    // Both the canonical spelling and the platform-neutral `Ctrl` spelling resolve to the one
+    // normalized key, which is the whole point of routing both paths through
+    // `normalize_shortcut`.
+    assert!(mgr.trigger_shortcut("Primary+S"), "the canonical spelling must reach it");
+    assert!(mgr.trigger_shortcut("Ctrl+S"), "and so must the `Ctrl` spelling");
+}
+
+/// W-P05: re-binding a chord to a different action hands it over atomically — the
+/// previous owner must lose both the trigger and its `shortcut_for_action` entry, and
+/// the new owner must answer with the exact chord spelling the trigger resolves.
+#[test]
+fn binding_a_chord_to_another_action_hands_it_over() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("save", "Save"));
+    assert!(mgr.register_action("save-as", "Save As"));
+    let saved = Arc::new(AtomicUsize::new(0));
+    let save_as = Arc::new(AtomicUsize::new(0));
+    {
+        let s = Arc::clone(&saved);
+        mgr.action("save").expect("action exists").connect_triggered(move || {
+            s.fetch_add(1, Ordering::SeqCst);
+        });
+        let a = Arc::clone(&save_as);
+        mgr.action("save-as").expect("action exists").connect_triggered(move || {
+            a.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    assert!(mgr.bind_shortcut("Ctrl+S", "save"));
+    // The API's contract (see the router-sync test) is the *normalized* chord — the exact
+    // string `trigger_shortcut` resolves — not the spelling the binder was handed.
+    assert_eq!(mgr.shortcut_for_action("save").map(String::as_str), Some("primary+s"));
+    assert!(mgr.trigger_shortcut("Ctrl+S"));
+    assert_eq!(saved.load(Ordering::SeqCst), 1);
+
+    // The handoff: the same chord now belongs to `save-as`, and `save` is unbound.
+    assert!(mgr.bind_shortcut("Ctrl+S", "save-as"));
+    assert!(mgr.shortcut_for_action("save").is_none(), "the old owner must lose the chord");
+    assert_eq!(mgr.shortcut_for_action("save-as").map(String::as_str), Some("primary+s"));
+    assert!(mgr.trigger_shortcut("Ctrl+S"), "the new owner must receive the chord");
+    assert_eq!(saved.load(Ordering::SeqCst), 1, "the previous owner must not fire");
+    assert_eq!(save_as.load(Ordering::SeqCst), 1);
+}
+
+/// W-P05: `bindings_for_host` must keep insertion order and survive an index rebuild —
+/// unregistering the middle of three host bindings must leave the remaining two in
+/// their original order, with other hosts' buckets untouched.
+#[test]
+fn host_bindings_keep_insertion_order_across_unregister() {
+    let mut mgr = ActionManager::new();
+    for id in ["alpha", "beta", "gamma"] {
+        assert!(mgr.register_action(id, id));
+    }
+    assert!(mgr.bind_action_to_menu("alpha", 100));
+    assert!(mgr.bind_action_to_button("alpha", 200));
+    assert!(mgr.bind_action_to_menu("beta", 100));
+    assert!(mgr.bind_action_to_menu("gamma", 100));
+
+    let actions: Vec<&str> =
+        mgr.bindings_for_host(100).iter().map(|binding| binding.action_id.as_str()).collect();
+    assert_eq!(actions, vec!["alpha", "beta", "gamma"], "insertion order before removal");
+
+    assert!(mgr.unregister_action("beta"));
+    let actions: Vec<&str> =
+        mgr.bindings_for_host(100).iter().map(|binding| binding.action_id.as_str()).collect();
+    assert_eq!(actions, vec!["alpha", "gamma"], "survivors keep their relative order");
+
+    // A host whose bucket was never rebuilt must still answer with its own bindings.
+    let button_bindings = mgr.bindings_for_host(200);
+    assert_eq!(button_bindings.len(), 1);
+    assert_eq!(button_bindings[0].action_id, "alpha");
+    assert_eq!(button_bindings[0].kind, ActionHostKind::Button);
+    assert!(!mgr.unregister_action("beta"), "unregistering again reports miss");
+}
+
+/// Modifier order and Option/Alt aliases must normalize to one chord key.
+///
+/// `Shortcut::from_string` treats `"Ctrl+Shift+S"` and `"Shift+Ctrl+S"` as the
+/// same value; the action registry must key them identically too, or a binding
+/// entered with one spelling cannot be triggered with the other. `Option` is the
+/// macOS name for the Alt key, so the two spellings must agree as well.
+#[test]
+fn string_shortcuts_normalize_modifier_order_and_aliases() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("save", "Save"));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = Arc::clone(&counter);
+    mgr.action("save").expect("action exists").connect_triggered(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    });
+
+    assert!(mgr.bind_shortcut("Ctrl+Shift+S", "save"));
+    assert!(mgr.trigger_shortcut("Shift+Ctrl+S"), "modifier order must not matter");
+    assert!(mgr.trigger_shortcut("ctrl+shift+s"), "case must not matter");
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+    assert!(mgr.bind_shortcut("Alt+A", "save"));
+    assert!(mgr.trigger_shortcut("Option+A"), "Alt and Option are the same key");
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+}
+
+/// `Shortcut::ctrl(S)` and `Shortcut::primary(S)` are different chords and must
+/// not overwrite each other in the action registry. The string API keeps folding
+/// `Ctrl` onto `Primary`, so a physical-Control binding is reachable through the
+/// typed trigger, not through the `"Ctrl+S"` string spelling.
+#[test]
+fn typed_ctrl_and_primary_are_distinct_bindings() {
+    use crate::shortcut::{Key, Shortcut};
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("cut", "Cut"));
+    assert!(mgr.register_action("save", "Save"));
+    let cut = Arc::new(AtomicUsize::new(0));
+    let save = Arc::new(AtomicUsize::new(0));
+    {
+        let cut = Arc::clone(&cut);
+        mgr.action("cut").expect("cut exists").connect_triggered(move || {
+            cut.fetch_add(1, Ordering::SeqCst);
+        });
+        let save = Arc::clone(&save);
+        mgr.action("save").expect("save exists").connect_triggered(move || {
+            save.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    assert!(mgr.bind_shortcut_type(&Shortcut::ctrl(Key::S), "cut"));
+    assert!(mgr.bind_shortcut_type(&Shortcut::primary(Key::S), "save"));
+
+    // Physical Control and PRIMARY are independent: each typed chord triggers only
+    // its own action.
+    assert!(mgr.trigger_shortcut_type(&Shortcut::ctrl(Key::S)));
+    assert_eq!(cut.load(Ordering::SeqCst), 1);
+    assert_eq!(save.load(Ordering::SeqCst), 0);
+
+    assert!(mgr.trigger_shortcut_type(&Shortcut::primary(Key::S)));
+    assert_eq!(cut.load(Ordering::SeqCst), 1);
+    assert_eq!(save.load(Ordering::SeqCst), 1);
+
+    // The string "Ctrl+S" means PRIMARY (the isolated string convention), so it
+    // fires save, not the physical-Control action.
+    assert!(mgr.trigger_shortcut("Ctrl+S"));
+    assert_eq!(cut.load(Ordering::SeqCst), 1);
+    assert_eq!(save.load(Ordering::SeqCst), 2);
+}
+
+/// Two different actions keep their own chords.
+///
+/// The release is scoped to the action being rebound, not global.
+#[test]
+fn rebinding_one_action_does_not_disturb_another() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("save", "Save"));
+    assert!(mgr.register_action("open", "Open"));
+
+    assert!(mgr.bind_shortcut("Ctrl+S", "save"));
+    assert!(mgr.bind_shortcut("Ctrl+O", "open"));
+    assert!(mgr.bind_shortcut("Ctrl+Shift+S", "save"));
+
+    assert!(mgr.trigger_shortcut("Ctrl+O"), "the other action's chord must survive");
+    assert!(!mgr.trigger_shortcut("Ctrl+S"));
+    assert!(mgr.trigger_shortcut("Ctrl+Shift+S"));
+}
+
+#[test]
+fn disabled_action_does_not_trigger() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("build", "Build"));
+    assert!(mgr.set_action_enabled("build", false));
+    assert!(!mgr.trigger_action("build"));
+}
+#[test]
+fn checkable_action_toggles_on_trigger() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("pin", "Pin"));
+    let toggles = Arc::new(AtomicUsize::new(0));
+    {
+        let action = mgr.action_mut("pin").expect("action exists");
+        action.set_checkable(true);
+        let toggles_ref = Arc::clone(&toggles);
+        action.connect_toggled(move |_| {
+            toggles_ref.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+    assert!(mgr.trigger_action("pin"));
+    assert_eq!(mgr.action("pin").map(|a| a.is_checked()), Some(true));
+    assert!(mgr.trigger_action("pin"));
+    assert_eq!(mgr.action("pin").map(|a| a.is_checked()), Some(false));
+    assert_eq!(toggles.load(Ordering::SeqCst), 2);
+}
+#[test]
+fn action_can_bind_to_button_host() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("run", "Run"));
+    assert!(mgr.bind_action_to_button("run", 42));
+    let bindings = mgr.bindings_for_host(42);
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].kind, ActionHostKind::Button);
+}
+#[test]
+fn enabled_changed_signal_emits_on_state_transition_only() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("fmt", "Format"));
+    let hits = Arc::new(AtomicUsize::new(0));
+    {
+        let action = mgr.action("fmt").expect("action exists");
+        let hits_ref = Arc::clone(&hits);
+        action.connect_enabled_changed(move |_| {
+            hits_ref.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+    assert!(mgr.set_action_enabled("fmt", false));
+    assert!(mgr.set_action_enabled("fmt", false));
+    assert!(mgr.set_action_enabled("fmt", true));
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+#[test]
+fn action_can_bind_to_menu_and_toolbar_hosts() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("copy", "Copy"));
+    assert!(mgr.bind_action_to_menu("copy", 100));
+    assert!(mgr.bind_action_to_toolbar("copy", 200));
+    let menu_bindings = mgr.bindings_for_host(100);
+    assert_eq!(menu_bindings.len(), 1);
+    assert_eq!(menu_bindings[0].kind, ActionHostKind::Menu);
+    let toolbar_bindings = mgr.bindings_for_host(200);
+    assert_eq!(toolbar_bindings.len(), 1);
+    assert_eq!(toolbar_bindings[0].kind, ActionHostKind::ToolBar);
+}
+
+#[test]
+fn action_router_connects_undo_redo_callbacks() {
+    use crate::shortcut::{Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutManager};
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    let style = crate::platform::platform_facts().shortcut_style();
+
+    let mut shortcut_manager = ShortcutManager::new();
+    let mut action_manager = ActionManager::new();
+    let undo_count = Arc::new(AtomicUsize::new(0));
+    let redo_count = Arc::new(AtomicUsize::new(0));
+    let undo_ref = Arc::clone(&undo_count);
+    let redo_ref = Arc::clone(&redo_count);
+    let mut router = ActionRouter::new(&mut shortcut_manager, &mut action_manager);
+    assert!(router.connect_undo_redo(
+        move || {
+            undo_ref.fetch_add(1, Ordering::SeqCst);
+        },
+        move || {
+            redo_ref.fetch_add(1, Ordering::SeqCst);
+        },
+    ));
+
+    // Undo is always the platform PRIMARY + Z, never the physical Control key.
+    let undo = shortcut_manager.get_shortcut("undo").expect("undo registered").clone();
+    assert!(undo.modifiers.contains(Modifiers::PRIMARY), "undo must be Primary+Z");
+    assert!(!undo.modifiers.contains(Modifiers::CTRL), "undo must not be physical Control");
+    assert_eq!(undo.key, Key::Z);
+
+    // Redo follows the explicit platform convention: Cmd+Shift+Z on macOS,
+    // Ctrl+Y (Primary+Y) on Windows/Linux.
+    let expected_redo = match style {
+        PlatformShortcutStyle::Mac => Shortcut::primary_shift(Key::Z),
+        PlatformShortcutStyle::Desktop => Shortcut::primary(Key::Y),
+    };
+    assert_eq!(
+        shortcut_manager.get_shortcut("redo").expect("redo registered"),
+        &expected_redo,
+        "redo must follow the platform convention",
+    );
+
+    // The neutral `Ctrl` string spelling parses to PRIMARY, so it reaches undo.
+    assert!(action_manager.trigger_shortcut("Ctrl+Z"));
+    assert_eq!(undo_count.load(Ordering::SeqCst), 1);
+
+    let redo_spelling = match style {
+        PlatformShortcutStyle::Mac => "Ctrl+Shift+Z",
+        PlatformShortcutStyle::Desktop => "Ctrl+Y",
+    };
+    assert!(action_manager.trigger_shortcut(redo_spelling));
+    assert_eq!(redo_count.load(Ordering::SeqCst), 1);
+
+    // A real key event with the platform PRIMARY modifier routes through the
+    // shortcut manager.
+    assert!(shortcut_manager.handle_key_event(Key::Z, Modifiers::PRIMARY));
+    let (redo_key, redo_mods) = match style {
+        PlatformShortcutStyle::Mac => (Key::Z, Modifiers::PRIMARY | Modifiers::SHIFT),
+        PlatformShortcutStyle::Desktop => (Key::Y, Modifiers::PRIMARY),
+    };
+    assert!(shortcut_manager.handle_key_event(redo_key, redo_mods));
+}
+
+/// The read-only variant observes the same state changes as the `Arc` form, without the
+/// caller having to unwrap a shared payload.
+#[test]
+fn read_only_action_subscribers_see_state_changes() {
+    let mut action = crate::action::Action::new("bold", "Bold");
+    action.set_checkable(true);
+
+    let toggled = Arc::new(Mutex::new(Vec::new()));
+    let enabled = Arc::new(Mutex::new(Vec::new()));
+    let t = Arc::clone(&toggled);
+    let e = Arc::clone(&enabled);
+    action.connect_toggled_ref(move |value: &bool| t.lock().unwrap().push(*value));
+    action.connect_enabled_changed_ref(move |value: &bool| e.lock().unwrap().push(*value));
+
+    action.set_checked(true);
+    action.set_checked(false);
+    action.set_enabled(false);
+
+    assert_eq!(*toggled.lock().unwrap(), vec![true, false]);
+    assert_eq!(*enabled.lock().unwrap(), vec![false]);
+}
+
+/// W-08: `connect` writes the shortcut registry and the action reverse index, and the
+/// reconciliation reports them in agreement.
+#[test]
+fn the_router_keeps_both_registration_tables_in_sync() {
+    let mut shortcuts = crate::shortcut::ShortcutManager::new();
+    let mut actions = ActionManager::new();
+    {
+        let mut router = ActionRouter::new(&mut shortcuts, &mut actions);
+        assert!(router.connect("save", crate::shortcut::Shortcut::primary(Key::S), "Save"));
+        assert!(
+            router.shortcut_reconciliation().is_empty(),
+            "one successful connect must leave both tables agreeing"
+        );
+    }
+    assert!(shortcuts.has_action("save"));
+    assert_eq!(actions.shortcut_for_action("save").map(String::as_str), Some("primary+s"));
+}
+
+/// W-08: a write that bypasses `connect` is detected from either side.
+#[test]
+fn the_reconciliation_names_a_one_sided_registration() {
+    // Action index holds a chord the shortcut registry never accepted.
+    let mut actions = ActionManager::new();
+    assert!(actions.register_action("stray", "Stray"));
+    assert!(actions.bind_shortcut_type(&crate::shortcut::Shortcut::primary(Key::X), "stray"));
+    let report = actions.shortcut_reconciliation(&crate::shortcut::ShortcutManager::new());
+    assert_eq!(report.len(), 1);
+    assert!(report[0].action_manager_has);
+    assert!(!report[0].shortcut_manager_has);
+    assert_eq!(report[0].action_id, "stray");
+
+    // Shortcut registry holds a chord the action index never received.
+    let mut shortcuts = crate::shortcut::ShortcutManager::new();
+    assert!(shortcuts.register("orphan", crate::shortcut::Shortcut::primary(Key::O), "Orphan"));
+    let report = ActionManager::new().shortcut_reconciliation(&shortcuts);
+    assert_eq!(report.len(), 1);
+    assert!(!report[0].action_manager_has);
+    assert!(report[0].shortcut_manager_has);
+    assert_eq!(report[0].action_id, "orphan");
+}
+
+/// M-018: visibility is a real, persisted bit that defaults to `true`.
+#[test]
+fn action_visibility_defaults_to_true_and_round_trips() {
+    let mut action = crate::action::Action::new("save", "Save");
+    assert!(action.is_visible(), "an action that never asked must stay visible");
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    action.connect_visible_changed_ref(move |visible: &bool| {
+        sink.lock().unwrap().push(*visible);
+    });
+    action.set_visible(false);
+    action.set_visible(false);
+    assert_eq!(*seen.lock().unwrap(), vec![false], "only a transition emits");
+
+    let json = action.to_json();
+    assert!(json.contains("\"visible\":false"), "the bit reaches the document: {json}");
+    let restored = crate::action::Action::from_json(&json).expect("the record loads");
+    assert!(!restored.is_visible(), "and survives the round trip");
+}
+
+/// M-018: a scoped registration is an override layer, not a second global table.
+#[test]
+fn scoped_actions_do_not_shadow_the_global_registry() {
+    let mut mgr = ActionManager::new();
+    assert!(mgr.register_action("save", "Save"));
+    assert!(mgr.register_action_in_scope("window-1", "save", "Save (window)"));
+    assert!(mgr.register_action_in_scope("window-2", "save", "Save (other)"));
+
+    assert_eq!(mgr.action("save").map(|action| action.text.as_str()), Some("Save"));
+    assert_eq!(
+        mgr.action_in_scope("window-1", "save").map(|action| action.text.as_str()),
+        Some("Save (window)")
+    );
+    assert_eq!(
+        mgr.action_in_scope("window-2", "save").map(|action| action.text.as_str()),
+        Some("Save (other)")
+    );
+    assert_eq!(
+        mgr.action_in_scope("unknown", "save").map(|action| action.text.as_str()),
+        Some("Save"),
+        "an unknown scope falls back to the global command"
+    );
+
+    let fired = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&fired);
+    mgr.action_triggered.connect(move |id: Arc<String>| {
+        sink.lock().unwrap().push((*id).clone());
+    });
+    assert!(mgr.trigger_action_in_scope("window-1", "save"));
+    assert_eq!(*fired.lock().unwrap(), vec!["save".to_string()], "the payload is the id");
+
+    assert!(mgr.unregister_action_in_scope("window-1", "save"));
+    assert!(mgr.action("save").is_some(), "the global registration survives");
+    assert_eq!(
+        mgr.action_in_scope("window-1", "save").map(|action| action.text.as_str()),
+        Some("Save"),
+        "removing the override restores the global view"
+    );
+}

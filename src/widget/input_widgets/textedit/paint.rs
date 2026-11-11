@@ -166,16 +166,32 @@ impl Draw for TextEdit {
             Some(resolved) if resolved != window_fill => resolved,
             _ => field_from_theme,
         };
+        // A field acknowledges the pointer at the same weight [`crate::style::StateOverlay`] gives
+        // the rest of the input family. A disabled editor clears its interaction flags, so this is
+        // the identity there and the disabled appearance comes from the `:disabled` style / ink.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let field = if overlay.is_empty() {
+            field
+        } else {
+            field.blend(&field.contrast_color(), overlay.fill_blend())
+        };
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
+        let ink = self.base.disabled_ink_on(ink, field);
         // The border is one step from the field toward the ink, so it is visible on either
-        // appearance rather than being a fixed grey a dark theme would render illegible.
+        // appearance rather than being a fixed grey a dark theme would render illegible. A
+        // disabled field recedes with the rest of its chrome.
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| field.blend(&ink, 0.22));
+        let border = self.base.disabled_ink_on(border, field);
 
         // Draw background
         context.face_with_gradient_corners(

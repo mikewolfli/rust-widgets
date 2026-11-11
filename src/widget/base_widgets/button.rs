@@ -182,6 +182,13 @@ pub struct Button {
     auto_exclusive: bool,
     /// Whether the button paints without a face or frame.
     flat: bool,
+    /// Whether the caller explicitly chose a corner radius.
+    ///
+    /// The draw path used to compare `style.border_radius` against the Material baseline and
+    /// treat equality as "the theme wrote it". That made the baseline value unchoosable: a
+    /// caller asking for Material's 4 px on a macOS profile got the profile's 6 px instead.
+    /// This flag records authorship instead of guessing it from the value.
+    border_radius_explicit: bool,
     /// How a label wider than the button is shortened.
     elide_mode: TextElideMode,
     /// The auto-repeat timing while this button is held.
@@ -335,6 +342,7 @@ impl Button {
             auto_default: false,
             auto_exclusive: false,
             flat: false,
+            border_radius_explicit: false,
             elide_mode: TextElideMode::ElideRight,
             auto_repeat: AutoRepeat::new(),
             text_revision: 0,
@@ -1795,6 +1803,43 @@ impl Widget for Button {
         &mut self.base
     }
 
+    /// Records whether the incoming style was authored by the caller or by the theme.
+    ///
+    /// `theme_derived` is the style record's own statement of "the theme wrote this", so it is
+    /// the explicit authorship flag the corner-radius decision needs. Reading it here, at the
+    /// one place a whole style is installed, keeps the rule out of `draw`.
+    fn set_style(&mut self, style: crate::style::WidgetStyle) {
+        self.border_radius_explicit = style.border_radius.is_some() && !style.theme_derived;
+        self.base.set_style(style);
+    }
+
+    /// Sets the corner radius and marks it caller-authored.
+    ///
+    /// The default trait method writes only the field, which would leave the button unable to
+    /// tell a caller's explicit value from the theme's baseline on a later redraw.
+    fn set_border_radius(&mut self, radius: u32) {
+        self.border_radius_explicit = true;
+        let style = self.base.style_mut();
+        style.border_radius = Some(radius);
+        // The caller is now a co-author, so a later theme application may only fill fields
+        // this style left unset rather than replacing the radius it just chose.
+        style.theme_derived = false;
+    }
+
+    /// Sets a whole border and marks the radius as caller-authored.
+    ///
+    /// The default implementation clones the current style, which on a themed button carries
+    /// `theme_derived = true`; keeping that flag would let the next theme application replace
+    /// the radius the caller just wrote.
+    fn set_border(&mut self, color: Option<Color>, width: u32, radius: u32) {
+        let mut style = self.style().clone();
+        style.border_color = color;
+        style.border_width = Some(width);
+        style.border_radius = Some(radius);
+        style.theme_derived = false;
+        self.set_style(style);
+    }
+
     fn set_enabled(&mut self, enabled: bool) {
         self.set_enabled_state(enabled);
         self.sync_group_registration();
@@ -2553,14 +2598,14 @@ impl Draw for Button {
             bg.blend(&interactive, progress)
         };
         // The corner radius is a profile shape token, not a second colour fact. A radius the
-        // caller or the theme actually chose is honoured; the Material baseline is the generic
-        // theme radius rather than a button-specific choice, so it follows the active profile
-        // instead — 6 px on macOS, Material's own 4 everywhere else. An unset radius keeps
-        // drawing square, which is what a control with no theme has always done.
-        let material_baseline = profile_metrics(ControlMetricsProfile::Material).button_radius;
+        // caller actually chose is honoured even when it equals the Material baseline; the
+        // baseline itself is the theme's generic radius rather than a button-specific choice,
+        // so a theme-authored value follows the active profile instead — 6 px on macOS,
+        // Material's own 4 everywhere else. An unset radius keeps drawing square, which is what
+        // a control with no theme has always done.
         let profile = profile_metrics(active_profile());
         let br = match style.border_radius {
-            Some(radius) if radius != material_baseline => radius,
+            Some(radius) if self.border_radius_explicit => radius,
             Some(_) => profile.button_radius,
             None => 0,
         };
@@ -3924,6 +3969,44 @@ mod tests {
         assert!(
             svg.contains("rx=\"6\""),
             "the profile's 6 px radius reaches the painted face: {svg}"
+        );
+    }
+
+    /// An explicit Material radius survives a profile that would otherwise round it further.
+    ///
+    /// This is the R-23 regression: the draw path treated the Material baseline value as the
+    /// "not set by the caller" sentinel, so asking for Material's 4 px on a macOS profile was
+    /// silently rewritten to the profile's 6 px. Authorship is now recorded by the setter, not
+    /// inferred from the value.
+    #[cfg(device_profile)]
+    #[test]
+    fn an_explicit_material_radius_is_not_rewritten_by_the_profile() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let baseline = profile_metrics(ControlMetricsProfile::Material).button_radius;
+        assert_ne!(baseline, 6, "the fixture needs the baseline and the macOS radius to differ");
+
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "r23-button-explicit-radius".to_string();
+        theme.metrics_profile = ControlMetricsProfile::Macos;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("r23-button-explicit-radius"));
+        }
+
+        let mut b = make_button();
+        crate::theme::apply_active_theme(&mut b);
+        b.set_border_radius(baseline);
+        let svg = crate::widget::svg::render_to_svg(&mut b);
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert!(
+            svg.contains(&format!("rx=\"{baseline}\"")),
+            "the caller's explicit radius must reach the painted face: {svg}"
+        );
+        assert!(
+            !svg.contains("rx=\"6\""),
+            "the profile's radius must not replace the explicit one: {svg}"
         );
     }
 

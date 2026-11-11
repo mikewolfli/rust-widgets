@@ -29,7 +29,7 @@ use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::coercion::{expect_bool, expect_string_list};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -812,6 +812,14 @@ impl WidgetProperties for Accordion {
                 self.sections.iter().filter(|s| s.expanded).count() as u64,
             )),
             "animated" => Ok(CapabilityValue::Bool(self.animated())),
+            // R-23: the open section ids, in display order. This is the same set
+            // `save_state` serialises, exposed as a value a document can write.
+            "expanded_sections" => Ok(CapabilityValue::Tuple(
+                self.expanded_ids()
+                    .into_iter()
+                    .map(|id| CapabilityValue::String(id.to_string()))
+                    .collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -828,6 +836,40 @@ impl WidgetProperties for Accordion {
                 self.set_animated(expect_bool(value)?);
                 Ok(())
             }
+            // R-23: writing the list pre-expands a document's sections. Each id must name a
+            // section this control owns; the change goes through `set_expanded`, so the
+            // single-expand policy and the `section_toggled` notifications are the same ones
+            // an interactive click produces (one path per concept).
+            "expanded_sections" => {
+                let ids = expect_string_list(value)?;
+                if let Some(unknown) =
+                    ids.iter().find(|id| !self.sections.iter().any(|section| &section.id == *id))
+                {
+                    log::warn!("accordion.expanded_sections names unknown section {unknown:?}");
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                // A single-expand accordion cannot represent several open sections, so the
+                // policy keeps the first id the caller named.
+                let mut wanted: Vec<&str> = ids.iter().map(|id| id.as_str()).collect();
+                if self.single_expand {
+                    wanted.truncate(1);
+                }
+                let current: Vec<String> = self
+                    .sections
+                    .iter()
+                    .filter(|section| section.expanded)
+                    .map(|section| section.id.clone())
+                    .collect();
+                for id in &current {
+                    if !wanted.contains(&id.as_str()) {
+                        self.set_expanded(id, false);
+                    }
+                }
+                for id in wanted {
+                    self.set_expanded(id, true);
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -838,6 +880,7 @@ impl WidgetProperties for Accordion {
             "single_expand",
             "expanded_count",
             "animated",
+            "expanded_sections",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -866,6 +909,14 @@ impl Draw for Accordion {
             .or_else(|| themed.as_ref().and_then(|resolved| resolved.text_color))
             .unwrap_or(window_foreground);
         let accent = themed.as_ref().and_then(|resolved| resolved.border_color).unwrap_or(accent);
+        // Disabled accordions used to gate input only: the headers, bodies and chevrons kept full
+        // contrast, so an inert stack still read as an active one. Both the ink and the accent
+        // step toward the surface they are painted on, which is the crate's single disabled-ink
+        // rule; every band below is derived from these two colours, so the whole stack recedes
+        // together while keeping its full geometry. `accordion:disabled` carries the palette's
+        // own disabled token for the surface.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let accent = self.base.disabled_ink_on(accent, surface);
         let font = style.font.clone().unwrap_or_else(|| Font::simple_interned("Arial", 12.0));
 
         // The sections run as tall as their content makes them; the clip bounds them to the
@@ -1056,6 +1107,39 @@ mod tests {
         accordion.add_section("a", "Alpha", "first body");
         accordion.add_section("b", "Beta", "second body");
         accordion
+    }
+
+    /// R-23: the `expanded_sections` property pre-expands a document's sections.
+    #[test]
+    fn expanded_sections_property_pre_expands_and_clears() {
+        let mut accordion = accordion();
+        assert_eq!(
+            accordion.get("expanded_sections"),
+            Ok(CapabilityValue::Tuple(Vec::new())),
+            "a fresh accordion has no open section"
+        );
+
+        accordion
+            .set(
+                "expanded_sections",
+                CapabilityValue::Tuple(vec![CapabilityValue::String("b".to_string())]),
+            )
+            .expect("a known section id");
+        assert_eq!(accordion.expanded_ids(), vec!["b"]);
+
+        assert_eq!(
+            accordion.set(
+                "expanded_sections",
+                CapabilityValue::Tuple(vec![CapabilityValue::String("missing".to_string())]),
+            ),
+            Err(CapabilityAccessError::OutOfRange),
+            "an unknown id is refused instead of silently ignored"
+        );
+
+        accordion
+            .set("expanded_sections", CapabilityValue::Tuple(Vec::new()))
+            .expect("an empty list closes every section");
+        assert!(accordion.expanded_ids().is_empty());
     }
 
     #[test]
@@ -1258,5 +1342,33 @@ mod tests {
         foreign.extend_from_slice(b"zzzz");
         assert!(!SaveState::restore_state(&mut accordion, &foreign));
         assert_eq!(accordion.expanded_ids(), vec!["b"]);
+    }
+
+    /// A disabled accordion recedes while keeping every header and body row.
+    ///
+    /// The event handler already consumed nothing when disabled, but the paint path had no
+    /// disabled branch, so an inert stack looked exactly like an active one. The row geometry is
+    /// asserted alongside the frame difference: "disabled" must not mean "one row disappeared".
+    #[test]
+    fn a_disabled_accordion_recedes_without_losing_its_rows() {
+        let _guard = crate::style::theme_test_guard();
+        let mut accordion = accordion();
+        accordion.set_expanded("a", true);
+        let rows_before = accordion.row_rects().len();
+
+        let enabled = crate::widget::svg::render_to_svg(&mut accordion);
+        let enabled_ink = crate::widget::svg::text_ink_boxes(&enabled).len();
+
+        accordion.set_enabled(false);
+        assert!(!accordion.is_enabled(), "the control must report the state it was given");
+        let disabled = crate::widget::svg::render_to_svg(&mut accordion);
+
+        assert_ne!(enabled, disabled, "a disabled accordion must paint a different frame");
+        assert_eq!(accordion.row_rects().len(), rows_before, "no row may disappear when disabled");
+        assert_eq!(
+            crate::widget::svg::text_ink_boxes(&disabled).len(),
+            enabled_ink,
+            "every title and open body must still be painted while disabled"
+        );
     }
 }

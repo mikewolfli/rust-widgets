@@ -610,6 +610,33 @@ pub enum RenderCommand {
         /// How `text` is placed horizontally relative to `origin.x`.
         alignment: HorizontalAlignment,
     },
+    /// Draw a single line of text rotated about a pivot.
+    ///
+    /// The glyphs are the same shaped run [`RenderCommand::DrawText`] draws; the only
+    /// difference is that the finished box is rotated about `pivot`. It is a separate
+    /// variant for the same reason `DrawTextDecorated` is: every existing construction
+    /// site stays valid and an unrotated label pays nothing.
+    ///
+    /// The rotation is clockwise in screen coordinates (y grows down), the convention the
+    /// callers' own angle math uses. `pivot` is in the same space as `origin`, so a radial
+    /// menu can rotate a label about the centre of the box that holds it.
+    DrawTextRotated {
+        /// Anchor point in logical pixels. `y` is the top of the text box;
+        /// horizontal placement is controlled by `alignment`.
+        origin: Point,
+        /// Text to draw; supports combining marks and variation selectors.
+        text: Arc<str>,
+        /// Font family, size, weight and style used to rasterize the glyphs.
+        font: Font,
+        /// Glyph color.
+        color: Color,
+        /// How `text` is placed horizontally relative to `origin.x`.
+        alignment: HorizontalAlignment,
+        /// The point the glyph box is rotated about, in the same space as `origin`.
+        pivot: Point,
+        /// Clockwise rotation in radians.
+        radians: f32,
+    },
     /// Draw a single line of text with baseline decorations (G-013).
     ///
     /// This is [`RenderCommand::DrawText`] plus a [`TextDecoration`] bitfield that
@@ -1108,6 +1135,14 @@ impl RenderCommand {
                 // The generous box already pads one em on every side, which covers
                 // an underline/wavy stroke sitting below the baseline.
                 Some(bounds_of_text(*origin, text, font, *alignment))
+            }
+            Self::DrawTextRotated { origin, text, font, alignment, pivot, .. } => {
+                // A rotated box is not a rectangle, so its damage is the disc that contains
+                // it: no rotation angle can move the ink outside this circle.
+                let text_box = bounds_of_text(*origin, text, font, *alignment);
+                let half =
+                    ((text_box.width as f32).hypot(text_box.height as f32) / 2.0).ceil() as u32;
+                Some(bounds_around_point(*pivot, half))
             }
             Self::PushClip { x, y, width, height }
             | Self::PushClipRoundedRect { x, y, width, height, .. } => {

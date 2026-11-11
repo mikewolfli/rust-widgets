@@ -18,6 +18,7 @@ This file tracks items that are currently not feasible to complete in the presen
   - Blocker: requires stable per-control capability table generation + compile-time route validation across all target profiles.
   - Target completion signal: `control-policy-hybrid` can prove deterministic native/basic + custom/advanced routing with parity gates.
   - Status 2026-09-11: largely delivered, but not yet *compile-time*. `tools/generate_control_route_matrix.py` emits a per-`WidgetKind` route matrix and the gate in `tools/check_control_route_matrix.sh` passes `--fail-on-placeholder --fail-on-contract-miss`; measured results are 167 variants with 0 missing route mappings and 0 missing trait create-method contracts. What remains open is the *compile-time* half: the route is currently validated by a generated report + gate rather than enforced by the type system.
+  - Review 2026-11-11 (issue-20261111): still open for the same reason, and now **less** relevant than when filed — BLUE15's self-drawn refactor made the route uniform (`CustomRequired` for every kind), so there is one route to validate rather than a per-control matrix. Compile-time enforcement would mean a generated trait/const table; that is a larger change than the report+gate, and no defect currently depends on it.
 
 - [ ] ITEM 1: Linux full native parity without `gtk-native` feature
   - Tracked in [`blue28.md`](blue28.md) B28.15 (decision: GTK-mandatory desktop vs native X11).
@@ -25,6 +26,7 @@ This file tracks items that are currently not feasible to complete in the presen
   - Blocker: requires stable non-GTK native backend strategy (or mandatory GTK runtime dependency policy).
   - Target completion signal: native-interactive behavior parity with `gtk-native` path.
   - Note 2026-09-11: the `gtk-native` path itself is now fully verified — the `image`-dependent `dav1d` system library was built from source into `~/.local`, so `--features desktop` compiles and its 3787 lib tests pass (0 failed / 0 ignored), and the GTK lifecycle test executes against a real X display.
+  - Review 2026-11-11 (issue-20261111): reviewed, still a **policy decision** (mandatory GTK runtime vs. a new X11 backend), not a code defect. The non-GTK path is documented as preview/state-loop only, and `supports_surfaces()` reports that honestly at runtime instead of pretending to paint. No change made because choosing the policy is the maintainer's call (principle #37 allows an honest absence; it does not allow inventing a backend).
 
 - [x] ITEM 1b: Wayland backend verified against a real compositor
   - Completed 2026-09-11
@@ -41,6 +43,7 @@ This file tracks items that are currently not feasible to complete in the presen
   - Progress 2026-09-11: `aarch64-unknown-linux-ohos` cross-compile verified (0 warnings); capability contract made honest (`native_menu: false`) instead of inheriting desktop defaults; module status documented in `src/platform/harmony/status.md`.
   - Remaining blocker: OpenHarmony SDK (ArkUI N-API headers) is not available in this environment (checked: no `~/ohos-sdk`/`~/OpenHarmony`), so no native ArkUI object can be constructed or tested.
   - Target completion signal: real native window lifecycle, input dispatch, and widget host integration.
+  - Review 2026-11-11 (issue-20261111): blocker unchanged and re-verified (no SDK in the environment). Not implementable without the ArkUI headers; the backend stays honest about it (`native_menu: false`, status in `src/platform/harmony/status.md`).
 
 - [x] ITEM 2b: Windows native SpinBox / ListView / ScrollArea — **obsoleted, closed as not-applicable (2026-09-28)**
   - The 2026-09-11 progress note below described real Win32 objects (`msctls_updown32`,
@@ -106,6 +109,10 @@ This file tracks items that are currently not feasible to complete in the presen
     (`run()` graduating from the polling loop to `-[NSApplication run]`), plus
     migration sign-off from the cocoa backend.
   - Target completion signal: `NativeInteractive` parity and replacement-readiness.
+  - Review 2026-11-11 (issue-20261111): blocked on a macOS host for the `run()` graduation and the
+    parity run; this workspace is Linux. The bug found here in the 2026-11-11 sweep
+    (macos-legacy `windowDidResize:` delivering untranslated host ids) was fixed and is recorded in
+    `docs/log/log-20261111-1.md`.
 
 - [x] ITEM 5b: cocoa-legacy macOS backend off-main-thread crash
   - Fixed 2026-09-11 (real bug found only on a macOS host).
@@ -137,10 +144,22 @@ This file tracks items that are currently not feasible to complete in the presen
     matching the exclusion the Linux arms already had.
   - Evidence: `cargo test --lib --all-features` now compiles and runs 1853 tests.
 
-- [ ] ITEM 6: Cross-platform full widget parity matrix closure
-  - Constraint: some widgets still rely on default trait-level fallback semantics on at least one backend.
-  - Blocker: each backend needs complete `create_*` coverage or explicit unsupported contracts.
-  - Target completion signal: no implicit `create_button` fallback for supported controls across all target backends.
+- [x] ITEM 6: Cross-platform full widget parity matrix closure — **closed as not-applicable (2026-11-11)**
+  - The premise no longer exists. BLUE15's self-drawn refactor removed the host-native control layer
+    (recorded above under ITEM 2b), `route_preference_for_widget_kind` returns `CustomRequired`
+    unconditionally, and every backend paints every `WidgetKind` through the library. There is no
+    `create_*` fallback left to close: the `Platform` trait declares its `create_*` methods with zero
+    default bodies, so a backend either implements one or fails to compile (`Missing = 0` in
+    `tools/platform_impl_matrix.md`).
+  - Review 2026-11-11 (issue-20261111): the matrix and the capability documents are generated and gated;
+    the remaining "explicit unsupported contract" wording is covered by each backend's runtime
+    capability answers (`supports_surfaces`, `has_print_support`, `native_menu`, …), which report
+    absence honestly instead of a state-only handle under a native-sounding name.
+  - Target completion signal met in its truthful form: no supported control silently falls through to a
+    state-only path without a recorded reason (the reasons live in the capability matrix).
+  - (Historical, superseded by the 2026-11-11 closure above) Constraint: some widgets still rely on default trait-level fallback semantics on at least one backend.
+  - (Historical) Blocker: each backend needs complete `create_*` coverage or explicit unsupported contracts.
+  - (Historical) Target completion signal: no implicit `create_button` fallback for supported controls across all target backends.
   - Correction 2026-09-11 (the original premise does not hold): the `Platform` trait declares 22 `create_*` methods with **zero default bodies**, so a backend cannot silently inherit a wrong default — it either implements the method or fails to compile. The measured `tools/platform_impl_matrix.md` therefore reports `Missing = 0` for the required contract, and the 87 "Placeholder" native-backend grades are `CustomRequired` widgets that are custom-painted **by design** (the project's 原生优先/自绘兔底 policy), with hybrid placeholders measured at 0.
   - What remains genuinely open: per-backend *native* coverage for widgets that could reasonably have one (e.g. Windows SpinBox/ListView/ScrollArea, done 2026-09-11) and explicit "unsupported" contracts where a platform truly has no counterpart (e.g. Android ColorDialog/FontDialog).
   - Target completion signal (restated): every backend either implements a real native `create_*` or documents an explicit unsupported contract, with no widget falling through to a silent state-only path without a recorded reason.
@@ -154,6 +173,10 @@ This file tracks items that are currently not feasible to complete in the presen
   - Measured 2026-09-11 (Round 7): 26 tests were in this state (`src/platform/ime_windows.rs` 15, `src/platform/windows/notify.rs` 11). Both are now executable on the host: the `ime_windows` composition state machine is compiled unconditionally (TSF touch points stay internally gated), and the pure Win32 notification-code mapping was moved to the ungated `src/platform/windows_notify.rs` (which the Windows backend now calls, rather than keeping a duplicate copy).
   - What remains genuinely open: other backends have the same shape — `src/platform/ime_macos.rs` (19 tests, pure state machine), `src/platform/macos_objc2/tests.rs` (17), `src/platform/ios/platform_impl.rs` (6), `src/platform/android/platform_impl.rs` (7) + `types.rs` (3), `src/platform/macos/tests.rs` (4), `src/platform/accessibility/windows.rs` (2), and 2 `target_os`-gated tests in `src/control_backend/routing.rs`. These were not touched in Round 7 because reaching them requires the same refactor per module or an actual Apple/Android host.
   - Target completion signal: no pure-logic test is left unreachable on the host; each module either compiles its pure logic unconditionally with OS parts gated, or is explicitly marked as requiring its target.
+  - Review 2026-11-11 (issue-20261111): reviewed; the list is unchanged except that the two modules
+    named above remain the completed half. The rest need either an Apple/Android host or the same
+    per-module "pure logic ungated, OS parts gated" refactor. This is a host-limited item, not a
+    silent gap: each module's status is recorded in `src/platform/*/status.md`.
 
 ## Notes
 

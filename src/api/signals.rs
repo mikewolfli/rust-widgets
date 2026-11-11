@@ -21,7 +21,7 @@ pub use super::control::drain_triggers;
 /// the crate's single frame driver.
 #[cfg(not(alloc_frugal))]
 pub use widget::runtime::{
-    animation_suspended, drive_frame, last_frame_stats, notify_native_redraw, report_state,
-    request_repaint_because, set_animation_suspended, FrameOutcome, FrameStats, RepaintReason,
-    StateFact,
+    animation_suspended, drive_frame, last_frame_stats, notify_platform_surface_repaint,
+    report_state, request_repaint_because, set_animation_suspended, FrameOutcome, FrameStats,
+    RepaintReason, StateFact,
 };

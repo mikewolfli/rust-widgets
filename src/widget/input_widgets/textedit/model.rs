@@ -6,6 +6,14 @@
 //!
 //! The wrap table built here is the single break rule: the paint path, the caret, the
 //! selection band and the pointer hit test all read it rather than deriving the breaks again.
+//!
+//! # Relationship to the other span types
+//!
+//! [`TextSpan`]/[`CharFormat`] describe a byte range of the plain-text document and the character
+//! attributes applied to it. The render layer's `rich_text::TextSpan` is a paint-time
+//! `(text, TextStyle)` pair, and `rich_edit::CharFormat` adds strikeout and font overrides for the
+//! rich editor. The attribute sets differ, so the types stay separate rather than being merged
+//! (principles #49 and #51).
 
 // The only users are the COMP-A8 find/replace binding below: the shared queue is an
 // `Arc<Mutex<..>>` so the bar and the editor can both reach it.

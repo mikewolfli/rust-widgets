@@ -37,6 +37,9 @@ pub mod safe_area;
 /// The generic scroll read/write contract shared by the scrolling containers (RW-58).
 pub mod scroll_surface;
 pub mod scrollarea;
+/// SDI workbench helper: a set of top-level windows with cascade/tile arrangement.
+#[cfg(full_widgets)]
+pub mod sdi_workbench;
 #[cfg(widgets_unstripped)]
 pub mod splitter;
 #[cfg(widgets_unstripped)]
@@ -75,11 +78,13 @@ pub use linear_layouts::{Flex, FlexItemSpec, FlowLayout, WrapLayout};
 #[cfg(widgets_unstripped)]
 pub use masonry_layout::{MasonryItem, MasonryLayout};
 #[cfg(widgets_unstripped)]
-pub use mdiarea::MdiArea;
+pub use mdiarea::{MdiArea, MdiWindowMenuAction, MdiWindowMenuEntry};
 #[cfg(widgets_unstripped)]
 pub use safe_area::{SafeArea, SafeAreaInsets};
 pub use scroll_surface::{ScrollableRows, ScrollableSurface};
 pub use scrollarea::ScrollArea;
+#[cfg(full_widgets)]
+pub use sdi_workbench::SdiWorkbench;
 #[cfg(widgets_unstripped)]
 pub use splitter::Splitter;
 #[cfg(widgets_unstripped)]

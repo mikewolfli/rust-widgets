@@ -10,7 +10,7 @@
 #   **A platform redraw the library did not ask for must be announced to the
 #   library.** `queue_draw` / `setNeedsDisplay:` may be called (the platform owns
 #   those pixels and only it can repaint them), but the call site must be paired
-#   with `notify_native_redraw`, so the frame ledger learns about it.
+#   with `notify_platform_surface_repaint`, so the frame ledger learns about it.
 #
 # The defect this stops
 # ---------------------
@@ -36,7 +36,7 @@
 #   (a) the body of `invalidate_surface*` — the **library** asked, and already
 #       counted it, so announcing again would double-count; or
 #   (b) a **platform-initiated** redraw, which must reach one of the two
-#       announcement helpers (`note_canvas_redraw` / `note_native_redraw`).
+#       announcement helpers (`note_canvas_redraw` / `note_platform_surface_repaint`).
 #
 # The two allowlisted files below hold the library-side functions; a new call site
 # in any *other* function is a finding.
@@ -52,7 +52,7 @@
 #
 # Reverse injection
 # -----------------
-# Removing a `note_native_redraw` pairing from an event handler must make this
+# Removing a `note_platform_surface_repaint` pairing from an event handler must make this
 # gate name that file. See the round's report for the exact output.
 #
 # Usage: tools/check_native_redraw_goes_through_the_runtime.sh
@@ -66,12 +66,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "[1/3] the announcement entry point exists"
-if ! grep -qE '^pub fn notify_native_redraw' src/widget/runtime/window_map.rs; then
-    echo "  FAIL  src/widget/runtime/window_map.rs no longer defines \`pub fn notify_native_redraw\`"
+if ! grep -qE '^pub fn notify_platform_surface_repaint' src/widget/runtime/window_map.rs; then
+    echo "  FAIL  src/widget/runtime/window_map.rs no longer defines \`pub fn notify_platform_surface_repaint\`"
     echo "        It is the one way a platform tells the library about its own redraws."
     exit 1
 fi
-echo "  PASS  notify_native_redraw is the platform's entry into the frame ledger"
+echo "  PASS  notify_platform_surface_repaint is the platform's entry into the frame ledger"
 
 echo "[2/3] every toolkit redraw call site is announced or is the library's own"
 # Collect the raw call sites, with their enclosing file, then decide by file.
@@ -122,7 +122,7 @@ while IFS= read -r hit; do
         inside { print }
         inside && /^}$/ { exit }
     ' "$file")"
-    if ! printf '%s' "$body" | grep -E 'note_canvas_redraw\(|note_native_redraw\(' \
+    if ! printf '%s' "$body" | grep -E 'note_canvas_redraw\(|note_platform_surface_repaint\(' \
         | sed -e 's://.*::' | grep -q .; then
         unannounced="${unannounced}${file}:${ln} in ${enclosing}()
 "
@@ -132,7 +132,7 @@ done <<< "$RAW"
 if [ -n "$unannounced" ]; then
     echo "  FAIL  these files queue more platform redraws than they announce:"
     printf '%s' "$unannounced" | sed 's/^/          /'
-    echo "        Pair each toolkit redraw with a \`note_native_redraw(id)\` /"
+    echo "        Pair each toolkit redraw with a \`note_platform_surface_repaint(id)\` /"
     echo "        \`note_canvas_redraw(id)\`: the platform must repaint its own pixels, but"
     echo "        the frame ledger has to learn about it (BLUE24 §7.2)."
     exit 1
@@ -153,7 +153,7 @@ while IFS= read -r file; do
             inside { print }
             inside && /^    }$/ { exit }
         ' "$file" 2>/dev/null || true)"
-        if printf '%s' "$body" | grep -qE 'note_canvas_redraw\(|note_native_redraw\('; then
+        if printf '%s' "$body" | grep -qE 'note_canvas_redraw\(|note_platform_surface_repaint\('; then
             double="${double}${file}: ${fn} announces a redraw the library already counted
 "
         fi

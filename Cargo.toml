@@ -59,6 +59,7 @@ include = [
     # tarball even though `Cargo.toml` announces it.
     "examples/view_counter.rs",
     "examples/view_adaptive.rs",
+    "examples/paradigm_selection.rs",
     "examples/control_rendering_census.rs",
     "examples/export_control_svgs.rs",
     "examples/icon_census.rs",
@@ -1192,6 +1193,14 @@ path = "examples/view_counter.rs"
 [[example]]
 name = "view_adaptive"
 path = "examples/view_adaptive.rs"
+required-features = ["desktop"]
+
+# The paradigm decision (issue-20261111 R-08): one code path chooses the touch scaffold or the
+# desktop SDI workbench from the primary display's width, which is a runtime fact rather than an
+# OS branch.
+[[example]]
+name = "paradigm_selection"
+path = "examples/paradigm_selection.rs"
 required-features = ["desktop"]
 
 # BLUE20 layer 1 — the rendering census probe.

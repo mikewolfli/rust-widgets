@@ -46,7 +46,7 @@
 //! 自绘型控件的放置方式由 `src/platform/` 内部决定。
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rust_widgets::app::{App, StatusBarHandle, WidgetHandle, WindowHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
@@ -1248,10 +1248,25 @@ fn toggle_appearance(log: &Arc<EventLog>) {
 /// implicitly. Asking once at startup is the host's decision, and the result is logged
 /// either way — a `None` is worth knowing about, because the fallback is visible tofu.
 fn register_cjk_face(log: &Arc<EventLog>) {
-    match rust_widgets::render::text::register_system_cjk_font() {
+    let worker = CJK_SCAN
+        .get()
+        .and_then(|slot| slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take());
+    match preview_common::finish_cjk_face(worker) {
         Some(family) => log.append(format!("[Fonts] 已注册系统 CJK 字体：{family}")),
         None => log.append("[Fonts] 未找到已安装的 CJK 字体；超出内置子集的汉字会显示为方框"),
     }
+}
+
+/// The background CJK-face registration started by [`prewarm_cjk_face`].
+///
+/// A process-wide slot rather than a parameter: the scan starts before `App::init` and is
+/// consumed before the first control exists, which the live run and the offscreen preview both
+/// reach.
+static CJK_SCAN: OnceLock<Mutex<Option<std::thread::JoinHandle<Option<String>>>>> = OnceLock::new();
+
+/// Starts the CJK-face scan so it overlaps `App::init` and window creation (R-19).
+fn prewarm_cjk_face() {
+    let _ = CJK_SCAN.set(Mutex::new(preview_common::prewarm_cjk_face()));
 }
 
 /// Runs the demo.
@@ -1259,6 +1274,10 @@ fn register_cjk_face(log: &Arc<EventLog>) {
 /// Kept as `app::run()` so it matches the other demos, and so the body is callable
 /// from a test without a window.
 pub fn run() {
+    // Start the disk-bound CJK face scan now; it overlaps App init and window creation. It is
+    // awaited just before the first control exists (R-19).
+    prewarm_cjk_face();
+
     let log = Arc::new(EventLog::new());
 
     println!("╔══════════════════════════════════════════════════════════╗");

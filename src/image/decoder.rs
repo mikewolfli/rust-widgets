@@ -749,14 +749,15 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             if pos + 4 >= data.len() {
                 break;
             }
+            // `seg_len` includes its own two length bytes, per ITU-T T.81 B.2.4.
             let seg_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-            if seg_len < 6 || pos + seg_len > data.len() {
+            if seg_len < 6 || pos + 2 + seg_len > data.len() {
                 break;
             }
             let num_sos_comp = data[pos + 4] as usize;
             let mut offset = pos + 5;
             for _ in 0..num_sos_comp {
-                if offset + 2 > pos + seg_len {
+                if offset + 2 > pos + 2 + seg_len {
                     break;
                 }
                 let comp_id = data[offset];
@@ -767,7 +768,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                 offset += 2;
             }
             // Skip spectral selection and approx (3 bytes)
-            scan_data_start = pos + seg_len;
+            scan_data_start = pos + 2 + seg_len;
             // Find the end of scan data (next marker or EOI)
             scan_data_end = data.len();
             for i in scan_data_start..data.len().saturating_sub(1) {
@@ -786,11 +787,15 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
         if pos + 4 > data.len() {
             break;
         }
+        // `seg_len` counts its own two bytes, so the segment ends at `pos + 2 + seg_len`.
+        // Treating it as if it counted the marker instead dropped the last two payload bytes
+        // of every segment — enough to make a 65-byte DQT payload look 63 bytes long and
+        // reject every real-world JPEG with "Missing quantization table".
         let seg_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-        if seg_len < 4 || pos + seg_len > data.len() {
+        if seg_len < 2 || pos + 2 + seg_len > data.len() {
             break;
         }
-        let seg_data = &data[pos + 4..pos + seg_len];
+        let seg_data = &data[pos + 4..pos + 2 + seg_len];
 
         match marker {
             0xC0..=0xC2 if seg_data.len() >= 6 => {
@@ -924,7 +929,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             _ => {}
         }
 
-        pos += seg_len;
+        pos += 2 + seg_len;
     }
 
     if width == 0 || height == 0 {
@@ -960,7 +965,36 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     // file with valid-looking dimensions but no usable scan data used to allocate gigabytes
     // (16384² i16 per component) and only then report that the entropy data was truncated.
     let scan_data = if scan_data_start < scan_data_end && scan_data_end <= data.len() {
-        &data[scan_data_start..scan_data_end]
+        let raw = &data[scan_data_start..scan_data_end];
+        // The scan loop stops at the first non-stuffed marker. Reaching it with an RSTn byte
+        // means the encoder split the scan into restart intervals, which this reader does not
+        // implement; report that instead of mis-decoding the rest of the file.
+        if scan_data_end + 1 < data.len() && data[scan_data_end] == 0xFF {
+            let marker = data[scan_data_end + 1];
+            if (0xD0..=0xD7).contains(&marker) {
+                return Err(String::from(
+                    "JPEG restart markers (RSTn) are not supported by this decoder; re-encode \
+                     the image without restart intervals",
+                ));
+            }
+        }
+        // JPEG entropy data is **byte-stuffed**: a literal `0xFF` is written as `FF 00`.
+        // Decoding the stuffed bytes as if they were bitstream shifts every code after the first
+        // `0xFF`, which is why a real photograph used to fail with an AC run past the end of its
+        // block. The stuffing is removed once here, before any bit is read.
+        let mut clean = Vec::with_capacity(raw.len());
+        let mut index = 0usize;
+        while index < raw.len() {
+            let byte = raw[index];
+            if byte == 0xFF && index + 1 < raw.len() && raw[index + 1] == 0x00 {
+                clean.push(0xFF);
+                index += 2;
+                continue;
+            }
+            clean.push(byte);
+            index += 1;
+        }
+        clean
     } else {
         return Err(format!(
             "JPEG has no scan data: the SOS marker declared bytes {scan_data_start}..\
@@ -968,12 +1002,18 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             data.len()
         ));
     };
+    let scan_data = scan_data.as_slice();
 
     // Allocate component buffers
     let mut comp_bufs: Vec<Vec<Vec<i16>>> = Vec::new();
     for comp in &components {
-        let cw = width.div_ceil((1 << comp.h_sampling) * 8) * ((1 << comp.h_sampling) * 8);
-        let ch = height.div_ceil((1 << comp.v_sampling) * 8) * ((1 << comp.v_sampling) * 8);
+        // Each MCU contributes `h_sampling * 8` columns and `v_sampling * 8` rows for this
+        // component, so the plane is exactly `mcus_x * h * 8` by `mcus_y * v * 8`. Sizing it by
+        // `width` instead gave a 4:2:0 chroma plane the luma's stride: the decoded chroma
+        // occupied the left half of a double-width buffer and the conversion read unwritten
+        // zeroes for the rest, which is what turned photographs green and purple.
+        let cw = mcus_x * comp.h_sampling as u32 * 8;
+        let ch = mcus_y * comp.v_sampling as u32 * 8;
         comp_bufs.push(vec![vec![0i16; cw as usize * ch as usize]; 1]);
     }
 
@@ -1059,19 +1099,19 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                         let mut pixels = [0i32; 64];
                         idct_8x8(&block, &mut pixels);
 
-                        // Store to component buffer
-                        let cw = width.div_ceil((1 << comp.h_sampling) * 8)
-                            * ((1 << comp.h_sampling) * 8);
-                        let buf_width = cw as usize;
+                        // Store to component buffer. The plane's stride is its own sampling
+                        // width, not the image's.
+                        let buf_width = mcus_x as usize * dbw;
+                        let buf_height = mcus_y as usize * dbh;
+                        let buf_len = comp_bufs[ci][0].len();
                         for yy in 0..8 {
                             for xx in 0..8 {
                                 let px = (mcu_x as usize * dbw + bx * 8 + xx).min(buf_width - 1);
-                                let py = (mcu_y as usize * dbh + by * 8 + yy)
-                                    .min(comp_bufs[ci][0].len() / buf_width - 1);
+                                let py = (mcu_y as usize * dbh + by * 8 + yy).min(buf_height - 1);
                                 let idx = py * buf_width + px;
-                                if idx < comp_bufs[ci][0].len() {
+                                if idx < buf_len {
                                     comp_bufs[ci][0][idx] =
-                                        pixels[yy * 8 + xx].clamp(-128, 127) as i16 + 128;
+                                        pixels[yy * 8 + xx].clamp(0, 255) as i16;
                                 }
                             }
                         }
@@ -1083,11 +1123,18 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
 
     // Convert to RGB
     let mut pixels = vec![0u8; (width * height * 4) as usize];
-    let buf_width = (width.div_ceil(mcu_width) * mcu_width) as usize;
+    let max_h = components.iter().map(|c| c.h_sampling as usize).max().unwrap_or(1);
+    let max_v = components.iter().map(|c| c.v_sampling as usize).max().unwrap_or(1);
+    // Each plane's own stride, derived from the MCU grid rather than from the image width.
+    let plane_width =
+        |index: usize| -> usize { mcus_x as usize * components[index].h_sampling as usize * 8 };
+    let sample = |index: usize, x: usize, y: usize, buffer: &[i16]| -> Option<i16> {
+        let comp = &components[index];
+        let cx = x * comp.h_sampling as usize / max_h;
+        let cy = y * comp.v_sampling as usize / max_v;
+        buffer.get(cy * plane_width(index) + cx).copied()
+    };
 
-    // The component planes are resolved once, outside the pixel loop. The previous version walked
-    // `comp_bufs.first().and_then(|b| b.first()).and_then(|row| row.get(..))` for every pixel —
-    // four `Option` layers and a bounds check per channel sample.
     let luma = comp_bufs
         .first()
         .and_then(|buffer| buffer.first())
@@ -1109,13 +1156,12 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     for y in 0..height as usize {
         for x in 0..width as usize {
             let idx = y * width as usize + x;
-            let bidx = y * buf_width + x;
-
-            let y_val = *luma.get(bidx).ok_or("JPEG decoded luma component is incomplete")? as i32;
+            let y_val =
+                sample(0, x, y, luma).ok_or("JPEG decoded luma component is incomplete")? as i32;
             let (cb_val, cr_val) = match chroma {
                 Some((cb, cr)) => (
-                    *cb.get(bidx).ok_or("JPEG decoded Cb component is incomplete")? as i32,
-                    *cr.get(bidx).ok_or("JPEG decoded Cr component is incomplete")? as i32,
+                    sample(1, x, y, cb).ok_or("JPEG decoded Cb component is incomplete")? as i32,
+                    sample(2, x, y, cr).ok_or("JPEG decoded Cr component is incomplete")? as i32,
                 ),
                 None => (128, 128),
             };
@@ -1307,53 +1353,49 @@ fn receive_extended(data: &[u8], bit_pos: &mut usize, cat: usize) -> Result<i32,
 /// can exceed both `i32` and `i64` for hostile but representable coefficients. `i128` safely
 /// covers the two separable passes; the result is narrowed only after division, saturating outside
 /// the range used by the pixel-store clamp.
+/// One 8×8 inverse DCT, in the normalisation ITU-T T.81 A.3.3 defines.
+///
+/// `output` is a level-shifted 0..=255 sample. The previous form divided a cosine table that
+/// was stored as `cos × 10000` by 4, leaving a factor of 10^8 in the result: every photograph
+/// saturated into bands of wrong colours, while the synthetic tests (which never asserted a
+/// sample value) stayed green.
 fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
-    let mut tmp = [0i128; 64];
-    // The cosine factors are a constant 8×8 table. This used to call `icosph` — and therefore
-    // `f64::cos` — 1024 times per block (8×8 pixels × 8 terms × 2 passes), which dominated the
-    // decode of a photographic image. The table is built once from the same `icosph`, so the
-    // values are bit-identical to the previous per-call computation.
     let table = idct_table();
+    let mut tmp = [0f64; 64];
 
-    // Rows
+    // Rows: the horizontal pass of the separable transform.
     for y in 0..8 {
         for x in 0..8 {
-            let mut sum = 0i128;
+            let mut sum = 0f64;
             for u in 0..8 {
-                let cu = if u == 0 { 1 } else { 2 };
-                let val = input[y * 8 + u] as i128;
-                sum += val * cu * table[u][x] as i128;
+                let cu = if u == 0 { core::f64::consts::FRAC_1_SQRT_2 } else { 1.0 };
+                sum += cu * input[y * 8 + u] as f64 * table[u][x];
             }
             tmp[y * 8 + x] = sum;
         }
     }
 
-    // Columns
+    // Columns: the vertical pass, the 1/4 normalisation, and the +128 level shift.
     for x in 0..8 {
         for y in 0..8 {
-            let mut sum = 0i128;
+            let mut sum = 0f64;
             for v in 0..8 {
-                let cv = if v == 0 { 1 } else { 2 };
-                let val = tmp[v * 8 + x];
-                sum += val * cv * table[v][y] as i128;
+                let cv = if v == 0 { core::f64::consts::FRAC_1_SQRT_2 } else { 1.0 };
+                sum += cv * tmp[v * 8 + x] * table[v][y];
             }
-            // `i32::try_from` after the `/4` keeps a pathological block (which the clamp at the
-            // store site would bound anyway) from wrapping in the narrowing cast.
-            let scaled = sum / 4;
-            output[y * 8 + x] =
-                i32::try_from(scaled).unwrap_or(if scaled > 0 { i32::MAX } else { i32::MIN });
+            output[y * 8 + x] = (sum / 4.0 + 128.0).round().clamp(0.0, 255.0) as i32;
         }
     }
 }
 
-/// The pre-computed 8×8 IDCT cosine table, built from [`icosph`] once per process.
-fn idct_table() -> &'static [[i32; 8]; 8] {
-    static TABLE: std::sync::OnceLock<[[i32; 8]; 8]> = std::sync::OnceLock::new();
+/// The pre-computed 8×8 IDCT cosine table: `cos((2·position + 1)·frequency·π / 16)`.
+fn idct_table() -> &'static [[f64; 8]; 8] {
+    static TABLE: std::sync::OnceLock<[[f64; 8]; 8]> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
-        let mut table = [[0i32; 8]; 8];
-        for (u, row) in table.iter_mut().enumerate() {
-            for (v, cell) in row.iter_mut().enumerate() {
-                *cell = icosph(u, v);
+        let mut table = [[0f64; 8]; 8];
+        for (frequency, row) in table.iter_mut().enumerate() {
+            for (position, cell) in row.iter_mut().enumerate() {
+                *cell = idct_cos(frequency, position);
             }
         }
         table
@@ -1371,10 +1413,9 @@ fn dequantize_block(block: &mut [i32; 64], quant_table: &[u16; 64]) -> Result<()
 }
 
 /// Pre-computed IDCT cosine factor.
-fn icosph(u: usize, v: usize) -> i32 {
+fn idct_cos(frequency: usize, position: usize) -> f64 {
     let pi = std::f64::consts::PI;
-    let cos = ((2.0 * v as f64 + 1.0) * u as f64 * pi / 16.0).cos();
-    (cos * 10000.0) as i32
+    ((2.0 * position as f64 + 1.0) * frequency as f64 * pi / 16.0).cos()
 }
 
 /// Zigzag scan order for JPEG 8x8 blocks.
@@ -3353,40 +3394,29 @@ mod tests {
         assert!(err.contains("truncated") || err.contains("decompress"), "unexpected error: {err}");
     }
 
-    /// N-M-01: the IDCT must not overflow on legally-large coefficients.
+    /// The IDCT matches the exact reference formula.
     ///
-    /// `icosph` is scaled to `10000` and the DC/AC coefficients are `i32`, so a single term such as
-    /// `32767 * 2 * 10000` already exceeds `i32::MAX`. A legal JPEG with a large quantization table
-    /// can therefore reach these magnitudes, which used to abort the process in a debug build (and
-    /// wrap to a wrong picture in release).
-    ///
-    /// The assertion compares the transform against an `f64` reference implementation of the same
-    /// separable formula, so it proves the `i128` accumulation is *accurate* and not merely
-    /// non-panicking: a wrapped `i32` intermediate would differ from the exact result, while the
-    /// widened computation matches to within the integer rounding of the reference.
+    /// This used to compare against a reference that reused the implementation's `cos × 10000`
+    /// table, so both sides carried the same missing normalisation and a photograph still decoded
+    /// into coloured bands. The reference below is the transform ITU-T T.81 A.3.3 defines, with
+    /// the 1/4 normalisation and the +128 level shift; the implementation must agree with it to
+    /// within one unit of rounding.
     #[test]
-    fn idct_does_not_overflow_on_large_coefficients() {
-        // A block whose DC and AC coefficients are near the `i16` extreme, scaled as if by a large
-        // quantization table — exactly the shape a hostile or unusual JPEG can produce.
+    fn idct_matches_the_exact_reference() {
         let mut block = [0i32; 64];
         for (i, coeff) in block.iter_mut().enumerate() {
-            *coeff = if i % 2 == 0 { 32767 * 255 } else { -32768 * 255 };
+            *coeff = if i % 2 == 0 { 32767 } else { -32768 };
         }
         let mut out = [0i32; 64];
-        // Debug builds panic on wrapping arithmetic, so reaching the comparison below is itself the
-        // check that the accumulator no longer overflows.
         idct_8x8(&block, &mut out);
 
-        // Reference: the same separable formula in `f64`, using the exact cosine. The implementation
-        // quantises `icosph` to `(cos * 10000) as i32`, so the reference reads it through the same
-        // function to compare like with like.
         let mut tmp = [0f64; 64];
         for y in 0..8 {
             for x in 0..8 {
                 let mut sum = 0f64;
                 for u in 0..8 {
-                    let cu = if u == 0 { 1 } else { 2 };
-                    sum += block[y * 8 + u] as f64 * cu as f64 * icosph(u, x) as f64;
+                    let cu = if u == 0 { core::f64::consts::FRAC_1_SQRT_2 } else { 1.0 };
+                    sum += cu * block[y * 8 + u] as f64 * idct_cos(u, x);
                 }
                 tmp[y * 8 + x] = sum;
             }
@@ -3395,23 +3425,28 @@ mod tests {
             for y in 0..8 {
                 let mut sum = 0f64;
                 for v in 0..8 {
-                    let cv = if v == 0 { 1 } else { 2 };
-                    sum += tmp[v * 8 + x] * cv as f64 * icosph(v, y) as f64;
+                    let cv = if v == 0 { core::f64::consts::FRAC_1_SQRT_2 } else { 1.0 };
+                    sum += cv * tmp[v * 8 + x] * idct_cos(v, y);
                 }
-                let reference = sum / 4.0;
-                let got = out[y * 8 + x] as f64;
-                // The implementation saturates at `i32` bounds; where the reference is inside that
-                // range, the two must agree exactly (both use the same integer cosine table).
-                if reference < i32::MAX as f64 && reference > i32::MIN as f64 {
-                    assert_eq!(
-                        got,
-                        reference.floor(),
-                        "IDCT sample ({x},{y}) diverged from the exact reference — this is the \
-                         signature of a wrapped intermediate"
-                    );
-                }
+                let reference = (sum / 4.0 + 128.0).round().clamp(0.0, 255.0);
+                assert_eq!(out[y * 8 + x] as f64, reference, "IDCT sample ({x},{y})");
             }
         }
+    }
+
+    /// A flat block stays flat and mid-grey: the DC-only case is the one every real photograph's
+    /// flat regions depend on.
+    #[test]
+    fn a_dc_only_block_is_uniform_and_centred() {
+        let mut block = [0i32; 64];
+        block[0] = 0;
+        let mut out = [0i32; 64];
+        idct_8x8(&block, &mut out);
+        assert!(out.iter().all(|sample| *sample == 128), "{out:?}");
+
+        block[0] = 8 * 32; // a positive DC lifts the whole block
+        idct_8x8(&block, &mut out);
+        assert!(out.iter().all(|sample| *sample == 160), "{out:?}");
     }
 
     #[test]
@@ -3428,8 +3463,8 @@ mod tests {
     fn decode_jpeg_rejects_overflowing_dequantized_dc_coefficients() {
         fn append_segment(jpeg: &mut Vec<u8>, marker: u8, payload: &[u8]) {
             jpeg.extend_from_slice(&[0xFF, marker]);
-            // The decoder advances by this length from the marker's 0xFF byte.
-            jpeg.extend_from_slice(&((payload.len() + 4) as u16).to_be_bytes());
+            // `seg_len` counts its own two bytes, per ITU-T T.81 B.2.4.
+            jpeg.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
             jpeg.extend_from_slice(payload);
         }
 
@@ -3478,7 +3513,10 @@ mod tests {
         let mut output = [0; 64];
 
         idct_8x8(&block, &mut output);
-        assert!(output.iter().any(|sample| *sample == i32::MAX || *sample == i32::MIN));
+        assert!(
+            output.iter().all(|sample| (0..=255).contains(sample)),
+            "a sample outside 0..=255 would be a saturating store bug: {output:?}"
+        );
     }
 
     /// `decode_async` runs the codec off the calling thread and returns the same image.

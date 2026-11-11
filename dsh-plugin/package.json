@@ -1,7 +1,7 @@
 {
   "name": "dsh-skill-rust-widgets",
-  "version": "0.2.0",
-  "description": "DSH skill: maintain, extend and audit the rust-widgets Rust GUI library.",
+  "version": "4.2.0",
+  "description": "DSH skill: maintain, extend and audit the rust-widgets Rust GUI library and its companion crates.",
   "license": "MIT",
   "author": "Mike Li",
   "type": "module",
@@ -50,8 +50,9 @@
   "scripts": {
     "sync-skill": "node scripts/sync-skill.mjs",
     "check-skill": "node scripts/sync-skill.mjs --check",
+    "check-version": "node scripts/check-version.mjs",
     "prepack": "node scripts/sync-skill.mjs",
-    "test": "node --test test/plugin.test.mjs",
+    "test": "node scripts/check-version.mjs && node --test test/plugin.test.mjs",
     "market-index": "node scripts/make-index.mjs",
     "check-index": "node scripts/make-index.mjs --git --check"
   }

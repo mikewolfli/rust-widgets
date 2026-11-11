@@ -39,7 +39,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rust_widgets::app::{App, AppConfig, LabelHandle, WidgetHandle, WindowHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
@@ -1808,10 +1808,24 @@ fn build_window_chrome(win: &WindowHandle, log: &Arc<EventLog>) -> Vec<Slot> {
 /// and reading a 20 MB collection is not something to do implicitly — so the demo asks once,
 /// before the first control exists, and logs the answer either way.
 fn register_cjk_face(log: &Arc<EventLog>) {
-    match rust_widgets::render::text::register_system_cjk_font() {
+    let worker = CJK_SCAN
+        .get()
+        .and_then(|slot| slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take());
+    match preview_common::finish_cjk_face(worker) {
         Some(family) => log.append(format!("[Fonts] 已注册系统 CJK 字体：{family}")),
         None => log.append("[Fonts] 未找到已安装的 CJK 字体；超出内置子集的汉字会显示为方框"),
     }
+}
+
+/// The background CJK-face registration started by [`prewarm_cjk_face`].
+///
+/// A process-wide slot rather than a parameter: the scan starts before `App::init` and is
+/// consumed inside the window builder, which the live run and the offscreen preview both reach.
+static CJK_SCAN: OnceLock<Mutex<Option<std::thread::JoinHandle<Option<String>>>>> = OnceLock::new();
+
+/// Starts the CJK-face scan so it overlaps `App::init` and window creation (R-19).
+fn prewarm_cjk_face() {
+    let _ = CJK_SCAN.set(Mutex::new(preview_common::prewarm_cjk_face()));
 }
 
 /// Builds the demo's whole window: the registered faces, the palette, the chrome, every
@@ -1904,6 +1918,10 @@ pub fn run() {
     println!("║     App 框架 · 统一控件 API · 实时事件日志                ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
+
+    // Start the disk-bound CJK face scan now; it overlaps App init and window creation. The
+    // window builder joins it before the first control exists (R-19).
+    prewarm_cjk_face();
 
     let log = Arc::new(EventLog::new());
 

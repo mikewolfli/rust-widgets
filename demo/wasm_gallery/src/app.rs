@@ -413,15 +413,20 @@ fn background() -> Color {
 /// computed and dropped, which is what keeps the render path covered by the
 /// crate's own `cargo check` for this demo.
 fn paint(window: ObjectId) {
+    // The client area the library reports is the size the surface must be rendered at. It is
+    // the created size until a resize is reported, and the reported size afterwards.
+    let (width, height) = rust_widgets::window_client_size(window)
+        .map(|(width, height)| (width.max(1), height.max(1)))
+        .unwrap_or((WIDTH, HEIGHT));
     let Some(frame) = rust_widgets::widget::runtime::render_window_frame(
         window,
-        Size::new(WIDTH, HEIGHT),
+        Size::new(width, height),
         background(),
     ) else {
         return;
     };
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    host::blit(&frame);
+    host::blit(&frame, width, height);
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
     let _ = frame;
 }
@@ -658,13 +663,13 @@ pub fn run() {
 /// host build compiles none of it.
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 mod host {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
 
-    use super::{paint, CANVAS_ID, HEIGHT, WIDTH};
+    use super::{paint, CANVAS_ID};
 
     /// The loop's callback: shared with the browser between frames, and owned by the
     /// thread-local below so dropping it does not kill the loop.
@@ -674,11 +679,40 @@ mod host {
         /// Holds the loop's closure for the life of the page. A dropped closure is a
         /// dead `requestAnimationFrame` callback.
         static FRAME_LOOP: RefCell<Option<FrameCallback>> = const { RefCell::new(None) };
+        /// The last client box handed to the library, so a frame only reports a resize when
+        /// the canvas actually changed size. Starts at zero to force the first frame to
+        /// report the page's real box (the canvas element and `WIDTH`x`HEIGHT` need not agree).
+        static CLIENT_SIZE: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     }
 
     fn canvas() -> Option<web_sys::HtmlCanvasElement> {
         let document = web_sys::window()?.document()?;
         document.get_element_by_id(CANVAS_ID)?.dyn_into::<web_sys::HtmlCanvasElement>().ok()
+    }
+
+    /// The canvas's CSS box, which is the client area the library lays out against.
+    ///
+    /// Read from the element rather than from `window_client_size`, because a page can change
+    /// the element's box without the library having heard about it yet — that is exactly the
+    /// change this loop has to report.
+    fn client_box() -> Option<(u32, u32)> {
+        let element = canvas()?;
+        let width = element.client_width().max(1) as u32;
+        let height = element.client_height().max(1) as u32;
+        Some((width, height))
+    }
+
+    /// Makes the canvas backing store match the CSS box, so the blit is 1:1.
+    fn resize_canvas(width: u32, height: u32) {
+        let Some(element) = canvas() else {
+            return;
+        };
+        if element.width() != width {
+            element.set_width(width);
+        }
+        if element.height() != height {
+            element.set_height(height);
+        }
     }
 
     fn context() -> Option<web_sys::CanvasRenderingContext2d> {
@@ -718,14 +752,14 @@ mod host {
     }
 
     /// Copies one RGBA frame into the canvas.
-    pub(super) fn blit(frame: &[u8]) {
+    pub(super) fn blit(frame: &[u8], width: u32, height: u32) {
         let Some(context) = context() else {
             return;
         };
         let Ok(image) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
             wasm_bindgen::Clamped(frame),
-            WIDTH,
-            HEIGHT,
+            width,
+            height,
         ) else {
             return;
         };
@@ -734,13 +768,41 @@ mod host {
 
     /// Installs the frame loop: one `requestAnimationFrame` per frame.
     pub(super) fn start(window: u64) {
+        // The library watches the surface itself when the backend can. A browser resize then
+        // queues the `Resized` trigger the library dispatches to the layout; the loop below
+        // still reads the box back each frame because the canvas backing store has to match
+        // it (the observer reports the size; it does not resize the element).
+        if !rust_widgets::platform::get_platform().observe_canvas_resize(window) {
+            super::status(
+                "canvas resize observation unavailable; the frame loop reports size changes",
+            );
+        }
+
         let holder: FrameCallback = Rc::new(RefCell::new(None));
         let holder_for_callback = Rc::clone(&holder);
         *holder.borrow_mut() = Some(Closure::<dyn FnMut()>::new(move || {
+            // Follow the element's box: when it changes, size the backing store to match and
+            // report the new client area, so the layout layer sees the same size the pixels
+            // are rendered at — on this backend and on a browser without `ResizeObserver`.
+            let mut resized = false;
+            if let Some((width, height)) = client_box() {
+                let changed = CLIENT_SIZE.with(|slot| {
+                    let previous = slot.replace((width, height));
+                    previous != (width, height)
+                });
+                if changed {
+                    resize_canvas(width, height);
+                    let _ = rust_widgets::queue_resize_trigger(window, width, height);
+                    resized = true;
+                }
+            }
             let outcome = rust_widgets::drive_frame(16);
             // A frame owes pixels when it drained input, advanced an animation or had
-            // a repaint requested; a still gallery otherwise costs nothing.
-            let due = outcome.repaints_submitted > 0
+            // a repaint requested; a still gallery otherwise costs nothing. A resize also
+            // owes pixels because the backing store was just re-created (and therefore
+            // cleared) by `resize_canvas`.
+            let due = resized
+                || outcome.repaints_submitted > 0
                 || outcome.events_dispatched > 0
                 || outcome.controls_ticked > 0
                 || outcome.needs_another_frame;

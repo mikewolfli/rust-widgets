@@ -581,13 +581,20 @@ pub fn create_splash_screen(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
-/// Creates a free-form shape widget drawn as a rounded rectangle with a corner
-/// radius of 8 pixels. `text` is applied as the control's label.
+/// Creates a free-form shape widget drawn as a five-pointed star. `text` is applied as
+/// the control's label.
+///
+/// The star is the shape that shows what the control is for: it has no rectangular
+/// bounds, so a press in one of its five notches falls through to whatever is behind it.
+/// A rounded rectangle demonstrated the same paint path while hiding the hit-test.
 pub fn create_freeform_shape(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(
         geometry,
         text,
-        Box::new(FreeformShapeWidget::new(geometry, ShapePath::RoundedRect { radius: 8 })),
+        Box::new(FreeformShapeWidget::new(
+            geometry,
+            ShapePath::Star { points: 5, inner_radius: 0.5 },
+        )),
     )
 }
 

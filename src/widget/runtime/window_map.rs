@@ -281,16 +281,16 @@ pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
 ///
 /// # Why the platform must come through here
 ///
-/// A native control owns its own pixels (BLUE24 §7.1), so the platform can and must ask for
-/// its own repaint. What it must not do is ask *without telling the library*, because three
+/// A platform-owned control owns its own pixels (BLUE24 §7.1), so the platform can and must ask
+/// for its own repaint. What it must not do is ask *without telling the library*, because three
 /// things then stop being true at once:
 ///
 /// 1. `performance::render_dirty_regions` computes damage the frame never actually submitted,
 ///    so "what did this frame paint?" has no answer;
 /// 2. the still-frame guarantee (BLUE24 §1 criterion 2 — an idle window submits nothing) can
 ///    no longer be shown, so "smooth is not paid for with a burning core" is unprovable;
-/// 3. the self-painted and native worlds each keep their own count, so one interaction is
-///    submitted twice.
+/// 3. the self-painted and platform-painted worlds each keep their own count, so one interaction
+///    is submitted twice.
 ///
 /// So a backend routes its own redraw requests through this function. It is the *same* ledger
 /// [`request_repaint`] writes to, so a frame that mixed the two worlds still reports one
@@ -300,7 +300,7 @@ pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
 /// the submission (the platform has already decided what it needs to repaint, and second-
 /// guessing it here would be the library inventing a claim about pixels it does not own), but
 /// it is recorded, so the ledger can distinguish a full-surface redraw from a partial one.
-pub fn notify_native_redraw(id: ObjectId, rect: Option<Rect>) {
+pub fn notify_platform_surface_repaint(id: ObjectId, rect: Option<Rect>) {
     // The platform has already invalidated its own surface; this call exists so the *library*
     // learns about it. Recording the region keeps the account complete even though the
     // submission is the platform's.

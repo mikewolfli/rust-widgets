@@ -426,13 +426,10 @@ fn alignment_from_token(token: &str) -> Option<HorizontalAlignment> {
 }
 
 /// Which way a column's sort runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortOrder {
-    /// Smallest first.
-    Ascending,
-    /// Largest first.
-    Descending,
-}
+///
+/// The data-source layer owns the single definition (principle #54); this path is the grid's
+/// historical spelling of the same type.
+pub use crate::widget::view_widgets::data_source::SortOrder;
 
 impl SortOrder {
     /// The token spelling published in `sort_columns`.
@@ -620,6 +617,9 @@ pub(crate) const HEADER_ICON_SIDE: u32 = 10;
 
 #[cfg(test)]
 mod tests {
+    // The only test here runs on desktop with the theme compiled in; in every other profile it is
+    // cfg'd out, and an ungated glob import would then be the module's only item (unused import).
+    #[cfg(all(device_profile, feature = "desktop"))]
     use super::*;
 
     /// The cell editor is a field, so its interior has to follow the `Input` theme role; filling

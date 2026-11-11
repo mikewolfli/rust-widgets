@@ -838,7 +838,6 @@ pub(crate) fn glyph_coverage_weight(coverage: u8) -> f32 {
 /// A GPU text pipeline multiplies the text colour by an uploaded coverage byte, so applying this
 /// ramp before the upload gives the GPU the same ink weight the reference composite applies. It is
 /// the byte form of [`glyph_coverage_weight`] without the round trip through `f32`.
-#[cfg(feature = "gpu-wgpu")]
 pub(crate) fn glyph_coverage_byte(coverage: u8) -> u8 {
     srgb_ramp()[coverage as usize]
 }

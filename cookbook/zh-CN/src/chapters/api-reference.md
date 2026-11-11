@@ -2031,89 +2031,68 @@ pub struct ActionRouter { /* ... */ }
 impl ActionRouter {
     pub fn new() -> Self;
     pub fn route(&self, action_id: &str, kind: ActionHostKind) -> Option<ObjectId>;
-    pub fn connect_undo_redo_stack(&mut self, stack: Arc<Mutex<UndoManager>>) -> bool;
+    pub fn connect_undo_redo<U, R>(&mut self, undo: U, redo: R) -> bool
+        where U: FnMut() + Send + Sync + 'static,
+              R: FnMut() + Send + Sync + 'static;
 }
 ```
 
 ### 撤销 / 重做
 
-`connect_undo_redo` 把两个闭包绑定到平台加速键上。下面的栈类型记录动作**做了什么**，因此宿主不必自己搭建历史。
+这里刻意分成两层：
+
+* `crate::undo` 是**历史**：命令实现 `UndoCommand`，`UndoStack` 保存它们，并带合并策略与"已保存"修订号。
+* `ActionRouter::connect_undo_redo` 把平台加速键（Ctrl/Cmd+Z 与重做组合键）绑定到宿主提供的两个闭包。
+  它不拥有栈，因此历史始终归宿主所有。
 
 ```rust
-pub const DEFAULT_UNDO_LIMIT: usize = 256;
-pub const GLOBAL_UNDO_CONTEXT: &str = "";
+use rust_widgets::undo::{CommandDescription, CommandId, MergePolicy, UndoCommand, UndoStack};
 
-pub struct Command { /* ... */ }
-impl Command {
-    pub fn new<U, R>(label: impl Into<String>, undo: U, redo: R) -> Self
-        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
-    pub fn label(&self) -> &str;
-    pub fn is_empty(&self) -> bool;
+pub const DEFAULT_UNDO_CAPACITY: usize = 1000;
+
+pub trait UndoCommand {
+    fn id(&self) -> CommandId;
+    fn description(&self) -> CommandDescription;
+    fn execute(&mut self) -> Result<(), String>;
+    fn undo(&mut self) -> Result<(), String>;
+    fn redo(&mut self) -> Result<(), String>;      // 默认调用 execute
+    fn merge_policy(&self) -> MergePolicy;        // 默认 Never
+    fn try_merge(&mut self, previous: &dyn UndoCommand) -> bool; // 默认 false
 }
 
 pub struct UndoStack { /* ... */ }
 impl UndoStack {
-    pub fn new() -> Self;
-    pub fn with_limit(limit: usize) -> Self;
-    pub fn limit(&self) -> usize;
-    pub fn set_limit(&mut self, limit: usize);
-    pub fn push(&mut self, command: Command);
-    pub fn record<U, R>(&mut self, label: impl Into<String>, undo: U, redo: R)
-        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
-    pub fn begin_group(&mut self, label: impl Into<String>);
-    pub fn end_group(&mut self) -> bool;
-    pub fn is_group_open(&self) -> bool;
-    pub fn undo(&mut self) -> Option<String>;
-    pub fn redo(&mut self) -> Option<String>;
+    pub fn new() -> Self;                         // DEFAULT_UNDO_CAPACITY
+    pub fn with_capacity(max: usize) -> Self;
+    pub fn push(&mut self, command: Box<dyn UndoCommand>);
+    pub fn undo(&mut self) -> Result<(), String>;
+    pub fn redo(&mut self) -> Result<(), String>;
     pub fn can_undo(&self) -> bool;
     pub fn can_redo(&self) -> bool;
-    pub fn undo_len(&self) -> usize;
-    pub fn redo_len(&self) -> usize;
-    pub fn is_dirty(&self) -> bool;
-    pub fn mark_saved(&mut self);
+    pub fn undo_count(&self) -> usize;
+    pub fn redo_count(&self) -> usize;
+    pub fn undo_text(&self) -> Option<String>;    // 菜单项文案
+    pub fn redo_text(&self) -> Option<String>;
+    pub fn mark_clean(&mut self);
+    pub fn is_clean(&self) -> bool;               // "没有未保存修改"
     pub fn clear(&mut self);
-}
-
-pub struct UndoManager { /* ... */ }
-impl UndoManager {
-    pub fn new() -> Self;
-    pub fn with_limit(limit: usize) -> Self;
-    pub fn active_context(&self) -> &str;
-    pub fn set_active_context(&mut self, context: impl Into<String>) -> String;
-    pub fn stack_for(&self, context: &str) -> Option<&UndoStack>;
-    pub fn stack(&self) -> &UndoStack;
-    pub fn stack_mut(&mut self) -> &mut UndoStack;
-    pub fn contexts(&self) -> Vec<String>;
-    pub fn push(&mut self, command: Command);
-    pub fn record<U, R>(&mut self, label: impl Into<String>, undo: U, redo: R)
-        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
-    pub fn begin_group(&mut self, label: impl Into<String>);
-    pub fn end_group(&mut self) -> bool;
-    pub fn undo(&mut self) -> Option<String>;
-    pub fn redo(&mut self) -> Option<String>;
-    pub fn can_undo(&self) -> bool;
-    pub fn can_redo(&self) -> bool;
-    pub fn is_dirty(&self) -> bool;
-    pub fn mark_saved(&mut self);
-    pub fn clear(&mut self);
+    pub fn truncate_undo(&mut self, len: usize);
+    pub fn set_max_capacity(&mut self, max: usize);
+    pub fn seal_merge_run(&mut self);             // 一次性合并屏障
 }
 ```
 
-用两个闭包记录一步，然后重放它：
+推入新命令会清空重做栈（历史已分叉）。若命令的 `merge_policy` 允许，它会与栈顶条目合并，
+因此一段连续输入成为一步；`seal_merge_run` 在需要的位置终止合并。加速键只接线一次：
 
 ```rust
-let mut stack = UndoStack::new();
-stack.record("insert_text", move || remove(), move || insert_again());
-if stack.can_undo() {
-    stack.undo();
-}
+let mut router = ActionRouter::new();
+router.connect_undo_redo(move || { let _ = stack.undo(); }, move || { let _ = stack.redo(); });
 ```
 
-新命令会清空重做栈（历史已分叉）。`UndoStack::begin_group` 与 `UndoStack::end_group`
-把它们之间推入的每条命令合成一步，撤销时按相反顺序执行；允许嵌套，且只有最外层一对创建边界。
-`UndoManager` 为每个焦点上下文各保留一个栈，并把 `undo` / `redo` 路由到活动栈；
-`GLOBAL_UNDO_CONTEXT` 是初始上下文，因此只用一个栈的宿主根本不需要调用 `set_active_context`。
-`ActionRouter::connect_undo_redo_stack` 把平台撤销/重做加速键绑定到活动栈。
+> **2026-11-11 变更（issue-20261111 R-24）。** `action` 模块中旧的撤销 API（其 `Command`、`UndoStack`、
+> `UndoManager` 类型，以及路由器的栈绑定方法）是零调用方的第二套撤销系统，已删除；
+> `crate::undo` 是唯一的历史实现。
 
 ---
 

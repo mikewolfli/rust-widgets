@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 //! Rich text editor widget.
+//!
+//! # Relationship to the other span types
+//!
+//! [`TextSpan`]/[`CharFormat`] here carry a byte range plus the rich editor's attributes,
+//! including strikeout and font family/size overrides. `textedit::CharFormat` is the plain-text
+//! editor's smaller set, and `render::rich_text::TextSpan` is a paint-time text/style pair. The
+//! three describe different roles, not duplicate definitions (principles #49 and #51).
 use crate::core::{Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::wheel::WheelScroll;
 use crate::impl_widget_property_hooks;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! MDI area widget.
+use crate::compat::Box;
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -78,6 +79,15 @@ pub struct MdiArea {
     pub subwindow_minimized_changed: Signal1<(ObjectId, bool)>,
     /// Emitted with `(old_index, new_index)` when a tab is dragged to a new slot (C-17).
     pub subwindow_tab_moved: Signal1<(usize, usize)>,
+    /// Emitted with the child `ObjectId` before its ✕ closes the sub-window.
+    ///
+    /// This is the sub-window counterpart of the top-level [`crate::event::Event::WindowCloseRequest`]:
+    /// the request is announced first, then a host-installed veto may refuse it. A host that needs
+    /// "save before closing" connects this signal to observe the request and installs
+    /// [`MdiArea::set_subwindow_close_handler`] to refuse it.
+    pub subwindow_close_requested: Signal1<ObjectId>,
+    /// Host-installed veto for a sub-window close, consulted after the request is emitted.
+    subwindow_close_handler: Option<Box<dyn Fn(ObjectId) -> bool>>,
     /// Cached z-order index and the key it was produced under (C-P08).
     ///
     /// The order changes only when a sub-window is added, removed or raised, but the hit chain
@@ -169,6 +179,38 @@ pub enum ActivationOrder {
     /// Activation follows history order
     HistoryOrder,
 }
+/// One action an [`MdiArea`] Window menu can offer.
+///
+/// The enum is the read-only description a host renders; the host still calls the existing
+/// [`MdiArea`] methods (`set_active_sub_window`, `activate_next_sub_window`, …) when an entry is
+/// chosen, so no second command path is introduced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MdiWindowMenuAction {
+    /// Bring the sub-window hosting this child id to the front.
+    Activate(ObjectId),
+    /// Activate the next sub-window in the area's activation order.
+    ActivateNext,
+    /// Activate the previous sub-window in the area's activation order.
+    ActivatePrevious,
+    /// Cascade the sub-windows.
+    Cascade,
+    /// Tile the sub-windows.
+    Tile,
+}
+
+/// One entry a host can paint in a Window menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdiWindowMenuEntry {
+    /// Text to show in the menu.
+    pub label: String,
+    /// What the host should do when the entry is chosen.
+    pub action: MdiWindowMenuAction,
+    /// Whether the entry is actionable in the area's current state.
+    pub enabled: bool,
+    /// Whether the entry names the currently active sub-window.
+    pub checked: bool,
+}
+
 /// The published token for a tab-strip position (C2-B1).
 fn tab_strip_position_to_str(position: TabStripPosition) -> &'static str {
     match position {
@@ -382,6 +424,8 @@ impl MdiArea {
             title_dirty: Rc::new(Cell::new(false)),
             subwindow_minimized_changed: Signal1::new(),
             subwindow_tab_moved: Signal1::new(),
+            subwindow_close_requested: Signal1::new(),
+            subwindow_close_handler: None,
             z_cache: RefCell::new(None),
         }
     }
@@ -481,6 +525,90 @@ impl MdiArea {
             self.remove_sub_window(widget);
         }
         count
+    }
+
+    /// Installs a veto handler for a sub-window's ✕.
+    ///
+    /// The handler receives the child `ObjectId` whose ✕ was pressed and returns `true` to let
+    /// the close proceed or `false` to refuse it. It is consulted **after**
+    /// [`Self::subwindow_close_requested`] is emitted, so an observer always sees the request even
+    /// when the close is refused. With no handler installed the close proceeds, which keeps the
+    /// existing behaviour.
+    pub fn set_subwindow_close_handler<F>(&mut self, handler: F)
+    where
+        F: Fn(ObjectId) -> bool + 'static,
+    {
+        self.subwindow_close_handler = Some(Box::new(handler));
+    }
+
+    /// Removes the sub-window close veto, returning whether one was installed.
+    pub fn clear_subwindow_close_handler(&mut self) -> bool {
+        self.subwindow_close_handler.take().is_some()
+    }
+
+    /// Announces and, unless vetoed, performs the close of sub-window `widget`.
+    ///
+    /// The request is emitted first so a host observes every close attempt; the veto is consulted
+    /// next; only an allowed request reaches [`Self::remove_sub_window`], which stays the single
+    /// removal implementation.
+    fn request_close_sub_window(&mut self, widget: ObjectId) -> bool {
+        self.subwindow_close_requested.emit(widget);
+        let allowed = self.subwindow_close_handler.as_ref().is_none_or(|handler| handler(widget));
+        if allowed {
+            self.remove_sub_window(widget);
+        }
+        allowed
+    }
+
+    /// The entries a Window menu needs for this area.
+    ///
+    /// Read-only: the host renders the list and calls the existing methods when an entry is
+    /// chosen. Activation entries come first (in storage order, checked for the active window),
+    /// followed by next/previous and the cascade/tile arrangements. `Next` and `Previous` are
+    /// disabled below two windows because a single-window traversal would be a no-op; cascade and
+    /// tile are disabled for an empty area for the same reason.
+    pub fn window_menu_entries(&self) -> Vec<MdiWindowMenuEntry> {
+        let count = self.subwindows.len();
+        let active = self.active_sub_window();
+        let mut entries = Vec::with_capacity(count + 4);
+        for (index, subwindow) in self.subwindows.iter().enumerate() {
+            let label = if subwindow.title.is_empty() {
+                format!("Window {}", index + 1)
+            } else {
+                subwindow.title.clone()
+            };
+            entries.push(MdiWindowMenuEntry {
+                label,
+                action: MdiWindowMenuAction::Activate(subwindow.widget),
+                enabled: true,
+                checked: active == Some(subwindow.widget),
+            });
+        }
+        entries.push(MdiWindowMenuEntry {
+            label: "Next Window".to_string(),
+            action: MdiWindowMenuAction::ActivateNext,
+            enabled: count > 1,
+            checked: false,
+        });
+        entries.push(MdiWindowMenuEntry {
+            label: "Previous Window".to_string(),
+            action: MdiWindowMenuAction::ActivatePrevious,
+            enabled: count > 1,
+            checked: false,
+        });
+        entries.push(MdiWindowMenuEntry {
+            label: "Cascade".to_string(),
+            action: MdiWindowMenuAction::Cascade,
+            enabled: count > 0,
+            checked: false,
+        });
+        entries.push(MdiWindowMenuEntry {
+            label: "Tile".to_string(),
+            action: MdiWindowMenuAction::Tile,
+            enabled: count > 0,
+            checked: false,
+        });
+        entries
     }
 
     /// Serialises the window layout: the view mode, every sub-window's geometry and its
@@ -1548,6 +1676,13 @@ impl Widget for MdiArea {
                     ]))
                 },
             )),
+            // R-06: the close request carries the sub-window id, the same `ObjectId` shape
+            // `subwindow_activated` travels as.
+            "subwindow_close_requested" => Some(EventSignalRef::mapped(
+                "subwindow_close_requested",
+                &self.subwindow_close_requested,
+                |v| CapabilityValue::UInt(*v),
+            )),
             _ => None,
         }
     }
@@ -1708,7 +1843,7 @@ impl EventHandler for MdiArea {
                     // be the wrong gesture for a click on the close affordance.
                     if let Some(index) = self.close_button_at(*pos) {
                         let widget = self.subwindows[index].widget;
-                        self.remove_sub_window(widget);
+                        self.request_close_sub_window(widget);
                     } else if let Some(index) = self.tab_at_point(*pos) {
                         self.set_active_sub_window(self.subwindows[index].widget);
                         // C-17: a press on a tab also arms a reorder. The reorder only begins once
@@ -1716,10 +1851,11 @@ impl EventHandler for MdiArea {
                         self.tab_drag = (self.subwindows.len() > 1).then_some((index, *pos));
                     }
                 } else if let Some(index) = self.close_button_at(*pos) {
-                    // The ✕ closes the window it belongs to — which is what the glyph says and
-                    // what `remove_sub_window` (the area's own public close path) does.
+                    // The ✕ closes the window it belongs to, but only after the request has been
+                    // announced and any host veto has allowed it. `remove_sub_window` stays the
+                    // single removal implementation.
                     let widget = self.subwindows[index].widget;
-                    self.remove_sub_window(widget);
+                    self.request_close_sub_window(widget);
                 } else if let Some(index) = self.minimize_button_at(*pos) {
                     // C-15: the title-bar button next to ✕ toggles minimize/restore.
                     let widget = self.subwindows[index].widget;
@@ -3351,6 +3487,117 @@ mod tests {
             Some(widget_id_1()),
             "closing an inactive window must not activate it"
         );
+    }
+
+    /// With no veto installed the ✕ still closes, which is the historical behaviour.
+    #[test]
+    fn a_close_with_no_veto_handler_removes_the_sub_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(20, 20, 200, 150));
+        assert!(
+            !area.clear_subwindow_close_handler(),
+            "there is no handler to clear on a fresh area"
+        );
+
+        let frame = area.subwindow_placement(0).expect("placed").frame;
+        let close = close_button_rect(frame);
+        let pos = Point::new(close.x + close.width as i32 / 2, close.y + close.height as i32 / 2);
+        area.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+
+        assert_eq!(area.sub_window_count(), 0, "no handler means the close proceeds");
+    }
+
+    /// A host veto keeps the sub-window, and the request is still observable.
+    #[test]
+    fn a_subwindow_close_veto_keeps_the_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(20, 20, 200, 150));
+        area.add_sub_window(widget_id_2(), Rect::new(240, 20, 200, 150));
+
+        let requested = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requested);
+        area.subwindow_close_requested.connect(move |widget| {
+            assert_eq!(*widget, widget_id_2(), "the request names the window whose ✕ was pressed");
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let vetoed = Arc::new(AtomicUsize::new(0));
+        let veto = Arc::clone(&vetoed);
+        area.set_subwindow_close_handler(move |widget| {
+            if widget == widget_id_2() {
+                veto.fetch_add(1, Ordering::SeqCst);
+                false
+            } else {
+                true
+            }
+        });
+
+        let frame = area.subwindow_placement(1).expect("placed").frame;
+        let close = close_button_rect(frame);
+        let pos = Point::new(close.x + close.width as i32 / 2, close.y + close.height as i32 / 2);
+        area.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+
+        assert_eq!(
+            area.sub_window_count(),
+            2,
+            "a vetoed close must leave the sub-window in the area"
+        );
+        assert_eq!(
+            area.sub_window(1).map(|window| window.widget()),
+            Some(widget_id_2()),
+            "the vetoed window is still the one at its index"
+        );
+        assert_eq!(requested.load(Ordering::SeqCst), 1, "the request is emitted before the veto");
+        assert_eq!(vetoed.load(Ordering::SeqCst), 1, "the host veto was consulted once");
+    }
+
+    /// Vetoing one sub-window does not block closing a different one.
+    #[test]
+    fn a_veto_for_one_subwindow_does_not_block_another() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(20, 20, 200, 150));
+        area.add_sub_window(widget_id_2(), Rect::new(240, 20, 200, 150));
+        // Only the first window is vetoed.
+        area.set_subwindow_close_handler(move |widget| widget != widget_id_1());
+
+        let first = area.subwindow_placement(0).expect("placed").frame;
+        let close = close_button_rect(first);
+        let pos = Point::new(close.x + close.width as i32 / 2, close.y + close.height as i32 / 2);
+        area.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(area.sub_window_count(), 2, "the vetoed window survives");
+
+        let second = area.subwindow_placement(1).expect("placed").frame;
+        let close = close_button_rect(second);
+        let pos = Point::new(close.x + close.width as i32 / 2, close.y + close.height as i32 / 2);
+        area.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(area.sub_window_count(), 1, "the un-vetoed window still closes");
+        assert_eq!(
+            area.sub_window(0).map(|window| window.widget()),
+            Some(widget_id_1()),
+            "the surviving window is the vetoed one"
+        );
+    }
+
+    /// The Window-menu helper reports activation state without wiring a menu.
+    #[test]
+    fn the_window_menu_entries_describe_the_area() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        let empty = area.window_menu_entries();
+        assert_eq!(empty.len(), 4, "an empty area still offers the four commands");
+        assert!(!empty[0].enabled && !empty[2].enabled, "commands on no window are disabled");
+
+        area.add_sub_window(widget_id_1(), Rect::new(20, 20, 200, 150));
+        area.add_sub_window(widget_id_2(), Rect::new(240, 20, 200, 150));
+        area.set_sub_window_title(widget_id_1(), "Report".to_string());
+        let entries = area.window_menu_entries();
+        assert_eq!(entries.len(), 6, "two activate entries and four commands");
+        assert_eq!(entries[0].label, "Report", "a titled window uses its title");
+        assert_eq!(entries[1].label, "Window 2", "an untitled window gets a positional label");
+        assert_eq!(entries[0].action, MdiWindowMenuAction::Activate(widget_id_1()));
+        assert!(entries[0].checked, "the first window is active");
+        assert!(!entries[1].checked);
+        assert!(entries[2].enabled && entries[3].enabled, "two windows makes next/previous usable");
+        assert_eq!(entries[4].action, MdiWindowMenuAction::Cascade);
+        assert_eq!(entries[5].action, MdiWindowMenuAction::Tile);
     }
 
     /// The checker background reaches the work area's own edges.

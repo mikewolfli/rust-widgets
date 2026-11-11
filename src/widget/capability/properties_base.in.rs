@@ -65,6 +65,18 @@ macro_rules! impl_properties_base {
             PropertySchema::enumerated("text_format", true, true, &["plain", "rich"]),
             PropertySchema::new("open_external_links", PropertyValueKind::Bool, true, true),
             PropertySchema::new("link_count", PropertyValueKind::UInt, true, false),
+            // R-23: the mnemonic is a one-character string; an empty write clears it. A
+            // `CapabilityValue` has no character variant, and the string spelling is what a
+            // document can carry without a second token table.
+            PropertySchema::new("mnemonic", PropertyValueKind::String, true, true),
+            // R-23: a buddy is an `ObjectId` (`u64`). The integer kind carries it; `null`
+            // clears the binding. There is no widget-reference value variant, so the id stays
+            // an opaque number rather than pretending to be a property path.
+            PropertySchema::new("buddy", PropertyValueKind::UInt, true, true),
+            // `pixmap` is intentionally absent: `Label::pixmap` returns an `Image`, and an
+            // `Image` has no path or other scalar identity, so no `CapabilityValue` can read
+            // it back. `set_pixmap` remains a programmatic setter rather than a property that
+            // would have to lie about its value.
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

@@ -173,6 +173,31 @@ pub trait PaintBackend {
             alignment,
         });
     }
+    /// Draws `text` rotated about `pivot`.
+    ///
+    /// The default owns the command, exactly as [`Self::draw_text`]'s does. The software
+    /// backend overrides it and rasterises the rotated mask immediately.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_rotated(
+        &mut self,
+        origin: crate::core::Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: crate::core::HorizontalAlignment,
+        pivot: crate::core::Point,
+        radians: f32,
+    ) {
+        self.execute_command(&RenderCommand::DrawTextRotated {
+            origin,
+            text: crate::compat::Arc::from(text),
+            font: font.clone(),
+            color,
+            alignment,
+            pivot,
+            radians,
+        });
+    }
     /// Fills `rect` with `gradient`.
     ///
     /// The same shape as [`Self::draw_text`], and for the same reason: [`RenderCommand::DrawGradient`]
@@ -491,6 +516,24 @@ impl PaintBackend for SoftwarePaintBackend {
     ) {
         self.surface.draw_text(origin, text, font, color, alignment);
     }
+    /// Rasterises a rotated run into coverage and composites it immediately.
+    ///
+    /// The coverage comes from the same shaping and rasterisation [`Self::draw_text`] uses, so a
+    /// rotated label is the same ink at the same weight and the same coordinate space.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_rotated(
+        &mut self,
+        origin: crate::core::Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: crate::core::HorizontalAlignment,
+        pivot: crate::core::Point,
+        radians: f32,
+    ) {
+        self.surface
+            .draw_text_rotated_coverage(origin, text, font, color, alignment, pivot, radians);
+    }
 
     /// Paints recorded path vertices without building an owning command (G-802).
     fn draw_path_ref(
@@ -732,6 +775,11 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         }
         RenderCommand::DrawText { origin, text, font, color, alignment } => {
             surface.draw_text(*origin, text, font, *color, *alignment)
+        }
+        RenderCommand::DrawTextRotated { origin, text, font, color, alignment, pivot, radians } => {
+            surface.draw_text_rotated_coverage(
+                *origin, text, font, *color, *alignment, *pivot, *radians,
+            )
         }
         RenderCommand::DrawTextDecorated { origin, text, font, color, alignment, decoration } => {
             draw_text_decorated_on_surface(

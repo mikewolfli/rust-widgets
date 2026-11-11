@@ -13,7 +13,7 @@ pub mod pagination;
 pub mod tab_view;
 
 // Re-exports
-pub use adaptive_scaffold::AdaptiveScaffold;
+pub use adaptive_scaffold::{AdaptiveScaffold, AdaptiveScaffoldBuilder};
 pub use app_bar::AppBar;
 pub use bottom_navigation_bar::BottomNavigationBar;
 pub use bottom_navigation_bar::NavItem;

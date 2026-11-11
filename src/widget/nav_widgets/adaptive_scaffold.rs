@@ -41,6 +41,12 @@ const APP_BAR_HEIGHT: u32 = 56;
 /// Height of the bottom navigation band, in logical pixels.
 const BOTTOM_NAV_HEIGHT: u32 = 56;
 
+/// Height of the persistent footer band, in logical pixels.
+///
+/// The footer sits between the body and the bottom navigation band, so it reserves space from
+/// the content area rather than floating over it.
+const PERSISTENT_FOOTER_HEIGHT: u32 = 56;
+
 /// Edge length of the floating action button slot, in logical pixels.
 const FAB_SLOT_SIZE: u32 = 56;
 
@@ -62,6 +68,31 @@ const SNACKBAR_MARGIN: i32 = 8;
 /// that width so the scaffold's content inset and the painted strip cannot disagree. The value is
 /// repeated here because the rail's own spelling is private to its module.
 const NAVIGATION_RAIL_WIDTH: u32 = 80;
+
+/// Reports a declared (id-based) snackbar slot's visibility.
+///
+/// A declared control belongs to the runtime, so the scaffold can only read it. The control's own
+/// visibility is authoritative: a `MaterialSnackbar` that has timed out or been dismissed reports
+/// hidden, and any other widget falls back to its base flag.
+fn scaffold_snackbar_visible(id: ObjectId) -> bool {
+    crate::widget::runtime::with_widget(id, |widget| {
+        crate::widget::capability::widget_as::<crate::widget::MaterialSnackbar>(widget)
+            .map_or_else(|| widget.base().is_visible(), |snackbar| snackbar.is_visible())
+    })
+    .unwrap_or_else(|| crate::is_widget_visible(id))
+}
+
+/// Reports a declared (id-based) bottom-sheet slot's open state.
+///
+/// A `BottomSheet` stays base-visible while closed (it paints a scrim), so its `open` flag is the
+/// authoritative answer. Any other widget falls back to its base visibility.
+fn scaffold_bottom_sheet_open(id: ObjectId) -> bool {
+    crate::widget::runtime::with_widget(id, |widget| {
+        crate::widget::capability::widget_as::<crate::widget::BottomSheet>(widget)
+            .map_or_else(|| widget.base().is_visible(), |sheet| sheet.is_open())
+    })
+    .unwrap_or_else(|| crate::is_widget_visible(id))
+}
 
 /// Largest window width, in logical pixels, that still uses the bottom bar.
 ///
@@ -210,6 +241,8 @@ pub struct AdaptiveScaffold {
     bottom_sheet: Option<Box<dyn Widget>>,
     /// Optional snackbar slot.
     snackbar: Option<Box<dyn Widget>>,
+    /// Optional persistent footer: a band below the body and above the bottom navigation bar.
+    persistent_footer: Option<Box<dyn Widget>>,
     /// Object-id content slots (issue-20261104 DM-06/DM-08).
     ///
     /// A JSON document's controls are mounted by the runtime, which owns them, so a
@@ -226,6 +259,7 @@ pub struct AdaptiveScaffold {
     end_drawer_id: Option<ObjectId>,
     bottom_sheet_id: Option<ObjectId>,
     snackbar_id: Option<ObjectId>,
+    persistent_footer_id: Option<ObjectId>,
     /// Whether the leading drawer is open.
     drawer_open: bool,
     /// Whether the trailing drawer is open.
@@ -295,6 +329,7 @@ impl AdaptiveScaffold {
             end_drawer: None,
             bottom_sheet: None,
             snackbar: None,
+            persistent_footer: None,
             body_id: None,
             nav_body_ids: Vec::new(),
             fab_id: None,
@@ -302,6 +337,7 @@ impl AdaptiveScaffold {
             end_drawer_id: None,
             bottom_sheet_id: None,
             snackbar_id: None,
+            persistent_footer_id: None,
             drawer_open: false,
             end_drawer_open: false,
             nav_item_badges: Vec::new(),
@@ -511,6 +547,10 @@ impl AdaptiveScaffold {
     }
 
     /// Sets the snackbar slot.
+    ///
+    /// Setting a control does **not** show it: a `MaterialSnackbar` starts hidden and is made
+    /// visible through [`Self::show_snackbar`], which keeps the control's own duration and dismiss
+    /// semantics in charge.
     pub fn set_snackbar(&mut self, widget: Option<Box<dyn Widget>>) {
         self.snackbar = widget;
         self.base.request_redraw();
@@ -519,6 +559,185 @@ impl AdaptiveScaffold {
     /// Returns the snackbar slot, if one is set.
     pub fn snackbar(&self) -> Option<&dyn Widget> {
         self.snackbar.as_deref()
+    }
+
+    /// Shows the snackbar slot.
+    ///
+    /// A [`MaterialSnackbar`] is shown through its own `show`, so its duration and queued
+    /// messages keep working. Any other widget is shown through its base visibility. Returns
+    /// `false` when the slot is empty or an id slot cannot be reached.
+    pub fn show_snackbar(&mut self) -> bool {
+        if let Some(widget) = self.snackbar.as_deref_mut() {
+            if let Some(snackbar) =
+                crate::widget::capability::widget_as_mut::<crate::widget::MaterialSnackbar>(widget)
+            {
+                snackbar.show();
+            } else {
+                widget.base_mut().show();
+            }
+            self.base.request_redraw();
+            return true;
+        }
+        if let Some(id) = self.snackbar_id {
+            let shown = crate::widget::runtime::with_widget_mut(id, |widget| {
+                if let Some(snackbar) = crate::widget::capability::widget_as_mut::<
+                    crate::widget::MaterialSnackbar,
+                >(widget)
+                {
+                    snackbar.show();
+                } else {
+                    widget.base_mut().show();
+                }
+            })
+            .is_some();
+            if shown {
+                self.base.request_redraw();
+            }
+            return shown;
+        }
+        false
+    }
+
+    /// Dismisses the snackbar slot immediately.
+    ///
+    /// A [`MaterialSnackbar`] is dismissed through its own `dismiss`, which emits its `dismissed`
+    /// signal; any other widget is hidden. Returns `false` when no slot can be reached.
+    pub fn dismiss_snackbar(&mut self) -> bool {
+        if let Some(widget) = self.snackbar.as_deref_mut() {
+            if let Some(snackbar) =
+                crate::widget::capability::widget_as_mut::<crate::widget::MaterialSnackbar>(widget)
+            {
+                snackbar.dismiss();
+            } else {
+                widget.base_mut().hide();
+            }
+            self.base.request_redraw();
+            return true;
+        }
+        if let Some(id) = self.snackbar_id {
+            let dismissed = crate::widget::runtime::with_widget_mut(id, |widget| {
+                if let Some(snackbar) = crate::widget::capability::widget_as_mut::<
+                    crate::widget::MaterialSnackbar,
+                >(widget)
+                {
+                    snackbar.dismiss();
+                } else {
+                    widget.base_mut().hide();
+                }
+            })
+            .is_some();
+            if dismissed {
+                self.base.request_redraw();
+            }
+            return dismissed;
+        }
+        false
+    }
+
+    /// Whether the snackbar slot is currently visible.
+    ///
+    /// Reports `false` for an empty slot, so a host never mistakes "no control" for "on screen".
+    pub fn is_snackbar_visible(&self) -> bool {
+        if let Some(widget) = self.snackbar.as_deref() {
+            return crate::widget::capability::widget_as::<crate::widget::MaterialSnackbar>(widget)
+                .map_or_else(|| widget.base().is_visible(), |snackbar| snackbar.is_visible());
+        }
+        self.snackbar_id.is_some_and(scaffold_snackbar_visible)
+    }
+
+    /// Opens the bottom-sheet slot.
+    ///
+    /// A [`BottomSheet`] is opened through its own `open`, so its rise animation and drag handle
+    /// keep working; any other widget is shown. Returns `false` when no slot can be reached.
+    pub fn show_bottom_sheet(&mut self) -> bool {
+        if let Some(widget) = self.bottom_sheet.as_deref_mut() {
+            if let Some(sheet) =
+                crate::widget::capability::widget_as_mut::<crate::widget::BottomSheet>(widget)
+            {
+                sheet.open();
+            } else {
+                widget.base_mut().show();
+            }
+            self.base.request_redraw();
+            return true;
+        }
+        if let Some(id) = self.bottom_sheet_id {
+            let opened = crate::widget::runtime::with_widget_mut(id, |widget| {
+                if let Some(sheet) =
+                    crate::widget::capability::widget_as_mut::<crate::widget::BottomSheet>(widget)
+                {
+                    sheet.open();
+                } else {
+                    widget.base_mut().show();
+                }
+            })
+            .is_some();
+            if opened {
+                self.base.request_redraw();
+            }
+            return opened;
+        }
+        false
+    }
+
+    /// Dismisses (closes) the bottom-sheet slot.
+    ///
+    /// A [`BottomSheet`] is dismissed through its own `dismiss`, so its rise animation is kept;
+    /// any other widget is hidden. Returns `false` when no slot can be reached.
+    pub fn dismiss_bottom_sheet(&mut self) -> bool {
+        if let Some(widget) = self.bottom_sheet.as_deref_mut() {
+            if let Some(sheet) =
+                crate::widget::capability::widget_as_mut::<crate::widget::BottomSheet>(widget)
+            {
+                sheet.dismiss();
+            } else {
+                widget.base_mut().hide();
+            }
+            self.base.request_redraw();
+            return true;
+        }
+        if let Some(id) = self.bottom_sheet_id {
+            let dismissed = crate::widget::runtime::with_widget_mut(id, |widget| {
+                if let Some(sheet) =
+                    crate::widget::capability::widget_as_mut::<crate::widget::BottomSheet>(widget)
+                {
+                    sheet.dismiss();
+                } else {
+                    widget.base_mut().hide();
+                }
+            })
+            .is_some();
+            if dismissed {
+                self.base.request_redraw();
+            }
+            return dismissed;
+        }
+        false
+    }
+
+    /// Whether the bottom-sheet slot is open.
+    pub fn is_bottom_sheet_open(&self) -> bool {
+        if let Some(widget) = self.bottom_sheet.as_deref() {
+            return crate::widget::capability::widget_as::<crate::widget::BottomSheet>(widget)
+                .map_or_else(|| widget.base().is_visible(), |sheet| sheet.is_open());
+        }
+        self.bottom_sheet_id.is_some_and(scaffold_bottom_sheet_open)
+    }
+
+    /// Sets the persistent footer slot.
+    ///
+    /// The footer reserves a band below the body and above the bottom navigation bar, so the
+    /// body loses exactly that height. It is not an overlay: the snackbar and the bottom sheet
+    /// are laid out above it.
+    pub fn set_persistent_footer(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.persistent_footer = widget;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns the persistent footer slot, if one is set.
+    pub fn persistent_footer(&self) -> Option<&dyn Widget> {
+        self.persistent_footer.as_deref()
     }
 
     /// Opens the leading drawer, if one is set. Returns whether it is now open.
@@ -713,12 +932,18 @@ impl AdaptiveScaffold {
         self.show_bottom_nav && !self.nav_items.is_empty() && self.navigation_rail_rect().is_none()
     }
 
-    /// Advances the delegated bottom bar's pill and the scaffold's own transitions.
+    /// Advances the delegated bottom bar, the scaffold's own transitions and the overlay slots.
+    ///
+    /// The snackbar and bottom sheet are owned as `Box<dyn Widget>`, so the scaffold is their
+    /// single animation owner: this is where a snackbar's duration counts down and where a bottom
+    /// sheet's rise advances. The draw path paints them but does not also tick them.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         let mut moving = self.m3_bar.as_mut().is_some_and(|bar| bar.tick(delta_ms));
         moving |= self.drawer_reveal.tick(delta_ms);
         moving |= self.end_drawer_reveal.tick(delta_ms);
         moving |= self.page_reveal.tick(delta_ms);
+        moving |= self.snackbar.as_deref_mut().is_some_and(|widget| widget.tick(delta_ms));
+        moving |= self.bottom_sheet.as_deref_mut().is_some_and(|widget| widget.tick(delta_ms));
         moving
     }
 
@@ -728,6 +953,8 @@ impl AdaptiveScaffold {
             || self.drawer_reveal.is_animating()
             || self.end_drawer_reveal.is_animating()
             || self.page_reveal.is_animating()
+            || self.snackbar.as_deref().is_some_and(|widget| widget.is_animating())
+            || self.bottom_sheet.as_deref().is_some_and(|widget| widget.is_animating())
     }
 
     /// Rebuilds the delegated M3 bar from the scaffold's own items, selection and band.
@@ -960,18 +1187,47 @@ impl AdaptiveScaffold {
         APP_BAR_HEIGHT + self.app_bar.bottom_slot_height()
     }
 
+    /// Whether this scaffold carries a persistent footer, in either content model.
+    fn persistent_footer_visible(&self) -> bool {
+        self.persistent_footer.is_some() || self.persistent_footer_id.is_some()
+    }
+
+    /// The footer band between the body and the bottom navigation bar.
+    ///
+    /// The band is inset by the navigation rail, exactly like the content band, so a footer and a
+    /// rail cannot be painted over each other in the medium form.
+    fn persistent_footer_rect(&self) -> Option<Rect> {
+        if !self.persistent_footer_visible() {
+            return None;
+        }
+        let rect = self.geometry();
+        let rail_inset = self.navigation_rail_rect().map(|rail| rail.width as i32).unwrap_or(0);
+        let bottom_offset = if self.bottom_nav_visible() { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
+        Some(Rect::new(
+            rect.x + rail_inset,
+            rect.y + rect.height as i32 - bottom_offset - PERSISTENT_FOOTER_HEIGHT as i32,
+            (rect.width as i32 - rail_inset).max(0) as u32,
+            PERSISTENT_FOOTER_HEIGHT,
+        ))
+    }
+
     /// Returns the content area rect (between AppBar and bottom nav, beside the rail).
+    ///
+    /// A persistent footer reserves its band from this rect, so the body loses exactly the height
+    /// the footer occupies instead of being painted underneath it.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
         let top_offset: i32 = self.app_bar_height() as i32;
         let rail_inset = self.navigation_rail_rect().map(|rail| rail.width as i32).unwrap_or(0);
         let bottom_offset: i32 =
             if self.bottom_nav_visible() { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
+        let footer_offset: i32 =
+            if self.persistent_footer_visible() { PERSISTENT_FOOTER_HEIGHT as i32 } else { 0 };
         Rect::new(
             rect.x + rail_inset,
             rect.y + top_offset,
             (rect.width as i32 - rail_inset).max(0) as u32,
-            (rect.height as i32 - top_offset - bottom_offset).max(0) as u32,
+            (rect.height as i32 - top_offset - bottom_offset - footer_offset).max(0) as u32,
         )
     }
 
@@ -1057,7 +1313,7 @@ impl AdaptiveScaffold {
                 return true;
             }
         }
-        if self.snackbar.is_some() {
+        if self.snackbar_shown() {
             let band = self.snackbar_rect();
             if band.contains_point(pos) {
                 if let Some(snackbar) = self.snackbar.as_deref_mut() {
@@ -1067,7 +1323,7 @@ impl AdaptiveScaffold {
                 return true;
             }
         }
-        if self.bottom_sheet.is_some() {
+        if self.bottom_sheet_shown() {
             let band = self.bottom_sheet_rect();
             if band.contains_point(pos) {
                 if let Some(sheet) = self.bottom_sheet.as_deref_mut() {
@@ -1171,13 +1427,22 @@ impl AdaptiveScaffold {
     }
 
     /// Returns the floating action button's slot rectangle.
+    ///
+    /// The button sits above every reserved band, including a persistent footer, so it never
+    /// covers the footer's content.
     fn fab_rect(&self) -> Option<Rect> {
         self.fab.as_ref()?;
         let rect = self.geometry();
         let bottom_inset = if self.bottom_nav_visible() { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
+        let footer_inset =
+            if self.persistent_footer_visible() { PERSISTENT_FOOTER_HEIGHT as i32 } else { 0 };
         Some(Rect::new(
             rect.x + rect.width as i32 - FAB_SLOT_SIZE as i32 - FAB_SLOT_MARGIN,
-            rect.y + rect.height as i32 - FAB_SLOT_SIZE as i32 - bottom_inset - FAB_SLOT_MARGIN,
+            rect.y + rect.height as i32
+                - FAB_SLOT_SIZE as i32
+                - bottom_inset
+                - footer_inset
+                - FAB_SLOT_MARGIN,
             FAB_SLOT_SIZE,
             FAB_SLOT_SIZE,
         ))
@@ -1216,16 +1481,202 @@ impl AdaptiveScaffold {
         )
     }
 
-    /// Returns the snackbar's rectangle, sitting above the bottom navigation band.
+    /// Whether the snackbar slot should be painted and hit-tested.
+    ///
+    /// A `MaterialSnackbar` answers through its own visibility; any other widget answers through
+    /// its base flag. An empty slot is never shown.
+    fn snackbar_shown(&self) -> bool {
+        self.snackbar.as_deref().is_some_and(|widget| {
+            crate::widget::capability::widget_as::<crate::widget::MaterialSnackbar>(widget)
+                .map_or_else(|| widget.base().is_visible(), |snackbar| snackbar.is_visible())
+        })
+    }
+
+    /// Whether the bottom-sheet slot should be painted and hit-tested.
+    ///
+    /// A `BottomSheet` answers through `open` plus its drawn rise, so the closing half of a
+    /// dismissal remains interactive; any other widget answers through its base flag.
+    fn bottom_sheet_shown(&self) -> bool {
+        self.bottom_sheet.as_deref().is_some_and(|widget| {
+            crate::widget::capability::widget_as::<crate::widget::BottomSheet>(widget).map_or_else(
+                || widget.base().is_visible(),
+                |sheet| sheet.is_open() || sheet.rise_progress() > 0.0,
+            )
+        })
+    }
+
+    /// Returns the snackbar's rectangle, sitting above the persistent footer and bottom nav band.
+    ///
+    /// A footer reserves its band from the body, so the overlay is lifted above it as well; the
+    /// two cannot overlap.
     fn snackbar_rect(&self) -> Rect {
         let rect = self.geometry();
         let bottom_inset = if self.bottom_nav_visible() { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
+        let footer_inset =
+            if self.persistent_footer_visible() { PERSISTENT_FOOTER_HEIGHT as i32 } else { 0 };
         Rect::new(
             rect.x + SNACKBAR_MARGIN,
-            rect.y + rect.height as i32 - bottom_inset - SNACKBAR_HEIGHT as i32 - SNACKBAR_MARGIN,
+            rect.y + rect.height as i32
+                - bottom_inset
+                - footer_inset
+                - SNACKBAR_HEIGHT as i32
+                - SNACKBAR_MARGIN,
             rect.width.saturating_sub((SNACKBAR_MARGIN * 2) as u32),
             SNACKBAR_HEIGHT,
         )
+    }
+}
+
+/// Builder for an [`AdaptiveScaffold`].
+///
+/// The builder is a spelling convenience, not a second construction path: [`Self::build`] creates
+/// the scaffold with [`AdaptiveScaffold::new`] and applies the existing setters, so a value built
+/// this way is indistinguishable from one assembled by hand.
+#[derive(Default)]
+pub struct AdaptiveScaffoldBuilder {
+    title: String,
+    geometry: Rect,
+    show_back: bool,
+    action_text: Option<String>,
+    actions: Vec<String>,
+    body: Option<Box<dyn Widget>>,
+    destinations: Vec<(String, String)>,
+    nav_bodies: Vec<(usize, Box<dyn Widget>)>,
+    selected_nav_index: usize,
+    show_bottom_nav: bool,
+    drawer: Option<Box<dyn Widget>>,
+    fab: Option<Box<dyn Widget>>,
+    snackbar: Option<Box<dyn Widget>>,
+    bottom_sheet: Option<Box<dyn Widget>>,
+    persistent_footer: Option<Box<dyn Widget>>,
+}
+
+impl AdaptiveScaffoldBuilder {
+    /// Starts a builder for a scaffold with `title` and `geometry`.
+    pub fn new(title: &str, geometry: Rect) -> Self {
+        Self { title: title.to_string(), geometry, ..Self::default() }
+    }
+
+    /// Sets whether the AppBar back affordance is shown.
+    pub fn show_back(mut self, show_back: bool) -> Self {
+        self.show_back = show_back;
+        self
+    }
+
+    /// Sets the AppBar's action text.
+    pub fn action_text(mut self, text: &str) -> Self {
+        self.action_text = Some(text.to_string());
+        self
+    }
+
+    /// Sets the AppBar's trailing action list.
+    pub fn actions(mut self, actions: Vec<String>) -> Self {
+        self.actions = actions;
+        self
+    }
+
+    /// Sets the shared fallback body.
+    pub fn body(mut self, widget: Box<dyn Widget>) -> Self {
+        self.body = Some(widget);
+        self
+    }
+
+    /// Adds one bottom-navigation destination, in declaration order.
+    pub fn destination(mut self, icon: &str, label: &str) -> Self {
+        self.destinations.push((icon.to_string(), label.to_string()));
+        self
+    }
+
+    /// Assigns the page shown while destination `index` is selected.
+    ///
+    /// Pages may be assigned before their destination is declared; [`Self::build`] adds every
+    /// destination first, so a page cannot be erased by the item list.
+    pub fn nav_body(mut self, index: usize, widget: Box<dyn Widget>) -> Self {
+        self.nav_bodies.push((index, widget));
+        self
+    }
+
+    /// Selects the destination that starts active.
+    pub fn selected_nav_index(mut self, index: usize) -> Self {
+        self.selected_nav_index = index;
+        self
+    }
+
+    /// Sets whether the bottom navigation bar is shown.
+    pub fn show_bottom_nav(mut self, show: bool) -> Self {
+        self.show_bottom_nav = show;
+        self
+    }
+
+    /// Sets the leading drawer slot.
+    pub fn drawer(mut self, widget: Box<dyn Widget>) -> Self {
+        self.drawer = Some(widget);
+        self
+    }
+
+    /// Sets the floating action button slot.
+    pub fn fab(mut self, widget: Box<dyn Widget>) -> Self {
+        self.fab = Some(widget);
+        self
+    }
+
+    /// Sets the snackbar slot. The control is not shown until `show_snackbar` is called.
+    pub fn snackbar(mut self, widget: Box<dyn Widget>) -> Self {
+        self.snackbar = Some(widget);
+        self
+    }
+
+    /// Sets the bottom-sheet slot. The control is not opened until `show_bottom_sheet` is called.
+    pub fn bottom_sheet(mut self, widget: Box<dyn Widget>) -> Self {
+        self.bottom_sheet = Some(widget);
+        self
+    }
+
+    /// Sets the persistent footer slot.
+    pub fn persistent_footer(mut self, widget: Box<dyn Widget>) -> Self {
+        self.persistent_footer = Some(widget);
+        self
+    }
+
+    /// Builds the scaffold through [`AdaptiveScaffold::new`] and its existing setters.
+    pub fn build(self) -> AdaptiveScaffold {
+        let mut scaffold = AdaptiveScaffold::new(&self.title, self.geometry);
+        scaffold.set_show_back(self.show_back);
+        if let Some(text) = self.action_text {
+            scaffold.set_action_text(&text);
+        }
+        if !self.actions.is_empty() {
+            scaffold.set_actions(self.actions);
+        }
+        if let Some(body) = self.body {
+            scaffold.set_body_widget(Some(body));
+        }
+        // Destinations first: `add_nav_item` pushes an empty page slot, so a page assigned before
+        // its destination would otherwise be replaced.
+        for (icon, label) in self.destinations {
+            scaffold.add_nav_item(&icon, &label);
+        }
+        for (index, body) in self.nav_bodies {
+            scaffold.set_nav_body(index, Some(body));
+        }
+        scaffold.set_selected_nav_index(self.selected_nav_index);
+        scaffold.set_show_bottom_nav(self.show_bottom_nav);
+        if let Some(drawer) = self.drawer {
+            scaffold.set_drawer(Some(drawer));
+        }
+        if let Some(fab) = self.fab {
+            scaffold.set_fab(Some(fab));
+        }
+        if let Some(snackbar) = self.snackbar {
+            scaffold.set_snackbar(Some(snackbar));
+        }
+        if let Some(bottom_sheet) = self.bottom_sheet {
+            scaffold.set_bottom_sheet(Some(bottom_sheet));
+        }
+        if let Some(footer) = self.persistent_footer {
+            scaffold.set_persistent_footer(Some(footer));
+        }
+        scaffold
     }
 }
 
@@ -1474,6 +1925,20 @@ impl Draw for AdaptiveScaffold {
             }
         }
 
+        // ── Persistent footer ──
+        //
+        // The footer owns the band `content_rect` already removed from the body, so painting it
+        // here cannot cover the page. It is drawn before the bottom navigation bar because the
+        // footer sits above that bar.
+        if let Some(band) = self.persistent_footer_rect() {
+            if let Some(footer) = self.persistent_footer.as_deref_mut() {
+                footer.set_geometry(band);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(footer) {
+                    drawable.draw(context);
+                }
+            }
+        }
+
         // ── Bottom navigation bar ──
         //
         // The rect is asked for once and the draw is guarded on the answer, so "is the nav bar
@@ -1543,20 +2008,26 @@ impl Draw for AdaptiveScaffold {
                 }
             }
         }
-        if self.bottom_sheet.is_some() {
+        // A bottom sheet paints only while it is open or still sliding, so `set_bottom_sheet` is
+        // not the same as "drawn forever": the control's own `open`/`dismiss` state decides.
+        if self.bottom_sheet_shown() {
             let band = self.bottom_sheet_rect();
             if let Some(sheet) = self.bottom_sheet.as_deref_mut() {
                 sheet.set_geometry(band);
-                if let Some(drawable) = crate::widget::draw_bridge::draw_of(sheet) {
+                // The scaffold ticks this slot in `tick`, so the paint path must not advance it a
+                // second time in the same frame.
+                if let Some(drawable) = sheet.as_draw_mut() {
                     drawable.draw(context);
                 }
             }
         }
-        if self.snackbar.is_some() {
+        // A snackbar is visible only while its own show/duration state says so; a freshly set
+        // `MaterialSnackbar` is hidden and paints nothing.
+        if self.snackbar_shown() {
             let band = self.snackbar_rect();
             if let Some(snackbar) = self.snackbar.as_deref_mut() {
                 snackbar.set_geometry(band);
-                if let Some(drawable) = crate::widget::draw_bridge::draw_of(snackbar) {
+                if let Some(drawable) = snackbar.as_draw_mut() {
                     drawable.draw(context);
                 }
             }
@@ -1808,7 +2279,7 @@ impl EventHandler for AdaptiveScaffold {
                         }
                     }
                 }
-                if !routed && self.snackbar.is_some() {
+                if !routed && self.snackbar_shown() {
                     let band = self.snackbar_rect();
                     if band.contains_point(*pos) {
                         if let Some(snackbar) = self.snackbar.as_deref_mut() {
@@ -1818,7 +2289,7 @@ impl EventHandler for AdaptiveScaffold {
                         }
                     }
                 }
-                if !routed && self.bottom_sheet.is_some() {
+                if !routed && self.bottom_sheet_shown() {
                     let band = self.bottom_sheet_rect();
                     if band.contains_point(*pos) {
                         if let Some(sheet) = self.bottom_sheet.as_deref_mut() {
@@ -2440,6 +2911,185 @@ mod tests {
             "drawer".to_string(),
             Rect::new(0, 0, 10, 10),
         ))
+    }
+
+    /// A widget that records how many times the scaffold painted it.
+    struct DrawCounter {
+        base: BaseWidget,
+        draws: Arc<AtomicUsize>,
+    }
+
+    impl DrawCounter {
+        fn new(draws: Arc<AtomicUsize>) -> Self {
+            Self {
+                base: BaseWidget::new(WidgetKind::Label, Rect::new(0, 0, 10, 10), "DrawCounter"),
+                draws,
+            }
+        }
+    }
+
+    impl Widget for DrawCounter {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        impl_draw_bridge!();
+    }
+
+    impl EventHandler for DrawCounter {
+        fn handle_event(&mut self, _event: &Event) {}
+    }
+
+    impl Draw for DrawCounter {
+        fn draw(&mut self, context: &mut RenderContext) {
+            self.draws.fetch_add(1, Ordering::SeqCst);
+            context.fill_rect(self.geometry(), Color::BLACK);
+        }
+    }
+
+    /// A snackbar's own duration dismisses it and the slot reports hidden.
+    #[test]
+    fn a_snackbar_auto_dismisses_through_the_scaffold_slot() {
+        let mut scaffold = make_scaffold();
+        let mut snackbar = crate::widget::MaterialSnackbar::new(Rect::new(0, 0, 300, 48));
+        snackbar.set_message("Saved");
+        snackbar.set_duration_ms(50);
+        scaffold.set_snackbar(Some(Box::new(snackbar)));
+
+        assert!(
+            !scaffold.is_snackbar_visible(),
+            "setting a snackbar must not force it permanently visible"
+        );
+        assert!(scaffold.show_snackbar(), "the slot accepts show");
+        assert!(scaffold.is_snackbar_visible(), "a shown snackbar is visible");
+
+        while scaffold.tick(16) {}
+        assert!(!scaffold.is_snackbar_visible(), "the snackbar's own duration must dismiss it");
+    }
+
+    /// An explicit dismiss hides the snackbar before its duration elapses.
+    #[test]
+    fn a_snackbar_dismisses_on_demand() {
+        let mut scaffold = make_scaffold();
+        let mut snackbar = crate::widget::MaterialSnackbar::new(Rect::new(0, 0, 300, 48));
+        snackbar.set_duration_ms(0);
+        scaffold.set_snackbar(Some(Box::new(snackbar)));
+        assert!(scaffold.show_snackbar());
+        assert!(scaffold.is_snackbar_visible());
+
+        assert!(scaffold.dismiss_snackbar(), "the slot accepts dismiss");
+        assert!(!scaffold.is_snackbar_visible(), "an explicit dismiss hides it");
+    }
+
+    /// The bottom-sheet slot follows the control's open/dismiss state.
+    #[test]
+    fn a_bottom_sheet_opens_and_dismisses_through_the_slot() {
+        let mut scaffold = make_scaffold();
+        scaffold.set_bottom_sheet(Some(Box::new(crate::widget::BottomSheet::new(Rect::new(
+            0, 0, 375, 400,
+        )))));
+        assert!(!scaffold.is_bottom_sheet_open(), "a freshly set bottom sheet is closed");
+        assert!(scaffold.show_bottom_sheet());
+        assert!(scaffold.is_bottom_sheet_open());
+        assert!(scaffold.dismiss_bottom_sheet());
+        assert!(!scaffold.is_bottom_sheet_open());
+    }
+
+    /// A hidden slot paints nothing, and an unset slot has nothing to paint.
+    #[test]
+    fn a_hidden_or_unset_overlay_slot_paints_nothing() {
+        let mut scaffold = make_scaffold();
+        let draws = Arc::new(AtomicUsize::new(0));
+        let mut counter = DrawCounter::new(Arc::clone(&draws));
+        counter.base_mut().hide();
+        scaffold.set_snackbar(Some(Box::new(counter)));
+
+        let _ = render_to_svg(&mut scaffold);
+        assert_eq!(draws.load(Ordering::SeqCst), 0, "a hidden slot is not painted");
+
+        scaffold.set_snackbar(None);
+        let _ = render_to_svg(&mut scaffold);
+        assert_eq!(draws.load(Ordering::SeqCst), 0, "an unset slot is not painted");
+    }
+
+    /// The footer takes its height from the body and sits above the bottom bar.
+    #[test]
+    fn a_persistent_footer_shortens_the_body_and_stays_above_the_nav_bar() {
+        let mut scaffold = make_scaffold();
+        scaffold.set_show_bottom_nav(true);
+        let body_without_footer = scaffold.content_rect();
+
+        scaffold.set_persistent_footer(Some(drawer_widget()));
+        let body_with_footer = scaffold.content_rect();
+        assert_eq!(
+            body_without_footer.height - body_with_footer.height,
+            PERSISTENT_FOOTER_HEIGHT,
+            "the footer reserves exactly its band from the body"
+        );
+
+        let footer = scaffold.persistent_footer_rect().expect("a footer band exists");
+        let nav = scaffold.bottom_nav_rect().expect("the nav bar is shown");
+        assert_eq!(
+            footer.y + footer.height as i32,
+            nav.y,
+            "the footer ends where the nav bar begins"
+        );
+        assert_eq!(
+            body_with_footer.y + body_with_footer.height as i32,
+            footer.y,
+            "the body ends where the footer begins"
+        );
+        let snackbar = scaffold.snackbar_rect();
+        assert!(
+            snackbar.y + snackbar.height as i32 <= footer.y,
+            "the snackbar overlay must not overlap the footer"
+        );
+    }
+
+    /// The builder uses the existing constructor and setters.
+    #[test]
+    fn the_builder_assembles_the_same_scaffold() {
+        let scaffold = AdaptiveScaffoldBuilder::new("Home", Rect::new(0, 0, 375, 812))
+            .show_back(true)
+            .action_text("Save")
+            .actions(vec!["One".to_string()])
+            .body(Box::new(crate::widget::base_widgets::label::Label::new(
+                "body".to_string(),
+                Rect::new(0, 0, 10, 10),
+            )))
+            .destination("★", "Favorites")
+            .destination("✉", "Messages")
+            .nav_body(
+                1,
+                Box::new(crate::widget::base_widgets::label::Label::new(
+                    "second".to_string(),
+                    Rect::new(0, 0, 10, 10),
+                )),
+            )
+            .selected_nav_index(1)
+            .show_bottom_nav(true)
+            .drawer(drawer_widget())
+            .fab(drawer_widget())
+            .snackbar(drawer_widget())
+            .bottom_sheet(drawer_widget())
+            .persistent_footer(drawer_widget())
+            .build();
+
+        assert_eq!(scaffold.title(), "Home");
+        assert!(scaffold.show_back());
+        assert_eq!(scaffold.action_text(), "Save");
+        assert_eq!(scaffold.nav_item_count(), 2);
+        assert_eq!(scaffold.selected_nav_index(), 1);
+        assert!(scaffold.show_bottom_nav());
+        assert!(scaffold.body_widget().is_some());
+        assert!(scaffold.nav_body(1).is_some());
+        assert!(scaffold.drawer().is_some());
+        assert!(scaffold.fab().is_some());
+        assert!(scaffold.snackbar().is_some());
+        assert!(scaffold.bottom_sheet().is_some());
+        assert!(scaffold.persistent_footer().is_some());
     }
 
     #[test]

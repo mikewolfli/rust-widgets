@@ -583,6 +583,92 @@ impl SoftwareSurface {
             self.buffer.layer_backdrop_pool.push(buffer);
         }
     }
+
+    /// Rasterises `text` rotated about `pivot` and composites it.
+    ///
+    /// The coverage is the reference renderer's own shaped mask, rotated once, so a rotated label
+    /// is the same ink and weight as an unrotated one. `origin`, `pivot` and the text metrics are
+    /// in the same space [`Self::draw_text`] uses.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_text_rotated_coverage(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+        pivot: Point,
+        radians: f32,
+    ) {
+        let Some(run) = crate::render::text::shaped_text_coverage_rotated(
+            origin,
+            text,
+            font,
+            alignment,
+            self.dpi_scale(),
+            pivot,
+            radians,
+        ) else {
+            return;
+        };
+        self.blend_text_coverage_mask(
+            Rect::new(run.x, run.y, run.width, run.height),
+            &run.bytes,
+            color,
+        );
+    }
+
+    /// Composites one pre-rasterised coverage mask over the frame, multiplied by `color`.
+    ///
+    /// The bytes are the display-encoded alpha the reference compositor would have used, so this
+    /// multiplies them by the colour directly instead of running them through
+    /// `glyph_coverage_weight` a second time. The clip and the frame bounds are resolved into a
+    /// visible span once, exactly as the glyph path does.
+    ///
+    /// Returns whether any pixel was written.
+    pub(crate) fn blend_text_coverage_mask(
+        &mut self,
+        rect: Rect,
+        coverage: &[u8],
+        color: Color,
+    ) -> bool {
+        let size = self.buffer.size();
+        if rect.width == 0 || rect.height == 0 || size.width == 0 || size.height == 0 {
+            return false;
+        }
+        let (clip_x, clip_y, clip_w, clip_h) =
+            self.current_clip().unwrap_or((0, 0, size.width, size.height));
+        let clip_right = clip_x.saturating_add(clip_w as i32);
+        let clip_bottom = clip_y.saturating_add(clip_h as i32);
+        let mut wrote = false;
+        for row in 0..rect.height {
+            let y = rect.y + row as i32;
+            if y < clip_y || y >= clip_bottom || y < 0 || y >= size.height as i32 {
+                continue;
+            }
+            for col in 0..rect.width {
+                let index = row as usize * rect.width as usize + col as usize;
+                let Some(&coverage_byte) = coverage.get(index) else { break };
+                if coverage_byte == 0 {
+                    continue;
+                }
+                let x = rect.x + col as i32;
+                if x < clip_x || x >= clip_right || x < 0 || x >= size.width as i32 {
+                    continue;
+                }
+                crate::render::pipeline::blend_pixel(
+                    &mut self.buffer.back,
+                    size.width,
+                    x as u32,
+                    y as u32,
+                    color,
+                    f32::from(coverage_byte) / 255.0,
+                );
+                wrote = true;
+            }
+        }
+        wrote
+    }
 }
 
 /// Public software render configuration for quality-related knobs.
@@ -775,17 +861,61 @@ struct RecordedImageCacheEntry {
     /// The source grid the draw declares.
     width: u32,
     height: u32,
+    /// 128-bit fingerprint of the bytes that were copied (see [`content_fingerprint`]).
+    ///
+    /// Replaced the whole-buffer `==` on every hit. That comparison was a `memcmp` per image per
+    /// frame — a widget layer blit goes through this path, so a 1000x600 layer paid 2.4 MB of
+    /// comparison every frame it was drawn from cache. The fingerprint is computed over the same
+    /// bytes in one branch-free pass and compared as two words.
+    fingerprint: ContentFingerprint,
     /// The bytes a recorded command owns, shared with every frame that records it again.
     data: Arc<[u8]>,
 }
 
+/// A 128-bit fingerprint of an image buffer's bytes.
+///
+/// Two independent 64-bit accumulators over 8-byte words: the cost is one pass with two
+/// multiplies per word, and a false "same content" needs both words to collide, which is why a
+/// probe that matches on `(ptr, len, width, height, fingerprint)` can be trusted. The previous
+/// design compared the bytes themselves; the correctness argument it protected — a caller may
+/// rewrite a `Vec` in place, and an allocator may reuse a freed address — still holds, because a
+/// rewritten buffer changes the fingerprint.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ContentFingerprint {
+    a: u64,
+    b: u64,
+}
+
+/// Computes the fingerprint of `data` without allocating.
+fn content_fingerprint(data: &[u8]) -> ContentFingerprint {
+    const OFFSET_A: u64 = 0xcbf2_9ce4_8422_2325;
+    const OFFSET_B: u64 = 0x9e37_79b9_7f4a_7c15;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut a = OFFSET_A;
+    let mut b = OFFSET_B;
+    let (chunks, remainder) = data.as_chunks::<8>();
+    for chunk in chunks {
+        // `as_chunks` guarantees eight bytes per element, so the conversion is infallible.
+        let word = u64::from_le_bytes(*chunk);
+        a = (a ^ word).wrapping_mul(PRIME);
+        b = (b ^ word.rotate_left(29) ^ a).wrapping_mul(PRIME);
+    }
+    let mut tail = 0u64;
+    for (index, byte) in remainder.iter().enumerate() {
+        tail |= u64::from(*byte) << (8 * index);
+    }
+    a = (a ^ tail ^ data.len() as u64).wrapping_mul(PRIME);
+    b = (b ^ tail.rotate_left(17)).wrapping_mul(PRIME);
+    ContentFingerprint { a, b }
+}
+
 /// Returns an `Arc` holding `data`, reusing the copy recorded for the same buffer last frame.
 ///
-/// The address, length and grid narrow the lookup to one entry; the bytes are then compared, the
-/// same way [`RenderContext::translated_path_points`] compares its vertices. Comparison is what
-/// makes a reused buffer safe: a caller may rewrite a `Vec` in place — animated frames, a
-/// re-rendered canvas cache — and the allocator may hand a freed address to a different image, so
-/// identity alone would serve stale pixels. Only a miss allocates.
+/// The address, length and grid narrow the lookup to one entry; the fingerprint then decides
+/// whether the bytes are the same. Comparison is what makes a reused buffer safe: a caller may
+/// rewrite a `Vec` in place — animated frames, a re-rendered canvas cache — and the allocator may
+/// hand a freed address to a different image, so identity alone would serve stale pixels. Only a
+/// miss allocates.
 fn recorded_image(data: &[u8], width: u32, height: u32) -> Arc<[u8]> {
     let ptr = data.as_ptr() as usize;
     let len = data.len();
@@ -795,20 +925,29 @@ fn recorded_image(data: &[u8], width: u32, height: u32) -> Arc<[u8]> {
             entry.ptr == ptr && entry.len == len && entry.width == width && entry.height == height
         });
         if let Some(index) = existing {
-            if cache[index].data.as_ref() == data {
+            let fingerprint = content_fingerprint(data);
+            if cache[index].fingerprint == fingerprint {
                 return Arc::clone(&cache[index].data);
             }
             // Same buffer identity, different pixels: replace the stale copy in place so the
             // entry keeps its position and the cache does not grow a duplicate per rewrite.
             let shared: Arc<[u8]> = Arc::from(data);
             cache[index].data = Arc::clone(&shared);
+            cache[index].fingerprint = fingerprint;
             return shared;
         }
         let shared: Arc<[u8]> = Arc::from(data);
         if cache.len() >= RECORDED_IMAGE_CACHE_DEPTH {
             cache.remove(0);
         }
-        cache.push(RecordedImageCacheEntry { ptr, len, width, height, data: Arc::clone(&shared) });
+        cache.push(RecordedImageCacheEntry {
+            ptr,
+            len,
+            width,
+            height,
+            fingerprint: content_fingerprint(data),
+            data: Arc::clone(&shared),
+        });
         shared
     })
 }
@@ -2410,6 +2549,14 @@ impl<'a> RenderContext<'a> {
     /// vertices as the caller wrote them. The old comment here claimed the miss allocated
     /// nothing at all, which the `points.to_vec()` key contradicted.
     fn translated_path_points(&self, points: &[Point], closed: bool) -> Arc<[Point]> {
+        // Linear scan with an exact vertex comparison, bounded by `PATH_POINT_CACHE_DEPTH` (16).
+        //
+        // R-15 flagged this as a "linear scan + full comparison" hot spot. The bound is what makes
+        // the shape right: a frame paints a handful of small static polygons (arrows, chevrons,
+        // gauge arcs), so the worst case is 16 comparisons against paths of a few points each. An
+        // index keyed by (offset, closed, first point) would trade that for a hash and a second
+        // lookup table, and the comparison would still be needed to prove the hit — a net loss at
+        // this depth. Revisit only with a measured frame time, per principle #51.
         let offset_x = self.offset_x;
         let offset_y = self.offset_y;
         let cached = PATH_POINT_CACHE.with(|cache| {
@@ -2582,6 +2729,41 @@ impl<'a> RenderContext<'a> {
             self.backend.draw_text(origin, text, font, color, alignment);
         }
     }
+    /// Draws one line of text rotated about `pivot`.
+    ///
+    /// `radians` is clockwise in screen coordinates (y grows down). The glyph run, its
+    /// measured box and its alignment are exactly [`Self::draw_text`]'s; only the finished
+    /// box is rotated, so a caller that already fits a label into a box keeps that box and
+    /// asks for the orientation separately.
+    pub fn draw_text_rotated(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+        pivot: Point,
+        radians: f32,
+    ) {
+        let origin = self.offset_point(origin);
+        let pivot = self.offset_point(pivot);
+        if self.bucket_recording() {
+            // The region buckets carry the four unrotated text fields; a rotated run keeps
+            // the owning command so a bucket replay still paints it.
+            self.dispatch_owned(RenderCommand::DrawTextRotated {
+                origin,
+                text: crate::compat::Arc::from(text),
+                font: font.clone(),
+                color,
+                alignment,
+                pivot,
+                radians,
+            });
+        } else {
+            self.backend.draw_text_rotated(origin, text, font, color, alignment, pivot, radians);
+        }
+    }
+
     /// Draws a single line of text with baseline decorations (G-013).
     ///
     /// The glyphs go down exactly as [`Self::draw_text`] puts them; `decoration`

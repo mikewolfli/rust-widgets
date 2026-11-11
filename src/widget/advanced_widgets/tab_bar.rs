@@ -86,9 +86,9 @@ fn elide_key(text: &str, budget: u32, font: &Font, mode: TabElideMode) -> u64 {
     }
     mix(match mode {
         TabElideMode::None => 0,
-        TabElideMode::Right => 1,
-        TabElideMode::Left => 2,
-        TabElideMode::Middle => 3,
+        TabElideMode::ElideRight => 1,
+        TabElideMode::ElideLeft => 2,
+        TabElideMode::ElideMiddle => 3,
     });
     hash
 }
@@ -337,23 +337,10 @@ fn tab_bar_tab_from_record(
 }
 
 /// How a tab title that does not fit its tab is handled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TabElideMode {
-    /// Paint the full title even where it does not fit; the renderer clips it at the tab.
-    None,
-    /// Elide the title at the tab's trailing edge, the historical rendering.
-    #[default]
-    Right,
-    /// Elide the title at its **leading** edge, keeping the identifying tail.
-    ///
-    /// The mode a file name wants: a list of `report-2026-10.csv` tabs keeps the extension and the
-    /// distinguishing suffix instead of three tabs that all read `report-…`.
-    Left,
-    /// Elide the **middle**, keeping both ends.
-    ///
-    /// For a path or URL whose head and tail are each identifying.
-    Middle,
-}
+///
+/// The tab container owns the single definition (principle #54); this path is the tab bar's
+/// historical spelling of the same type, including the `Right`/`Left`/`Middle` aliases.
+pub use crate::widget::container_widgets::tabwidget::TabElideMode;
 
 /// What becomes current after the current tab is removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -506,7 +493,7 @@ impl TabBar {
             drag_target: None,
             scroll_buttons: false,
             scroll_offset: 0,
-            elide_mode: TabElideMode::Right,
+            elide_mode: TabElideMode::ElideRight,
             auto_hide: false,
             expanding: false,
             selection_behavior_on_remove: SelectionBehaviorOnRemove::default(),
@@ -1324,9 +1311,9 @@ impl TabBar {
         let title = self.tabs[index].title.as_str();
         match self.elide_mode {
             TabElideMode::None => Cow::Borrowed(title),
-            TabElideMode::Right => elide_to_width(title, budget, measure),
-            TabElideMode::Left => elide_start_to_width(title, budget, measure),
-            TabElideMode::Middle => {
+            TabElideMode::ElideRight => elide_to_width(title, budget, measure),
+            TabElideMode::ElideLeft => elide_start_to_width(title, budget, measure),
+            TabElideMode::ElideMiddle => {
                 crate::widget::text_utils::elide_middle_to_width(title, budget, measure)
             }
         }
@@ -3069,7 +3056,7 @@ mod tests {
         bar.remove_tab(0);
         assert_eq!(bar.current_index(), Some(0), "SelectNext keeps the same slot");
 
-        assert_eq!(bar.elide_mode(), TabElideMode::Right);
+        assert_eq!(bar.elide_mode(), TabElideMode::ElideRight);
         bar.set_elide_mode(TabElideMode::None);
         assert_eq!(bar.elide_mode(), TabElideMode::None);
         assert_eq!(bar.style_variant(), TabBarStyle::Standard);
@@ -3125,12 +3112,12 @@ mod tests {
         let tab_rect = Rect::new(0, 0, 60, 24);
         let mut measure = |text: &str| text.chars().count() as u32 * 7;
 
-        bar.set_elide_mode(TabElideMode::Left);
+        bar.set_elide_mode(TabElideMode::ElideLeft);
         let left = bar.fitted_title(0, tab_rect, &mut measure).into_owned();
         assert!(left.starts_with('\u{2026}'), "the leading end is the elided one: {left}");
         assert!(left.ends_with("csv"), "the suffix survives: {left}");
 
-        bar.set_elide_mode(TabElideMode::Middle);
+        bar.set_elide_mode(TabElideMode::ElideMiddle);
         let middle = bar.fitted_title(0, tab_rect, &mut measure).into_owned();
         assert!(middle.contains('\u{2026}'));
         assert!(middle.starts_with("rep"), "the head survives: {middle}");
@@ -3139,7 +3126,7 @@ mod tests {
         assert!(middle.ends_with('v'), "the tail survives: {middle}");
 
         // Right is still the default and still keeps the head.
-        bar.set_elide_mode(TabElideMode::Right);
+        bar.set_elide_mode(TabElideMode::ElideRight);
         let right = bar.fitted_title(0, tab_rect, &mut measure).into_owned();
         assert!(right.starts_with("rep"));
     }
@@ -3444,5 +3431,21 @@ mod tests {
         assert!(fired.load(Ordering::SeqCst));
         assert_eq!(bar.hovered_index, None);
         assert_eq!(bar.tab_enabled(1), Some(false));
+    }
+
+    /// The tab bar's `TabElideMode` and the tab container's are one type (principle #54).
+    #[test]
+    fn tab_elide_mode_is_the_tab_container_definition() {
+        fn same_type(
+            mode: TabElideMode,
+        ) -> crate::widget::container_widgets::tabwidget::TabElideMode {
+            mode
+        }
+        assert_eq!(
+            same_type(TabElideMode::ElideMiddle),
+            crate::widget::container_widgets::tabwidget::TabElideMode::ElideMiddle
+        );
+        // The historical spelling remains a value of the same type.
+        assert_eq!(TabElideMode::Right, TabElideMode::ElideRight);
     }
 }

@@ -1578,3 +1578,31 @@ fn a_detached_find_bar_is_not_polled() {
     assert_eq!(bar.match_count(), 3, "detach leaves the last count");
     assert_eq!(ta.selection_range(), None, "and the selection did not move");
 }
+
+/// A disabled text area recedes visually while keeping its text and geometry.
+///
+/// The event handler already returned early when disabled, but `draw` had no disabled branch.
+/// The palette reads are the other half: a themed area must take its fill, ink and outline from
+/// the resolved style rather than the fixed white/grey/black triple it used before.
+#[test]
+fn a_disabled_text_area_recedes_without_losing_its_geometry() {
+    let _guard = crate::style::theme_test_guard();
+    let bounds = Rect::new(0, 0, 260, 120);
+    let mut area = TextArea::new(String::new(), bounds);
+    area.set_text("first line\nsecond line");
+
+    let enabled = crate::widget::svg::render_to_svg(&mut area);
+    let enabled_ink = crate::widget::svg::text_ink_boxes(&enabled).len();
+
+    area.set_enabled(false);
+    assert!(!area.is_enabled(), "the control must report the state it was given");
+    let disabled = crate::widget::svg::render_to_svg(&mut area);
+
+    assert_ne!(enabled, disabled, "a disabled text area must paint a different frame");
+    assert_eq!(area.geometry(), bounds, "disabling must not change the area's geometry");
+    assert_eq!(
+        crate::widget::svg::text_ink_boxes(&disabled).len(),
+        enabled_ink,
+        "both rows must still be painted while disabled, not disappear"
+    );
+}

@@ -48,9 +48,13 @@ enum Sizing {
     Overlay,
 }
 
+/// What [`measure`] reports: the smallest width the window accepted, then the left and the
+/// right child allocations as `(x, y, width, height)`.
+type Measurement = (i32, (i32, i32, i32, i32), (i32, i32, i32, i32));
+
 /// Builds the backend's tree with `sizing`, resizes the window, and reports
 /// `(smallest width reached, left allocation, right allocation)`.
-fn measure(label: &str, sizing: Sizing) -> (i32, (i32, i32, i32, i32), (i32, i32, i32, i32)) {
+fn measure(label: &str, sizing: Sizing) -> Measurement {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_default_size(1440, 900);
 

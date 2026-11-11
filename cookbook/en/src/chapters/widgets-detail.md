@@ -306,6 +306,36 @@ A scaffold that composes an `AppBar`, a content area and an optional bottom navi
 
 **Aliases.** `scaffold`
 
+#### Choosing between the scaffold and a desktop workbench
+
+One application should not write two layouts. The choice is a runtime comparison, not an OS check:
+
+```rust
+use rust_widgets::widget::{AdaptiveScaffoldBuilder, SdiWorkbench};
+
+const TOUCH_BREAKPOINT: u32 = 840; // the scaffold's own drawer/rail switch
+
+fn build(width: u32) {
+    if width < TOUCH_BREAKPOINT {
+        let scaffold = AdaptiveScaffoldBuilder::new("Home", geometry)
+            .show_bottom_nav(true)
+            .destination("home", "Home")
+            .body(content)
+            .build();
+        window.mount_surface(Box::new(scaffold), geometry);
+    } else {
+        let mut workbench = SdiWorkbench::new(bounds);
+        workbench.open_window("Document", 60, 60, 640, 480);
+        workbench.cascade();
+    }
+}
+```
+
+The full program, including how the width is read from the primary display, is
+`examples/paradigm_selection.rs`. Use `MdiArea` instead of `SdiWorkbench` when the documents must
+share one window as panes; use the workbench when each document is its own top-level window.
+
+
 ### AppBar (`app_bar`)
 
 A top bar with a title, a leading back affordance and trailing actions; the two text affordances follow reading direction (`direction`), not fixed sides. Use it for a page title and one or two actions; move a longer action set into an overflow menu, and use a `ToolBar` on desktop.

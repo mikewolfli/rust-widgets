@@ -1717,3 +1717,15 @@ fn column_description_insert_remove_and_rename() {
         ]
     );
 }
+
+/// The grid's `SortOrder` and the data source's are one type (principle #54).
+#[test]
+fn sort_order_is_the_data_source_definition() {
+    fn same_type(order: crate::widget::view_widgets::data_source::SortOrder) -> SortOrder {
+        order
+    }
+    assert_eq!(
+        same_type(crate::widget::view_widgets::data_source::SortOrder::Ascending),
+        SortOrder::Ascending
+    );
+}

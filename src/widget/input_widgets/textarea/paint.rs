@@ -679,7 +679,34 @@ impl Draw for TextArea {
         let origin_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
 
         // -- Background --
-        let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
+        //
+        // Chrome colours resolve the explicit style first and the active palette second, with the
+        // historical literal as the last resort. The fixed white/grey/black triple this used to
+        // read made a themed text area ignore the appearance it was mounted in, while `line_edit`
+        // already took its colours from the same style record.
+        let palette = crate::style::palette_shared();
+        let bg = self.style().background_color;
+        // `input_background` is a method on the theme's own `Colors`. The stripped-profile
+        // placeholder palette (no device profile) has the same fields but no methods, and this
+        // module compiles there too; `palette_shared()` is always `None` in that profile, so
+        // gating the derivation loses nothing and keeps one formula (the theme's).
+        #[cfg(device_profile)]
+        let bg = bg.or_else(|| palette.as_ref().map(|colors| colors.input_background()));
+        let bg = bg.unwrap_or(Color::rgb(255, 255, 255));
+        // A text area is an interactive field, so it acknowledges the pointer at the same weight
+        // [`crate::style::StateOverlay`] gives `spin_box` and `combo_box`. A disabled area has its
+        // interaction flags cleared by `Widget::set_enabled`, so this is the identity there and
+        // the `:disabled` key / disabled ink below carry that appearance.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let bg = if overlay.is_empty() {
+            bg
+        } else {
+            bg.blend(&bg.contrast_color(), overlay.fill_blend())
+        };
         context.face_with_gradient_corners(
             rect,
             bg,
@@ -690,17 +717,35 @@ impl Draw for TextArea {
         );
 
         // -- Border --
-        let border = self.style().border_color.unwrap_or(Color::rgb(200, 200, 200));
-        crate::widget::draw::stroke_surface_border(
-            context,
-            rect,
-            self.style().resolved_corner_radii().to_array(),
-            border,
-            1,
-        );
+        //
+        // The outline comes from the resolved style, then the palette's separator role, and only
+        // then the historical grey. The width is the style's own, so a theme or a caller that
+        // widens a field's border reaches the text area too; the fallback of one pixel keeps an
+        // unset style painting exactly the outline it painted before.
+        let border = self
+            .style()
+            .border_color
+            .or_else(|| palette.as_ref().map(|colors| colors.outline))
+            .unwrap_or(Color::rgb(200, 200, 200));
+        let border = self.base.disabled_ink_on(border, bg);
+        let border_width = self.style().border_width.unwrap_or(1);
+        if border_width > 0 {
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                self.style().resolved_corner_radii().to_array(),
+                border,
+                border_width,
+            );
+        }
 
         // -- Text --
-        let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
+        let text_color = self
+            .style()
+            .text_color
+            .or_else(|| palette.as_ref().map(|colors| colors.foreground))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let text_color = self.base.disabled_ink_on(text_color, bg);
         // The placeholder is the value's own ink damped toward the field it sits on — the same
         // derivation `line_edit` and `auto_complete_edit` use — rather than a fixed grey that
         // ignored the appearance. A literal here rendered a light-theme hint over a dark field.

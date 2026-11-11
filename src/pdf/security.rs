@@ -12,14 +12,15 @@
 //!   `/Filter /Standard` security handler — the writer emits an `/Encrypt`
 //!   dictionary with a direct `/CF` crypt filter, references it from the trailer,
 //!   and encrypts every stream and string with AES-256-CBC (PDF 2.0, V5/R6,
-//!   `/CFM /AESV3`). The `% RW-NOTE` marker then states that encryption was applied
-//!   (see `serialize_security_diagnostics_entries`).
-//! - **Without `pdf-encryption`**: the profile stays intent only; the `% RW-NOTE`
-//!   marker records the requested permissions and states the output is **not**
-//!   encrypted, because it is not.
+//!   `/CFM /AESV3`), with an `% RW-NOTE` marker stating that encryption was applied.
+//! - **Without `pdf-encryption`**: the writer **refuses** a non-default profile with
+//!   an `Unsupported` error and writes nothing. It used to write the document with a
+//!   `% RW-NOTE` line saying it was not encrypted, which reported success for a
+//!   security request that was not honoured (R-30).
 //!
 //! In both cases passwords are never written into the output in plain text: echoing
-//! them into the file would leak the secrets.
+//! them into the file would leak the secrets. `parse_security_diagnostics` still
+//! reads the intent markers older builds wrote, so those files keep loading.
 //!
 //! # Encryption tooling (`pdf-encryption` feature)
 //!
@@ -34,34 +35,13 @@
 
 use crate::pdf::types::*;
 
-/// Serialize the security intent marker for a profile that is **not** applied as
-/// document-level encryption.
-///
-/// Returns the empty string for a default (fully open) security profile.
-/// Otherwise returns a standalone `%` comment line stating the requested
-/// permissions and warning that the output is NOT encrypted. Used only when the
-/// standard encryption handler is not in play: the writer substitutes an
-/// "encryption applied" marker once a real `/Encrypt` dictionary is emitted, so the
-/// marker never contradicts the file. Never contains password material.
-pub(crate) fn serialize_security_diagnostics_entries(security: &PdfSecurity) -> String {
-    if *security == PdfSecurity::default() {
-        return String::new();
-    }
-    format!(
-        "% RW-NOTE: PDF encryption requested but not implemented (print={}, edit={}, copy={}, annot={}) — document is NOT encrypted",
-        security.print_permission,
-        security.edit_permission,
-        security.copy_permission,
-        security.annotation_permission,
-    )
-}
-
 /// Parse security diagnostics from document info text.
 ///
-/// Looks for the `% RW-NOTE: PDF encryption ...` comment that was placed by
-/// [`serialize_security_diagnostics_entries`] and reconstructs the original
-/// [`PdfSecurity`] from the embedded permission parameters. Legacy files that
-/// embedded plain-text passwords (older builds) are still parsed for
+/// Looks for the `% RW-NOTE: PDF encryption ...` comment that **older builds** placed in a
+/// document that requested a profile they could not apply, and reconstructs the original
+/// [`PdfSecurity`] from the embedded permission parameters. Current builds refuse such a
+/// request instead of writing it (R-30), so this is a reader-only compatibility path for files
+/// that already exist. Legacy files that embedded plain-text passwords are still parsed for
 /// backward compatibility, but new output never contains passwords.
 pub(crate) fn parse_security_diagnostics(text: &str) -> Option<PdfSecurity> {
     if !text.contains("RW-NOTE: PDF encryption") {
@@ -654,69 +634,18 @@ mod tests {
     // ── Diagnostics tests ──
 
     #[test]
-    fn test_default_security_returns_empty() {
-        let security = PdfSecurity::default();
-        let result = serialize_security_diagnostics_entries(&security);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_non_default_security_emits_note() {
-        let security = PdfSecurity {
-            user_password: Some("hello".to_string()),
-            owner_password: Some("world".to_string()),
-            print_permission: true,
-            edit_permission: false,
-            copy_permission: true,
-            annotation_permission: false,
-        };
-        let result = serialize_security_diagnostics_entries(&security);
-        // The writer substitutes an "encryption applied" marker when the standard
-        // handler is emitted, so this bare intent marker must only be asserted when
-        // encryption is genuinely off.
-        #[cfg(not(feature = "pdf-encryption"))]
-        {
-            assert!(result.contains("RW-NOTE: PDF encryption"));
-            assert!(result.contains("NOT encrypted"));
-        }
-        assert!(result.contains("print=true"));
-        assert!(result.contains("edit=false"));
-        assert!(result.contains("copy=true"));
-        assert!(result.contains("annot=false"));
-        assert!(!result.contains("hello"));
-        assert!(!result.contains("world"));
-        assert!(!result.contains("password="));
-    }
-
-    #[test]
-    fn test_round_trip_via_comment_format() {
-        // Only meaningful without document-level encryption: with the feature
-        // enabled the marker is identical (the writer never emits a dict).
-        #[cfg(not(feature = "pdf-encryption"))]
-        {
-            let security = PdfSecurity {
-                user_password: Some("test123".to_string()),
-                owner_password: None,
-                print_permission: false,
-                edit_permission: true,
-                copy_permission: false,
-                annotation_permission: true,
-            };
-            let serialized = serialize_security_diagnostics_entries(&security);
-            // Permissions round-trip…
-            let parsed = parse_security_diagnostics(&serialized);
-            assert!(parsed.is_some());
-            let parsed = parsed.unwrap();
-            assert!(!parsed.print_permission);
-            assert!(parsed.edit_permission);
-            assert!(!parsed.copy_permission);
-            assert!(parsed.annotation_permission);
-            // …but passwords must never be written into an unencrypted output.
-            assert!(!serialized.contains("test123"));
-            assert!(parsed.user_password.is_none());
-            assert!(parsed.owner_password.is_none());
-            assert!(serialized.contains("NOT encrypted"));
-        }
+    fn test_legacy_intent_marker_round_trips_permissions() {
+        // A marker written by an older build: parsing must still recover the permissions,
+        // while passwords never survive (no build writes them any more).
+        let text = "% RW-NOTE: PDF encryption requested but not implemented (print=false, \
+                    edit=true, copy=false, annot=true) — document is NOT encrypted";
+        let parsed = parse_security_diagnostics(text).expect("a legacy marker must parse");
+        assert!(!parsed.print_permission);
+        assert!(parsed.edit_permission);
+        assert!(!parsed.copy_permission);
+        assert!(parsed.annotation_permission);
+        assert!(parsed.user_password.is_none());
+        assert!(parsed.owner_password.is_none());
     }
 
     #[test]

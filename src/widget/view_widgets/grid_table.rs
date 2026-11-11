@@ -15,7 +15,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::coercion::{expect_bool, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -152,6 +152,12 @@ pub struct GridTableWidget {
     header_bg: Color,
     header_text_color: Color,
     selected_bg: Color,
+    /// Which of the four appearance colours a caller set explicitly.
+    ///
+    /// The draw path resolves an appearance colour that still holds its constructor literal from
+    /// the theme, so "the caller asked for this exact value" and "nobody configured it" would
+    /// otherwise be indistinguishable. Same decision as `Button::border_radius_explicit`.
+    appearance_authored: u8,
 
     // Selection
     selected_cell: Option<(usize, usize)>,
@@ -241,13 +247,22 @@ impl GridTableWidget {
     ///
     /// `Draw` compares the current value against this to tell "the caller left the
     /// appearance alone" from "the caller asked for this exact colour".
-    const DEFAULT_GRID_COLOR: Color = Color::rgb(210, 215, 225);
+    pub(crate) const DEFAULT_GRID_COLOR: Color = Color::rgb(210, 215, 225);
     /// See [`Self::DEFAULT_GRID_COLOR`].
-    const DEFAULT_HEADER_BG: Color = Color::rgb(240, 242, 245);
+    pub(crate) const DEFAULT_HEADER_BG: Color = Color::rgb(240, 242, 245);
     /// See [`Self::DEFAULT_GRID_COLOR`].
-    const DEFAULT_HEADER_TEXT_COLOR: Color = Color::rgb(40, 50, 70);
+    pub(crate) const DEFAULT_HEADER_TEXT_COLOR: Color = Color::rgb(40, 50, 70);
     /// See [`Self::DEFAULT_GRID_COLOR`].
-    const DEFAULT_SELECTED_BG: Color = Color::rgb(200, 220, 250);
+    pub(crate) const DEFAULT_SELECTED_BG: Color = Color::rgb(200, 220, 250);
+
+    /// [`Self::appearance_authored`] bit for [`Self::grid_color`].
+    const GRID_COLOR_AUTHORED: u8 = 1 << 0;
+    /// [`Self::appearance_authored`] bit for [`Self::header_bg`].
+    const HEADER_BG_AUTHORED: u8 = 1 << 1;
+    /// [`Self::appearance_authored`] bit for [`Self::header_text_color`].
+    const HEADER_TEXT_COLOR_AUTHORED: u8 = 1 << 2;
+    /// [`Self::appearance_authored`] bit for [`Self::selected_bg`].
+    const SELECTED_BG_AUTHORED: u8 = 1 << 3;
 
     /// How far either side of a column's right edge the resize handle answers, in pixels.
     ///
@@ -272,6 +287,7 @@ impl GridTableWidget {
             header_bg: Self::DEFAULT_HEADER_BG,
             header_text_color: Self::DEFAULT_HEADER_TEXT_COLOR,
             selected_bg: Self::DEFAULT_SELECTED_BG,
+            appearance_authored: 0,
             selected_cell: None,
             selected_cells: std::collections::BTreeSet::new(),
             selected_rows: std::collections::BTreeSet::new(),
@@ -1287,6 +1303,69 @@ impl GridTableWidget {
         self.base.request_redraw();
     }
 
+    /// The colour of the grid lines.
+    pub fn grid_color(&self) -> Color {
+        self.grid_color
+    }
+
+    /// Sets the grid-line colour and marks it caller-authored.
+    ///
+    /// An unset colour follows the theme's surface/ink blend; an authored one is honoured even
+    /// when it equals the constructor literal.
+    pub fn set_grid_color(&mut self, color: Color) {
+        self.appearance_authored |= Self::GRID_COLOR_AUTHORED;
+        if self.grid_color == color {
+            return;
+        }
+        self.grid_color = color;
+        self.base.request_redraw();
+    }
+
+    /// The header strip's background colour.
+    pub fn header_bg(&self) -> Color {
+        self.header_bg
+    }
+
+    /// Sets the header background colour and marks it caller-authored.
+    pub fn set_header_bg(&mut self, color: Color) {
+        self.appearance_authored |= Self::HEADER_BG_AUTHORED;
+        if self.header_bg == color {
+            return;
+        }
+        self.header_bg = color;
+        self.base.request_redraw();
+    }
+
+    /// The colour the header labels are drawn with.
+    pub fn header_text_color(&self) -> Color {
+        self.header_text_color
+    }
+
+    /// Sets the header label colour and marks it caller-authored.
+    pub fn set_header_text_color(&mut self, color: Color) {
+        self.appearance_authored |= Self::HEADER_TEXT_COLOR_AUTHORED;
+        if self.header_text_color == color {
+            return;
+        }
+        self.header_text_color = color;
+        self.base.request_redraw();
+    }
+
+    /// The fill of a selected cell.
+    pub fn selected_bg(&self) -> Color {
+        self.selected_bg
+    }
+
+    /// Sets the selection fill and marks it caller-authored.
+    pub fn set_selected_bg(&mut self, color: Color) {
+        self.appearance_authored |= Self::SELECTED_BG_AUTHORED;
+        if self.selected_bg == color {
+            return;
+        }
+        self.selected_bg = color;
+        self.base.request_redraw();
+    }
+
     /// The columns that fit in the data area, in draw order: `(column, x, width)` with `x` **relative
     /// to the data area's left edge**.
     ///
@@ -1617,6 +1696,18 @@ impl WidgetProperties for GridTableWidget {
             "sorting_enabled" => Ok(CapabilityValue::Bool(self.sorting_enabled())),
             "sort_role" => Ok(CapabilityValue::String(data_role_to_str(self.sort_role()))),
             "auto_refresh" => Ok(CapabilityValue::Bool(self.auto_refresh())),
+            // R-23: the sizing and appearance knobs that already had public setters.
+            "header_height" => Ok(CapabilityValue::UInt(self.header_height() as u64)),
+            "alternating_rows" => Ok(CapabilityValue::Bool(self.alternating_rows())),
+            "multi_select" => Ok(CapabilityValue::Bool(self.multi_select())),
+            "show_scrollbar" => Ok(CapabilityValue::Bool(self.show_scrollbar())),
+            "section_resize_mode" => Ok(CapabilityValue::String(
+                grid_section_resize_mode_to_str(self.section_resize_mode()).to_string(),
+            )),
+            "grid_color" => Ok(CapabilityValue::Color(self.grid_color())),
+            "header_bg" => Ok(CapabilityValue::Color(self.header_bg())),
+            "header_text_color" => Ok(CapabilityValue::Color(self.header_text_color())),
+            "selected_bg" => Ok(CapabilityValue::Color(self.selected_bg())),
             "selected_cell" => match self.selected_cell() {
                 Some((row, column)) => Ok(CapabilityValue::String(format!("{row},{column}"))),
                 None => Ok(CapabilityValue::Null),
@@ -1660,6 +1751,43 @@ impl WidgetProperties for GridTableWidget {
                 self.set_sort_role(expect_data_role(value)?);
                 Ok(())
             }
+            "header_height" => {
+                self.set_header_height(expect_u32(value)?);
+                Ok(())
+            }
+            "alternating_rows" => {
+                self.set_alternating_rows(expect_bool(value)?);
+                Ok(())
+            }
+            "multi_select" => {
+                self.set_multi_select(expect_bool(value)?);
+                Ok(())
+            }
+            "show_scrollbar" => {
+                self.set_show_scrollbar(expect_bool(value)?);
+                Ok(())
+            }
+            "section_resize_mode" => {
+                self.set_section_resize_mode(expect_grid_section_resize_mode(value)?);
+                Ok(())
+            }
+            "grid_color" | "header_bg" | "header_text_color" | "selected_bg" => {
+                let color = match value {
+                    CapabilityValue::Color(color) => color,
+                    CapabilityValue::String(raw) => match Color::parse_hex(&raw) {
+                        Some(color) => color,
+                        None => return Err(CapabilityAccessError::TypeMismatch),
+                    },
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                match name {
+                    "grid_color" => self.set_grid_color(color),
+                    "header_bg" => self.set_header_bg(color),
+                    "header_text_color" => self.set_header_text_color(color),
+                    _ => self.set_selected_bg(color),
+                }
+                Ok(())
+            }
             // Counts and the selected cell are derived from the data source and
             // the live selection; there is no meaningful assignment for them.
             "has_data_source" | "row_count" | "column_count" | "sort_spec_count"
@@ -1682,6 +1810,15 @@ impl WidgetProperties for GridTableWidget {
             "sorting_enabled",
             "sort_role",
             "auto_refresh",
+            "header_height",
+            "alternating_rows",
+            "multi_select",
+            "show_scrollbar",
+            "section_resize_mode",
+            "grid_color",
+            "header_bg",
+            "header_text_color",
+            "selected_bg",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1710,6 +1847,32 @@ impl WidgetProperties for GridTableWidget {
             }
             _ => self.default_command(name),
         }
+    }
+}
+
+/// Publishes `GridSectionResizeMode` as the shared lower-case token.
+fn grid_section_resize_mode_to_str(mode: GridSectionResizeMode) -> &'static str {
+    match mode {
+        GridSectionResizeMode::Interactive => "interactive",
+        GridSectionResizeMode::Stretch => "stretch",
+        GridSectionResizeMode::Fixed => "fixed",
+        GridSectionResizeMode::ResizeToContents => "resize_to_contents",
+    }
+}
+
+/// Parses the shared lower-case token back, rejecting anything else.
+fn expect_grid_section_resize_mode(
+    value: CapabilityValue,
+) -> Result<GridSectionResizeMode, CapabilityAccessError> {
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "interactive" => Ok(GridSectionResizeMode::Interactive),
+            "stretch" => Ok(GridSectionResizeMode::Stretch),
+            "fixed" => Ok(GridSectionResizeMode::Fixed),
+            "resize_to_contents" => Ok(GridSectionResizeMode::ResizeToContents),
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
     }
 }
 
@@ -1815,31 +1978,37 @@ impl Draw for GridTableWidget {
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
+        // A disabled grid used to gate input only: every header, cell and separator stayed at full
+        // contrast. The ink steps toward the surface it is painted on (the crate's one disabled
+        // rule), and the grid/header fills derived from it recede with it, so the control keeps
+        // its full geometry while reading as inert. The palette's own `disabled` token reaches
+        // the surface through `grid_table:disabled`.
+        let ink = self.base.disabled_ink_on(ink, surface);
         // The accent is the theme's `primary`, used both for the selection fill and for the
         // resting header text; the surface and the ink supply everything else.
         let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
-        // Each cached appearance field is used only while it still holds its constructor
-        // literal, i.e. while no caller set it explicitly. The explicit setters keep their
-        // meaning; only the untouched default now follows the appearance.
-        let grid_color = if self.grid_color == Self::DEFAULT_GRID_COLOR {
-            surface.blend(&ink, 0.15)
-        } else {
+        // Each appearance colour follows the theme until a caller authors it; the authorship bit
+        // is what keeps a caller-chosen literal (including the constructor literal) choosable.
+        let grid_color = if self.appearance_authored & Self::GRID_COLOR_AUTHORED != 0 {
             self.grid_color
-        };
-        let header_bg = if self.header_bg == Self::DEFAULT_HEADER_BG {
-            surface.blend(&ink, 0.06)
         } else {
+            surface.blend(&ink, 0.15)
+        };
+        let header_bg = if self.appearance_authored & Self::HEADER_BG_AUTHORED != 0 {
             self.header_bg
-        };
-        let header_text_color = if self.header_text_color == Self::DEFAULT_HEADER_TEXT_COLOR {
-            ink.blend(&accent, 0.60)
         } else {
+            surface.blend(&ink, 0.06)
+        };
+        let header_text_color = if self.appearance_authored & Self::HEADER_TEXT_COLOR_AUTHORED != 0
+        {
             self.header_text_color
-        };
-        let selected_bg = if self.selected_bg == Self::DEFAULT_SELECTED_BG {
-            surface.blend(&accent, 0.30)
         } else {
+            ink.blend(&accent, 0.60)
+        };
+        let selected_bg = if self.appearance_authored & Self::SELECTED_BG_AUTHORED != 0 {
             self.selected_bg
+        } else {
+            surface.blend(&accent, 0.30)
         };
         // The hover tint is the same accent blend every row family member uses (`table_widget`
         // :722): visible next to the surface, clearly weaker than the selection fill.
@@ -2899,6 +3068,33 @@ mod tests {
         tbl.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         tbl.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
         assert!(tbl.scroll_row() > 0, "End reaches the last row");
+    }
+
+    #[test]
+    fn appearance_colours_round_trip_through_the_property_route() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        let red = Color::rgb(255, 0, 0);
+        let green = Color::rgb(0, 128, 0);
+        let blue = Color::rgb(0, 0, 255);
+        let grey = Color::rgb(64, 64, 64);
+
+        tbl.set("grid_color", CapabilityValue::Color(red)).unwrap();
+        tbl.set("header_bg", CapabilityValue::Color(green)).unwrap();
+        tbl.set("header_text_color", CapabilityValue::Color(blue)).unwrap();
+        tbl.set("selected_bg", CapabilityValue::Color(grey)).unwrap();
+
+        assert_eq!(tbl.get("grid_color").unwrap(), CapabilityValue::Color(red));
+        assert_eq!(tbl.get("header_bg").unwrap(), CapabilityValue::Color(green));
+        assert_eq!(tbl.get("header_text_color").unwrap(), CapabilityValue::Color(blue));
+        assert_eq!(tbl.get("selected_bg").unwrap(), CapabilityValue::Color(grey));
+
+        // A caller that asks for the constructor literal keeps it: authorship is recorded
+        // separately from the value, so the draw path cannot mistake it for "unset".
+        tbl.set("grid_color", CapabilityValue::Color(GridTableWidget::DEFAULT_GRID_COLOR)).unwrap();
+        assert_ne!(tbl.appearance_authored & GridTableWidget::GRID_COLOR_AUTHORED, 0);
     }
 
     /// Extended selection, type-ahead and the scroll-bar flag are wired.

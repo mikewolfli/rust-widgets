@@ -96,7 +96,7 @@ impl LineEdit {
     /// The clear button's box, in the field's trailing content corner.
     pub(super) fn clear_button_rect(&self) -> Rect {
         let field = self.field_rect();
-        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let padding = self.resolved_content_padding_h() as i32;
         let size = CLEAR_BUTTON_SIZE as i32;
         Rect::new(
             (field.x + field.width as i32 - padding - size).max(field.x),
@@ -122,11 +122,31 @@ impl LineEdit {
         (advance + LINE_EDIT_CARET_ROOM as i32 - width).max(0)
     }
 
+    /// The horizontal inset the field's content is placed from.
+    ///
+    /// `WidgetStyle::padding` is a plain `EdgeOffsets`, so there is no per-side `Option` to
+    /// test: a zero left/right is what an unset padding looks like on a style that never
+    /// mentioned one. A non-zero style value is the resolved padding and wins; otherwise
+    /// [`dimensions::TEXT_FIELD_PADDING_H`] remains the documented fallback, so a default
+    /// field paints, hit-tests and reports its IME caret at exactly the old pixels.
+    ///
+    /// The field's layout is symmetric (one horizontal inset for both slots and the value),
+    /// so the leading side is the one used when a style states both.
+    pub(super) fn resolved_content_padding_h(&self) -> u32 {
+        let padding = self.base.style().padding;
+        let configured = if padding.left != 0 { padding.left } else { padding.right };
+        if configured == 0 {
+            dimensions::TEXT_FIELD_PADDING_H
+        } else {
+            configured
+        }
+    }
+
     /// The value box's left edge and width, measured without a paint context.
     pub(super) fn value_box_geometry(&self) -> (i32, i32) {
         let field = self.field_rect();
         let font = effective_font(self.base.style());
-        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let padding = self.resolved_content_padding_h() as i32;
         let gap = DECORATION_GAP as i32;
         let inner_left = field.x + padding;
         let inner_right = field.x + field.width as i32 - padding;
@@ -252,14 +272,19 @@ impl LineEdit {
         // and `draw` all measure with one font (D09-STYLE-02).
         let font = effective_font(style);
         let dpi_bits = context.dpi_scale().to_bits();
-        // The layout depends on the field box, the font, the DPI and the five decoration slots
-        // (plus the counter, which follows the value and the limit). All of those advance
-        // `text_revision`, so one revision comparison covers the whole input (I-P13).
+        // The one horizontal inset this layout places every slot from. It is read from the
+        // resolved style so a caller's padding moves the prefix, the value and the suffix
+        // together, and the cache key below includes it.
+        let padding_h = self.resolved_content_padding_h();
+        // The layout depends on the field box, the font, the DPI, the content inset and the five
+        // decoration slots (plus the counter, which follows the value and the limit). All of those
+        // advance `text_revision`, so one revision comparison covers the whole input (I-P13).
         if let Ok(cache) = self.layout_cache.try_borrow() {
             if let Some(entry) = cache.as_ref() {
                 if entry.field == field
                     && entry.revision == self.text_revision
                     && entry.dpi_bits == dpi_bits
+                    && entry.padding_h == padding_h
                     && entry.font == *font
                 {
                     return entry.layout;
@@ -274,7 +299,7 @@ impl LineEdit {
         let line_height = font.effective_line_height().max(1.0) as u32;
         let layout = DecorationLayout::compute(
             field,
-            dimensions::TEXT_FIELD_PADDING_H,
+            padding_h,
             line_height,
             DECORATION_GAP,
             metrics,
@@ -287,6 +312,7 @@ impl LineEdit {
                 revision: self.text_revision,
                 dpi_bits,
                 font: font.clone(),
+                padding_h,
                 layout,
             });
         }
@@ -306,7 +332,7 @@ impl LineEdit {
     pub(super) fn caret_query(&self) -> InputMethodQuery {
         let field = self.field_rect();
         let font = effective_font(self.base.style());
-        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let padding = self.resolved_content_padding_h() as i32;
         let gap = DECORATION_GAP as i32;
         let inner_left = field.x + padding;
         let inner_right = field.x + field.width as i32 - padding;
@@ -395,6 +421,24 @@ impl Draw for LineEdit {
         let layout = self.decoration_layout(context);
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
+        // # Why the field acknowledges the pointer
+        //
+        // A field that invites typing is an interactive object, and it used to paint its resting
+        // fill whatever the pointer did. `spin_box` and `combo_box` already take this step through
+        // [`crate::style::StateOverlay`]; this is the same derivation at the same weight, so a
+        // hovered field and a hovered spin box move by one amount. A disabled field has its
+        // interaction flags cleared by `Widget::set_enabled`, so this is the identity there and
+        // the disabled appearance comes from `:disabled` / `disabled_ink_on` below.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let bg = if overlay.is_empty() {
+            bg
+        } else {
+            bg.blend(&bg.contrast_color(), overlay.fill_blend())
+        };
         context.face_with_gradient_corners(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             bg,
@@ -413,6 +457,14 @@ impl Draw for LineEdit {
         let semantic_border =
             crate::style::resolved_semantic_border("line_edit", self.semantic_state());
         if let Some(border_color) = semantic_border.or(style.border_color) {
+            // A refusal keeps its own outline; otherwise a disabled field's border recedes by the
+            // crate's single disabled-ink rule, so "inert" is visible on the outline as well as
+            // on the value rather than only on the fill.
+            let border_color = if semantic_border.is_some() {
+                border_color
+            } else {
+                self.base.disabled_ink_on(border_color, bg)
+            };
             let bw = style.border_width.unwrap_or(0);
             // STY-01: the outline follows the fill's corner radius. A square rule around a
             // rounded field left the four corners showing the backdrop.
@@ -463,7 +515,11 @@ impl Draw for LineEdit {
                 EchoMode::Password => revealed,
             };
         let value_line = context.text_line(rect, font);
-        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+        // The value's ink honours the enabled flag by stepping toward the field it is painted on.
+        // That direction is the only one that reads as "receded" on both appearances; the
+        // palette's `disabled` token reaches the same control through `line_edit:disabled`.
+        let text_color =
+            self.base.disabled_ink_on(style.text_color.unwrap_or(Color::rgb(0, 0, 0)), bg);
         // The box the value is laid out in, and the alignment it uses within that box.
         //
         // Resolved **once**, outside the `if` that draws the string, because the caret below needs
@@ -707,7 +763,7 @@ impl Draw for LineEdit {
             // belongs to.
             let caret_top = rect.y + 2;
             let caret_bottom = rect.y + rect.height as i32 - 2;
-            let caret_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+            let caret_color = text_color;
             context.draw_line(
                 Point::new(caret_x, caret_top),
                 Point::new(caret_x, caret_bottom),

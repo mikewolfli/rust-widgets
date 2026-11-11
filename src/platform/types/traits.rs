@@ -787,6 +787,27 @@ pub trait Platform: Send + Sync {
         false
     }
 
+    /// Watches the window's drawing surface so a host resize reaches the layout layer.
+    ///
+    /// # What `true` promises
+    ///
+    /// That this backend installed an observation of `window_id`'s surface and will report
+    /// every client-area change through [`Platform::queue_resize_trigger`], so a layout
+    /// registered with the window is re-run without the host polling a size.
+    ///
+    /// # Why the desktop backends keep the `false` default
+    ///
+    /// They already receive the resize from the operating system's own window callback and
+    /// queue it there; installing a second observer would be a second source for one fact
+    /// (principles #54/#101). The browser backend is the one where the host owns the element
+    /// and no window callback reports it, so it overrides this.
+    ///
+    /// A `false` answer is not a failure: it means the host reports the size itself (through
+    /// [`crate::queue_resize_trigger`]), which is the same path a backend observation uses.
+    fn observe_canvas_resize(&self, _window_id: ObjectId) -> bool {
+        false
+    }
+
     /// Returns `true` when this backend can deliver pointer/stylus events carrying pen
     /// pressure and tilt (D09-POINTER-01).
     ///

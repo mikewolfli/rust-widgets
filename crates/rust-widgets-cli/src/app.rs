@@ -82,7 +82,36 @@ fn execute(options: &Options) -> (Vec<Diagnostic>, bool) {
             run_json2rust(input, overrides, targets, *check, options.strict, options.json)
         }
         Command::Fmt { input, output } => (run_fmt(input, output.as_deref()), false),
+        Command::Create { name, profile, output_root, rust_widgets_path } => (
+            run_create(name, *profile, output_root, rust_widgets_path.as_deref(), options.json),
+            false,
+        ),
         Command::Help => (Vec::new(), false),
+    }
+}
+
+/// `create`: scaffold a project and report every file written.
+fn run_create(
+    name: &str,
+    profile: crate::create::ProjectProfile,
+    output_root: &Path,
+    rust_widgets_path: Option<&Path>,
+    json: bool,
+) -> Vec<Diagnostic> {
+    let request = crate::create::CreateRequest {
+        name: name.to_string(),
+        profile,
+        output_root: output_root.to_path_buf(),
+        rust_widgets_path: rust_widgets_path.map(Path::to_path_buf),
+    };
+    match crate::create::create(&request) {
+        Ok(files) => {
+            for file in files {
+                progress(json, format!("created {} ({} bytes)", file.path.display(), file.bytes));
+            }
+            Vec::new()
+        }
+        Err(error) => vec![io_diagnostic(&output_root.join(name), error)],
     }
 }
 

@@ -300,6 +300,34 @@ fn convert_commands(
                     None => Err(BridgeGap { index, variant: command_variant_name(command) }),
                 }
             }
+            RenderCommand::DrawTextRotated {
+                origin,
+                text,
+                font,
+                color,
+                alignment,
+                pivot,
+                radians,
+            } => {
+                // The rotated mask is the reference rasteriser's own coverage, resampled once;
+                // the GPU then blits it exactly as it blits an unrotated run.
+                match crate::render::text::shaped_text_coverage_rotated(
+                    *origin, text, font, *alignment, text_scale, *pivot, *radians,
+                ) {
+                    Some(run) => Ok(WgpuDrawCommand::DrawTextCoverage {
+                        rect: PixelRect {
+                            x: run.x,
+                            y: run.y,
+                            width: run.width,
+                            height: run.height,
+                        },
+                        coverage: run.bytes,
+                        color: rgba8(color),
+                        clip: None,
+                    }),
+                    None => Err(BridgeGap { index, variant: command_variant_name(command) }),
+                }
+            }
             RenderCommand::DrawImage { x, y, width, height, data } => {
                 Ok(WgpuDrawCommand::DrawImage {
                     rect: PixelRect { x: *x, y: *y, width: *width, height: *height },
@@ -1130,6 +1158,7 @@ fn command_variant_name(command: &RenderCommand) -> &'static str {
         RenderCommand::DrawCircle { .. } => "DrawCircle",
         RenderCommand::DrawCircleStroke { .. } => "DrawCircleStroke",
         RenderCommand::DrawText { .. } => "DrawText",
+        RenderCommand::DrawTextRotated { .. } => "DrawTextRotated",
         RenderCommand::DrawTextDecorated { .. } => "DrawTextDecorated",
         RenderCommand::DrawImage { .. } => "DrawImage",
         RenderCommand::DrawImageScaled { .. } => "DrawImageScaled",

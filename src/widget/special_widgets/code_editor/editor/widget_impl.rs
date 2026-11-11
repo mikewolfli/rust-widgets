@@ -303,6 +303,23 @@ impl WidgetProperties for CodeEditor {
             "undo_depth" => Ok(CapabilityValue::UInt(self.undo_depth() as u64)),
             "goto_bar_visible" => Ok(CapabilityValue::Bool(self.goto_bar_visible())),
             "breakpoint_gutter" => Ok(CapabilityValue::Bool(self.is_breakpoint_gutter())),
+            // R-18: the display switches read the same configuration the public getters
+            // and setters use, so a document sees exactly what a Rust caller sees.
+            "show_line_numbers" => Ok(CapabilityValue::Bool(self.config.show_line_numbers)),
+            "show_minimap" => Ok(CapabilityValue::Bool(self.config.show_minimap)),
+            "word_wrap" => Ok(CapabilityValue::Bool(self.config.word_wrap)),
+            "show_whitespace" => Ok(CapabilityValue::Bool(self.config.show_whitespace)),
+            "tab_width" => Ok(CapabilityValue::UInt(self.tab_width() as u64)),
+            "placeholder_text" => Ok(CapabilityValue::String(
+                self.config.placeholder_text.clone().unwrap_or_default(),
+            )),
+            "caret_style" => {
+                Ok(CapabilityValue::String(caret_style_token(self.caret_style()).to_string()))
+            }
+            "overwrite_mode" => Ok(CapabilityValue::Bool(self.overwrite_mode())),
+            "language" => {
+                Ok(CapabilityValue::String(language_token(self.active_language()).to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -376,6 +393,59 @@ impl WidgetProperties for CodeEditor {
                 self.set_breakpoint_gutter(visible);
                 Ok(())
             }
+            "show_line_numbers" => {
+                self.set_show_line_numbers(crate::widget::capability::coercion::expect_bool(
+                    value,
+                )?);
+                Ok(())
+            }
+            "show_minimap" => {
+                self.set_show_minimap(crate::widget::capability::coercion::expect_bool(value)?);
+                Ok(())
+            }
+            "word_wrap" => {
+                self.set_word_wrap(crate::widget::capability::coercion::expect_bool(value)?);
+                Ok(())
+            }
+            "show_whitespace" => {
+                self.set_show_whitespace(crate::widget::capability::coercion::expect_bool(value)?);
+                Ok(())
+            }
+            "tab_width" => {
+                let width = crate::widget::capability::coercion::expect_usize(value)?;
+                if !(1..=16).contains(&width) {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_tab_width(width);
+                Ok(())
+            }
+            "placeholder_text" => {
+                let text = expect_string(value)?;
+                // The control models "no placeholder" as `None`; the property spelling
+                // for that is the empty string, matching every other text editor here.
+                self.set_placeholder_text(if text.is_empty() { None } else { Some(text) });
+                Ok(())
+            }
+            "caret_style" => {
+                let token = expect_string(value)?;
+                let Some(style) = caret_style_from_token(&token) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_caret_style(style);
+                Ok(())
+            }
+            "overwrite_mode" => {
+                self.set_overwrite_mode(crate::widget::capability::coercion::expect_bool(value)?);
+                Ok(())
+            }
+            "language" => {
+                let token = expect_string(value)?;
+                let Some(language) = language_from_token(&token) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_language(language);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -397,6 +467,15 @@ impl WidgetProperties for CodeEditor {
             "undo_depth",
             "goto_bar_visible",
             "breakpoint_gutter",
+            "show_line_numbers",
+            "show_minimap",
+            "word_wrap",
+            "show_whitespace",
+            "tab_width",
+            "placeholder_text",
+            "caret_style",
+            "overwrite_mode",
+            "language",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -491,5 +570,87 @@ impl CodeEditor {
             // has never heard of it. An unpublished suffix still answers `UnknownCommand`.
             _ => self.default_command(name),
         }
+    }
+}
+
+/// The published token for a caret shape.
+///
+/// The editor has no token helpers of its own (unlike `TerminalView`), and the property
+/// schema's token list must be the reader's vocabulary, so the mapping lives here next to
+/// the `caret_style` arm rather than in a second table.
+fn caret_style_token(style: CaretStyle) -> &'static str {
+    match style {
+        CaretStyle::Line => "line",
+        CaretStyle::Block => "block",
+        CaretStyle::Underline => "underline",
+    }
+}
+
+/// Parses a published caret-shape token.
+fn caret_style_from_token(token: &str) -> Option<CaretStyle> {
+    match token {
+        "line" => Some(CaretStyle::Line),
+        "block" => Some(CaretStyle::Block),
+        "underline" => Some(CaretStyle::Underline),
+        _ => None,
+    }
+}
+
+/// The published token for a language family.
+///
+/// These are lower-case identifiers rather than the display names `LanguageId::name`
+/// returns: a document must be able to spell them without spaces or punctuation, and the
+/// read direction must return exactly the tokens the schema publishes.
+fn language_token(language: LanguageId) -> &'static str {
+    match language {
+        LanguageId::Rust => "rust",
+        LanguageId::Python => "python",
+        LanguageId::JavaScript => "javascript",
+        LanguageId::Go => "go",
+        LanguageId::Zig => "zig",
+        LanguageId::CLike => "c",
+        LanguageId::Java => "java",
+        LanguageId::CSharp => "csharp",
+        LanguageId::Cpp => "cpp",
+        LanguageId::Kotlin => "kotlin",
+        LanguageId::Swift => "swift",
+        LanguageId::Html => "html",
+        LanguageId::Xml => "xml",
+        LanguageId::Json => "json",
+        LanguageId::Css => "css",
+        LanguageId::Yaml => "yaml",
+        LanguageId::Toml => "toml",
+        LanguageId::Shell => "shell",
+        LanguageId::Sql => "sql",
+        LanguageId::Markdown => "markdown",
+        LanguageId::PlainText => "plain_text",
+    }
+}
+
+/// Parses a published language token.
+fn language_from_token(token: &str) -> Option<LanguageId> {
+    match token {
+        "rust" => Some(LanguageId::Rust),
+        "python" => Some(LanguageId::Python),
+        "javascript" => Some(LanguageId::JavaScript),
+        "go" => Some(LanguageId::Go),
+        "zig" => Some(LanguageId::Zig),
+        "c" => Some(LanguageId::CLike),
+        "java" => Some(LanguageId::Java),
+        "csharp" => Some(LanguageId::CSharp),
+        "cpp" => Some(LanguageId::Cpp),
+        "kotlin" => Some(LanguageId::Kotlin),
+        "swift" => Some(LanguageId::Swift),
+        "html" => Some(LanguageId::Html),
+        "xml" => Some(LanguageId::Xml),
+        "json" => Some(LanguageId::Json),
+        "css" => Some(LanguageId::Css),
+        "yaml" => Some(LanguageId::Yaml),
+        "toml" => Some(LanguageId::Toml),
+        "shell" => Some(LanguageId::Shell),
+        "sql" => Some(LanguageId::Sql),
+        "markdown" => Some(LanguageId::Markdown),
+        "plain_text" => Some(LanguageId::PlainText),
+        _ => None,
     }
 }

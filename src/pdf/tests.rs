@@ -192,6 +192,31 @@ fn writer_serializes_acroform_and_widget_annotations() {
     assert!(text.contains("/T (submit)"));
 }
 #[test]
+#[cfg(not(feature = "pdf-encryption"))]
+fn writer_refuses_a_security_profile_it_cannot_apply() {
+    let writer = PdfWriter::new();
+    let mut doc = writer.create_document(Size { width: 595, height: 842 });
+    doc.set_security(PdfSecurity {
+        user_password: Some("user-secret".to_string()),
+        owner_password: Some("owner-secret".to_string()),
+        print_permission: false,
+        edit_permission: true,
+        copy_permission: false,
+        annotation_permission: false,
+    });
+    // A build without `pdf-encryption` cannot perform what the profile asks for. Emitting the
+    // bytes anyway was "success" for an unencrypted document (R-30); the honest answer is an
+    // `Unsupported` error naming the missing capability.
+    let error = doc.to_bytes().expect_err("a security profile this build cannot apply must fail");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(
+        error.to_string().contains("pdf-encryption"),
+        "the error must name the missing feature: {error}"
+    );
+}
+
+#[cfg(feature = "pdf-encryption")]
+#[test]
 fn writer_serializes_security_diagnostics_when_security_is_set() {
     let writer = PdfWriter::new();
     let mut doc = writer.create_document(Size { width: 595, height: 842 });
@@ -205,39 +230,39 @@ fn writer_serializes_security_diagnostics_when_security_is_set() {
     });
     let bytes = doc.to_bytes().expect("serialize document");
     let text = String::from_utf8_lossy(&bytes);
-    // Honest security marker: records intent, warns the output is NOT encrypted
-    // (unless the standard handler actually encrypts it), and never echoes
-    // plaintext passwords into the file.
-    #[cfg(not(feature = "pdf-encryption"))]
-    {
-        assert!(text.contains("% RW-NOTE: PDF encryption requested"));
-        assert!(text.contains("NOT encrypted"));
-    }
-    #[cfg(feature = "pdf-encryption")]
-    {
-        assert!(text.contains("% RW-NOTE: PDF encryption applied"));
-        assert!(!text.contains("NOT encrypted"));
-        assert!(text.contains("/Filter /Standard"));
-        assert!(text.contains("/Encrypt "));
-        // Permission flags are encoded in the dictionary's `/P` value (signed), so
-        // locate it directly rather than scanning for the flag substrings.
-        let permissions = parse_applied_permission_value(&text);
-        assert_eq!(permissions & (1 << 2), 0, "print denied -> bit 3 clear");
-        assert_ne!(permissions & (1 << 3), 0, "edit allowed -> bit 4 set");
-        assert_eq!(permissions & (1 << 4), 0, "copy denied -> bit 5 clear");
-        assert_eq!(permissions & (1 << 5), 0, "annotate denied -> bit 6 clear");
-    }
-    #[cfg(not(feature = "pdf-encryption"))]
-    {
-        assert!(text.contains("print=false"));
-        assert!(text.contains("edit=true"));
-        assert!(text.contains("copy=false"));
-        assert!(text.contains("annot=false"));
-    }
+    assert!(text.contains("% RW-NOTE: PDF encryption applied"));
+    assert!(!text.contains("NOT encrypted"));
+    assert!(text.contains("/Filter /Standard"));
+    assert!(text.contains("/Encrypt "));
+    // Permission flags are encoded in the dictionary's `/P` value (signed), so
+    // locate it directly rather than scanning for the flag substrings.
+    let permissions = parse_applied_permission_value(&text);
+    assert_eq!(permissions & (1 << 2), 0, "print denied -> bit 3 clear");
+    assert_ne!(permissions & (1 << 3), 0, "edit allowed -> bit 4 set");
+    assert_eq!(permissions & (1 << 4), 0, "copy denied -> bit 5 clear");
+    assert_eq!(permissions & (1 << 5), 0, "annotate denied -> bit 6 clear");
     assert!(!text.contains("user-secret"));
     assert!(!text.contains("owner-secret"));
     assert!(!text.contains("/RWUserPassword"));
 }
+#[cfg(not(feature = "pdf-encryption"))]
+#[test]
+fn legacy_security_marker_still_parses_without_encryption() {
+    // Files written by older builds carry the intent marker in plain text. Reading them must
+    // keep working even though this build can no longer *write* one (R-30).
+    let marker = "% RW-NOTE: PDF encryption requested but not implemented (print=false, \
+                  edit=true, copy=false, annot=true) — document is NOT encrypted";
+    let security = crate::pdf::security::parse_security_diagnostics(marker)
+        .expect("a legacy intent marker must still parse");
+    assert_eq!(security.user_password, None);
+    assert_eq!(security.owner_password, None);
+    assert!(!security.print_permission);
+    assert!(security.edit_permission);
+    assert!(!security.copy_permission);
+    assert!(security.annotation_permission);
+}
+
+#[cfg(feature = "pdf-encryption")]
 #[test]
 fn reader_roundtrip_restores_security_diagnostics() {
     let writer = PdfWriter::new();
@@ -254,21 +279,12 @@ fn reader_roundtrip_restores_security_diagnostics() {
     let reader = PdfReader::new();
     let loaded = reader.load_from_bytes(&bytes).expect("load bytes");
     let security = loaded.security();
-    // Passwords cannot round-trip: the writer never embeds them. Under the
-    // encryption feature the reader reports a password *requirement* marker for
-    // an encrypted file, so the recovered permissions come from the applied
-    // dictionary rather than the intent marker.
-    #[cfg(not(feature = "pdf-encryption"))]
-    {
-        assert_eq!(security.user_password, None);
-        assert_eq!(security.owner_password, None);
-    }
-    #[cfg(feature = "pdf-encryption")]
-    {
-        assert!(security.user_password.is_some());
-        assert_eq!(security.owner_password, None);
-    }
-    // Permissions round-trip from the intent marker / applied dictionary.
+    // Passwords cannot round-trip: the writer never embeds them. The reader reports a password
+    // *requirement* marker for an encrypted file, so the recovered permissions come from the
+    // applied dictionary rather than the intent marker.
+    assert!(security.user_password.is_some());
+    assert_eq!(security.owner_password, None);
+    // Permissions round-trip from the applied dictionary.
     assert!(!security.print_permission);
     assert!(!security.edit_permission);
     assert!(security.copy_permission);
@@ -281,6 +297,10 @@ fn reader_roundtrip_restores_security_diagnostics() {
 fn writer_combined_pipeline_emits_form_security_and_image_markers() {
     let writer = PdfWriter::new();
     let mut doc = writer.create_document(Size { width: 595, height: 842 });
+    // Only a build that can actually apply the profile may request one; without
+    // `pdf-encryption` the writer refuses the document outright (R-30), so this test
+    // would have nothing to inspect.
+    #[cfg(feature = "pdf-encryption")]
     doc.set_security(PdfSecurity {
         user_password: Some("combo-user".to_string()),
         owner_password: Some("combo-owner".to_string()),
@@ -318,17 +338,19 @@ fn writer_combined_pipeline_emits_form_security_and_image_markers() {
     }
     #[cfg(not(feature = "pdf-encryption"))]
     {
-        assert!(text.contains("% RW-NOTE: PDF encryption requested"));
-        assert!(text.contains("NOT encrypted"));
+        // No security profile was requested, so the writer emits no severity marker at all.
+        assert!(!text.contains("% RW-NOTE"));
+        assert!(!text.contains("combo-user"));
+        assert!(!text.contains("combo-owner"));
     }
     #[cfg(feature = "pdf-encryption")]
     {
         assert!(text.contains("% RW-NOTE: PDF encryption applied"));
         assert!(!text.contains("NOT encrypted"));
         assert!(text.contains("/Filter /Standard"));
+        assert!(!text.contains("combo-user"));
+        assert!(!text.contains("combo-owner"));
     }
-    assert!(!text.contains("combo-user"));
-    assert!(!text.contains("combo-owner"));
     #[cfg(not(feature = "pdf-encryption"))]
     {
         assert!(text.contains("% rw-image-route:exact-rgb"));
@@ -343,6 +365,9 @@ fn writer_combined_pipeline_emits_form_security_and_image_markers() {
 fn reader_roundtrip_preserves_security_and_image_route_markers() {
     let writer = PdfWriter::new();
     let mut doc = writer.create_document(Size { width: 300, height: 200 });
+    // Only a build that can apply the profile may request one; otherwise the writer refuses
+    // the document (R-30), and this test is about the content stream anyway.
+    #[cfg(feature = "pdf-encryption")]
     doc.set_security(PdfSecurity {
         user_password: Some("round-u".to_string()),
         owner_password: Some("round-o".to_string()),
@@ -363,22 +388,22 @@ fn reader_roundtrip_preserves_security_and_image_route_markers() {
     let reader = PdfReader::new();
     let mut loaded = reader.load_from_bytes(&bytes).expect("load bytes");
     let security = loaded.security();
-    // Intent marker round-trips permissions; passwords stay out of the file
-    // (the encryption feature reports only a requirement marker, never a secret).
+    // Only the encrypted build records permissions, and it never records the secrets.
     #[cfg(not(feature = "pdf-encryption"))]
     {
         assert_eq!(security.user_password, None);
         assert_eq!(security.owner_password, None);
+        assert_eq!(*security, PdfSecurity::default());
     }
     #[cfg(feature = "pdf-encryption")]
     {
         assert!(security.user_password.is_some());
         assert_eq!(security.owner_password, None);
+        assert!(security.print_permission);
+        assert!(!security.edit_permission);
+        assert!(!security.copy_permission);
+        assert!(!security.annotation_permission);
     }
-    assert!(security.print_permission);
-    assert!(!security.edit_permission);
-    assert!(!security.copy_permission);
-    assert!(!security.annotation_permission);
     let page = loaded.get_page(0).expect("loaded page exists");
     let content_bytes = page.content();
     // The image route markers and text operators live in the plaintext content

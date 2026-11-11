@@ -8,6 +8,30 @@ use crate::platform::state::BackendState;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 
+/// Resolves the two id spaces a resize report can name.
+///
+/// A browser host holds the **widget-registry** id when it created its window through the
+/// control backend, while this backend's own `create_window` returns a **host** id. The
+/// `ResizeObserver` in [`WasmPlatform::observe_canvas_resize`] may see either, and so may a
+/// host that reports the size itself. Both directions are translated here, at the one boundary
+/// that knows about the two spaces (the same translation the macOS backends perform).
+///
+/// Returns `(widget_id, host_id)`; an id with no association is returned unchanged in both
+/// positions, because "not associated" is a fact the caller — not this helper — decides how to
+/// report.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn resize_ids(id: u64) -> (u64, u64) {
+    let widget = crate::widget::runtime::widget_id_for_host_window(id).unwrap_or(id);
+    let host = crate::widget::runtime::host_window_for(id).unwrap_or(id);
+    (widget, host)
+}
+
+/// A stripped profile keeps no widget registry, so no association exists to translate.
+#[cfg(alloc_frugal)]
+pub(crate) fn resize_ids(id: u64) -> (u64, u64) {
+    (id, id)
+}
+
 /// Handle kinds for WASM widgets.
 ///
 /// # Why this has one variant
@@ -175,18 +199,20 @@ impl WasmPlatform {
                         // answer.
                         continue;
                     }
-                    // Update this backend's own size record first, so the readback the host makes
-                    // answers with the new size; then enqueue the trigger on the shared crate queue
-                    // the host loop polls. The enqueue result is reported rather than discarded:
-                    // `false` means the id is not one the crate queue tracks, which is the honest
-                    // "recorded here, not queued there" fact.
-                    if let Some((x, y, _, _)) = state.widget_geometry(window_id) {
-                        state.set_geometry(window_id, x, y, width, height);
+                    // Resolve both id spaces first: the observer may be handed the widget id a
+                    // host holds or the host id this backend's `create_window` returned (see
+                    // `resize_ids`). The size is recorded against the **host** record, and the
+                    // trigger is queued against the **widget** id — that is the id space the
+                    // control backend and the layout pass speak.
+                    let (widget_id, host_id) = resize_ids(window_id);
+                    if let Some((x, y, _, _)) = state.widget_geometry(host_id) {
+                        state.set_geometry(host_id, x, y, width, height);
                     }
-                    if !crate::queue_resize_trigger(window_id, width, height) {
+                    if !crate::queue_resize_trigger(widget_id, width, height) {
                         log::debug!(
-                            "[wasm] resize for window {window_id} recorded in the wasm backend, \
-                             but the crate-level resize queue did not accept the id"
+                            "[wasm] resize for window {window_id} (widget {widget_id}) was \
+                             recorded in the wasm backend, but the crate-level resize queue \
+                             accepted no trigger for it"
                         );
                     }
                 }

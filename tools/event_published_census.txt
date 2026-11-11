@@ -142,7 +142,7 @@ masked_edit: text_changed, editing_finished, input_rejected, return_pressed
 masonry_layout: item_clicked
 material_navigation_rail: current_changed
 material_snackbar: action_pressed, dismissed
-mdi_area: subwindow_activated, subwindow_title_changed, subwindow_minimized_changed, subwindow_tab_moved
+mdi_area: subwindow_activated, subwindow_title_changed, subwindow_minimized_changed, subwindow_tab_moved, subwindow_close_requested
 mention: mention_inserted, popup_toggled, text_changed
 menu: triggered, triggered_index, about_to_show, submenu_requested, about_to_hide, tearoff_requested, action_triggered
 menu_bar: triggered, entry_hovered, triggered_entry, entry_action_triggered

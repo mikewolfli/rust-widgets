@@ -244,6 +244,27 @@ pub fn default_named_property_value(
     canonical_name: &str,
     property_name: &str,
 ) -> Option<CapabilityValue> {
+    // R-18: the code editor shares `WidgetKind::RichEdit`, whose default table was written for
+    // the rich-text control. Its display switches are answered here, by canonical name, with the
+    // values `CodeEditorConfig::default()` starts from — the same state a live editor reports.
+    #[cfg(feature = "code-editor")]
+    if canonical_name == "code_editor" {
+        use crate::widget::special_widgets::code_editor::DEFAULT_TAB_WIDTH;
+        return match property_name {
+            "show_line_numbers" => Some(CapabilityValue::Bool(true)),
+            "show_minimap" => Some(CapabilityValue::Bool(true)),
+            "word_wrap" => Some(CapabilityValue::Bool(false)),
+            "show_whitespace" => Some(CapabilityValue::Bool(false)),
+            "tab_width" => Some(CapabilityValue::UInt(DEFAULT_TAB_WIDTH as u64)),
+            "placeholder_text" => Some(CapabilityValue::String(String::new())),
+            // `CaretStyle::default()` is `Line`; `language_token(PlainText)` is `plain_text`.
+            "caret_style" => Some(CapabilityValue::String("line".to_string())),
+            "overwrite_mode" => Some(CapabilityValue::Bool(false)),
+            "language" => Some(CapabilityValue::String("plain_text".to_string())),
+            // Every other code-editor property keeps the shared/kind default path below.
+            _ => None,
+        };
+    }
     match (canonical_name, property_name) {
         ("drop_down_popup_host", "items") => {
             Some(CapabilityValue::Records(crate::widget::capability::RecordList::new(
@@ -397,6 +418,21 @@ pub fn default_widget_property_default_value(
         (WidgetKind::ScrollBar, "idle_delay_ms") => Some(CapabilityValue::UInt(600)),
         (WidgetKind::ScrollBar, "idle_opacity") => Some(CapabilityValue::Float(0.35)),
         (WidgetKind::Spinner, "track_color" | "arc_color") => Some(CapabilityValue::Null),
+        // R-23: the four authored appearance colours of the grid table. The values are the
+        // control's own constructor literals, referenced rather than repeated so a schema default
+        // cannot drift from the state a fresh `GridTableWidget` reports.
+        (WidgetKind::GridTable, "grid_color") => {
+            Some(CapabilityValue::Color(crate::widget::GridTableWidget::DEFAULT_GRID_COLOR))
+        }
+        (WidgetKind::GridTable, "header_bg") => {
+            Some(CapabilityValue::Color(crate::widget::GridTableWidget::DEFAULT_HEADER_BG))
+        }
+        (WidgetKind::GridTable, "header_text_color") => {
+            Some(CapabilityValue::Color(crate::widget::GridTableWidget::DEFAULT_HEADER_TEXT_COLOR))
+        }
+        (WidgetKind::GridTable, "selected_bg") => {
+            Some(CapabilityValue::Color(crate::widget::GridTableWidget::DEFAULT_SELECTED_BG))
+        }
         (WidgetKind::Switch | WidgetKind::CupertinoSwitch, "thumb_color") => {
             Some(CapabilityValue::Null)
         }
@@ -533,6 +569,10 @@ pub fn default_widget_property_default_value(
             "text_format" => CapabilityValue::String("plain".to_string()),
             "open_external_links" => CapabilityValue::Bool(false),
             "link_count" => CapabilityValue::UInt(0),
+            // R-23: the mnemonic is an empty string when unset, and a buddy is absent (`Null`)
+            // until bound. Both match the control's `get` answers.
+            "mnemonic" => CapabilityValue::String(String::new()),
+            "buddy" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::CheckBox => match property_name {
@@ -1071,6 +1111,12 @@ pub fn default_widget_property_default_value(
             "selection_mode" => CapabilityValue::String("cell".to_string()),
             "sort_spec_count" => CapabilityValue::UInt(0),
             "selected_cell" => CapabilityValue::Null,
+            // R-23: the appearance/interaction knobs the control's constructor starts with.
+            "header_height" => CapabilityValue::UInt(28),
+            "alternating_rows" => CapabilityValue::Bool(false),
+            "multi_select" => CapabilityValue::Bool(false),
+            "show_scrollbar" => CapabilityValue::Bool(false),
+            "section_resize_mode" => CapabilityValue::String("interactive".to_string()),
             _ => return None,
         },
         WidgetKind::NumberPicker => match property_name {
@@ -2736,6 +2782,8 @@ pub fn default_widget_property_default_value(
             "single_expand" => CapabilityValue::Bool(true),
             // `Accordion::new` starts with the open/close animation off.
             "animated" => CapabilityValue::Bool(false),
+            // R-23: a fresh accordion has no open section.
+            "expanded_sections" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
 

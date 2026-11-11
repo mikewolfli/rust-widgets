@@ -185,6 +185,12 @@ impl Color {
     /// Background of a control that cannot be interacted with (`#F5F5F5`).
     pub const DISABLED_BACKGROUND: Self = Self::rgb(245, 245, 245);
     /// Text of a control that cannot be interacted with (`#999999`).
+    ///
+    /// This is the literal fallback for a caller with no surface to derive against. A control
+    /// that knows the surface it paints on should use `BaseWidget::disabled_ink_on`, which steps
+    /// that surface toward its contrast colour; the chart family (bar/line/pie charts, sparkline,
+    /// arc, progress circle, spinner) derives its disabled ink that way and does not read this
+    /// constant.
     pub const DISABLED_FOREGROUND: Self = Self::rgb(153, 153, 153);
 
     /// How much of `DISABLED_FOREGROUND` is mixed into a disabled fill, in percent.

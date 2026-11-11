@@ -8,6 +8,7 @@
 //! cannot do this yet" and "the tool did it and produced nothing".
 
 use crate::bundle::Overrides;
+use crate::create::ProjectProfile;
 use rust_widgets::designer::TargetProfile;
 use std::path::PathBuf;
 
@@ -37,6 +38,17 @@ pub enum Command {
         /// Where to write; `None` means stdout.
         output: Option<PathBuf>,
     },
+    /// Scaffold a runnable project for one device profile.
+    Create {
+        /// The project (and Cargo package) name.
+        name: String,
+        /// The profile the project is created for.
+        profile: ProjectProfile,
+        /// The directory the project directory is created under.
+        output_root: PathBuf,
+        /// A path dependency on the library (a checkout); `None` means a version dependency.
+        rust_widgets_path: Option<PathBuf>,
+    },
     /// Print the usage text.
     Help,
 }
@@ -61,9 +73,14 @@ Usage:
   rwui json2rust <bundle-or-json> [-o <dir>] [--css <file>]... [--target default|stripped]
                                   [--check] [--json] [--strict]
   rwui fmt <document.json> [-o <file>]
+  rwui create <name> [--profile desktop|tablet|mobile|embedded|mini]
+                     [-o <parent-dir>] [--rust-widgets-path <dir>] [--json]
 
 A bundle is a directory containing `ui.json` (or the `document` named by `rwui.json`),
 optionally `theme.css`, `rwui.json` and `assets/`.
+
+`create` writes a runnable project: `ui/app.json` + `ui/app.css` (same base name), a
+`src/main.rs` entry stub and `src/app.rs` for the chosen profile.
 
 Exit status:
   0  no errors
@@ -128,6 +145,39 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
                 }
             }
             Command::Fmt { input, output }
+        }
+        "create" => {
+            let name = args.next().ok_or("create needs a project name")?;
+            if name.starts_with('-') {
+                return Err(format!("expected a project name, got the flag `{name}`"));
+            }
+            let mut profile = ProjectProfile::Desktop;
+            let mut output_root = PathBuf::from(".");
+            let mut rust_widgets_path = None;
+            while let Some(flag) = args.next() {
+                match flag.as_str() {
+                    "--profile" | "-p" => {
+                        let token = args.next().ok_or("--profile needs a name")?;
+                        profile = ProjectProfile::parse(&token).ok_or_else(|| {
+                            format!(
+                                "unknown profile `{token}`; expected one of desktop, tablet, mobile, \
+                                 embedded, mini"
+                            )
+                        })?;
+                    }
+                    "-o" | "--output" => {
+                        output_root = PathBuf::from(args.next().ok_or("-o needs a directory")?);
+                    }
+                    "--rust-widgets-path" => {
+                        rust_widgets_path = Some(PathBuf::from(
+                            args.next().ok_or("--rust-widgets-path needs a directory")?,
+                        ));
+                    }
+                    "--json" => shared.json = true,
+                    other => return Err(format!("unknown argument `{other}`")),
+                }
+            }
+            Command::Create { name, profile, output_root, rust_widgets_path }
         }
         other => return Err(format!("unknown command `{other}`")),
     };

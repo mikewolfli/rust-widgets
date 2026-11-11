@@ -1875,6 +1875,11 @@ impl Draw for TreeTable {
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
+        // A disabled tree table used to gate input only. Receding the ink toward the surface (the
+        // crate's single disabled-ink rule) carries the header, cell text, grid and selection
+        // chrome with it, while the rows keep their geometry. `tree_table:disabled` supplies the
+        // palette's own disabled token for the surface.
+        let ink = self.base.disabled_ink_on(ink, surface);
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))

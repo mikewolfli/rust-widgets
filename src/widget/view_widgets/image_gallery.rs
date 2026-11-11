@@ -1208,8 +1208,15 @@ impl Draw for ImageGallery {
             // The origin is the glyph box's *top* edge, so the label reads as centred on the
             // band at one third of the preview rather than half a line below its middle.
             let name_metrics = context.measure_text(display_name, font);
+            let line_height = name_metrics.height.max(1) as i32;
+            // A short preview cannot hold two stacked captions: at the census size the preview is
+            // only a couple of lines tall, and the name and dimensions were drawn eight pixels
+            // apart, on top of each other. The name is the caption; the dimensions join it only
+            // when the stage has room for a second line.
+            let band_center = preview_rect.y + preview_rect.height as i32 / 2;
+            let two_lines = preview_rect.height as i32 >= line_height * 3;
             let name_y =
-                preview_rect.y + preview_rect.height as i32 / 3 - name_metrics.height as i32 / 2;
+                if two_lines { band_center - line_height } else { band_center - line_height / 2 };
             // The name is host-supplied, so a long one overflowed both edges of the preview: the
             // centred origin was computed from the *measured* width, which put the overflow half
             // beyond each side and made the label wider than the box it was centred on. Handing
@@ -1225,25 +1232,23 @@ impl Draw for ImageGallery {
 
             // Draw dimensions. Both the dimension and index labels render into one buffer:
             // `format!` built a fresh `String` for each, per frame.
-            META_TEXT_SCRATCH.with(|cell| {
-                let mut meta_text = cell.borrow_mut();
-                meta_text.clear();
-                let _ = write!(meta_text, "{}x{}", image.width, image.height);
-                let dim_metrics = context.measure_text(&meta_text, font);
-                let dim_x =
-                    preview_rect.x + (preview_rect.width as i32 - dim_metrics.width as i32) / 2;
-                // Same as the filename above: half a *line box* about the band, not half an
-                // ascent below it.
-                let dim_y = preview_rect.y + preview_rect.height as i32 * 2 / 3
-                    - dim_metrics.height as i32 / 2;
-                context.draw_text(
-                    Point::new(dim_x, dim_y),
-                    &meta_text,
-                    font,
-                    dim_ink,
-                    HorizontalAlignment::Left,
-                );
-            });
+            if two_lines {
+                META_TEXT_SCRATCH.with(|cell| {
+                    let mut meta_text = cell.borrow_mut();
+                    meta_text.clear();
+                    let _ = write!(meta_text, "{}x{}", image.width, image.height);
+                    let dim_metrics = context.measure_text(&meta_text, font);
+                    let dim_x =
+                        preview_rect.x + (preview_rect.width as i32 - dim_metrics.width as i32) / 2;
+                    context.draw_text(
+                        Point::new(dim_x, band_center),
+                        &meta_text,
+                        font,
+                        dim_ink,
+                        HorizontalAlignment::Left,
+                    );
+                });
+            }
 
             // Image index indicator.
             META_TEXT_SCRATCH.with(|cell| {

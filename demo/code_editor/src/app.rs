@@ -34,7 +34,7 @@ use rust_widgets::widget::view_widgets::tree_view::{TreeView, VecTreeModel};
 use rust_widgets::widget::Widget;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::commands::{self, Command, StatusFacts};
 
@@ -55,58 +55,13 @@ fn apply_appearance(default_dark: bool) {
     preview_common::apply_appearance_mode(dark);
 }
 
-/// 事件泵的最长阻塞等待（兜底）。
-///
-/// 菜单与控件触发入队时会唤醒框架的等待通道（`wait_for_host_events`），所以有事件时
-/// 这里**立即**返回；这个时长只是没有唤醒源的状态（窗口尺寸需要轮询）的兜底。早期实现
-/// 是 16 ms 固定睡眠，空闲时每秒唤醒 60 次。
-const IDLE_BACKSTOP: std::time::Duration = std::time::Duration::from_millis(100);
-
-/// 一次事件都没有的连续空闲超过这个时长，事件泵就记录一条诊断，但**不退出**。
-///
-/// # 为什么需要一个可观察的空闲上限
-///
-/// 主线程跑的是平台循环（`App::run`），它只在窗口关闭时返回。这个上限让“长期无事件”在
-/// 日志里看得见（便于区分“真的空闲”和“事件没人消费”），但它**不是退出条件**。
-///
-/// # 为什么不能让它结束泵线程（本 demo 之前的缺陷）
-///
-/// 早先的写法是空闲超时后 `break` 掉泵线程，主线程却仍卡在 `app.run()` 里。后果是：
-/// 窗口还活着，但**菜单/控件触发再没有消费者** —— 30 秒后用户点菜单，事件进了队列却没人
-/// 取，菜单看起来“坏了”。泵线程与窗口的生命周期必须一致：只要窗口还在跑，就必须有人
-/// 消费。所以唯一的退出信号是 `done`（主线程在 `app.run()` 返回后置位），空闲超过上限
-/// 只记诊断且归零，不结束循环。
-///
-/// # 为什么不用 `rust_widgets::quit()` 来收尾
-///
-/// 试过：在空闲超时时请求平台退出。但 `Platform::quit` 在部分后端是**主线程专属**的
-/// （macOS 的 `NSApp stop_` 会在非主线程上直接 no-op），从泵线程调用只会静默失效，
-/// 反而掩盖“窗口没关”的真实情况。不依赖不可移植的跨线程退出，只观察主线程给出的
-/// `done`。
-///
-/// # 它必须由 `IDLE_BACKSTOP` 算出来，不能写成拍脑袋的 tick 数
-///
-/// 这里原本写的是 `idle_ticks > 30 * 60 * 2`，注释却写着「超过 30 秒」。按 16 ms 一 tick
-/// 算，`30 * 60 * 2 = 3600` tick 实际是 **57.6 秒**；而 `30 * 60` 也不是秒数，
-/// 是「分钟数 × 60」这个中间量——即那个表达式**从来不代表任何真实时长**。
-/// 现在把两个常数分开：上限说「多长时间」，`ticks()` 把它换算成 tick，二者不会漂移。
-const IDLE_REPORT_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// [`IDLE_REPORT_AFTER`] 换算成多少个 `IDLE_BACKSTOP` tick。
-fn idle_ticks_before_report() -> u32 {
-    // 向上取整，并保证至少 1：一个比等待间隔还短的上限会立刻刷屏，那不是「空闲太久」。
-    let interval = IDLE_BACKSTOP.as_millis().max(1) as u64;
-    let ticks = (IDLE_REPORT_AFTER.as_millis() as u64).div_ceil(interval);
-    ticks.clamp(1, u64::from(u32::MAX)) as u32
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // 日志
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// How many recent entries the demo keeps in memory.
 ///
-/// The log is written by the polling thread and never read back by the demo, but a
+/// The log is written from the loop thread's frame tick and never read back by the demo, but a
 /// long-running window would otherwise grow it without bound (one entry per menu item,
 /// toolbar click and editor signal). Beyond this limit the oldest entry is dropped, so the
 /// footprint is bounded and the most recent events — the only ones a reader looks at — are
@@ -827,11 +782,33 @@ fn build_tool_bar(
 /// punctuation and kana), and this demo's sample source and window text are Chinese. Without
 /// an installed face those characters would be tofu; the library leaves that choice to the
 /// host, so the demo makes it once here and records which family answered.
+///
+/// # Why the scan is started earlier than it is awaited (R-19)
+///
+/// Reading and parsing the installed face is a disk-bound few-hundred-millisecond job. It used
+/// to run here, synchronously, before the window existed — visible as a slow launch. It needs
+/// neither the App nor a window, so [`prewarm_cjk_face`] starts it beside `App::init`, and this
+/// call only waits for the answer before the first frame is built.
 fn register_cjk_face(log: &Arc<EventLog>) {
-    match rust_widgets::render::text::register_system_cjk_font() {
+    let worker = CJK_SCAN
+        .get()
+        .and_then(|slot| slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take());
+    match preview_common::finish_cjk_face(worker) {
         Some(family) => log.append(format!("[Fonts] 已注册系统 CJK 字体：{family}")),
         None => log.append("[Fonts] 未找到已安装的 CJK 字体；超出内置子集的汉字会显示为方框"),
     }
+}
+
+/// The background CJK-face registration started by [`prewarm_cjk_face`].
+///
+/// A process-wide slot rather than a parameter: the scan must start before `App::init` and be
+/// consumed inside the window builder, which two entry points (the live run and the offscreen
+/// preview) reach — neither should carry a copy of the handle.
+static CJK_SCAN: OnceLock<Mutex<Option<std::thread::JoinHandle<Option<String>>>>> = OnceLock::new();
+
+/// Starts the CJK-face scan so it overlaps `App::init` and window creation.
+fn prewarm_cjk_face() {
+    let _ = CJK_SCAN.set(Mutex::new(preview_common::prewarm_cjk_face()));
 }
 
 /// 启动 demo 应用。
@@ -857,6 +834,10 @@ pub fn run() -> std::process::ExitCode {
 /// The fallible body of [`run`]; nothing in this module terminates the process.
 fn run_inner() -> Result<(), String> {
     banner();
+
+    // Start the disk-bound CJK face scan now; it overlaps App init and window creation. The
+    // window builder joins it before the first control exists (R-19).
+    prewarm_cjk_face();
 
     let log = Arc::new(EventLog::new());
     let backend = rust_widgets::backend_name();
@@ -889,7 +870,7 @@ fn run_inner() -> Result<(), String> {
     log.append("[Window] shown");
 
     print_usage();
-    run_loop(&app, win.raw_id(), &menu_bindings, &toolbar_buttons, &editor, &log);
+    run_loop(&app, &menu_bindings, &toolbar_buttons, &editor, &log);
     Ok(())
 }
 
@@ -1089,122 +1070,104 @@ fn apply_layout(
 // 现在分栏是窗口布局的一个**子布局**（`BoxLayout::set_child_layout`，DEMO-004），
 // `apply_window_layout` 一次就摆完两层。补丁函数已删除：一套机制就够，两套只会给出两个答案。
 
-/// 消费菜单激活队列。
+/// 消费菜单激活队列，**在平台循环自己的线程上**。
 ///
-/// # 线程分工：平台循环在主线程，消费在后台线程
+/// # 为什么不能放在后台线程（本 demo 曾经的缺陷）
 ///
-/// 两个事实决定了这个分工，顺序不能颠倒：
+/// 曾经这里是一个 `std::thread::spawn` 的轮询线程，理由是「平台循环占住主线程，宿主
+/// 取不到队列」。但两条 `poll_*` 入口都是**取出**（`pop_front`）而不是窥视，它们和主线程
+/// 的 `drain_triggers` 消费的是**同一条**队列。于是后台线程会把 `Resized`\`Moved`\
+/// `Closed` 抢走并丢弃，resize 后布局间歇性不重跑；而菜单事件落到后台线程上，
+/// `dispatch_menu_event` → `Command::dispatch` → `with_widget_mut` 查的是 thread-local
+/// 控件注册表，后台线程查不到，菜单命令**必然**变成 `no-op`。
 ///
-/// 1. **平台事件循环必须在主线程跑。** GTK 3 把每个控件绑定到唯一的主线程，
-///    `gtk::main()` 从别的线程调用会直接 panic（`GTK may only be used from the main
-///    thread.`）。
-/// 2. **宿主又必须能取。** `poll_menu_triggered()` / `poll_widget_trigger_event()`
-///    是必须在循环之外调用的——循环一进去就回不到 Rust 侧，菜单就变成纯装饰。
+/// 正确位置是库已经提供的帧钩子：`platform::main_thread::schedule_in` 把工作交给
+/// **驱动帧的那条线程**（GTK 的 glib timeout、AppKit 的 `NSTimer`、其它后端的循环迭代），
+/// 也就是 `drive_frame` 所在的线程。队列要重复消费，就按该 API 的约定在回调末尾再排一次
+/// 自己——它刻意不提供重复形式，避免第二套定时机制。
 ///
-/// 所以：平台循环占住主线程，**消费放到后台线程**。这与本文件早先的写法正好相反
-/// （那时尝试把平台循环放到后台）——那种写法在 GTK 下必然 panic，因为它在工作线程里
-/// 初始化并驱动 GTK。
+/// # 为什么 resize 不在这里（DEMO-003）
 ///
-/// 只有轮询本身会动 Qt/GTK 对象时才会出问题；`poll_*` 只读队列并分派命令，
-/// 不需要平台 API，所以可以安全地在后台线程运行。
+/// 窗口布局自己带着**子布局**（`BoxLayout::set_child_layout`，DEMO-004），后端报 resize
+/// 就会跑完整棵布局树，两栏与三行同一次完成。这里只剩「取队列」一件事。
 ///
-/// # 为什么 resize 不在这里了（DEMO-003）
-///
-/// 以前这条线程还靠 `window_client_size()` 每 100 ms 对比客户区，把两栏重算一遍 ——
-/// 因为窗口布局只托管外层行，两栏是挂载面，不在托管项里。现在窗口布局自己带着
-/// **子布局**（`BoxLayout::set_child_layout`，DEMO-004），后端报 resize 就会跑完整棵
-/// 布局树，两栏与三行同一次完成。于是这条线程只剩“取队列”一件事，
-/// 也就没有第二条 resize 实现需要跟它对齐。
-///
-/// 队列仍然是必需的：原生菜单栏（macOS 的 `NSMenu`）选中项只进这个队列，不发射
-/// 任何控件信号 —— 它没有控件可发。
-///
-/// 后台线程的唯一退出信号是 `done`，由主线程在 `app.run()` 返回后置位 —— 即窗口真正
-/// 关闭。窗口还开着时永远有人消费事件，因此不会出现“菜单事件进了队列却没人取”的半死
-/// 状态（见 `IDLE_REPORT_AFTER` 的说明）。
+/// 队列仍然是必需的：原生菜单栏（macOS 的 `NSMenu`）选中项只进这个队列，不发射任何
+/// 控件信号 —— 它没有控件可发。
 fn run_loop(
     app: &App,
-    window_id: ObjectId,
     bindings: &[(u64, MenuBinding)],
     toolbar_buttons: &[ObjectId],
     editor: &CustomWidgetHandle,
     log: &Arc<EventLog>,
 ) {
-    // 消费线程需要在主线程进入平台循环之前启动，否则它一开始就看不到已经入队的
-    // 触发；`Arc` 让两个线程各自持有需要的东西。
     let bindings: Arc<Vec<(u64, MenuBinding)>> = Arc::new(bindings.to_vec());
     let toolbar_buttons: Arc<Vec<ObjectId>> = Arc::new(toolbar_buttons.to_vec());
     let editor = editor.clone();
     let poll_log = Arc::clone(log);
+    // Only the main thread sets this, after `app.run()` returns (the window is really gone).
     let done = Arc::new(AtomicBool::new(false));
-    let done_flag = Arc::clone(&done);
 
-    let poller = std::thread::spawn(move || {
-        // `window_id` is kept for the exit-path diagnostic: an id is what a log reader can
-        // correlate with the `[Window] created` line, and the pump no longer reads the size.
-        let _ = window_id;
-        let mut handled = 0usize;
-        let mut idle_ticks = 0u32;
-        // The pump runs for as long as the window does. The only exit is `done`, which
-        // the main thread sets after `app.run()` returns — i.e. after the window has
-        // actually closed. This is the shutdown signal that keeps the two threads in
-        // step: as long as the window is open there is a consumer for every event, so a
-        // later menu activation can never land in a queue nobody polls (the defect this
-        // loop closes).
-        while !done_flag.load(Ordering::SeqCst) {
-            let mut did_work = false;
-
-            // 菜单激活：原生菜单与自绘菜单选择都进这个队列，必须从队列取出。
-            while let Some(item_id) = rust_widgets::poll_menu_triggered() {
-                if dispatch_menu_event(item_id, &bindings, &editor, &poll_log) {
-                    did_work = true;
-                    handled += 1;
-                }
-            }
-
-            // 控件触发。工具栏按钮已由 `on_click` 回调处理（见 `build_tool_bar`），
-            // 这里只计数、不写日志：同一次点击若再记一条 `[Widget]`，日志里就会出现两条
-            // （本 demo 之前的缺陷）。其它控件的触发仍逐条记录。
-            while let Some(event) = rust_widgets::poll_widget_trigger_event() {
-                if !toolbar_buttons.contains(&event.widget_id) {
-                    poll_log
-                        .append(format!("[Widget] id={} kind={:?}", event.widget_id, event.kind));
-                }
-                did_work = true;
-                handled += 1;
-            }
-
-            if did_work {
-                idle_ticks = 0;
-            } else {
-                idle_ticks += 1;
-                // 连续无事件超过 `IDLE_REPORT_AFTER` 时只记一条诊断，**不退出**。唯一的退出
-                // 信号是 `done`（主线程在 `app.run()` 返回后置位）：只要窗口还在，就必须有人
-                // 消费菜单/控件触发，否则“窗口还开着、泵已死”会让菜单看起来失效（见
-                // `IDLE_REPORT_AFTER` 的说明）。归零是为了不重复刷同一条。
-                if idle_ticks > idle_ticks_before_report() {
-                    poll_log.append(format!(
-                        "[App] 空闲超过 {:?} 无事件（继续消费，等待窗口关闭）",
-                        IDLE_REPORT_AFTER
-                    ));
-                    idle_ticks = 0;
-                }
-            }
-            // 有事件入队时框架会唤醒这里，因此触发延迟不再是「最多一个轮询间隔」；
-            // 超时只用来复查窗口尺寸（它没有唤醒源）。
-            rust_widgets::wait_for_host_events(IDLE_BACKSTOP);
-        }
-        poll_log.append(format!("[App] 轮询结束（处理 {handled} 个事件）"));
-    });
+    // `schedule_in` returns `false` before any loop has ticked; the work stays queued and the
+    // first frame runs it, so the answer is not an error here.
+    schedule_menu_pump(
+        Arc::clone(&done),
+        Arc::clone(&bindings),
+        Arc::clone(&toolbar_buttons),
+        editor.clone(),
+        Arc::clone(&poll_log),
+    );
 
     // 主线程跑平台循环，直到窗口关闭（`gtk::main()` 返回）。
     log.append("[App] 平台事件循环在主线程启动");
     app.run();
 
-    // 循环已返回，通知轮询线程收工并等它把剩余事件处理完，
-    // 否则最后几个菜单触发会在退出时丢失。
+    // 循环已返回：停止重复排程，并把循环关闭前最后入队的事件处理掉。
     done.store(true, Ordering::SeqCst);
-    let _ = poller.join();
+    let handled = consume_pending_triggers(&bindings, &toolbar_buttons, &editor, &poll_log);
+    poll_log.append(format!("[App] 消费结束（退出前处理 {handled} 个事件）"));
+}
+
+/// 把下一次「取队列」排到平台循环的线程上，并在回调末尾重新排自己。
+fn schedule_menu_pump(
+    done: Arc<AtomicBool>,
+    bindings: Arc<Vec<(u64, MenuBinding)>>,
+    toolbar_buttons: Arc<Vec<ObjectId>>,
+    editor: CustomWidgetHandle,
+    log: Arc<EventLog>,
+) {
+    rust_widgets::platform::main_thread::schedule_in(std::time::Duration::ZERO, move || {
+        if done.load(Ordering::SeqCst) {
+            return;
+        }
+        consume_pending_triggers(&bindings, &toolbar_buttons, &editor, &log);
+        schedule_menu_pump(done, bindings, toolbar_buttons, editor, log);
+    });
+}
+
+/// 取出当前队列里的全部菜单/控件触发并分派，返回处理条数。
+fn consume_pending_triggers(
+    bindings: &[(u64, MenuBinding)],
+    toolbar_buttons: &[ObjectId],
+    editor: &CustomWidgetHandle,
+    log: &Arc<EventLog>,
+) -> usize {
+    let mut handled = 0usize;
+    // 菜单激活：原生菜单与自绘菜单选择都进这个队列，必须从队列取出。
+    while let Some(item_id) = rust_widgets::poll_menu_triggered() {
+        if dispatch_menu_event(item_id, bindings, editor, log) {
+            handled += 1;
+        }
+    }
+    // 控件触发。工具栏按钮已由 `on_click` 回调处理（见 `build_tool_bar`），
+    // 这里只计数、不写日志：同一次点击若再记一条 `[Widget]`，日志里就会出现两条
+    // （本 demo 之前的缺陷）。其它控件的触发仍逐条记录。
+    while let Some(event) = rust_widgets::poll_widget_trigger_event() {
+        if !toolbar_buttons.contains(&event.widget_id) {
+            log.append(format!("[Widget] id={} kind={:?}", event.widget_id, event.kind));
+        }
+        handled += 1;
+    }
+    handled
 }
 
 fn banner() {

@@ -80,7 +80,12 @@ FIELD_DECL = re.compile(
     r"^\s{4,}(?:pub(?:\([^)]*\))?\s+)?([a-z_][a-z0-9_]*)\s*:\s*[A-Za-z_&'\[]", re.M
 )
 ANY_ACCESS = re.compile(r"\.([a-z_][a-z0-9_]*)\b")
-MUTATOR = re.compile(r"\s*(=[^=]|\.(?:push|insert|extend|clear|remove|add|retain|take|get_or_insert))")
+# An access followed by `=` is a write, **unless** the `=` starts a match arm (`=>`) or is part of
+# `==`. Both are reads of the field: `Some(radius) if self.explicit => radius` reads it. Treating a
+# guarded match arm as an assignment hid a real reader and reported the field as write-only.
+MUTATOR = re.compile(
+    r"\s*=(?!=|>)|\s*\.(?:push|insert|extend|clear|remove|add|retain|take|get_or_insert)"
+)
 
 # A struct-literal initializer: `field: value` inside a `Braces` expression. This is the shape the
 # gate used to miss entirely, and it is the **most common** way a field is first written —

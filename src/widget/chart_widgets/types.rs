@@ -107,17 +107,10 @@ impl std::fmt::Display for ChartType {
 }
 
 /// Which edge of a plot an attached axis sits on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AxisEdge {
-    /// The left edge (the usual Y axis).
-    Left,
-    /// The right edge (a secondary Y axis).
-    Right,
-    /// The top edge.
-    Top,
-    /// The bottom edge (the usual X axis).
-    Bottom,
-}
+///
+/// The axis-picker companion owns the single definition (principle #54); this path is the chart
+/// model's historical spelling of the same type.
+pub use crate::widget::companions::AxisEdge;
 
 /// A secondary axis attached to a chart's plot.
 ///

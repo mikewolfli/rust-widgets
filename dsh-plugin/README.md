@@ -29,14 +29,28 @@ Then start the profile as usual (`dsh <profile>`).
 
 ## What the skill does
 
-`rust-widgets-maintainer` routes work on the rust-widgets repository:
+`rust-widgets-maintainer` routes work on the rust-widgets repository, including
+every companion crate:
 
 - the governing rules in `docs/plans/principle.md`,
-- the repository map (controls, layout, render, platform, code editor, gates),
+- the repository map (controls, layout, render, platform, code editor, gates,
+  `crates/`, `demo/`, `examples/`, `docs/`, this plugin),
+- the five device profiles and their feature sets,
+- the companion crates (`rust-widgets-cli`, `rust-widgets-suites`,
+  `rust-widgets-font`, `rust-widgets-icons`, `mobile-services`) and the `rwui`
+  commands (`check`, `json2rust`, `fmt`, `create`),
 - the standard edit → focused check → full validation workflow,
 - control/capability registration steps,
 - the code-editor language seam (including Zig),
+- how to keep this plugin in sync with the library,
 - the reporting format every task must end with.
+
+## Version
+
+This package ships with the library, so its version is the library's version:
+both are `4.2.0`, read from the root `Cargo.toml`. `npm run check-version` (part
+of `npm test`) fails when the two diverge, and `npm run market-index` refuses to
+write an index whose version disagrees with the library.
 
 ## Requirements
 
@@ -50,12 +64,14 @@ The package has no runtime dependencies.
 ```sh
 npm run sync-skill   # copy .dsh/skills into ./assets and rebuild index.json
 npm run check-skill  # fail if the bundled copy drifted
+npm run check-version # fail if package.json#version differs from the library's
 npm run check-index  # fail if market-index.json drifted from the package
-npm test             # node:test against the provider contract
+npm test             # check-version + node:test against the provider contract
 npm pack --dry-run   # inspect the published file list
 ```
 
 The source of truth is `<repo>/.dsh/skills/rust-widgets-maintainer/SKILL.md`.
+Edit that file, then run `npm run sync-skill`; never edit `assets/` by hand.
 `prepack` re-syncs it automatically before `npm publish`, so the published copy
 cannot lag behind the repository.
 
@@ -86,6 +102,12 @@ npm run check-index             # drift gate for CI
 `--git` pins the newest commit that changed `dsh-plugin/` (the index file itself
 does not move the pin, so regenerating is idempotent) and refuses an uncommitted
 package, so commit the package first.
+
+Because the package version tracks the root `Cargo.toml`, the index can only be
+refreshed **after** the commit that carries the current version. The release
+order is: bump the library and the plugin together, commit, then run
+`npm run market-index -- --git`. Running it earlier is refused rather than
+producing an index whose pin installs a different version.
 
 ## How it works
 

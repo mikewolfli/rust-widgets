@@ -67,6 +67,59 @@ macro_rules! impl_properties_other {
             PropertySchema::new("undo_depth", PropertyValueKind::UInt, true, false),
             PropertySchema::new("goto_bar_visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("breakpoint_gutter", PropertyValueKind::Bool, true, true),
+            // R-18: the display switches `CodeEditor` already exposes as public setters.
+            // Publishing them lets a document or a designer configure the editor's basic
+            // presentation, which the previous table could not express at all.
+            PropertySchema::new("show_line_numbers", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_minimap", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("word_wrap", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_whitespace", PropertyValueKind::Bool, true, true),
+            // `set_tab_width` ignores anything outside `1..=16`, and the property arm below
+            // reports that refusal as `OutOfRange` rather than a write that silently did
+            // nothing. The bound is stated here rather than as a schema `Range` because a
+            // range constraint on a `UInt` row cannot be exercised by the shared
+            // outside-the-range gate (it probes with a float carrier, which `UInt` refuses as
+            // a type mismatch before the bound is consulted).
+            PropertySchema::new("tab_width", PropertyValueKind::UInt, true, true),
+            // The empty-state copy; the empty string means "no placeholder", matching the
+            // other text controls' spelling of an unset placeholder.
+            PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
+            PropertySchema::enumerated("caret_style", true, true, &["line", "block", "underline"]),
+            PropertySchema::new("overwrite_mode", PropertyValueKind::Bool, true, true),
+            // The language vocabulary is the editor's own `LanguageId` set; the tokens are
+            // lower-case identifiers so a JSON document can name one without prose.
+            PropertySchema::enumerated(
+                "language",
+                true,
+                true,
+                &[
+                    "rust",
+                    "python",
+                    "javascript",
+                    "go",
+                    "zig",
+                    "c",
+                    "java",
+                    "csharp",
+                    "cpp",
+                    "kotlin",
+                    "swift",
+                    "html",
+                    "xml",
+                    "json",
+                    "css",
+                    "yaml",
+                    "toml",
+                    "shell",
+                    "sql",
+                    "markdown",
+                    "plain_text",
+                ],
+            ),
+            // `palette` is deliberately absent: `CodeEditor::palette()` returns a
+            // `SyntaxPalette`, which is a colour table with no scalar identity to read or
+            // write. Publishing a token would invent a second palette vocabulary that the
+            // getter could not answer, so the palette stays a programmatic setter.
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -2157,4 +2210,34 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
     };
+}
+
+/// R-18: the code-editor display switches are declared once each.
+///
+/// A duplicated row is not a harmless copy: consumers that resolve the first match and
+/// consumers that resolve the last would disagree about the kind and the flags once the
+/// copies drift. This is the focused guard for the names added by the capability-surface
+/// round; the whole-table uniqueness rule lives in the capability tests.
+#[cfg(all(test, feature = "code-editor", not(alloc_frugal)))]
+mod code_editor_switch_schema_tests {
+    use super::schema::CODE_EDITOR_PROPERTIES;
+
+    #[test]
+    fn each_editor_switch_is_declared_exactly_once() {
+        const NAMES: &[&str] = &[
+            "show_line_numbers",
+            "show_minimap",
+            "word_wrap",
+            "show_whitespace",
+            "tab_width",
+            "placeholder_text",
+            "caret_style",
+            "overwrite_mode",
+            "language",
+        ];
+        for name in NAMES {
+            let count = CODE_EDITOR_PROPERTIES.iter().filter(|schema| schema.name == *name).count();
+            assert_eq!(count, 1, "`{name}` must be declared exactly once, found {count}");
+        }
+    }
 }

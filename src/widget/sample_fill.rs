@@ -613,11 +613,36 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 // A gallery whose own snapshot says "No images in gallery" teaches a reviewer nothing
                 // about the grid, the captions or the selection ring.
                 if gallery.images().is_empty() {
-                    for index in 1..=4 {
-                        gallery.add_image(
-                            &format!("sample-{index}.png"),
-                            Some(&format!("Image {index}")),
-                        );
+                    // The samples are decoded from real bytes, so the snapshot exercises the
+                    // decode-and-paint path rather than drawing the placeholder well four times.
+                    #[cfg(feature = "image")]
+                    {
+                        use crate::widget::view_widgets::image_gallery::GalleryImage;
+                        const SAMPLES: [(&str, &str, &[u8]); 4] = [
+                            ("Coast", "coast.jpg", include_bytes!("sample_photos/coast.jpg")),
+                            ("Forest", "forest.jpg", include_bytes!("sample_photos/forest.jpg")),
+                            ("City", "city.jpg", include_bytes!("sample_photos/city.jpg")),
+                            ("Desert", "desert.jpg", include_bytes!("sample_photos/desert.jpg")),
+                        ];
+                        let mut images = Vec::with_capacity(SAMPLES.len());
+                        for (label, path, bytes) in SAMPLES {
+                            let mut image = GalleryImage::with_label(path, Some(label), 0, 0);
+                            if image.load_from_bytes(bytes).is_ok() {
+                                images.push(image);
+                            }
+                        }
+                        if !images.is_empty() {
+                            gallery.set_images(images);
+                        }
+                    }
+                    #[cfg(not(feature = "image"))]
+                    {
+                        for index in 1..=4 {
+                            gallery.add_image(
+                                &format!("sample-{index}.png"),
+                                Some(&format!("Image {index}")),
+                            );
+                        }
                     }
                 }
                 true
@@ -1746,7 +1771,7 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         // snapshots stay byte-identical on any machine.
         "freeform_shape" => match widget_as_mut::<FreeformShapeWidget>(widget) {
             Some(shape) => {
-                shape.set_path(ShapePath::Star { points: 6, inner_radius: 0.5 });
+                shape.set_path(ShapePath::Star { points: 5, inner_radius: 0.5 });
                 true
             }
             None => false,

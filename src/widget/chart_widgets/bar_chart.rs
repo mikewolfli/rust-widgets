@@ -7,6 +7,12 @@
 //! optional value labels on top. Each bar can have its own color, or all bars
 //! share a default color.
 //!
+//! # Which layer this is (principle #49)
+//!
+//! A **control**: capability properties/events, driven by `data_binding/chart.rs`. The data-model
+//! engine is `charts.rs` (built by the factory's generic `chart` kind). Both exist because they
+//! serve different consumers; see `docs/issues/issue-20261111.md` R-26.
+//!
 //! # Rendering path
 //!
 //! With the `chart` feature enabled, the plot area, axes, grid and tick labels
@@ -269,15 +275,24 @@ pub struct BarChart {
     #[cfg(feature = "chart")]
     y_label_cache: Option<YAxisLabelCache>,
     /// Emitted with the category index under the pointer when hover enters a bar.
+    ///
+    /// Backward-compatible projection of [`Self::bar_hovered_with_series`]: it carries the
+    /// category component of the same transition. New code should subscribe to the pair,
+    /// which also names the series.
     pub bar_hovered: Signal1<usize>,
     /// Emitted with the category index when the pointer leaves a bar.
+    ///
+    /// The projection spelling of [`Self::bar_unhovered_with_series`].
     pub bar_unhovered: Signal1<usize>,
     /// Emitted with the category index of a clicked bar.
+    ///
+    /// The projection spelling of [`Self::bar_clicked_with_series`].
     pub bar_clicked: Signal1<usize>,
     /// Emitted with `(series, category)` when hover enters a bar (CH-04).
     ///
-    /// The single-index signals above keep their historical payload for compatibility; a
-    /// grouped chart needs the series dimension, which this signal carries.
+    /// This is the authoritative spelling: the three `_with_series` signals are emitted by
+    /// the control's single hover/click path, and the single-index signals above are their
+    /// category projection so existing subscribers keep working.
     pub bar_hovered_with_series: Signal1<(usize, usize)>,
     /// Emitted with `(series, category)` when the pointer leaves a bar (CH-04).
     pub bar_unhovered_with_series: Signal1<(usize, usize)>,
@@ -1319,9 +1334,8 @@ impl BarChart {
         let categories = self.category_count();
         if self.hovered.is_some_and(|index| index >= categories) {
             if let Some(index) = self.hovered.take() {
-                self.bar_unhovered.emit(index);
                 let series = self.series_at(Point::new(0, 0), Rect::new(0, 0, 1, 1), index);
-                self.bar_unhovered_with_series.emit((series, index));
+                self.emit_bar_unhovered(series, index);
             }
         }
     }
@@ -2131,7 +2145,13 @@ impl Draw for BarChart {
 
         let (y_min, y_max) = self.resolve_y_range();
         let is_enabled = self.base.is_enabled();
-        let disabled_color = Color::DISABLED_FOREGROUND;
+        // R-21: the disabled ink is derived from the active surface rather than pinned to
+        // `#999999`, so a dark appearance does not get a light-grey chart on a dark ground.
+        // `disabled_ink_on` is the crate's one disabled-ink rule; the surface is the palette
+        // the chart chrome already derives from.
+        let chart_surface =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let disabled_color = self.base.disabled_ink_on(axis_chrome().0, chart_surface);
 
         // ── Backdrop: axes, grid and tick labels ──
         //
@@ -2394,7 +2414,9 @@ impl BarChart {
         if categories == 0 || self.series.is_empty() {
             return;
         }
-        let disabled = Color::DISABLED_FOREGROUND;
+        let chart_surface =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let disabled = self.base.disabled_ink_on(axis_chrome().0, chart_surface);
         let growth = f64::from(self.growth_progress());
         let font = role_font(self.base.style(), CATEGORY_FONT_SIZE);
         let line_height = context.measure_text("M", &font).height.max(1) as i32;
@@ -2774,6 +2796,31 @@ impl BarChart {
     }
 }
 
+impl BarChart {
+    /// Reports a hover entering a bar.
+    ///
+    /// The pair signal is the source: it carries both dimensions of the fact. The
+    /// single-index spelling is the backward-compatible projection of the same transition,
+    /// emitting the pair's category component, so there is one emission path rather than two
+    /// that can drift (principle #101).
+    fn emit_bar_hovered(&mut self, series: usize, category: usize) {
+        self.bar_hovered_with_series.emit((series, category));
+        self.bar_hovered.emit(category);
+    }
+
+    /// Reports the pointer leaving a bar, through the same single path as `emit_bar_hovered`.
+    fn emit_bar_unhovered(&mut self, series: usize, category: usize) {
+        self.bar_unhovered_with_series.emit((series, category));
+        self.bar_unhovered.emit(category);
+    }
+
+    /// Reports a click, through the same single path as the hover pair.
+    fn emit_bar_clicked(&mut self, series: usize, category: usize) {
+        self.bar_clicked_with_series.emit((series, category));
+        self.bar_clicked.emit(category);
+    }
+}
+
 impl EventHandler for BarChart {
     fn handle_event(&mut self, event: &Event) {
         // Companion reports are shared writes, drained before routing so the frame that follows
@@ -2826,15 +2873,13 @@ impl EventHandler for BarChart {
                 let next = self.category_at(*pos, plot_area);
                 if next != self.hovered {
                     if let Some(index) = self.hovered {
-                        self.bar_unhovered.emit(index);
                         let series = self.series_at(*pos, plot_area, index);
-                        self.bar_unhovered_with_series.emit((series, index));
+                        self.emit_bar_unhovered(series, index);
                     }
                     self.hovered = next;
                     if let Some(index) = next {
-                        self.bar_hovered.emit(index);
                         let series = self.series_at(*pos, plot_area, index);
-                        self.bar_hovered_with_series.emit((series, index));
+                        self.emit_bar_hovered(series, index);
                     }
                     self.base.request_redraw();
                 }
@@ -2874,9 +2919,8 @@ impl EventHandler for BarChart {
                     crosshair.hide();
                 }
                 if let Some(index) = self.hovered.take() {
-                    self.bar_unhovered.emit(index);
                     let series = self.series_at(Point::new(0, 0), plot_area, index);
-                    self.bar_unhovered_with_series.emit((series, index));
+                    self.emit_bar_unhovered(series, index);
                     self.base.request_redraw();
                 }
             }
@@ -2893,9 +2937,8 @@ impl EventHandler for BarChart {
                     self.pan_origin = Some((pos.x, low));
                 }
                 if let Some(index) = self.category_at(*pos, plot_area) {
-                    self.bar_clicked.emit(index);
                     let series = self.series_at(*pos, plot_area, index);
-                    self.bar_clicked_with_series.emit((series, index));
+                    self.emit_bar_clicked(series, index);
                 }
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
@@ -3345,6 +3388,47 @@ mod tests {
         assert_eq!(bc.hovered_bar(), Some(0));
         bc.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert_eq!(bc.hovered_bar(), None);
+    }
+
+    /// A click reaches both published spellings through one path.
+    ///
+    /// R-22: the pair is the source and the single-index signal is its category projection.
+    /// This pins that a subscriber of either spelling hears the click and that the two values
+    /// describe the same bar rather than two independently maintained copies.
+    #[test]
+    fn both_bar_click_spellings_deliver_on_a_click() {
+        use std::sync::{Arc, Mutex};
+
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 1.0), BarEntry::new("B", 2.0)]);
+        let _ = render_to_svg(&mut chart);
+        let plot = chart.last_plot_area.expect("the paint records the plot area");
+
+        let legacy = Arc::new(Mutex::new(Vec::new()));
+        let legacy_sink = Arc::clone(&legacy);
+        chart.bar_clicked.connect(move |index| {
+            if let Ok(mut seen) = legacy_sink.lock() {
+                seen.push(*index);
+            }
+        });
+        let pair = Arc::new(Mutex::new(Vec::new()));
+        let pair_sink = Arc::clone(&pair);
+        chart.bar_clicked_with_series.connect(move |value| {
+            if let Ok(mut seen) = pair_sink.lock() {
+                seen.push(*value);
+            }
+        });
+
+        chart.handle_event(&Event::mouse_press(plot.x + plot.width as i32 / 4, plot.y + 4, 1));
+
+        let legacy = legacy.lock().unwrap();
+        let pair = pair.lock().unwrap();
+        assert_eq!(legacy.len(), 1, "the single-index spelling hears the click");
+        assert_eq!(pair.len(), 1, "the pair spelling hears the same click");
+        assert_eq!(
+            legacy[0], pair[0].1,
+            "the single-index payload is the pair's category component"
+        );
     }
 
     // ── Value-change easing (issue-20261023, BarChart) ──

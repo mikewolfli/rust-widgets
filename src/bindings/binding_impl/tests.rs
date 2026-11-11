@@ -728,6 +728,8 @@ fn c_abi_set_and_get_widget_property_round_trip() {
     use std::ffi::{CStr, CString};
 
     let c = |s: &str| CString::new(s).expect("no interior NUL");
+    // The last-error slot is process-wide; hold the guard for the refusal → code sequence.
+    let _error_slot = crate::error::ffi::ffi_error_test_guard();
 
     // SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
     unsafe {
@@ -1001,6 +1003,8 @@ fn c_abi_set_style_reaches_the_widget_style_record() {
     use std::ffi::CString;
 
     let c = |s: &str| CString::new(s).expect("no interior NUL");
+    // The last-error slot is process-wide; hold the guard for the refusal → code sequence.
+    let _error_slot = crate::error::ffi::ffi_error_test_guard();
 
     let title = c("style-window");
     let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
@@ -1167,6 +1171,9 @@ fn c_abi_layout_entry_points_move_the_widgets() {
 fn c_abi_property_errors_are_distinguishable() {
     use std::ffi::CString;
     let c = |s: &str| CString::new(s).expect("no interior NUL");
+    // The last-error slot is process-wide; hold the guard so no parallel test clears it between
+    // a failing call and the `rw_error_code` assertion below.
+    let _error_slot = crate::error::ffi::ffi_error_test_guard();
 
     // SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
     unsafe {
@@ -1210,6 +1217,8 @@ fn c_abi_set_widget_property_rejects_unknown_value_kind() {
     use std::ffi::CString;
 
     let c = |s: &str| CString::new(s).expect("no interior NUL");
+    // The last-error slot is process-wide; hold the guard for the clear → call → read sequence.
+    let _error_slot = crate::error::ffi::ffi_error_test_guard();
 
     // SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
     unsafe {

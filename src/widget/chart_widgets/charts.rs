@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 //! Chart implementations: Line, Bar, Pie, Scatter, Area.
+//!
+//! # Which layer this is (principle #49)
+//!
+//! This module is the **data-model chart engine**: it owns the axis ranges, series model and the
+//! `ChartType` superset (waterfall, candlestick, …), and the factory's generic `chart` kind builds
+//! it (`chart_widgets/types.rs`). The per-kind widgets in this directory (`line_chart.rs`,
+//! `bar_chart.rs`, `pie_chart.rs`) are the **control layer**: they publish capability properties and
+//! events, and `data_binding/chart.rs` drives them. The two are not duplicates of one another — they
+//! serve different consumers — so neither replaces the other; see `docs/issues/issue-20261111.md`
+//! R-26 for the measurement that established this.
 
 use crate::widget::chart_widgets::types::*;
 // svg used for chart rendering

@@ -97,7 +97,6 @@ thread_local! {
 /// cost of every lookup for no extra safety (REND-14); it now hashes the length plus the first and
 /// last eight bytes, which still distinguishes the strings a label cache actually sees (a status
 /// line that ends differently, a number that grew) without reading the middle again.
-#[cfg(feature = "gpu-wgpu")]
 pub(crate) fn text_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u64) {
     text_measurement_fingerprint(text, font, scale)
 }
@@ -107,7 +106,6 @@ pub(crate) fn text_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u64
 /// A cache that stores shaped or rasterised text must record this value with its entry: the
 /// epoch is what makes an entry built against a previously-resolved face unreachable instead of
 /// silently stale (see [`invalidate_text_measurements`]).
-#[cfg(feature = "gpu-wgpu")]
 pub(crate) fn text_metrics_epoch() -> u64 {
     TEXT_METRICS_EPOCH.load(Ordering::Relaxed)
 }

@@ -2496,10 +2496,10 @@ pub(crate) fn mount_surface_native(
     content_view.addSubview(&canvas);
     canvas.setNeedsDisplay(true);
     // The view is being revealed, which is the platform repainting a surface the
-    // library just mounted; announce it like every other platform redraw. `notify_native_redraw`
+    // library just mounted; announce it like every other platform redraw. `notify_platform_surface_repaint`
     // is a full-widget-set item (it drives the repaint queue), so a stripped profile skips it.
     #[cfg(widgets_unstripped)]
-    crate::notify_native_redraw(id, None);
+    crate::notify_platform_surface_repaint(id, None);
 
     SURFACE_VIEWS
         .lock()

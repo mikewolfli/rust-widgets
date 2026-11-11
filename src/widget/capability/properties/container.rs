@@ -500,7 +500,7 @@ pub(crate) fn accordion_capability() -> WidgetCapability {
         aliases: &["collapsible_list"],
         properties: ACCORDION_PROPERTIES,
         events: events_of!("accordion"),
-        commands: &["set_single_expand", "set_animated"],
+        commands: &["set_single_expand", "set_animated", "set_expanded_sections"],
     }
 }
 

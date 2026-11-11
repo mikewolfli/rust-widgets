@@ -247,7 +247,20 @@ fn a_panel_factory_parents_its_children_and_nested_panels_re_layout() {
 
     let header_rect =
         rust_widgets::widget::runtime::geometry_of(header.raw_id()).expect("the header is mounted");
-    assert_eq!(header_rect, Rect::new(0, 0, 800, 30), "the north track is fixed");
+    // The window layout scales a track's logical extent by the device scale
+    // (`LayoutContext::default()` reads the platform's DPI/text scale), so the expected pixel
+    // height is `30 * scale`. Pinning a literal 30 passed only on a 96-DPI host and on the
+    // thread where the platform answers scale 1.0; a 99-DPI host legitimately rounds to 31.
+    let scale = {
+        let context = rust_widgets::layout::types::LayoutContext::default();
+        context.layout_scale.max(context.font_scale)
+    };
+    let north = (30.0 * scale).round() as u32;
+    assert_eq!(
+        header_rect,
+        Rect::new(0, 0, 800, north),
+        "the north track is fixed at its requested extent, scaled by the device"
+    );
 
     let parent_of =
         |id| rust_widgets::widget::runtime::with_widget(id, |widget| widget.parent()).flatten();
@@ -265,13 +278,17 @@ fn a_panel_factory_parents_its_children_and_nested_panels_re_layout() {
 
     let body_rect =
         rust_widgets::widget::runtime::geometry_of(body.raw_id()).expect("the body is mounted");
-    assert_eq!(body_rect, Rect::new(0, 30, 800, 570), "the center takes the rest");
+    assert_eq!(
+        body_rect,
+        Rect::new(0, north as i32, 800, 600 - north),
+        "the center takes the rest"
+    );
 
     let text_rect = rust_widgets::widget::runtime::geometry_of(body_text.raw_id())
         .expect("the nested label is mounted");
     assert_eq!(
         text_rect,
-        Rect::new(0, 30, 800, 570),
+        Rect::new(0, north as i32, 800, 600 - north),
         "the nested panel's own layout must run after its parent places it"
     );
 }

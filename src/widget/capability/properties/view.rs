@@ -450,6 +450,12 @@ pub(crate) fn grid_table_capability() -> WidgetCapability {
             "set_selection_mode",
             "set_sort_role",
             "set_sorting_enabled",
+            // R-23: the four appearance colours now have editable properties, so the designer's
+            // `set_<name>` route resolves to a real write instead of `UnknownCommand`.
+            "set_grid_color",
+            "set_header_bg",
+            "set_header_text_color",
+            "set_selected_bg",
         ],
     }
 }

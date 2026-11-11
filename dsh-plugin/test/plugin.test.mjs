@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { apply, inject, name } from '../lib/index.js'
+import { libraryVersion } from '../scripts/version.mjs'
 
 function mount() {
   let registered
@@ -54,4 +56,42 @@ test('a body that is no longer loadable resolves to undefined', async () => {
   const [skill] = await provider.list()
   const missing = { ...skill, locator: skill.locator.replace(/SKILL\.md$/u, 'MISSING.md') }
   assert.equal(await provider.get(missing, {}), undefined)
+})
+
+test('the package version tracks the library version', () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+  )
+  assert.equal(packageJson.version, libraryVersion())
+})
+
+test('the skill covers every companion crate and the whole CLI surface', async () => {
+  const provider = mount()
+  const [skill] = await provider.list()
+  const { content } = await provider.get(skill, {})
+  // One entry per directory under `crates/`; a new crate without a line here is a
+  // skill that cannot route work on it.
+  for (const crate of [
+    'rust-widgets-cli',
+    'rust-widgets-suites',
+    'rust-widgets-font',
+    'rust-widgets-icons',
+    'mobile-services',
+  ]) {
+    assert.match(content, new RegExp(crate, 'u'), `the skill must name ${crate}`)
+  }
+  for (const command of ['check', 'json2rust', 'fmt', 'create']) {
+    assert.match(content, new RegExp(`\`rwui ${command}`, 'u'), `the skill must document rwui ${command}`)
+  }
+  assert.match(content, /default-features = false/u)
+  assert.match(content, /package\.json#version/u)
+})
+
+test('the skill names the repository areas it is expected to maintain', async () => {
+  const provider = mount()
+  const [skill] = await provider.list()
+  const { content } = await provider.get(skill, {})
+  for (const area of ['crates/', 'demo/', 'examples/', 'dsh-plugin/', 'docs/plans/', 'tools/']) {
+    assert.ok(content.includes(area), `the repository map must name ${area}`)
+  }
 })

@@ -244,6 +244,10 @@ pub fn classify(command: &RenderCommand) -> (CommandClass, &'static str) {
             CommandClass::MappedWithDivergence,
             "the GPU composites shaped coverage with the same ink; alpha rounding may differ by one LSB (§1.2 class B)",
         ),
+        RenderCommand::DrawTextRotated { .. } => (
+            CommandClass::MappedWithDivergence,
+            "the rotated mask is the reference coverage resampled once; the GPU composites the same bytes (§1.2 class B)",
+        ),
         RenderCommand::DrawTextDecorated { .. } => (
             CommandClass::MappedWithDivergence,
             "the bridge expands the rules into centred strokes; the glyph alpha may round one LSB (§1.2 B)",

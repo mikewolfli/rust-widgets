@@ -15,8 +15,41 @@
 
 use std::fs;
 use std::path::Path;
+use std::thread::JoinHandle;
 
 use rust_widgets::theme::{global_theme_manager, AppearanceMode, Theme};
+
+/// Starts registering an installed CJK face on a background thread.
+///
+/// # Why a thread
+///
+/// `register_system_cjk_font` reads and parses the first installed CJK family (a 20 MB `.ttc` on
+/// many hosts). The demos used to do that synchronously before creating the window, which cost
+/// the startup path several hundred milliseconds that the user sees as a slow launch. Nothing in
+/// that work needs the App, the theme or a window, so it overlaps them and the first frame joins.
+///
+/// Returns `None` when the worker cannot be spawned, which is not an error: the caller fallback
+/// in [`finish_cjk_face`] does the same work on its own thread.
+pub fn prewarm_cjk_face() -> Option<JoinHandle<Option<String>>> {
+    // A spawn failure is not an error: `finish_cjk_face` does the same work on its own thread.
+    // This crate has no logger dependency, and the caller reports the outcome either way.
+    std::thread::Builder::new()
+        .name("demo-cjk-face".to_string())
+        .spawn(rust_widgets::render::text::register_system_cjk_font)
+        .ok()
+}
+
+/// Waits for [`prewarm_cjk_face`] and returns the family that answered.
+///
+/// `None` as the handle means no worker was started, so the registration runs here — the same
+/// call, just not overlapped. A worker that panicked is also reported as `None` rather than
+/// propagated: a failed font registration must not take the demo down.
+pub fn finish_cjk_face(handle: Option<JoinHandle<Option<String>>>) -> Option<String> {
+    match handle {
+        Some(worker) => worker.join().ok().flatten(),
+        None => rust_widgets::render::text::register_system_cjk_font(),
+    }
+}
 
 /// Name of the dark palette [`apply_appearance_mode`] registers.
 pub const MACOS_DARK: &str = "macos-dark";

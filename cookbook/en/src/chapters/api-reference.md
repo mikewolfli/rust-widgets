@@ -2078,94 +2078,71 @@ pub struct ActionRouter { /* ... */ }
 impl ActionRouter {
     pub fn new() -> Self;
     pub fn route(&self, action_id: &str, kind: ActionHostKind) -> Option<ObjectId>;
-    pub fn connect_undo_redo_stack(&mut self, stack: Arc<Mutex<UndoManager>>) -> bool;
+    pub fn connect_undo_redo<U, R>(&mut self, undo: U, redo: R) -> bool
+        where U: FnMut() + Send + Sync + 'static,
+              R: FnMut() + Send + Sync + 'static;
 }
 ```
 
 ### Undo / Redo
 
-`connect_undo_redo` binds two closures to the platform accelerators. The stack
-types below record *what* an action did, so a host does not have to build the
-history itself.
+Two layers, on purpose:
+
+* `crate::undo` is the **history**: commands implement `UndoCommand`, and `UndoStack` stores
+  them with merge policies and a clean/saved revision.
+* `ActionRouter::connect_undo_redo` binds the platform accelerators (Ctrl/Cmd+Z and the redo
+  chord) to two closures of yours. It does not own a stack, so the history stays the host's.
 
 ```rust
-pub const DEFAULT_UNDO_LIMIT: usize = 256;
-pub const GLOBAL_UNDO_CONTEXT: &str = "";
+use rust_widgets::undo::{CommandDescription, CommandId, MergePolicy, UndoCommand, UndoStack};
 
-pub struct Command { /* ... */ }
-impl Command {
-    pub fn new<U, R>(label: impl Into<String>, undo: U, redo: R) -> Self
-        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
-    pub fn label(&self) -> &str;
-    pub fn is_empty(&self) -> bool;
+pub const DEFAULT_UNDO_CAPACITY: usize = 1000;
+
+pub trait UndoCommand {
+    fn id(&self) -> CommandId;
+    fn description(&self) -> CommandDescription;
+    fn execute(&mut self) -> Result<(), String>;
+    fn undo(&mut self) -> Result<(), String>;
+    fn redo(&mut self) -> Result<(), String>;      // default: execute
+    fn merge_policy(&self) -> MergePolicy;        // default: Never
+    fn try_merge(&mut self, previous: &dyn UndoCommand) -> bool; // default: false
 }
 
 pub struct UndoStack { /* ... */ }
 impl UndoStack {
-    pub fn new() -> Self;
-    pub fn with_limit(limit: usize) -> Self;
-    pub fn limit(&self) -> usize;
-    pub fn set_limit(&mut self, limit: usize);
-    pub fn push(&mut self, command: Command);
-    pub fn record<U, R>(&mut self, label: impl Into<String>, undo: U, redo: R)
-        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
-    pub fn begin_group(&mut self, label: impl Into<String>);
-    pub fn end_group(&mut self) -> bool;
-    pub fn is_group_open(&self) -> bool;
-    pub fn undo(&mut self) -> Option<String>;
-    pub fn redo(&mut self) -> Option<String>;
+    pub fn new() -> Self;                         // DEFAULT_UNDO_CAPACITY entries
+    pub fn with_capacity(max: usize) -> Self;
+    pub fn push(&mut self, command: Box<dyn UndoCommand>);
+    pub fn undo(&mut self) -> Result<(), String>;
+    pub fn redo(&mut self) -> Result<(), String>;
     pub fn can_undo(&self) -> bool;
     pub fn can_redo(&self) -> bool;
-    pub fn undo_len(&self) -> usize;
-    pub fn redo_len(&self) -> usize;
-    pub fn is_dirty(&self) -> bool;
-    pub fn mark_saved(&mut self);
+    pub fn undo_count(&self) -> usize;
+    pub fn redo_count(&self) -> usize;
+    pub fn undo_text(&self) -> Option<String>;    // label for a menu entry
+    pub fn redo_text(&self) -> Option<String>;
+    pub fn mark_clean(&mut self);
+    pub fn is_clean(&self) -> bool;               // "no unsaved changes"
     pub fn clear(&mut self);
-}
-
-pub struct UndoManager { /* ... */ }
-impl UndoManager {
-    pub fn new() -> Self;
-    pub fn with_limit(limit: usize) -> Self;
-    pub fn active_context(&self) -> &str;
-    pub fn set_active_context(&mut self, context: impl Into<String>) -> String;
-    pub fn stack_for(&self, context: &str) -> Option<&UndoStack>;
-    pub fn stack(&self) -> &UndoStack;
-    pub fn stack_mut(&mut self) -> &mut UndoStack;
-    pub fn contexts(&self) -> Vec<String>;
-    pub fn push(&mut self, command: Command);
-    pub fn record<U, R>(&mut self, label: impl Into<String>, undo: U, redo: R)
-        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
-    pub fn begin_group(&mut self, label: impl Into<String>);
-    pub fn end_group(&mut self) -> bool;
-    pub fn undo(&mut self) -> Option<String>;
-    pub fn redo(&mut self) -> Option<String>;
-    pub fn can_undo(&self) -> bool;
-    pub fn can_redo(&self) -> bool;
-    pub fn is_dirty(&self) -> bool;
-    pub fn mark_saved(&mut self);
-    pub fn clear(&mut self);
+    pub fn truncate_undo(&mut self, len: usize);
+    pub fn set_max_capacity(&mut self, max: usize);
+    pub fn seal_merge_run(&mut self);             // one-shot merge barrier
 }
 ```
 
-Record one step from its two closures, then replay it:
+A push clears the redo pile (the history has branched). A command whose `merge_policy` allows it
+is merged into the entry on top, so a typing burst becomes one step; `seal_merge_run` stops that
+merging at a deliberate boundary. Wire the accelerators once:
 
 ```rust
-let mut stack = UndoStack::new();
-stack.record("insert_text", move || remove(), move || insert_again());
-if stack.can_undo() {
-    stack.undo();
-}
+let mut router = ActionRouter::new();
+router.connect_undo_redo(move || { let _ = stack.undo(); }, move || { let _ = stack.redo(); });
 ```
 
-A new command clears the redo pile (the history has branched).
-`UndoStack::begin_group` and `UndoStack::end_group` collapse every command pushed
-between them into one step that undoes in reverse order; nesting is allowed and
-only the outermost pair creates a boundary. `UndoManager` keeps one stack per
-focus context and routes `undo` / `redo` to the active one;
-`GLOBAL_UNDO_CONTEXT` is the initial context, so a single-stack host never calls
-`set_active_context` at all. `ActionRouter::connect_undo_redo_stack` binds the
-platform undo/redo accelerators to the active stack.
+> **Changed 2026-11-11 (issue-20261111 R-24).** The older undo API in the `action` module
+> (its `Command`, `UndoStack` and `UndoManager` types, plus the router's stack-binding method) was a
+> second undo system with zero callers. It was removed; `crate::undo` is the only history
+> implementation.
 
 ---
 

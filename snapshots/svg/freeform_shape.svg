@@ -3,6 +3,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(46,46,48,1.00)" />
-  <path d="M 120 0 L 135 34 L 172 30 L 150 60 L 172 90 L 135 86 L 120 120 L 105 86 L 68 90 L 90 60 L 68 30 L 105 34 Z" fill="rgba(225,225,225,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 120 0 L 135 34 L 172 30 L 150 60 L 172 90 L 135 86 L 120 120 L 105 86 L 68 90 L 90 60 L 68 30 L 105 34 Z" fill="none" stroke="rgba(136,136,137,1.00)" stroke-width="2" />
+  <path d="M 120 0 L 138 36 L 177 41 L 149 69 L 155 109 L 120 90 L 85 109 L 91 69 L 63 41 L 102 36 Z" fill="rgba(225,225,225,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 120 0 L 138 36 L 177 41 L 149 69 L 155 109 L 120 90 L 85 109 L 91 69 L 63 41 L 102 36 Z" fill="none" stroke="rgba(136,136,137,1.00)" stroke-width="2" />
 </svg>

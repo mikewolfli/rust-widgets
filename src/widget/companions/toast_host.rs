@@ -23,6 +23,13 @@ use super::helpers::{expect_token, surface_ink};
 // ---------------------------------------------------------------------------
 
 /// Where a toast host anchors its rows.
+///
+/// # Relationship to `ToastStack`'s anchor
+///
+/// The host accepts the four corners plus two centred positions; `ToastStack` implements only
+/// the corners. The two are therefore distinct types (principle #49), not duplicate spellings:
+/// this six-position set is a strict superset, and the stack's anchor converts into it through
+/// `From`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToastAnchor {
     /// Top-left.
@@ -70,32 +77,11 @@ impl ToastAnchor {
 }
 
 /// Which end of a toast host receives the newest row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ToastStackingDirection {
-    /// Newest toast at the top of the stack.
-    #[default]
-    NewestAtTop,
-    /// Newest toast at the bottom of the stack.
-    NewestAtBottom,
-}
-
-impl ToastStackingDirection {
-    /// The published token.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ToastStackingDirection::NewestAtTop => "newest_at_top",
-            ToastStackingDirection::NewestAtBottom => "newest_at_bottom",
-        }
-    }
-    /// Parses the published token.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "newest_at_top" => Some(ToastStackingDirection::NewestAtTop),
-            "newest_at_bottom" => Some(ToastStackingDirection::NewestAtBottom),
-            _ => None,
-        }
-    }
-}
+///
+/// The toast stack owns the single definition (principle #54); this path is the companion's
+/// historical spelling of the same type. The host's constructor states `NewestAtTop` explicitly,
+/// which is its historical default.
+pub use crate::widget::special_widgets::toast::ToastStackingDirection;
 
 /// What a toast host does when a push arrives and every slot is full.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

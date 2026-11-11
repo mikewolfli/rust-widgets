@@ -115,6 +115,23 @@ fn main() {
 Window creation, the event loop, layout, theming, i18n and the C ABI each have their own chapter —
 start at [`cookbook/en/src/README.md`](cookbook/en/src/README.md).
 
+## Development paradigms: touch scaffold or desktop workbench
+
+The library ships two composition paradigms, and an application picks one from a **runtime** fact
+(the primary display's width), never from the operating system:
+
+| Viewport | Paradigm | Control |
+|---|---|---|
+| narrower than 840 logical px | AppBar + bottom navigation + FAB + body/drawer | `AdaptiveScaffold` (built with `AdaptiveScaffoldBuilder`) |
+| 840 px or wider | independent top-level windows with cascade/tile | `SdiWorkbench`, or `MdiArea` for panes inside one window |
+
+[`examples/paradigm_selection.rs`](examples/paradigm_selection.rs) is the complete decision —
+one `match`, no `cfg(target_os)` — and the control demo shows both paradigms side by side. The
+scaffold's own breakpoints (bottom bar / rail / drawer) use the same width, so the outer choice and
+the scaffold's internal adaptation cannot disagree. Both paradigms are ordinary controls: mount
+them on a surface like any other control.
+
+
 ## How it fits together
 
 A control is handed a rectangle by whatever placed it, and that rectangle is the area it **may**
@@ -146,7 +163,7 @@ package; a host opts in explicitly.
 | `rust-widgets-font` | The OFL font payloads behind the `fonts-*` features, split out so the core package stays under crates.io's 10 MiB ceiling. | Implicitly, by enabling a `fonts-*` feature. Do not depend on it directly. |
 | `rust-widgets-suites` | Seven optional control groups — `form`, `webview`, `finance`, `maps`, `project`, `devtools`, `media-playback` — **39 controls** with the same property, event, layout, wiring and accessibility surfaces as a core control. The web family that used to be the separate `rust-widgets-webview` crate is now the `webview` group. | `rust_widgets_suites::install(&mut factory)`, or one group's `install_*_group`. |
 | `mobile-services` | Mobile application-shell services for Android, iOS and HarmonyOS: keep-awake, haptics, permissions, notifications, share, deep links, safe-area insets and orientation lock. Not GUI core. | `rust_widgets_mobile_services::*` on a mobile target; a desktop build never links it. |
-| `rust-widgets-cli` | The designer CLI, binary `rwui`: validate a project bundle (`check`), generate committed Rust from it (`json2rust`, with `--check` for drift), and normalise a document (`fmt`). It drives the library's own generator, so it cannot disagree with it. CSS cascade and reverse parsing are later BLUE31 stages, not part of this binary yet. | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`. |
+| `rust-widgets-cli` | The designer CLI, binary `rwui`: validate a project bundle (`check`), generate committed Rust from it (`json2rust`, with `--check` for drift), normalise a document (`fmt`), and scaffold a runnable project for one device profile (`create`). It drives the library's own generator, so it cannot disagree with it. CSS cascade and reverse parsing are later BLUE31 stages, not part of this binary yet. | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`. |
 
 The suites crate is not a workspace member: it depends on `rust_widgets`, never the reverse, and
 the parent package's `include` list excludes `crates/**`, so `cargo package` at the root neither
@@ -235,7 +252,7 @@ exercised in CI, and the generated header is checked for drift by `tools/check_a
 | [`docs/log/`](docs/log/) | Per-round engineering logs |
 | [`docs/reports/`](docs/reports/) | Audit and quality reports |
 | [`control.md`](control.md) | The widget gallery, generated from the registry |
-| [`crates/rust-widgets-cli`](crates/rust-widgets-cli) | `rwui` — check a project bundle, generate Rust from it, normalise a document |
+| [`crates/rust-widgets-cli`](crates/rust-widgets-cli) | `rwui` — check a project bundle, generate Rust from it, normalise a document, scaffold a project |
 
 ## Agent skills (DSH)
 

@@ -306,7 +306,7 @@ impl WgpuRenderer {
     /// handle clone; a miss creates the texture and writes the pixels once.
     fn cached_texture(&self, source: &Arc<[u8]>, width: u32, height: u32) -> wgpu::TextureView {
         let key = TextureKey::new(source, width, height);
-        if let Some(view) = self.texture_cache.borrow().view(&key) {
+        if let Some(view) = self.texture_cache.borrow_mut().view(&key) {
             return view;
         }
         let texture = self.image_texture(width, height);
@@ -347,7 +347,7 @@ impl WgpuRenderer {
     /// content identity ([`TextCoverageKey`]), so a hit costs a hash lookup and a handle clone.
     pub(super) fn upload_text_draw(&self, rect: PixelRect, text: &str, color: Rgba8) -> TextDraw {
         let key = TextCoverageKey::new(text, rect.width, rect.height);
-        let cached = self.text_coverage_cache.borrow().view(&key, text);
+        let cached = self.text_coverage_cache.borrow_mut().view(&key, text);
         let view = match cached {
             Some(view) => view,
             None => {

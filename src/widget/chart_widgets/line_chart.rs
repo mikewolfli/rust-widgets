@@ -6,6 +6,13 @@
 //! The LineChart widget draws axes, optional grid lines, an optional filled area
 //! under the line, and a line connecting data points with configurable stroke.
 //! Axis ranges can be set manually or auto-computed from the data.
+//!
+//! # Which layer this is (principle #49)
+//!
+//! A **control**: it publishes capability properties/events and is the type
+//! `data_binding/chart.rs` drives. The axis/series model lives in `charts.rs`, the data-model
+//! engine the factory's generic `chart` kind builds; this widget is not a second implementation of
+//! it.
 
 //!
 //! # `enabled` and the chrome signals
@@ -2101,7 +2108,14 @@ impl Draw for LineChart {
         let (y_min, y_max) = self.resolve_y_range();
 
         let is_enabled = self.base.is_enabled();
-        let disabled_color = Color::DISABLED_FOREGROUND;
+        // R-21: derive the disabled chrome from the active surface instead of pinning it to
+        // `#999999`; the rule and the weight are the ones `BaseWidget::disabled_ink_on` owns.
+        let chart_surface =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let disabled_color = self.base.disabled_ink_on(
+            crate::widget::chart_widgets::charts::axis_chrome_color(0.45),
+            chart_surface,
+        );
 
         // ── Backdrop: axes, grid and tick labels ──
         #[cfg(feature = "chart")]

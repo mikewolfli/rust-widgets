@@ -705,6 +705,9 @@ impl DataGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the desktop-only pointer tests below send events, and they are gated the same way; an
+    // unconditional import was therefore unused in the tablet and mobile builds.
+    #[cfg(all(device_profile, feature = "desktop"))]
     use crate::event::EventHandler;
 
     struct Source {

@@ -200,37 +200,11 @@ fn split_action_from_record(
 }
 
 /// Where a split button's drop-down opens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PopupDirection {
-    /// Below the face, the conventional placement.
-    #[default]
-    Down,
-    /// Above the face.
-    Up,
-    /// Below when it fits, above when the window has no room below.
-    Auto,
-}
-
-impl PopupDirection {
-    /// The property spelling.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            PopupDirection::Down => "down",
-            PopupDirection::Up => "up",
-            PopupDirection::Auto => "auto",
-        }
-    }
-
-    /// Parses a property spelling.
-    pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "down" => PopupDirection::Down,
-            "up" => PopupDirection::Up,
-            "auto" => PopupDirection::Auto,
-            _ => return None,
-        })
-    }
-}
+///
+/// The menu family owns the single definition (principle #54); this path is the split button's
+/// historical spelling of the same type. The enum's [`Default`] is `Auto`, so the field below
+/// states `Down` explicitly to keep this control's historical placement.
+pub use crate::widget::menu_toolbar::menu::PopupDirection;
 
 /// SplitButton provides a default primary action plus selectable alternatives.
 ///
@@ -293,7 +267,7 @@ impl SplitButton {
             hovered_arrow: false,
             arrow_width: dimensions::SPLIT_ARROW_COLUMN_WIDTH,
             row_height: 22,
-            popup_direction: PopupDirection::default(),
+            popup_direction: PopupDirection::Down,
             max_menu_height: None,
             menu_scroll: 0,
             triggered: Signal1::new(),
@@ -2187,6 +2161,20 @@ mod tests {
             trigger_box.x - primary.x,
             dimensions::SPLIT_BUTTON_PADDING_H as i32,
             "and that amount is the named constant, not a literal"
+        );
+    }
+
+    /// The split button's `PopupDirection` and the menu's are one type (principle #54).
+    #[test]
+    fn popup_direction_is_the_menu_definition() {
+        fn same_type(
+            direction: PopupDirection,
+        ) -> crate::widget::menu_toolbar::menu::PopupDirection {
+            direction
+        }
+        assert_eq!(
+            same_type(PopupDirection::Up),
+            crate::widget::menu_toolbar::menu::PopupDirection::Up
         );
     }
 }

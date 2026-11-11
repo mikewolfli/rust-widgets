@@ -2,9 +2,9 @@
   "skills": [
     {
       "name": "rust-widgets-maintainer",
-      "description": "Maintain, extend and audit the rust-widgets Rust GUI library. Use when changing controls, layouts, rendering, platform backends, the code editor, capability metadata, JSON layout loading, or running the repository's validation gates.",
+      "description": "Maintain, extend and audit the rust-widgets Rust GUI library and everything beside it. Use when changing controls, layouts, rendering, platform backends, the code editor, capability metadata, JSON layout loading, the rust-widgets-cli `rwui` tool (check, json2rust, fmt, create), the suites/font/icon/mobile-services crates, the demo applications, this DSH plugin, or running the repository's validation gates.",
       "directory": "rust-widgets-maintainer",
-      "whenToUse": "Load when working inside the rust-widgets repository on a coding, review, or validation task."
+      "whenToUse": "Load when working inside the rust-widgets repository on a coding, review, or validation task, including tasks that touch `crates/`, `demo/`, `examples/`, or `dsh-plugin/`."
     }
   ]
 }

@@ -83,7 +83,15 @@ impl EditorChrome {
         // Borrowed: `resolve` only reads the style. The clone copied the whole
         // `WidgetStyle` (`Font.family` string and gradient stops) once per editor frame.
         let style = editor.base.style();
-        let theme = crate::style::resolved_theme_style_shared("code_editor");
+        // Resolve the control's **own** kind plus its current interaction state. `CodeEditor`
+        // reports `WidgetKind::RichEdit`, so `apply_active_theme` keys the shared style by
+        // `rich_edit`; this chrome is authored against the `code_editor` name, and asking for the
+        // state here is what makes `code_editor:disabled` reachable rather than data no path reads.
+        let theme = crate::style::resolved_theme_style_for_state_shared(
+            "code_editor",
+            editor.widget_state(),
+        )
+        .or_else(|| crate::style::resolved_theme_style_shared("code_editor"));
 
         // Explicit style first, then the theme's resolved style for this control, then
         // the light preset's literal. That field order is the documented precedence, so a
@@ -122,10 +130,22 @@ impl EditorChrome {
         // `surface_container`; a background the caller wrote itself
         // (`theme_derived == false`) is still taken as-is.
         let caller_surface = if style.theme_derived { None } else { style.background_color };
-        let surface =
-            caller_surface.or(themed_surface).or(themed_bg).unwrap_or(editor.palette.background);
+        let disabled = !editor.base.is_enabled();
+        // A disabled editor takes the `code_editor:disabled` fill (the palette's own disabled
+        // token) ahead of the raised document surface, so the buffer reads as inert; a caller's
+        // own surface still wins in every state.
+        let surface = caller_surface
+            .or(if disabled { themed_bg } else { themed_surface })
+            .or(themed_surface)
+            .or(themed_bg)
+            .unwrap_or(editor.palette.background);
+        // Ink and outline recede toward the surface they are painted on when the editor is
+        // disabled. This is the crate's single disabled-ink rule, so the editor reads as inert
+        // exactly like a disabled field even in a build with no theme active.
         let ink = pick(style.text_color, themed_ink, editor.palette.color_for(TokenKind::Plain));
+        let ink = editor.base.disabled_ink_on(ink, surface);
         let border = pick(style.border_color, themed_border, editor.palette.border_color);
+        let border = editor.base.disabled_ink_on(border, surface);
 
         // The accent was read with the surface above (one palette snapshot).
 

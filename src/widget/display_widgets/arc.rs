@@ -752,23 +752,29 @@ impl Draw for Arc {
         let rect = self.geometry();
         let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
         let is_enabled = self.base.is_enabled();
+        // R-21: the disabled tone is derived from the active surface through the shared
+        // `disabled_ink_on` rule instead of a fixed `#999999`.
+        let enabled_ink = self.style().text_color.unwrap_or(Color::rgb(0, 120, 215));
+        let chart_surface =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let disabled_ink = self.base.disabled_ink_on(enabled_ink, chart_surface);
 
         // Resolve colors from style overrides, falling back to defaults. A disabled arc
         // follows the same family rule as `progress_circle`: the track fades toward the
-        // disabled foreground and the value ink is the disabled tone.
+        // disabled ink and the value ink is the disabled tone.
         let track_color = if is_enabled {
             self.style().background_color.unwrap_or(Color::rgb(220, 220, 220))
         } else {
             self.style()
                 .background_color
                 .unwrap_or(Color::rgb(220, 220, 220))
-                .blend(&Color::DISABLED_FOREGROUND, 0.5)
+                .blend(&disabled_ink, 0.5)
         };
 
         let arc_color = if is_enabled {
             self.style().text_color.unwrap_or(Color::rgb(0, 120, 215))
         } else {
-            Color::DISABLED_FOREGROUND
+            disabled_ink
         };
 
         // Radius is half the smaller dimension minus a small inset.
@@ -935,7 +941,7 @@ impl Draw for Arc {
                 let text_color = if is_enabled {
                     self.style().text_color.unwrap_or(Color::rgb(0, 0, 0))
                 } else {
-                    Color::DISABLED_FOREGROUND
+                    disabled_ink
                 };
                 context.draw_text(
                     Point::new(text_x, text_y),

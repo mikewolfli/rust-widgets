@@ -1605,6 +1605,15 @@ impl WidgetProperties for Label {
             "text_format" => Ok(CapabilityValue::String(self.text_format().as_str().to_string())),
             "open_external_links" => Ok(CapabilityValue::Bool(self.is_open_external_links())),
             "link_count" => Ok(CapabilityValue::UInt(self.links().len() as u64)),
+            // R-23: the one-character mnemonic, or the empty string when none is declared.
+            "mnemonic" => Ok(CapabilityValue::String(
+                self.mnemonic().map(|character| character.to_string()).unwrap_or_default(),
+            )),
+            // R-23: the buddy as the opaque `ObjectId` number, or `null` when unbound.
+            "buddy" => Ok(match self.buddy() {
+                Some(id) => CapabilityValue::UInt(id),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -1656,6 +1665,31 @@ impl WidgetProperties for Label {
                 Ok(())
             }
             "link_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // R-23: an empty string clears the mnemonic; more than one character is a type
+            // mismatch rather than a silent truncation to the first character.
+            "mnemonic" => {
+                let text = expect_string(value)?;
+                let mut characters = text.chars();
+                let mnemonic = match (characters.next(), characters.next()) {
+                    (None, _) => None,
+                    (Some(character), None) => Some(character),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_mnemonic(mnemonic);
+                Ok(())
+            }
+            // R-23: the integer is the `ObjectId`; `null` clears the binding.
+            "buddy" => match value {
+                CapabilityValue::UInt(id) => {
+                    self.set_buddy(Some(id));
+                    Ok(())
+                }
+                CapabilityValue::Null => {
+                    self.set_buddy(None);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
             _ => base_property_set(self, name, value),
         }
     }
@@ -1672,6 +1706,8 @@ impl WidgetProperties for Label {
             "text_format",
             "open_external_links",
             "link_count",
+            "mnemonic",
+            "buddy",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -2949,6 +2985,33 @@ mod tests {
         for name in label.property_names() {
             assert!(label.get(name).is_ok(), "{name:?} is published but not readable");
         }
+    }
+
+    /// R-23: the mnemonic and buddy are capability properties, not only Rust setters.
+    ///
+    /// The mnemonic travels as a one-character string (empty clears it) and the buddy as the
+    /// opaque `ObjectId` number (`null` clears it). Both are asserted in both directions so a
+    /// designer can set what the control can read back.
+    #[test]
+    fn mnemonic_and_buddy_round_trip_as_properties() {
+        let mut label = Label::new("Name:".to_string(), Rect::new(0, 0, 80, 20));
+        assert_eq!(label.get("mnemonic"), Ok(CapabilityValue::String(String::new())));
+        assert_eq!(label.get("buddy"), Ok(CapabilityValue::Null));
+
+        label.set("mnemonic", CapabilityValue::String("N".to_string())).expect("one character");
+        assert_eq!(label.mnemonic(), Some('N'));
+        assert_eq!(label.get("mnemonic"), Ok(CapabilityValue::String("N".to_string())));
+        assert_eq!(
+            label.set("mnemonic", CapabilityValue::String("no".to_string())),
+            Err(CapabilityAccessError::TypeMismatch),
+            "a multi-character mnemonic is refused rather than truncated"
+        );
+
+        label.set("buddy", CapabilityValue::UInt(7)).expect("an id");
+        assert_eq!(label.buddy(), Some(7));
+        assert_eq!(label.get("buddy"), Ok(CapabilityValue::UInt(7)));
+        label.set("buddy", CapabilityValue::Null).expect("null clears");
+        assert_eq!(label.buddy(), None);
     }
 
     /// A buddy binding plus a mnemonic gives the label the keyboard route it lacked.

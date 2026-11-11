@@ -711,6 +711,17 @@ impl Platform for WasmPlatform {
         true
     }
 
+    /// Installs the canvas `ResizeObserver` for `window_id`.
+    ///
+    /// Delegates to [`WasmPlatform::observe_canvas_resize`], which is where the DOM work and
+    /// its honest `false` answers (no canvas, no `ResizeObserver`, non-wasm host) live. The
+    /// trait method exists so a host can reach the observation without naming this concrete
+    /// backend — the desktop backends answer `false` because their OS already delivers the
+    /// resize callback.
+    fn observe_canvas_resize(&self, window_id: crate::core::ObjectId) -> bool {
+        WasmPlatform::observe_canvas_resize(self, window_id)
+    }
+
     /// Mounts a widget onto a surface this host will present.
     ///
     /// See [`Self::supports_surfaces`] for what changed and why the canvas alone was not
@@ -823,33 +834,40 @@ impl Platform for WasmPlatform {
     /// * a host that already tracks its own layout and would rather report the size
     ///   itself than have the library observe the element.
     ///
-    /// Returns `false` when `window_id` addresses nothing, so a host that reports a
-    /// resize for a window it already dropped is told rather than silently ignored.
+    /// Returns `false` when the id addresses nothing **and** the crate queue refuses it, so a
+    /// host that reports a resize for a window it already dropped is told rather than silently
+    /// ignored.
     ///
-    /// # Why this does not just forward to the crate-level entry point
+    /// # Why this resolves two id spaces
     ///
     /// The other backends forward, because their `create_window` delegates to the control
-    /// backend, which then owns the window and its size record. **This** backend creates
-    /// its window in its own `BackendState` (see `create_window` above: it sizes the host
-    /// canvas directly), so the control backend has never heard of the id and its
-    /// `queue_resize_trigger` would refuse it. Recording the geometry here — where the
-    /// window actually lives — is what keeps the readback answerable.
+    /// backend, which then owns the window and its size record. **This** backend creates its
+    /// window in its own `BackendState` (see `create_window` above: it sizes the host canvas
+    /// directly), so the control backend has never heard of the *host* id. A host normally
+    /// holds the **widget** id instead, because that is what `rw_create_window` returns. Both
+    /// arrive here, so [`resize_ids`] translates at this boundary.
     ///
-    /// The trigger *event* is still queued through the crate-level entry point, because
-    /// that queue is what the host loop polls regardless of which backend created the
-    /// window. A refusal there (the id belongs to a control-backend window, as it does in
-    /// a host that built its window through `rw_create_window`) is harmless: the size is
-    /// already recorded, and the control backend queues its own event in that case.
+    /// The size is recorded against this backend's own record — where the window actually
+    /// lives — and the trigger is queued against the widget id, which is the id space the
+    /// control backend's queue, `window_client_size` and the layout pass all use.
+    ///
+    /// A refusal from the crate queue is **not** dismissed as harmless: if no widget owns the
+    /// id, no layout can follow the resize, and the `false` return says exactly that. The
+    /// previous body claimed "the control backend queues its own event in that case", which was
+    /// the opposite of what happened (the queue rejected the untranslated id and nothing was
+    /// queued at all).
     fn queue_resize_trigger(&self, window_id: u64, width: u32, height: u32) -> bool {
-        let Some((x, y, _, _)) = self.state.widget_geometry(window_id) else {
-            return false;
+        let (widget_id, host_id) = super::types::resize_ids(window_id);
+        let Some((x, y, _, _)) = self.state.widget_geometry(host_id) else {
+            // Not a window this backend created. Forwarding is still the right move: the id may
+            // belong to a control-backend window, and there the queue is the authority.
+            return crate::queue_resize_trigger(widget_id, width, height);
         };
         // Resize the record rather than adding a second size store: `window_size` reads
         // the record, so one write keeps the two views of "how big is this window"
         // (geometry and client size) from disagreeing.
-        self.state.set_geometry(window_id, x, y, width, height);
-        let _ = crate::queue_resize_trigger(window_id, width, height);
-        true
+        self.state.set_geometry(host_id, x, y, width, height);
+        crate::queue_resize_trigger(widget_id, width, height)
     }
 }
 
@@ -1006,11 +1024,20 @@ mod tests {
     }
 
     /// A resize reported through the backend must be readable back afterwards.
+    ///
+    /// The window here was created by the **backend**, so no widget owns it. The size is still
+    /// recorded (the readback must answer), but the trigger queue refuses an id no widget
+    /// backs — `false` is the honest answer, and the previous body's unconditional `true` was
+    /// exactly the "reported success for something that did not happen" shape this backend has
+    /// already been corrected for elsewhere.
     #[test]
-    fn a_reported_resize_is_readable_from_the_backend() {
+    fn a_reported_resize_is_recorded_even_without_an_owning_widget() {
         let p = make_platform();
         let win = p.create_window("test", 0, 0, 800, 600);
-        assert!(p.queue_resize_trigger(win, 1200, 900), "a live window must accept a resize");
+        assert!(
+            !p.queue_resize_trigger(win, 1200, 900),
+            "a backend-created window has no widget, so no layout trigger can be queued"
+        );
         assert_eq!(
             p.window_client_size(win),
             Some((1200, 900)),

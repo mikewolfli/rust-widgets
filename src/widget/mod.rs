@@ -303,8 +303,10 @@ pub use container_widgets::collapsible_pane::CollapsiblePane;
 pub use container_widgets::dockwidget::DockWidget;
 pub use container_widgets::groupbox::GroupBox;
 #[cfg(widgets_unstripped)]
-pub use container_widgets::mdiarea::MdiArea;
+pub use container_widgets::mdiarea::{MdiArea, MdiWindowMenuAction, MdiWindowMenuEntry};
 pub use container_widgets::scrollarea::{ScrollArea, StickyRegion};
+#[cfg(full_widgets)]
+pub use container_widgets::sdi_workbench::SdiWorkbench;
 #[cfg(widgets_unstripped)]
 pub use container_widgets::splitter::Splitter;
 #[cfg(widgets_unstripped)]
@@ -410,7 +412,7 @@ pub use icon_registry::{
 };
 // Re-export nav widgets
 #[cfg(full_widgets)]
-pub use nav_widgets::adaptive_scaffold::AdaptiveScaffold;
+pub use nav_widgets::adaptive_scaffold::{AdaptiveScaffold, AdaptiveScaffoldBuilder};
 #[cfg(full_widgets)]
 pub use nav_widgets::app_bar::AppBar;
 #[cfg(full_widgets)]

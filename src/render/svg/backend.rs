@@ -1047,6 +1047,40 @@ impl PaintBackend for SvgPaintBackend {
     ) {
         self.emit_text(origin, text, font, &color, alignment);
     }
+
+    /// Emits the same vector glyphs as [`Self::draw_text`], inside a rotation group.
+    ///
+    /// The glyph geometry is a path, so the SVG viewer applies the rotation to the outline
+    /// rather than to a pre-rasterised bitmap: the rotated label keeps its vector quality.
+    /// A negligible angle falls through to the plain path so an unrotated run is byte-identical.
+    fn draw_text_rotated(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: crate::core::HorizontalAlignment,
+        pivot: Point,
+        radians: f32,
+    ) {
+        if !radians.is_finite() || radians.abs() < 1e-4 {
+            self.draw_text(origin, text, font, color, alignment);
+            return;
+        }
+        let first = self.elements.len();
+        self.emit_text(origin, text, font, &color, alignment);
+        if self.elements.len() == first {
+            return;
+        }
+        let emitted: Vec<String> = self.elements.split_off(first);
+        self.push_element(format!(
+            r#"<g transform="rotate({:.4} {} {})">{}</g>"#,
+            radians.to_degrees(),
+            pivot.x,
+            pivot.y,
+            emitted.concat()
+        ));
+    }
     fn begin_frame(&mut self, clear: Color) {
         self.elements.clear();
         self.clip_depth = 0;
@@ -1270,6 +1304,15 @@ impl PaintBackend for SvgPaintBackend {
             RenderCommand::DrawText { origin, text, font, color, alignment } => {
                 self.emit_text(*origin, text, font, color, *alignment);
             }
+            RenderCommand::DrawTextRotated {
+                origin,
+                text,
+                font,
+                color,
+                alignment,
+                pivot,
+                radians,
+            } => self.draw_text_rotated(*origin, text, font, *color, *alignment, *pivot, *radians),
             RenderCommand::DrawTextDecorated {
                 origin,
                 text,
@@ -2571,6 +2614,7 @@ mod tests {
                 RenderCommand::DrawCircle { .. } => "DrawCircle",
                 RenderCommand::DrawCircleStroke { .. } => "DrawCircleStroke",
                 RenderCommand::DrawText { .. } => "DrawText",
+                RenderCommand::DrawTextRotated { .. } => "DrawTextRotated",
                 RenderCommand::DrawTextDecorated { .. } => "DrawTextDecorated",
                 RenderCommand::DrawImage { .. } => "DrawImage",
                 RenderCommand::DrawImageScaled { .. } => "DrawImageScaled",

@@ -7,4 +7,8 @@ publish = false
 [dependencies]
 # The appearance helpers register the library's own macOS presets, so this crate asks the
 # library rather than carrying a private palette table (DM3-1).
-rust_widgets = { path = "../.." }
+#
+# `runtime-fonts` is required by this crate's **own** code (`prewarm_cjk_face` calls
+# `register_system_cjk_font`). Relying on a dependent demo to enable it made a standalone
+# `cargo check` of this package fail: feature unification is not a manifest declaration.
+rust_widgets = { path = "../..", features = ["runtime-fonts"] }

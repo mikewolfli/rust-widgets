@@ -220,8 +220,7 @@ pub mod image;
 pub mod json;
 /// Layout managers.
 pub mod layout;
-/// Memory management utilities.
-pub mod memory;
+
 /// Advanced widgets (gated behind `advanced-widgets` feature).
 #[cfg(feature = "advanced-widgets")]
 pub mod menu_config;
@@ -352,8 +351,8 @@ pub use api::{
     is_window_in_state, last_frame_stats, list_box_add_item, list_box_clear_items,
     list_box_current_index, list_box_item_count, list_box_item_text, list_box_remove_item,
     list_box_set_current_index, menu_add_item, menu_item_icons_supported, menu_item_shortcut,
-    mount_surface, notify_native_redraw, platform_clipboard, platform_init, platform_quit,
-    platform_run, poll_drop_event, poll_menu_triggered, poll_widget_trigger_event,
+    mount_surface, notify_platform_surface_repaint, platform_clipboard, platform_init,
+    platform_quit, platform_run, poll_drop_event, poll_menu_triggered, poll_widget_trigger_event,
     poll_widget_triggered, queue_resize_trigger, reapply_active_theme, report_state,
     request_repaint_because, resize_surface, restore_save_state, runtime, runtime_gui_mode,
     runtime_gui_mode_for, schedule_on_main, set_animation_suspended, set_clipboard_text,
@@ -375,31 +374,31 @@ pub use api::{
     advanced_widgets, census, chart_widgets, composite, cupertino, dialog, media_widgets,
     menu_close, menu_open_at, menu_toolbar, misc_widgets, nav_widgets, overlay_widgets,
     sample_fill, special_widgets, view_widgets, Action, ActivityIndicator, AdaptiveScaffold,
-    AnimatedFrame, AnimatedImage, AnimatedImageFormat, AppBar, Avatar, Banner, BarChart, BarEntry,
-    BarcodeFormat, BarcodeResult, BarcodeScanner, BezierCurveEditor, BottomNavigationBar,
-    BottomSheet, Breadcrumb, BreadcrumbSegment, Calendar, Canvas, Cascader, CascaderOption, Chart,
-    ChartWidget, CheckListBox, Chip, ChipItem, ColorDialog, ColorPicker, ColumnFilter, ColumnView,
-    CommandEntry, CommandPalette, CompletedMention, ContextMenu, CupertinoAlertDialog,
-    CupertinoDatePicker, CupertinoNavigationBar, CupertinoSegmentedControl, CupertinoSlider,
-    CupertinoSwitch, DataGrid, DataView, DateEdit, DatePicker, DateRangePicker, DateTimeEdit,
-    DateTimePicker, Dial, Dialog, DirectoryDialog, DoubleSpinBox, DropZone, DropdownItem,
-    DropdownMenu, EmojiGlyph, EmojiPicker, FileDialog, FilterCondition, FilterConjunction,
-    FilterExpr, FilterField, FilterOperator, FindReplaceDialog, FontDialog, FreeformShape,
-    FreeformShapeWidget, GalleryImage, Grid, GridTable, GridTableWidget, GridViewHeader,
-    GridWidget, Heatmap, HeatmapCell, HeroAnimation, ImageGallery, InputDialog, KeySequenceEdit,
-    LineChart, ListModel, ListView, MaterialNavigationRail, MaterialSnackbar, Mention,
-    MentionCandidate, Menu, MenuBar, MenuButton, MenuItem, MessageBox, MobileDatePicker,
+    AdaptiveScaffoldBuilder, AnimatedFrame, AnimatedImage, AnimatedImageFormat, AppBar, Avatar,
+    Banner, BarChart, BarEntry, BarcodeFormat, BarcodeResult, BarcodeScanner, BezierCurveEditor,
+    BottomNavigationBar, BottomSheet, Breadcrumb, BreadcrumbSegment, Calendar, Canvas, Cascader,
+    CascaderOption, Chart, ChartWidget, CheckListBox, Chip, ChipItem, ColorDialog, ColorPicker,
+    ColumnFilter, ColumnView, CommandEntry, CommandPalette, CompletedMention, ContextMenu,
+    CupertinoAlertDialog, CupertinoDatePicker, CupertinoNavigationBar, CupertinoSegmentedControl,
+    CupertinoSlider, CupertinoSwitch, DataGrid, DataView, DateEdit, DatePicker, DateRangePicker,
+    DateTimeEdit, DateTimePicker, Dial, Dialog, DirectoryDialog, DoubleSpinBox, DropZone,
+    DropdownItem, DropdownMenu, EmojiGlyph, EmojiPicker, FileDialog, FilterCondition,
+    FilterConjunction, FilterExpr, FilterField, FilterOperator, FindReplaceDialog, FontDialog,
+    FreeformShape, FreeformShapeWidget, GalleryImage, Grid, GridTable, GridTableWidget,
+    GridViewHeader, GridWidget, Heatmap, HeatmapCell, HeroAnimation, ImageGallery, InputDialog,
+    KeySequenceEdit, LineChart, ListModel, ListView, MaterialNavigationRail, MaterialSnackbar,
+    Mention, MentionCandidate, Menu, MenuBar, MenuButton, MenuItem, MessageBox, MobileDatePicker,
     ModalBottomSheet, NavItem, NavigationDrawer, NavigationEvent, NavigationStack,
     NotificationCenter, NotificationItem, NotificationLevel, Pagination, PieChart, PieMenu,
     PieMenuItem, PieSlice, Popover, PopupWindow, ProgressDialog, PropertiesPanel, PropertyEntry,
     PropertyGrid, PropertyItem, PropertyValue, PullToRefresh, QRCode, QueryBuilder,
     QueryBuilderRow, RadarChart, RailItem, RangePresetBar, RefreshControl, RibbonBar, RibbonGroup,
-    RibbonItem, Segment, SegmentItem, SegmentedButton, SegmentedControl, ShapeCanvas, SignaturePad,
-    SignatureStroke, Snackbar, SortSpec, Sparkline, SplashScreen, SplitAction, SplitButton,
-    StatusBar, SwipeToDismiss, TabBar, TabBarTab, TabPage, TabView, Table, TableModel, TableWidget,
-    TimeEdit, TimePicker, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
-    ToolBar, ToolButton, Tooltip, TreeModel, TreeTable, TreeTableModel, TreeView, UndoView,
-    VecListModel, VirtualList, VirtualTable, Wizard, WizardDialog, WizardStep, FAB,
+    RibbonItem, SdiWorkbench, Segment, SegmentItem, SegmentedButton, SegmentedControl, ShapeCanvas,
+    SignaturePad, SignatureStroke, Snackbar, SortSpec, Sparkline, SplashScreen, SplitAction,
+    SplitButton, StatusBar, SwipeToDismiss, TabBar, TabBarTab, TabPage, TabView, Table, TableModel,
+    TableWidget, TimeEdit, TimePicker, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel,
+    ToastStack, ToolBar, ToolButton, Tooltip, TreeModel, TreeTable, TreeTableModel, TreeView,
+    UndoView, VecListModel, VirtualList, VirtualTable, Wizard, WizardDialog, WizardStep, FAB,
 };
 
 // The editor controls are independent features, so their root re-exports are
@@ -420,12 +419,12 @@ pub use api::{
     CarouselIndicatorPosition, CarouselIndicatorStyle, CarouselPage, CollapsiblePane, ColorHistory,
     ColorWell, CommandLink, Divider, DockPanel, DockWidget, EditableComboBox, EmptyState,
     FloatingLabel, FontComboBox, FontPreview, Icon, IconRegistrationError, ImePreedit,
-    InplaceEditor, LCDNumber, MaskedEdit, MasonryItem, MasonryLayout, MdiArea, MultiSelectComboBox,
-    MultiSelectItem, NumberPicker, OtpInput, ProgressCircle, RangeSlider, RangeSliderOrientation,
-    Rating, RegisteredIcon, RichEdit, SafeArea, SafeAreaInsets, SearchBar, SearchBox,
-    ShortcutEditor, ShortcutEntry, SkeletonLoader, Splitter, StackedWidget, Stepper, TabWidget,
-    TagInput, TextEdit, ToggleButton, ToggleButtonState, ToolBox, Toolbox, WidgetAndDraw,
-    WidgetFactory, MAX_REGISTERED_ICONS,
+    InplaceEditor, LCDNumber, MaskedEdit, MasonryItem, MasonryLayout, MdiArea, MdiWindowMenuAction,
+    MdiWindowMenuEntry, MultiSelectComboBox, MultiSelectItem, NumberPicker, OtpInput,
+    ProgressCircle, RangeSlider, RangeSliderOrientation, Rating, RegisteredIcon, RichEdit,
+    SafeArea, SafeAreaInsets, SearchBar, SearchBox, ShortcutEditor, ShortcutEntry, SkeletonLoader,
+    Splitter, StackedWidget, Stepper, TabWidget, TagInput, TextEdit, ToggleButton,
+    ToggleButtonState, ToolBox, Toolbox, WidgetAndDraw, WidgetFactory, MAX_REGISTERED_ICONS,
 };
 
 // RW-101 fallout: `AutoCompleteEdit` is a `full_widgets` item in `api`, while the block above is
@@ -947,6 +946,19 @@ pub mod deprecated {
     )]
     pub fn supports_custom_widgets() -> bool {
         crate::supports_surfaces()
+    }
+
+    /// Deprecated alias of [`crate::notify_platform_surface_repaint`].
+    ///
+    /// Gated with its replacement: the `mini` profile has no widget runtime, so the
+    /// announcement has no ledger to reach there.
+    #[cfg(not(alloc_frugal))]
+    #[deprecated(
+        note = "renamed to `notify_platform_surface_repaint`; 'native' named a mechanism, and a \
+                platform-owned surface is what is being announced (principle #52)"
+    )]
+    pub fn notify_native_redraw(id: crate::core::ObjectId, rect: Option<crate::core::Rect>) {
+        crate::notify_platform_surface_repaint(id, rect)
     }
 
     /// Deprecated alias of [`crate::backend_handle`].

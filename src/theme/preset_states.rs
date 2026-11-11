@@ -54,6 +54,11 @@ const DISABLED_FADE: f32 = 0.55;
 ///
 /// * `button` / `toggle_button` / `tool_button` are the daily interactive fills, so they
 ///   get hover, pressed and disabled.
+/// * The input, container and view controls that report `Disabled` but carried no key
+///   (`line_edit`, `text_area`, `text_edit`, `accordion`, `splitter`, `tree_table`, `table`,
+///   `grid_table`, `code_editor`) get a `disabled` entry, derived from the palette's own
+///   `disabled` token. Without it the style re-resolution ran, found nothing, and disabling
+///   the control changed only whether it accepted input.
 /// * `check_box` / `radio_button` / `switch` latch a value, so they get `checked`.
 /// * The editable kinds get `:error`, which is the one state the `error` colour role had
 ///   no consumer for.
@@ -82,6 +87,40 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
                 ..ThemeStyleToken::default()
             },
         );
+        styles.insert(
+            format!("{kind}:{}", WidgetState::Disabled.state_suffix()),
+            ThemeStyleToken {
+                background: Some(colors.disabled),
+                foreground: Some(colors.background.blend(&ink, DISABLED_FADE)),
+                ..ThemeStyleToken::default()
+            },
+        );
+    }
+
+    // The remaining controls report the same four primitive interaction states but had no
+    // `:disabled` key, so disabling them only gated input: the style re-resolution ran, found
+    // no key, and the control kept its creation appearance. The kind names below are the
+    // **canonical** names `factory_name_for_kind` resolves, which is what
+    // `apply_active_theme` passes to the state lookup. Two of them are worth spelling out:
+    // `TextArea` resolves to `text_area` (its role classification normalises the underscore),
+    // and `TableWidget` shares `WidgetKind::Table`, whose canonical row is `table` rather
+    // than the `table_widget` factory alias — a `table_widget:disabled` key would be data no
+    // resolution path ever reads, which is the defect the `line_edit:error` note above records.
+    //
+    // The colours are the same pair the button family uses: the palette's own `disabled` token
+    // for the surface and a fade toward the preset's background for the ink, so a disabled
+    // field cannot drift to a literal grey on one appearance and stay readable on the other.
+    for kind in [
+        "line_edit",
+        "text_area",
+        "text_edit",
+        "accordion",
+        "splitter",
+        "tree_table",
+        "table",
+        "grid_table",
+        "code_editor",
+    ] {
         styles.insert(
             format!("{kind}:{}", WidgetState::Disabled.state_suffix()),
             ThemeStyleToken {
@@ -217,10 +256,11 @@ pub(super) fn preset_surface_overrides() -> BTreeMap<String, ThemeStyleToken> {
 /// test that pins the count read the same number rather than each hard-coding it. A
 /// preset with fewer keys than this means a state group was dropped.
 pub fn preset_state_key_count() -> usize {
-    // 4 push-button kinds x 3 states, 3 latching kinds x 1 `checked` + 1 chip `selected`,
-    // 1 `toggle_button:checked` (a **different** key shape from the three above — see the
-    // long note beside it: a checked toggle needs a deeper step of its own accent, not the
-    // plain `primary` the others take), 1 editable kind x 1 `error`.
+    // 4 push-button kinds x 3 states, 9 input/container/view kinds x 1 `disabled`,
+    // 3 latching kinds x 1 `checked` + 1 chip `selected`, 1 `toggle_button:checked` (a
+    // **different** key shape from the three above — see the long note beside it: a checked
+    // toggle needs a deeper step of its own accent, not the plain `primary` the others take),
+    // 1 editable kind x 1 `error`.
     //
     // The `toggle_button` term was missing when its key was added, and this number is what
     // `every_preset_family_carries_its_states` compares against — so the count said 26 while
@@ -231,7 +271,7 @@ pub fn preset_state_key_count() -> usize {
     // The error term fell from 10 to 1 in BLUE25 A-3: nine of the ten kinds declared a
     // refusal state no control could report, so their keys were removed rather than left as
     // data no theme author could observe. See the table's own comment for the rule.
-    4 * 3 + 3 + 1 + 1 + 1
+    4 * 3 + 9 + 3 + 1 + 1 + 1
 }
 
 #[cfg(test)]
@@ -252,6 +292,15 @@ mod tests {
             assert!(styles.contains_key("button:hover"));
             assert!(styles.contains_key("button:pressed"));
             assert!(styles.contains_key("button:disabled"));
+            assert!(styles.contains_key("line_edit:disabled"));
+            assert!(styles.contains_key("text_area:disabled"));
+            assert!(styles.contains_key("text_edit:disabled"));
+            assert!(styles.contains_key("accordion:disabled"));
+            assert!(styles.contains_key("splitter:disabled"));
+            assert!(styles.contains_key("tree_table:disabled"));
+            assert!(styles.contains_key("table:disabled"));
+            assert!(styles.contains_key("grid_table:disabled"));
+            assert!(styles.contains_key("code_editor:disabled"));
             assert!(styles.contains_key("check_box:checked"));
             assert!(styles.contains_key("chip:selected"));
             // The key that named a state no control reported: it must be gone, not merely

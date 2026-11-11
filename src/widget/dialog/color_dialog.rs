@@ -46,6 +46,26 @@ pub enum ColorDialogOption {
 /// on a picker of this size and still cheap enough to repaint with the dialog.
 const RAMP_STEPS: u32 = 32;
 
+/// One of `steps` contiguous strips that tile `rect` along one axis.
+///
+/// The strip **geometry** and the **colour position** are different quantities. The colour has to
+/// reach 1.0 on the last strip, so it is indexed by `step / (steps - 1)`; the strips themselves
+/// have to cover every pixel, so they are placed by `step / steps`. Using the colour base for the
+/// geometry leaves a one-pixel seam between every pair of strips, which the panel behind shows
+/// through — the defect that made the picker read as dark vertical stripes.
+fn ramp_strip(rect: Rect, step: u32, steps: u32, vertical: bool) -> Rect {
+    let steps = steps.max(1);
+    let (extent, origin) = if vertical { (rect.height, rect.y) } else { (rect.width, rect.x) };
+    let start = origin + (extent as f32 * step as f32 / steps as f32) as i32;
+    let end = origin + (extent as f32 * (step + 1) as f32 / steps as f32) as i32;
+    let length = (end - start).max(1) as u32;
+    if vertical {
+        Rect::new(rect.x, start, rect.width, length)
+    } else {
+        Rect::new(start, rect.y, length, rect.height)
+    }
+}
+
 /// Paints one saturation/value plane at `hue`.
 fn paint_sv_plane(context: &mut RenderContext, rect: Rect, hue: Color) {
     if rect.width == 0 || rect.height == 0 {
@@ -54,17 +74,13 @@ fn paint_sv_plane(context: &mut RenderContext, rect: Rect, hue: Color) {
     let steps = RAMP_STEPS.min(rect.width).max(1);
     for step in 0..steps {
         let t = step as f32 / (steps - 1).max(1) as f32;
-        let x = rect.x + (rect.width as f32 * t) as i32;
-        let next = rect.x + (rect.width as f32 * (step + 1) as f32 / steps as f32) as i32;
-        let strip = Rect::new(x, rect.y, (next - x).max(1) as u32, rect.height);
+        let strip = ramp_strip(rect, step, steps, false);
         context.fill_rect(strip, Color::WHITE.blend(&hue, t));
     }
     let steps = RAMP_STEPS.min(rect.height).max(1);
     for step in 0..steps {
         let t = step as f32 / (steps - 1).max(1) as f32;
-        let y = rect.y + (rect.height as f32 * t) as i32;
-        let next = rect.y + (rect.height as f32 * (step + 1) as f32 / steps as f32) as i32;
-        let strip = Rect::new(rect.x, y, rect.width, (next - y).max(1) as u32);
+        let strip = ramp_strip(rect, step, steps, true);
         context.fill_rect(strip, Color::BLACK.with_alpha((t * 255.0).round() as u8));
     }
 }
@@ -78,9 +94,7 @@ fn paint_alpha_rail(context: &mut RenderContext, rect: Rect, color: Color) {
     let steps = RAMP_STEPS.min(rect.width).max(1);
     for step in 0..steps {
         let t = step as f32 / (steps - 1).max(1) as f32;
-        let x = rect.x + (rect.width as f32 * t) as i32;
-        let next = rect.x + (rect.width as f32 * (step + 1) as f32 / steps as f32) as i32;
-        let strip = Rect::new(x, rect.y, (next - x).max(1) as u32, rect.height);
+        let strip = ramp_strip(rect, step, steps, false);
         context.fill_rect(strip, color.with_alpha((t * 255.0).round() as u8));
     }
 }
@@ -1338,10 +1352,7 @@ impl Draw for ColorDialog {
                 let steps = RAMP_STEPS.min(rail.height).max(1);
                 for step in 0..steps {
                     let t = step as f32 / (steps - 1).max(1) as f32;
-                    let y = rail.y + (rail.height as f32 * t) as i32;
-                    let next =
-                        rail.y + (rail.height as f32 * (step + 1) as f32 / steps as f32) as i32;
-                    let strip = Rect::new(rail.x, y, rail.width, (next - y).max(1) as u32);
+                    let strip = ramp_strip(rail, step, steps, true);
                     context.fill_rect(strip, color_from_hsv(t * 360.0, 1.0, 1.0, 255));
                 }
                 context.draw_rect(rail, border);
@@ -1753,6 +1764,37 @@ mod tests {
         assert!(dialog.no_buttons);
         dialog.set_option(ColorDialogOption::ShowPresetPalette, false);
         assert!(dialog.preset_rects().is_empty());
+    }
+
+    #[test]
+    fn the_ramp_strips_tile_their_rect_without_seams() {
+        // The picker's own size at the census rect: 220 x 32, ramped in 32 strips.
+        let rect = Rect::new(10, 38, 220, 32);
+        for steps in [1u32, 2, 7, 32] {
+            let mut next_x = rect.x;
+            let mut covered = 0u32;
+            for step in 0..steps {
+                let strip = ramp_strip(rect, step, steps, false);
+                assert_eq!(strip.x, next_x, "step {step}/{steps} starts where the previous ended");
+                assert!(strip.width > 0);
+                covered += strip.width;
+                next_x += strip.width as i32;
+            }
+            assert_eq!(covered, rect.width, "the strips cover the whole width once");
+            assert_eq!(next_x, rect.x + rect.width as i32);
+
+            let mut next_y = rect.y;
+            let mut covered = 0u32;
+            for step in 0..steps {
+                let strip = ramp_strip(rect, step, steps, true);
+                assert_eq!(strip.y, next_y);
+                assert!(strip.height > 0);
+                covered += strip.height;
+                next_y += strip.height as i32;
+            }
+            assert_eq!(covered, rect.height);
+            assert_eq!(next_y, rect.y + rect.height as i32);
+        }
     }
 
     #[test]

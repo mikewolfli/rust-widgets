@@ -170,9 +170,10 @@ pub struct LineEdit {
     pub context_menu_requested: Signal1<Point>,
     /// Emitted when the selected range changes.
     ///
-    /// Carries no payload because the range is read back through
-    /// [`Self::selection_range`], which is also what a keyboard or pointer extension updates.
-    pub selection_changed: GenericSignal,
+    /// Emitted with the selected `(start, end)` byte range, or `None` when the selection
+    /// collapses. The range is the same one [`Self::selection_range`] answers, so a subscriber
+    /// no longer has to read the control back to learn what changed.
+    pub selection_changed: Signal1<Option<(usize, usize)>>,
     /// Emitted with the new caret byte offset whenever it moves.
     pub cursor_position_changed: Signal1<usize>,
     /// Emitted when the value changes through a *user* edit path.
@@ -380,6 +381,10 @@ pub(super) struct LayoutCacheEntry {
     pub(super) revision: u64,
     pub(super) dpi_bits: u32,
     pub(super) font: Font,
+    /// The horizontal content inset the layout was computed with. Part of the key because a
+    /// style padding change moves the slots without changing any other input, and a stale
+    /// layout would leave the decoration boxes at the previous inset.
+    pub(super) padding_h: u32,
     pub(super) layout: DecorationLayout,
 }
 
@@ -436,7 +441,7 @@ impl LineEdit {
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
             context_menu_requested: Signal1::new(),
-            selection_changed: GenericSignal::new(),
+            selection_changed: Signal1::new(),
             cursor_position_changed: Signal1::new(),
             text_edited: Signal1::new(),
             action_triggered: Signal1::new(),
@@ -1020,7 +1025,8 @@ impl LineEdit {
             self.cursor_position_changed.emit(self.cursor_position);
         }
         if self.selection_start != before_selection {
-            self.selection_changed.emit();
+            let selection = self.selection_range();
+            self.selection_changed.emit(selection);
         }
         // Copyability follows the selection and the echo mode, so every caret move is a place it
         // can change; `refresh_edit_capabilities` emits only when the answer actually differs.
@@ -1301,7 +1307,7 @@ impl LineEdit {
             return;
         }
         self.selection_start = None;
-        self.selection_changed.emit();
+        self.selection_changed.emit(None);
         self.refresh_edit_capabilities();
         self.base.request_redraw();
     }

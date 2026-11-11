@@ -9,6 +9,7 @@
 mod app;
 mod bundle;
 mod cli;
+mod create;
 mod diagnostics;
 mod forward;
 

@@ -242,6 +242,32 @@
   "metrics_profile": "material",
   "overrides": {
     "styles": {
+      "accordion:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
       "button:disabled": {
         "background": {
           "r": 80,
@@ -347,6 +373,84 @@
           "r": 0,
           "g": 0,
           "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "code_editor:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "grid_table:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "line_edit:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
           "a": 255
         },
         "border": null,
@@ -477,6 +581,32 @@
         "material": null,
         "hairline": null
       },
+      "splitter:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
       "switch:checked": {
         "background": {
           "r": 100,
@@ -488,6 +618,84 @@
           "r": 0,
           "g": 0,
           "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "table:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "text_area:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "text_edit:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
           "a": 255
         },
         "border": null,
@@ -652,6 +860,32 @@
           "a": 255
         },
         "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "tree_table:disabled": {
+        "background": {
+          "r": 80,
+          "g": 80,
+          "b": 80,
+          "a": 255
+        },
+        "foreground": {
+          "r": 132,
+          "g": 132,
+          "b": 132,
+          "a": 255
+        },
         "border": null,
         "border_width": null,
         "radius": null,

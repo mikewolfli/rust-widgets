@@ -52,8 +52,6 @@ ITEM = re.compile(
 # `mod.rs` files that still define items, with the extraction each one needs. Keyed by
 # path; the value is the seam. Removing an entry from this table is the fix.
 MOD_RS_PENDING: dict[str, str] = {
-    "src/action/mod.rs": "the action data types → `action/types.rs` (mod.rs keeps the declarations and re-exports)",
-    "src/data_binding/mod.rs": "the `PropertySink` trait and its adapters → `data_binding/sink.rs`",
     "src/menu_config/mod.rs": "the JSON converters → `menu_config/json.rs`",
     "src/widget/base_widgets/mod.rs": "`AutoRepeat` and its helpers → `base_widgets/auto_repeat.rs`",
 

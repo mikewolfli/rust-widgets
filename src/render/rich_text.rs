@@ -6,6 +6,15 @@
 //! A `RichText` is a sequence of `TextSpan` values, each with its own `TextStyle`.
 //! Use the `add_span` / `add_text` builders to compose styled text, then call
 //! `measure()` to obtain the overall dimensions.
+//!
+//! # Relationship to the widget-layer span types
+//!
+//! [`TextSpan`] here is a paint-time run: owned text plus a resolved [`TextStyle`]. The editable
+//! document models have their own range-based types (`textedit::TextSpan`/`CharFormat` and
+//! `rich_edit::TextSpan`/`CharFormat`), which store byte ranges and character attributes instead.
+//! The roles are different — "how is this text drawn" versus "which bytes carry which
+//! attributes" — so the types are deliberately separate rather than duplicate definitions
+//! (principles #49 and #51).
 
 use core::cell::RefCell;
 

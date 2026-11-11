@@ -41,9 +41,8 @@ pub(crate) use containers::invalidate_text_measurements;
 
 // The one text fingerprint and the epoch that invalidates it, shared with the shaped-coverage
 // cache in `render::text::coverage`. A second spelling of the key would drift from the one the
-// software surface's own measurement cache uses. Both the cache and its consumers exist only with
-// the GPU feature.
-#[cfg(feature = "gpu-wgpu")]
+// software surface's own measurement cache uses. The coverage module is compiled wherever text is
+// drawn (the rotated-text path uses it on every backend), so these are not GPU-only.
 pub(crate) use containers::{text_fingerprint, text_metrics_epoch};
 
 // The one conic rasteriser and its ramp builder, shared by `fill_rect_gradient` and the
@@ -60,7 +59,6 @@ pub(crate) use containers::gradient_ramp_lut;
 pub(crate) use pixel_ops::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_saturating};
 
 // The glyph geometry both renderers read.
-#[cfg(feature = "gpu-wgpu")]
 pub(crate) use pixel_ops::glyph_coverage_byte;
 pub(crate) use pixel_ops::glyph_rects;
 

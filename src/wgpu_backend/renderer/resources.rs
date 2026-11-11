@@ -677,8 +677,11 @@ pub(crate) struct CachedTexture {
 /// re-uploaded per draw, per frame. Those bytes do not change between frames — an `Arc` image is
 /// stable content — so the upload happens once and later draws only create their bind group.
 ///
-/// Bounded FIFO: a host that streams video frames through distinct `Arc`s allocates one upload per
-/// frame and the oldest entry is dropped, exactly like the crate's other content caches.
+/// Bounded LRU: a host that streams video frames through distinct `Arc`s allocates one upload per
+/// frame and the least recently used entry is dropped, exactly like the crate's other content
+/// caches. LRU rather than FIFO because a working set that cycles through N+1 textures (a carousel,
+/// a video thumbnail strip, a screen with 33+ icons) would otherwise evict the entry that is about
+/// to be drawn next and re-upload every texture every frame.
 #[derive(Default)]
 pub(crate) struct TextureCache {
     entries: HashMap<TextureKey, CachedTexture>,
@@ -686,16 +689,34 @@ pub(crate) struct TextureCache {
 }
 
 impl TextureCache {
-    /// How many uploads one renderer keeps before evicting the oldest.
-    const LIMIT: usize = 32;
+    /// How many uploads one renderer keeps before evicting the least recently used one.
+    const LIMIT: usize = 64;
 
     /// The cached view for `key`, when the upload is still resident.
-    pub(crate) fn view(&self, key: &TextureKey) -> Option<wgpu::TextureView> {
-        self.entries.get(key).map(|entry| entry.view.clone())
+    ///
+    /// A hit marks the entry as most recently used (see [`Self::touch`]).
+    pub(crate) fn view(&mut self, key: &TextureKey) -> Option<wgpu::TextureView> {
+        let view = self.entries.get(key)?.view.clone();
+        self.touch(key);
+        Some(view)
     }
 
-    /// Stores `texture`/`view` under `key`, retaining `source` and evicting the oldest entry when
-    /// the cache is full.
+    /// Moves `key` to the back of the recency queue, where eviction never reaches it next.
+    fn touch(&mut self, key: &TextureKey) {
+        let Some(position) = self.order.iter().position(|candidate| candidate == key) else {
+            return;
+        };
+        // Already the most recent: moving it would only churn the queue.
+        if position + 1 == self.order.len() {
+            return;
+        }
+        if let Some(touched) = self.order.remove(position) {
+            self.order.push_back(touched);
+        }
+    }
+
+    /// Stores `texture`/`view` under `key`, retaining `source` and evicting the least recently
+    /// used entry when the cache is full.
     pub(crate) fn insert(
         &mut self,
         key: TextureKey,
@@ -709,6 +730,10 @@ impl TextureCache {
             .is_none()
         {
             self.order.push_back(key);
+        } else {
+            // Re-inserting an existing key replaces the upload, so it also becomes the most
+            // recently used one.
+            self.touch(&key);
         }
         while self.order.len() > Self::LIMIT {
             if let Some(oldest) = self.order.pop_front() {
@@ -784,19 +809,40 @@ pub(crate) struct TextCoverageCache {
 }
 
 impl TextCoverageCache {
-    /// How many coverage uploads one renderer keeps before evicting the oldest.
+    /// How many coverage uploads one renderer keeps before evicting the least recently used one.
     ///
     /// A screen paints more distinct captions than distinct images, and a coverage texel is one
     /// byte rather than four, so the bound is higher than [`TextureCache`]'s.
-    const LIMIT: usize = 64;
+    const LIMIT: usize = 128;
 
     /// The cached view for `key`, when the entry describes exactly this text.
-    pub(crate) fn view(&self, key: &TextCoverageKey, text: &str) -> Option<wgpu::TextureView> {
+    ///
+    /// A hit marks the entry as most recently used (see [`Self::touch`]).
+    pub(crate) fn view(&mut self, key: &TextCoverageKey, text: &str) -> Option<wgpu::TextureView> {
         let entry = self.entries.get(key)?;
-        (entry.text.as_ref() == text).then(|| entry.view.clone())
+        if entry.text.as_ref() != text {
+            return None;
+        }
+        let view = entry.view.clone();
+        self.touch(key);
+        Some(view)
     }
 
-    /// Stores `texture`/`view` under `key`, evicting the oldest entry when the cache is full.
+    /// Moves `key` to the back of the recency queue, where eviction never reaches it next.
+    fn touch(&mut self, key: &TextCoverageKey) {
+        let Some(position) = self.order.iter().position(|candidate| candidate == key) else {
+            return;
+        };
+        if position + 1 == self.order.len() {
+            return;
+        }
+        if let Some(touched) = self.order.remove(position) {
+            self.order.push_back(touched);
+        }
+    }
+
+    /// Stores `texture`/`view` under `key`, evicting the least recently used entry when the cache
+    /// is full.
     pub(crate) fn insert(
         &mut self,
         key: TextCoverageKey,
@@ -811,6 +857,8 @@ impl TextCoverageCache {
         if self.entries.insert(key, CachedTextCoverage { text, _texture: texture, view }).is_none()
         {
             self.order.push_back(key);
+        } else {
+            self.touch(&key);
         }
         while self.order.len() > Self::LIMIT {
             if let Some(oldest) = self.order.pop_front() {

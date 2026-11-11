@@ -302,8 +302,8 @@ extern "C" fn accepts_first_responder(_this: &Object, _cmd: Sel) -> cocoa::base:
 /// This is the macOS spelling of the same announcement `platform::linux::canvas`
 /// makes; both reach the one ledger, so a frame's account is the same whichever backend
 /// produced it.
-fn note_native_redraw(id: ObjectId) {
-    crate::notify_native_redraw(id, None);
+fn note_platform_surface_repaint(id: ObjectId) {
+    crate::notify_platform_surface_repaint(id, None);
 }
 
 /// `-mouseExited:` clears the hover target.
@@ -322,7 +322,7 @@ extern "C" fn mouse_exited(this: &Object, _cmd: Sel, _event: id) {
             // The hover that just cleared belonged to this view's widget, so the redraw is
             // this surface's; announcing it keeps the frame's account complete (§7.2).
             if let Some(widget_id) = widget_id_of(view) {
-                note_native_redraw(widget_id);
+                note_platform_surface_repaint(widget_id);
             }
         }
     });
@@ -367,7 +367,7 @@ extern "C" fn mouse_entered(this: &Object, _cmd: Sel, event: id) {
                 position,
             );
             let _: () = msg_send![view, setNeedsDisplay: YES];
-            note_native_redraw(widget_id);
+            note_platform_surface_repaint(widget_id);
         }
     });
     if outcome.is_err() {
@@ -681,7 +681,7 @@ fn forward_touches(this: &Object, event: id, phase: TouchPhase) {
             }
             if delivered {
                 let _: () = msg_send![view, setNeedsDisplay: YES];
-                note_native_redraw(widget_id);
+                note_platform_surface_repaint(widget_id);
             }
         }
     });
@@ -766,7 +766,7 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
             // too is what keeps a frame's account complete and stops the native and
             // self-painted worlds from counting one interaction twice (BLUE24 §7.2).
             let _: () = msg_send![view, setNeedsDisplay: YES];
-            note_native_redraw(widget_id);
+            note_platform_surface_repaint(widget_id);
         }
     });
     if outcome.is_err() {
@@ -823,7 +823,7 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
             if u32::from(translated_key.appkit_key_code) == KEY_TAB {
                 crate::widget::window::focus_next_in_window(modifiers & WIDGET_SHIFT == 0);
                 let _: () = msg_send![view, setNeedsDisplay: YES];
-                note_native_redraw(widget_id);
+                note_platform_surface_repaint(widget_id);
                 return;
             }
             let chord = modifiers & (WIDGET_CONTROL | WIDGET_META) != 0;
@@ -847,7 +847,7 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
                 return;
             }
             let _: () = msg_send![view, setNeedsDisplay: YES];
-            note_native_redraw(target);
+            note_platform_surface_repaint(target);
         }
     });
     if outcome.is_err() {
@@ -889,7 +889,7 @@ extern "C" fn key_up(this: &Object, _cmd: Sel, event: id) {
                 return;
             }
             let _: () = msg_send![view, setNeedsDisplay: YES];
-            note_native_redraw(target);
+            note_platform_surface_repaint(target);
         }
     });
     if outcome.is_err() {
@@ -1121,7 +1121,7 @@ fn redraw_canvas(this: &Object) {
         let view = this as *const Object as id;
         let _: () = msg_send![view, setNeedsDisplay: YES];
         if let Some(target) = ime_target(this) {
-            note_native_redraw(target);
+            note_platform_surface_repaint(target);
         }
     }
 }
@@ -1506,7 +1506,7 @@ impl MacOSPlatform {
             // The view is being revealed, which is the platform repainting a surface the
             // library just mounted. Announcing it keeps the frame that reveals it accounted
             // for like every other platform redraw (§7.2).
-            note_native_redraw(id);
+            note_platform_surface_repaint(id);
             pool.drain();
 
             crate::compat::lock(mounted_views()).insert(id, view as usize);
@@ -1575,7 +1575,7 @@ impl MacOSPlatform {
         }
         // The platform is now going to repaint this surface at its new geometry; announce it
         // exactly as `mount_surface_impl` does, so the frame account stays complete.
-        note_native_redraw(id);
+        note_platform_surface_repaint(id);
         crate::widget::runtime::set_geometry(id, rect);
         true
     }
@@ -1893,8 +1893,8 @@ unsafe fn window_did_move(this: &Object, notification: id) {
 /// # Safety
 /// `this` must be the delegate object and `notification` a live resize notification, as AppKit guarantees.
 unsafe fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
-    let widget_id = associated_widget_id(this, window_association_key());
-    if widget_id == 0 {
+    let host_id = associated_widget_id(this, window_association_key());
+    if host_id == 0 {
         return;
     }
     // `NSNotification.object` is the window that resized.
@@ -1914,10 +1914,30 @@ unsafe fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
     if width == 0 || height == 0 {
         return;
     }
-    // The trigger is queued on the process-wide resize queue the host polls;
-    // routing it through the platform singleton added nothing but a downcast
-    // whose result was discarded.
-    crate::queue_resize_trigger(widget_id, width, height);
+    // The delegate is associated with the **host** id `create_window` returned
+    // (`src/platform/macos/platform_impl.rs`), while the trigger queue, `window_client_size`
+    // and the layout pass all speak the **widget-registry** id. Translating here is the same
+    // boundary `drawRect:` translates at; without it the queue refuses the id and the layout
+    // never re-runs after the user resizes the window (the defect this closes).
+    //
+    // No association yet means the window has not been adopted by a widget — a normal
+    // transient just after `create_window` — so it is a debug note, not an error.
+    let Some(widget_id) = crate::widget::runtime::widget_id_for_host_window(host_id) else {
+        log::debug!(
+            "[macos] windowDidResize: host id={host_id} has no owning widget yet; \
+             nothing to lay out"
+        );
+        return;
+    };
+    // The trigger is queued on the process-wide resize queue the host polls.
+    // A refusal is reported rather than discarded: it means this resize produced no layout
+    // run at all, which is exactly the failure a silent `;` hides.
+    if !crate::queue_resize_trigger(widget_id, width, height) {
+        log::warn!(
+            "[macos] windowDidResize: resize for widget {widget_id} (host {host_id}) was \
+             refused by the resize queue; the layout will not re-run"
+        );
+    }
 }
 
 /// Association key holding the resize delegate on its window.

@@ -923,6 +923,30 @@ fn the_value_starts_at_the_fields_horizontal_padding() {
     );
 }
 
+/// A style padding moves the content inset away from the shared fallback.
+///
+/// R-23: the paint, hit test and IME caret used to read `TEXT_FIELD_PADDING_H` directly, so a
+/// host that resolved a padding through the style channel moved no pixel. The fallback still
+/// applies when the style states no padding, which is what keeps every default field identical.
+#[test]
+fn a_style_padding_replaces_the_field_fallback() {
+    let mut field = LineEdit::new(Rect::new(0, 0, 240, 120));
+    field.set_text("Sample");
+    let field_rect = field.field_rect();
+    assert_eq!(
+        field.resolved_content_padding_h(),
+        dimensions::TEXT_FIELD_PADDING_H,
+        "a style with no padding keeps the shared text-field inset"
+    );
+
+    field.set_style(
+        crate::style::WidgetStyle::default().with_padding(crate::style::Padding::symmetric(0, 10)),
+    );
+    assert_eq!(field.resolved_content_padding_h(), 10);
+    let (left, _) = field.value_box_geometry();
+    assert_eq!(left, field_rect.x + 10, "the value follows the resolved style padding");
+}
+
 // ─── Decoration slots (F-12) ───
 
 /// A field that never sets a slot must paint exactly as it did, and reserve nothing extra.
@@ -2227,14 +2251,18 @@ mod composition_tests {
         field.cursor_position_changed.connect(move |value| {
             carets_clone.lock().unwrap().push(*value);
         });
-        let selections = Arc::new(Mutex::new(0usize));
+        let selections = Arc::new(Mutex::new(Vec::<Option<(usize, usize)>>::new()));
         let selections_clone = selections.clone();
-        field.selection_changed.connect(move || {
-            *selections_clone.lock().unwrap() += 1;
+        field.selection_changed.connect(move |range| {
+            selections_clone.lock().unwrap().push(*range);
         });
         field.select_all();
         assert!(!carets.lock().unwrap().is_empty(), "the caret moved to the end");
-        assert_eq!(*selections.lock().unwrap(), 1);
+        assert_eq!(
+            *selections.lock().unwrap(),
+            alloc::vec![Some((0, 6))],
+            "the signal carries the selected byte range"
+        );
     }
 
     /// The input mask reuses the masked-edit grammar and keeps the value formatted (I-011).
@@ -2307,4 +2335,32 @@ mod composition_tests {
         assert_eq!(field.mask_cache.borrow().0, 4, "the cache is keyed by the character count");
         assert_eq!(first.1, "****");
     }
+}
+
+/// A disabled field recedes visually while keeping its value and geometry.
+///
+/// The field's event handler already refused input when disabled, but `draw` had no disabled
+/// branch at all: a disabled field looked exactly like an enabled one. This pins both halves of
+/// the contract — the frame must change, and the value's own ink must still be painted.
+#[test]
+fn a_disabled_line_edit_recedes_without_losing_its_geometry() {
+    let _guard = crate::style::theme_test_guard();
+    let bounds = Rect::new(0, 0, 220, 24);
+    let mut field = LineEdit::new(bounds);
+    field.set_text("Value");
+
+    let enabled = crate::widget::svg::render_to_svg(&mut field);
+    let enabled_ink = crate::widget::svg::text_ink_boxes(&enabled).len();
+
+    field.set_enabled(false);
+    assert!(!field.is_enabled(), "the control must report the state it was given");
+    let disabled = crate::widget::svg::render_to_svg(&mut field);
+
+    assert_ne!(enabled, disabled, "a disabled field must paint a different frame");
+    assert_eq!(field.geometry(), bounds, "disabling must not change the field's geometry");
+    assert_eq!(
+        crate::widget::svg::text_ink_boxes(&disabled).len(),
+        enabled_ink,
+        "the value must still be painted while disabled, not disappear"
+    );
 }

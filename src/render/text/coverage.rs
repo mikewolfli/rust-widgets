@@ -38,7 +38,7 @@
 //! which the runtime-font registration path bumps, so a face that changes resolution makes every
 //! older entry unreachable rather than silently stale.
 
-use crate::compat::Arc;
+use crate::compat::{vec, Arc, Vec};
 use crate::core::{Font, HorizontalAlignment, Point};
 #[cfg(not(feature = "text-shaping"))]
 use crate::render::text::paint_active;
@@ -84,6 +84,28 @@ const CACHE_LIMIT: usize = 128;
 
 thread_local! {
     static COVERAGE_CACHE: RefCell<Vec<CachedCoverage>> = const { RefCell::new(Vec::new()) };
+}
+
+/// One rotated coverage box, keyed by everything its pixels depend on.
+///
+/// A radial menu redraws its labels every frame (hover tint, reveal animation), and a fresh
+/// rotation per label per frame was 32 allocations over four frames in the steady-state
+/// allocation test. The bytes are held here by `Arc` and cloned by refcount on a hit.
+struct CachedRotatedCoverage {
+    epoch: u64,
+    text_key: (u64, u64),
+    origin: (i32, i32),
+    pivot: (i32, i32),
+    radians_bits: u32,
+    coverage: TextCoverage,
+}
+
+/// Rotated entries retained before the oldest is evicted. A menu labels a handful of wedges.
+const ROTATED_CACHE_LIMIT: usize = 64;
+
+thread_local! {
+    static ROTATED_CACHE: RefCell<Vec<CachedRotatedCoverage>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Builds the reference renderer's coverage for one `DrawText` command.
@@ -169,6 +191,145 @@ pub(crate) fn shaped_text_coverage(
         height,
         bytes,
     })
+}
+
+/// Coverage for a run drawn rotated about `pivot`.
+///
+/// The axis-aligned coverage comes from [`shaped_text_coverage`], so the glyphs, advances and
+/// display-encoded weights are the reference renderer's, not a second text implementation. This
+/// function only resamples that mask into the rotated box, which is the one thing every backend
+/// can then blit unchanged: the SVG backend emits the same rotation on its vector glyphs, the
+/// software backend composites these bytes, and the GPU bridge uploads them as a texture.
+///
+/// `radians` is clockwise in screen coordinates (y grows down), the same convention as the
+/// control-angle math in `pie_menu`. A non-finite or negligible angle returns the unrotated run
+/// unchanged, so a caller can pass a computed angle without a special case.
+pub(crate) fn shaped_text_coverage_rotated(
+    origin: Point,
+    text: &str,
+    font: &Font,
+    alignment: HorizontalAlignment,
+    scale: f32,
+    pivot: Point,
+    radians: f32,
+) -> Option<TextCoverage> {
+    let base = shaped_text_coverage(origin, text, font, alignment, scale)?;
+    if base.width == 0 || base.height == 0 || !radians.is_finite() || radians.abs() < 1e-4 {
+        return Some(base);
+    }
+
+    // Everything the rotated pixels depend on. Two labels of the same string at different
+    // radii are different pictures, so the placement is part of the key.
+    let epoch = crate::render::pipeline::text_metrics_epoch();
+    let text_key = crate::render::pipeline::text_fingerprint(text, font, scale);
+    let origin_key = (origin.x, origin.y);
+    let pivot_key = (pivot.x, pivot.y);
+    let radians_bits = radians.to_bits();
+    if let Some(hit) = ROTATED_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|entry| {
+                entry.epoch == epoch
+                    && entry.text_key == text_key
+                    && entry.origin == origin_key
+                    && entry.pivot == pivot_key
+                    && entry.radians_bits == radians_bits
+            })
+            .map(|entry| entry.coverage.clone())
+    }) {
+        return Some(hit);
+    }
+
+    let (sin, cos) = radians.sin_cos();
+    let (px, py) = (pivot.x as f32, pivot.y as f32);
+    let right = (base.x + base.width as i32) as f32;
+    let bottom = (base.y + base.height as i32) as f32;
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for (x, y) in [
+        (base.x as f32, base.y as f32),
+        (right, base.y as f32),
+        (right, bottom),
+        (base.x as f32, bottom),
+    ] {
+        let dx = x - px;
+        let dy = y - py;
+        let rx = px + dx * cos - dy * sin;
+        let ry = py + dx * sin + dy * cos;
+        min_x = min_x.min(rx);
+        min_y = min_y.min(ry);
+        max_x = max_x.max(rx);
+        max_y = max_y.max(ry);
+    }
+
+    let box_x = min_x.floor() as i32;
+    let box_y = min_y.floor() as i32;
+    let box_width = ((max_x.ceil() as i32 - box_x).max(1)) as u32;
+    let box_height = ((max_y.ceil() as i32 - box_y).max(1)) as u32;
+    let mut bytes = vec![0u8; box_width as usize * box_height as usize];
+
+    // Inverse rotation: a destination pixel centre maps back to the unrotated mask.
+    let (inv_sin, inv_cos) = (-radians).sin_cos();
+    let mask_width = base.width as usize;
+    let mask_height = base.height as usize;
+    let source = base.bytes.as_ref();
+    for out_y in 0..box_height {
+        let dy = box_y as f32 + out_y as f32 + 0.5 - py;
+        for out_x in 0..box_width {
+            let dx = box_x as f32 + out_x as f32 + 0.5 - px;
+            let sx = px + dx * inv_cos - dy * inv_sin;
+            let sy = py + dx * inv_sin + dy * inv_cos;
+            let u = sx - base.x as f32 - 0.5;
+            let v = sy - base.y as f32 - 0.5;
+            if u < -1.0 || v < -1.0 || u > mask_width as f32 || v > mask_height as f32 {
+                continue;
+            }
+            let u0 = u.floor();
+            let v0 = v.floor();
+            let fx = u - u0;
+            let fy = v - v0;
+            let sample = |col: f32, row: f32| -> f32 {
+                let col = col as i32;
+                let row = row as i32;
+                if col < 0 || row < 0 || col >= mask_width as i32 || row >= mask_height as i32 {
+                    0.0
+                } else {
+                    f32::from(source[row as usize * mask_width + col as usize])
+                }
+            };
+            let top = sample(u0, v0) * (1.0 - fx) + sample(u0 + 1.0, v0) * fx;
+            let bottom = sample(u0, v0 + 1.0) * (1.0 - fx) + sample(u0 + 1.0, v0 + 1.0) * fx;
+            let value = top * (1.0 - fy) + bottom * fy;
+            bytes[out_y as usize * box_width as usize + out_x as usize] =
+                value.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+
+    let coverage = TextCoverage {
+        x: box_x,
+        y: box_y,
+        width: box_width,
+        height: box_height,
+        bytes: Arc::from(bytes),
+    };
+    ROTATED_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= ROTATED_CACHE_LIMIT {
+            cache.remove(0);
+        }
+        cache.push(CachedRotatedCoverage {
+            epoch,
+            text_key,
+            origin: origin_key,
+            pivot: pivot_key,
+            radians_bits,
+            coverage: coverage.clone(),
+        });
+    });
+    Some(coverage)
 }
 
 /// The pen start for a run of `width` pixels whose anchor is `origin_x`.

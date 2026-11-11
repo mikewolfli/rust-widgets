@@ -15,9 +15,9 @@
 //!
 //! # Relationship to the chart model
 //!
-//! The chart's own `chart_widgets::AxisEdge` names the same four edges. This module keeps a local
-//! copy because the companion is usable without the chart's model types; a host maps one to the
-//! other when it attaches the resulting spec.
+//! This module owns the single [`AxisEdge`] definition (principle #54). The chart model
+//! (`chart_widgets::AxisEdge`) re-exports it, so a picker assignment can be passed to
+//! `Chart::attach_axis` without a conversion.
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
@@ -53,6 +53,11 @@ const PICKER_PADDING_V: u32 = 3;
 const PICKER_PADDING_H: u32 = 6;
 
 /// One edge of a chart's plot area.
+///
+/// # Canonical definition
+///
+/// This is the single definition (principle #54). `chart_widgets::AxisEdge` re-exports it, so an
+/// assignment made here is accepted by the chart model without a conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AxisEdge {
     /// The left edge — the usual primary Y axis.
@@ -646,5 +651,14 @@ mod tests {
             Some(false)
         );
         assert_eq!(picker.edges().len(), 4, "missing edges are restored");
+    }
+
+    /// The picker's `AxisEdge` and the chart model's are one type (principle #54).
+    #[test]
+    fn axis_edge_is_the_chart_model_definition() {
+        fn same_type(edge: AxisEdge) -> crate::widget::chart_widgets::types::AxisEdge {
+            edge
+        }
+        assert_eq!(same_type(AxisEdge::Top), crate::widget::chart_widgets::types::AxisEdge::Top);
     }
 }

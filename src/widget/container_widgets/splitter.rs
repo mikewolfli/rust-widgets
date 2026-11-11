@@ -94,6 +94,16 @@ pub struct Splitter {
     /// Set when a handle is grabbed and clamped to the current pane count, so a keyboard user
     /// always adjusts a divider that exists.
     focused_handle: usize,
+    /// The divider currently under the pointer, if any.
+    ///
+    /// The control-level `hovered` flag says only "the pointer is somewhere over me"; a divider is
+    /// a narrow band inside that rectangle, and highlighting every divider for a pointer over a
+    /// pane would point at the wrong affordance. This is the per-handle half, refreshed from
+    /// `MouseMove` through the same hit test `begin_handle_drag` uses.
+    hovered_handle: Option<usize>,
+    /// The pointer's latest position, used to re-derive [`Self::hovered_handle`] when the layout
+    /// changes under a still pointer (a pane resize moves the dividers).
+    last_pointer: Option<crate::core::Point>,
     /// Width of the divider between adjacent panes, in logical pixels.
     handle_width: u32,
     /// Per-pane collapsed state, parallel to the layout's pane list.
@@ -133,6 +143,8 @@ impl Splitter {
             drag_session: None,
             drag_state: None,
             focused_handle: 0,
+            hovered_handle: None,
+            last_pointer: None,
             handle_width: HANDLE_WIDTH,
             collapsed: Vec::new(),
             max_pane_sizes: Vec::new(),
@@ -947,12 +959,20 @@ impl Draw for Splitter {
         let style = self.base.style();
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
-        let (window_fill, foreground, secondary) = match theme.palette {
-            Some(active) => (active.background, active.foreground, active.secondary),
+        let (window_fill, foreground, secondary, accent, primary) = match theme.palette {
+            Some(active) => (
+                active.background,
+                active.foreground,
+                active.secondary,
+                active.accent,
+                active.primary,
+            ),
             None => (
                 crate::core::Color::rgb(240, 240, 240),
                 crate::core::Color::BLACK,
                 crate::core::Color::rgb(158, 158, 158),
+                crate::core::Color::PRIMARY,
+                crate::core::Color::PRIMARY,
             ),
         };
         let ink = style
@@ -968,12 +988,34 @@ impl Draw for Splitter {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.08),
         };
+        // A disabled splitter recedes toward the window rather than merely refusing input; the
+        // palette's own `disabled` token reaches it through `splitter:disabled`, and this step is
+        // the same fill rule `disabled_surface_near` gives every other disabled surface.
+        let track = self.base.disabled_surface_near(track, window_fill);
+        // The divider's own ink follows the enabled flag as well, so its fill and outline cannot
+        // stay at full contrast on a disabled control.
+        let ink = self.base.disabled_ink_on(ink, track);
         let handle_fill = track.blend(&ink, 0.14);
         let handle_border = style
             .border_color
             .or_else(|| theme.style.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != handle_fill)
             .unwrap_or_else(|| track.blend(&secondary, 0.45));
+        // The divider is the splitter's **only** interaction affordance, so a hovered or dragged
+        // handle has to be visible. Both steps come from the theme's own accent/primary token
+        // rather than a literal: a theme that recolours its selection or brand colour recolours
+        // the divider feedback with it. The drag step is the stronger of the two, matching the
+        // "a press is firmer than a hover" convention `StateOverlay` documents.
+        let hovered_fill = track.blend(&accent, 0.28);
+        let active_fill = track.blend(&primary, 0.55);
+        let enabled = self.base.is_enabled();
+        // `is_dragging_handle` is the public fact a caller can observe; the index beside it is
+        // what lets the paint highlight **that** divider rather than every divider at once.
+        let dragged_handle = if self.is_dragging_handle() {
+            self.drag_state.as_ref().map(|drag| drag.handle_index)
+        } else {
+            None
+        };
 
         // The track is the surface the panes sit on, drawn before the panes so a splitter with no
         // panes yet still shows where it is.
@@ -1010,20 +1052,38 @@ impl Draw for Splitter {
         match self.orientation() {
             Orientation::Horizontal => {
                 // Draw vertical splitter handles, one in each gap between panes.
-                for x in centers.iter().copied() {
+                for (index, x) in centers.iter().copied().enumerate() {
                     let handle_rect =
                         Rect::new(x - handle_width / 2, rect.y, handle_width as u32, rect.height);
-                    context.fill_rect(handle_rect, handle_fill);
-                    context.draw_rect(handle_rect, handle_border);
+                    let (fill, border) = if !enabled {
+                        (handle_fill, handle_border)
+                    } else if dragged_handle == Some(index) {
+                        (active_fill, primary)
+                    } else if self.hovered_handle == Some(index) {
+                        (hovered_fill, accent)
+                    } else {
+                        (handle_fill, handle_border)
+                    };
+                    context.fill_rect(handle_rect, fill);
+                    context.draw_rect(handle_rect, border);
                 }
             }
             Orientation::Vertical => {
                 // Draw horizontal splitter handles, one in each gap between panes.
-                for y in centers.iter().copied() {
+                for (index, y) in centers.iter().copied().enumerate() {
                     let handle_rect =
                         Rect::new(rect.x, y - handle_width / 2, rect.width, handle_width as u32);
-                    context.fill_rect(handle_rect, handle_fill);
-                    context.draw_rect(handle_rect, handle_border);
+                    let (fill, border) = if !enabled {
+                        (handle_fill, handle_border)
+                    } else if dragged_handle == Some(index) {
+                        (active_fill, primary)
+                    } else if self.hovered_handle == Some(index) {
+                        (hovered_fill, accent)
+                    } else {
+                        (handle_fill, handle_border)
+                    };
+                    context.fill_rect(handle_rect, fill);
+                    context.draw_rect(handle_rect, border);
                 }
             }
         }
@@ -1032,7 +1092,25 @@ impl Draw for Splitter {
 impl crate::event::EventHandler for Splitter {
     fn handle_event(&mut self, event: &crate::event::Event) {
         self.base.handle_event(event);
+        // The divider's hover band is narrower than the control, so it is refreshed from the
+        // pointer's own position rather than from the control-level `hovered` flag. A drag keeps
+        // the grabbed handle highlighted regardless of where inside the band the pointer is.
+        match event {
+            crate::event::Event::MouseMove { pos }
+            | crate::event::Event::PointerMove { pos, .. } => {
+                self.last_pointer = Some(*pos);
+                self.refresh_handle_hover();
+            }
+            crate::event::Event::MouseLeave { .. } => {
+                self.last_pointer = None;
+                self.refresh_handle_hover();
+            }
+            _ => { /* Other events carry no pointer position */ }
+        }
         if !self.base.is_enabled() {
+            // A disabled splitter paints the receded state its `:disabled` key describes; it must
+            // not keep a stale hover highlight while it is inert.
+            self.hovered_handle = None;
             return;
         }
         match event {
@@ -1120,6 +1198,43 @@ impl Splitter {
             pos.x as f32 - rect.x as f32
         } else {
             pos.y as f32 - rect.y as f32
+        }
+    }
+
+    /// The divider index under `pos`, when the pointer is inside a handle's grab band.
+    ///
+    /// This is the **read-only** half of the same hit test [`Self::begin_handle_drag`] uses: the
+    /// pane rectangles and divider centres come from one layout pass, so what the divider paints
+    /// as hovered is exactly what a press would grab.
+    fn handle_at(&self, pos: crate::core::Point) -> Option<usize> {
+        let mut rects = self.pane_rects_scratch.borrow_mut();
+        self.pane_rects_into(&mut rects);
+        let mut centers = self.divider_centers_scratch.borrow_mut();
+        self.divider_centers_into(&rects, &mut centers);
+        let geometry = self.base.geometry();
+        let pos_primary = self.primary_offset(pos);
+        centers.iter().enumerate().find_map(|(index, center)| {
+            let center = match self.orientation() {
+                Orientation::Horizontal => *center as f32 - geometry.x as f32,
+                Orientation::Vertical => *center as f32 - geometry.y as f32,
+            };
+            ((pos_primary - center).abs() <= self.handle_width as f32 / 2.0).then_some(index)
+        })
+    }
+
+    /// Re-derives [`Self::hovered_handle`] from the last pointer position.
+    ///
+    /// A change asks for a repaint: the base keeps only the control-level `hovered` flag, so
+    /// moving between two dividers (or off one) would otherwise not invalidate the frame.
+    fn refresh_handle_hover(&mut self) {
+        let next = if self.base.is_enabled() {
+            self.last_pointer.and_then(|pos| self.handle_at(pos))
+        } else {
+            None
+        };
+        if next != self.hovered_handle {
+            self.hovered_handle = next;
+            self.base.request_redraw();
         }
     }
 
@@ -1407,6 +1522,61 @@ mod tests {
     /// the two wrong derivations agreed with each other and the defect stayed green.
     fn divider_x(sp: &Splitter) -> i32 {
         sp.divider_centers().first().copied().unwrap_or(sp.geometry().x)
+    }
+
+    /// A disabled splitter recedes while its dividers keep the same geometry.
+    ///
+    /// Input was already gated in the event handler, but the paint path never read the enabled
+    /// flag, so an inert splitter looked exactly like a draggable one. The frame difference is
+    /// the observable; the divider count and the control's box are what must survive it.
+    #[test]
+    fn a_disabled_splitter_recedes_without_losing_its_dividers() {
+        let _guard = crate::style::theme_test_guard();
+        let mut sp = two_pane_splitter();
+        let dividers_before = sp.divider_centers().len();
+
+        let enabled = crate::widget::svg::render_to_svg(&mut sp);
+
+        sp.set_enabled(false);
+        assert!(!sp.is_enabled(), "the control must report the state it was given");
+        let disabled = crate::widget::svg::render_to_svg(&mut sp);
+
+        assert_ne!(enabled, disabled, "a disabled splitter must paint a different frame");
+        assert_eq!(sp.geometry(), Rect::new(0, 0, 300, 200), "geometry must not change");
+        assert_eq!(
+            sp.divider_centers().len(),
+            dividers_before,
+            "every divider must still be painted while disabled"
+        );
+    }
+
+    /// A hovered divider and a dragged divider each paint a visible change.
+    ///
+    /// The divider is the splitter's only interaction affordance, and its draw path used to read
+    /// neither `is_dragging_handle()` nor hover: the control was grabbable with no feedback at
+    /// all. The enabled resting frame is compared to a pointer-over-divider frame and to a frame
+    /// taken while the handle is grabbed, so both affordances are observable.
+    #[test]
+    fn the_divider_responds_to_hover_and_drag() {
+        let _guard = crate::style::theme_test_guard();
+        let mut sp = two_pane_splitter();
+        let divider = divider_x(&sp);
+
+        let resting = crate::widget::svg::render_to_svg(&mut sp);
+
+        sp.handle_event(&crate::event::Event::mouse_move(divider, 100));
+        let hovered = crate::widget::svg::render_to_svg(&mut sp);
+        assert_ne!(resting, hovered, "a hovered divider must be visible");
+
+        // Off the divider again: the hover band is narrow, so the frame returns to rest.
+        sp.handle_event(&crate::event::Event::mouse_move(divider + 80, 100));
+        assert_eq!(crate::widget::svg::render_to_svg(&mut sp), resting);
+
+        sp.handle_event(&crate::event::Event::mouse_press(divider, 100, 1));
+        assert!(sp.is_dragging_handle(), "a press on the divider opens a drag session");
+        let dragged = crate::widget::svg::render_to_svg(&mut sp);
+        assert_ne!(resting, dragged, "the dragged divider must be visible");
+        assert_ne!(hovered, dragged, "a drag must read stronger than a hover");
     }
 
     /// The divider is painted and grabbed in the gap between the panes.

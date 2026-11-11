@@ -2309,6 +2309,25 @@ fn geometry_can_be_read_and_written_through_the_registry() {
     unregister(id);
 }
 
+/// A geometry write invalidates layers by rectangle, not by dropping the whole thread's set
+/// (R-14). The observable is the global layer epoch: it is bumped only by causes no rectangle
+/// describes, so an unchanged epoch proves the write took the rectangle path.
+#[test]
+fn a_geometry_write_invalidates_layers_without_bumping_the_global_epoch() {
+    let id = register(sample_editor("x")).expect("registry");
+    let before = layer_epoch();
+    assert!(set_geometry(id, Rect::new(5, 6, 400, 300)));
+    assert_eq!(
+        layer_epoch(),
+        before,
+        "a rectangle-described move must not drop every cached layer on the thread"
+    );
+    // An unchanged write is a no-op for every cache, including the epoch.
+    assert!(set_geometry(id, Rect::new(5, 6, 400, 300)));
+    assert_eq!(layer_epoch(), before);
+    unregister(id);
+}
+
 #[test]
 fn render_frame_returns_rgba_of_the_requested_size() {
     let id = register(sample_editor("fn main() {\n    let x = 1;\n}")).expect("registry");
@@ -4486,7 +4505,7 @@ fn a_native_redraw_is_counted_by_the_frame() {
 
     // Start from a clean frame accounting.
     let _ = drive_frame(0);
-    notify_native_redraw(id, Some(crate::core::Rect::new(0, 0, 10, 10)));
+    notify_platform_surface_repaint(id, Some(crate::core::Rect::new(0, 0, 10, 10)));
     let outcome = drive_frame(0);
     assert_eq!(
         outcome.repaints_submitted, 1,
@@ -4638,7 +4657,7 @@ fn one_surface_is_submitted_once_and_the_rest_are_coalesced() {
     // A clean frame boundary, so the five requests belong to one window.
     let _ = drive_frame(0);
     for _ in 0..5 {
-        notify_native_redraw(surface, None);
+        notify_platform_surface_repaint(surface, None);
     }
     let outcome = drive_frame(0);
     assert_eq!(outcome.repaints_submitted, 1, "one surface, one submission");
@@ -4658,7 +4677,7 @@ fn every_repaint_names_a_reason() {
     let _unmount = MountGuard(id);
     let _ = drive_frame(0);
 
-    notify_native_redraw(id, None);
+    notify_platform_surface_repaint(id, None);
     let _ = drive_frame(0);
 
     let stats = last_frame_stats().expect("a frame ran");
