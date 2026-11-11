@@ -749,6 +749,14 @@ impl ValueSink<'_> {
 /// CSS parser that converts CSS text into `StyleSheet` + property application.
 pub struct CssParser;
 
+/// The colour spellings [`CssParser::parse_color`] accepts.
+///
+/// Appended to every colour parse failure so a host that reads the error knows what to write
+/// instead of guessing (DX-11). The list is the same one `parse_color`'s named-colour arm
+/// already spells out, so the two cannot drift.
+const COLOR_FORMS: &str =
+    "expected #RGB, #RRGGBB, #RRGGBBAA, rgb(r,g,b), rgba(r,g,b,a), or a named color";
+
 impl CssParser {
     /// Validates CSS text and returns a sheet of the rules whose selectors name a known kind.
     ///
@@ -1926,46 +1934,40 @@ impl CssParser {
 
     fn parse_hex_color(hex: &str) -> Result<Color, String> {
         let hex = hex.trim();
+        // Every failure names the accepted spellings, so a host that reads the error knows what
+        // to write instead of guessing (DX-11). The wording is the one `parse_color` already uses.
+        let invalid = || format!("Invalid hex: {hex}; {COLOR_FORMS}");
         // `len()` and the slices below are byte-based, so a non-ASCII character would panic on a
         // char-boundary split (`"#日本"` is 6 bytes and enters the 6-digit arm). Reject non-hex
         // input up front and let the normal "invalid colour" path report it.
         if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(format!("Invalid hex: {hex}"));
+            return Err(invalid());
         }
         let (r, g, b, a) = match hex.len() {
             3 => {
-                let r = u8::from_str_radix(&hex[0..1], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?
-                    * 17;
-                let g = u8::from_str_radix(&hex[1..2], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?
-                    * 17;
-                let b = u8::from_str_radix(&hex[2..3], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?
-                    * 17;
+                let r = u8::from_str_radix(&hex[0..1], 16).map_err(|_| invalid())? * 17;
+                let g = u8::from_str_radix(&hex[1..2], 16).map_err(|_| invalid())? * 17;
+                let b = u8::from_str_radix(&hex[2..3], 16).map_err(|_| invalid())? * 17;
                 (r, g, b, 255)
             }
             6 => {
-                let r = u8::from_str_radix(&hex[0..2], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?;
-                let g = u8::from_str_radix(&hex[2..4], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?;
-                let b = u8::from_str_radix(&hex[4..6], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?;
+                let r = u8::from_str_radix(&hex[0..2], 16).map_err(|_| invalid())?;
+                let g = u8::from_str_radix(&hex[2..4], 16).map_err(|_| invalid())?;
+                let b = u8::from_str_radix(&hex[4..6], 16).map_err(|_| invalid())?;
                 (r, g, b, 255)
             }
             8 => {
-                let r = u8::from_str_radix(&hex[0..2], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?;
-                let g = u8::from_str_radix(&hex[2..4], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?;
-                let b = u8::from_str_radix(&hex[4..6], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?;
-                let a = u8::from_str_radix(&hex[6..8], 16)
-                    .map_err(|_| format!("Invalid hex: {hex}"))?;
+                let r = u8::from_str_radix(&hex[0..2], 16).map_err(|_| invalid())?;
+                let g = u8::from_str_radix(&hex[2..4], 16).map_err(|_| invalid())?;
+                let b = u8::from_str_radix(&hex[4..6], 16).map_err(|_| invalid())?;
+                let a = u8::from_str_radix(&hex[6..8], 16).map_err(|_| invalid())?;
                 (r, g, b, a)
             }
-            _ => return Err(format!("Invalid hex color length: #{hex}")),
+            other => {
+                return Err(format!(
+                    "Invalid hex color length: #{hex} ({other} digits); {COLOR_FORMS}"
+                ))
+            }
         };
         Ok(Color::rgba(r, g, b, a))
     }
@@ -1976,19 +1978,26 @@ impl CssParser {
         let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
         match parts.len() {
             3 => {
-                let r: u8 = parts[0].parse().map_err(|_| format!("Invalid rgb: {v}"))?;
-                let g: u8 = parts[1].parse().map_err(|_| format!("Invalid rgb: {v}"))?;
-                let b: u8 = parts[2].parse().map_err(|_| format!("Invalid rgb: {v}"))?;
+                let r: u8 =
+                    parts[0].parse().map_err(|_| format!("Invalid rgb: {v}; {COLOR_FORMS}"))?;
+                let g: u8 =
+                    parts[1].parse().map_err(|_| format!("Invalid rgb: {v}; {COLOR_FORMS}"))?;
+                let b: u8 =
+                    parts[2].parse().map_err(|_| format!("Invalid rgb: {v}; {COLOR_FORMS}"))?;
                 Ok(Color::rgba(r, g, b, 255))
             }
             4 => {
-                let r: u8 = parts[0].parse().map_err(|_| format!("Invalid rgba: {v}"))?;
-                let g: u8 = parts[1].parse().map_err(|_| format!("Invalid rgba: {v}"))?;
-                let b: u8 = parts[2].parse().map_err(|_| format!("Invalid rgba: {v}"))?;
-                let a: f32 = parts[3].parse().map_err(|_| format!("Invalid rgba: {v}"))?;
+                let r: u8 =
+                    parts[0].parse().map_err(|_| format!("Invalid rgba: {v}; {COLOR_FORMS}"))?;
+                let g: u8 =
+                    parts[1].parse().map_err(|_| format!("Invalid rgba: {v}; {COLOR_FORMS}"))?;
+                let b: u8 =
+                    parts[2].parse().map_err(|_| format!("Invalid rgba: {v}; {COLOR_FORMS}"))?;
+                let a: f32 =
+                    parts[3].parse().map_err(|_| format!("Invalid rgba: {v}; {COLOR_FORMS}"))?;
                 Ok(Color::rgba(r, g, b, (a * 255.0).round() as u8))
             }
-            _ => Err(format!("Invalid rgb(a) format: {v}")),
+            _ => Err(format!("Invalid rgb(a) format: {v}; {COLOR_FORMS}")),
         }
     }
 
@@ -2418,6 +2427,19 @@ mod tests {
     fn test_parse_hex_color_3() {
         let c = CssParser::parse_color("#f00").unwrap();
         assert_eq!(c, Color::rgba(255, 0, 0, 255));
+    }
+
+    /// DX-11: a refusal names the accepted spellings, so the caller can fix the input.
+    ///
+    /// The messages used to say only "Invalid hex" / "Invalid rgb(a) format", which told the
+    /// author of a stylesheet that the value was wrong but not what a right one looks like.
+    #[test]
+    fn a_bad_colour_error_names_the_accepted_spellings() {
+        let err = CssParser::parse_color("#12").expect_err("two digits is not a colour");
+        assert!(err.contains("#RRGGBB"), "the hex error must list the forms: {err}");
+
+        let err = CssParser::parse_color("rgb(1,2)").expect_err("two components is not a colour");
+        assert!(err.contains("rgb(r,g,b)"), "the rgb error must list the forms: {err}");
     }
 
     #[test]

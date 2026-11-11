@@ -8,8 +8,8 @@
 > 原则依据：[`principle.md`](principle.md)（继承 BLUE1–BLUE20 全部规则，含 #1–#111）
 > 取证方法：`snapshots/svg/`（376 个 SVG，188 控件 × 明暗两态）+ 源码逐处核对 +
 > 外部对标（三家） 对位比对，**每条均附源码行号或 SVG 原文**
-> 上轮日志：[`docs/log/log-20260922-1.md`](../log/log-20260922-1.md)（第 62 轮）
-> 本轮日志：[`docs/log/log-20260922-2.md`](../log/log-20260922-2.md)
+> 上轮日志：[`docs/log/archive/log-20260922-1.md`](../log/log-20260922-1.md)（第 62 轮）
+> 本轮日志：[`docs/log/archive/log-20260922-2.md`](../log/log-20260922-2.md)
 
 ---
 

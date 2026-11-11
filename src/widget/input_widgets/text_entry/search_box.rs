@@ -1095,6 +1095,19 @@ impl EventHandler for SearchBox {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.press_with_pointer(*pos);
             }
+            // UX6-09: a double-click selects the word under the pointer, the same rule the
+            // `LineEdit` family applies. Without this arm the gesture did nothing at all, while
+            // the identical gesture selected a word one control over.
+            Event::MouseDoubleClick { pos, button }
+                if *button == 1 && self.field_rect().contains_point(*pos) =>
+            {
+                let index = self.byte_index_at_x(pos.x);
+                let (start, end) = crate::widget::text_utils::word_range_at(&self.text, index);
+                self.selection_anchor = Some(start);
+                self.cursor = end;
+                self.dragging_selection = false;
+                self.base.request_redraw();
+            }
             Event::MouseMove { pos } => {
                 // I-110: a pointer drag extends the selection the press began.
                 if self.dragging_selection {
@@ -1385,6 +1398,19 @@ mod tests {
         });
 
         assert_eq!(sb.text(), "");
+    }
+
+    /// UX6-09: a double-click selects the word under the pointer, as `LineEdit` does.
+    ///
+    /// The gesture used to do nothing at all in this control, so the same action selected a word
+    /// in the field next to it and was inert here.
+    #[test]
+    fn a_double_click_selects_the_word_under_the_pointer() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        sb.set_text("alpha beta");
+        sb.handle_event(&Event::MouseDoubleClick { pos: Point::new(2, 16), button: 1 });
+        let (start, end) = sb.selection_range().expect("a double-click must select a word");
+        assert_eq!(&sb.text()[start..end], "alpha");
     }
 
     #[test]

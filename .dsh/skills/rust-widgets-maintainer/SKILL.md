@@ -59,7 +59,7 @@ editor, a designer CLI, and optional companion crates. Work is governed by
 | `tools/check_*.sh` | Validation gates |
 | `tests/`, `benches/` | Integration tests and Criterion benchmarks |
 | `docs/plans/` | Plans, including the governing `principle.md` and `FUTURE.md` |
-| `docs/issues/` | The current issue list; fix from this file |
+| `docs/issues/` | Scan reports, one file per dated pass; the newest date is the current one (no index file — list the directory and sort by name) |
 | `docs/log/` | Per-day work logs with per-item status and real command output |
 | `dsh-plugin/` | This DSH skill package (see below) |
 
@@ -163,7 +163,8 @@ not build them:
 
 ## Adding or extending a control
 
-- Register the kind in `src/widget/capability/registration.rs` and the factory in
+- Add the enum variant to `src/widget/kind.rs` (`WidgetKind`), then register the kind in
+  `src/widget/capability/registration.rs` and the factory in
   `src/widget/capability/constructors.rs`.
 - Publish properties in the relevant `properties_*.in.rs` file, then implement
   `get`/`set`/`property_names` in the control.
@@ -197,10 +198,65 @@ all three are in `default`, and a profile-only build compiles none of them.
 - A grammar-aware highlighter plugs in through
   `CodeEditor::register_language_highlighter`; do not fork the lexer.
 
+## Adding a theme token
+
+1. **Declare it.** A colour role is a field on `Colors` in
+   `src/theme/types.rs` (with a serde default so an old preset still parses); a
+   per-role style override is a field on `ThemeStyleToken` in the same file.
+2. **Give it a value in every preset.** The built-ins are Rust functions in
+   `src/theme/manager.rs` (`Theme::default()` for light, `Theme::dark()`, and the
+   `macos-*` presets). A role left at its default is the appearance-blind case:
+   it will not move with the theme.
+3. **Regenerate the fixtures.** `bash themes/generate.sh` rewrites
+   `themes/*.json` from those presets; `bash tools/check_theme_fixtures.sh`
+   fails when a fixture and the library disagree.
+4. **Read it somewhere.** A role with no production consumer fails
+   `bash tools/check_declared_tokens_have_consumers.sh` — that gate exists
+   because seven layering roles were once declared, written into every preset,
+   documented, and painted by nobody.
+
+## Other declared capabilities
+
+The skill manifest also advertises four narrower workflows. Each is the short
+version of a task you would otherwise have to re-derive from the gates:
+
+- **platform-backend-work** — a backend is a `pub mod <family>` in
+  `src/platform/mod.rs`, compiled under its own `cfg`, and every family supplies
+  `platform_impl.rs`. After adding or changing one run
+  `bash tools/check_platform_impl_matrix.sh`, `bash tools/check_profiles.sh` and
+  `bash tools/check_target_backend_selection.sh`;
+  `tools/check_platform_docs_truthfulness.sh` enforces that `docs/platform/*`
+  still names real symbols rather than dead ones.
+- **json-layout-loading** — the declarative path is `src/json/loader.rs`
+  (construction and property writes) plus `src/json/element.rs` (registered
+  named elements). It reaches controls only through the capability tables, so a
+  new property must be published in `properties_*.in.rs` before a document can
+  set it. `bash tools/check_json_event_route.sh` and
+  `bash tools/check_declarative_path_repaints.sh` cover the two failure modes
+  (an event that routes nowhere, a load that does not repaint).
+- **capability-metadata** — the machine-readable surface is **generated**, not
+  hand-written: `python3 tools/derive_event_payloads.py` writes
+  `src/widget/capability/event_payloads.rs`, and
+  `python3 tools/generate_c_header.py` writes the C ABI header. The whole
+  capability document — every property, event and command per control — is
+  `docs/capability_schema.json`, written by
+  `cargo run --example export_capability_schema` and checked byte-for-byte by
+  `bash tools/check_capability_schema_is_current.sh`, so read that file instead
+  of the source tables. Re-run the generators after touching a signal or a
+  property schema; each paired `check_*` gate re-derives the same table and
+  fails on disagreement.
+- **audit-widget-completeness** — `src/widget/census.rs` renders every kind, and
+  `control.md` plus `snapshots/svg/` are its committed artefacts.
+  `python3 tools/generate_control_index.py` rewrites the index and
+  `cargo run --example export_control_svgs` the pictures; then run
+  `bash tools/check_control_rendering.sh`,
+  `bash tools/check_control_has_tests.sh` and
+  `bash tools/check_svg_snapshots.sh`.
+
 ## Validation and benchmarks
 
 ```sh
-cargo test --lib                     # ~10k unit tests
+cargo test --lib                     # ~11k unit tests
 cargo test --test path_allocations   # allocation regression
 cargo test --test designer_autosave
 cargo clippy --all-targets -- -D warnings

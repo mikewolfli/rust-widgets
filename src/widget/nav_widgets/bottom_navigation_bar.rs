@@ -440,6 +440,10 @@ impl Widget for BottomNavigationBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// Reachable by keyboard: without an override the key arms can never run (U3-01).
+    fn is_focusable(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }

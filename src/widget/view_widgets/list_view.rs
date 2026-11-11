@@ -1895,6 +1895,29 @@ impl Draw for ListView {
             }
         }
 
+        // ── Scroll indicator (UX-04) ──
+        //
+        // A list that can scroll and shows nothing is the chrome version of "silently refuses
+        // input": nothing tells the reader that more rows exist. The thumb is an **overlay** at
+        // the content box's trailing edge, so it takes no lane from the cells and every stored
+        // cell rectangle stays exactly what it was before this control had a bar at all.
+        {
+            let layout = self.list_layout();
+            let columns = layout.columns.max(1) as usize;
+            let total_lines = self.row_count().div_ceil(columns);
+            let visible_lines = (layout.content.height / layout.row_height.max(1)) as usize;
+            if let Some(band) = crate::widget::overscroll::scroll_thumb_rect(
+                layout.content,
+                total_lines,
+                visible_lines,
+                self.scroll_row,
+                4,
+                false,
+            ) {
+                context.fill_rect(band, accent.with_alpha(120));
+            }
+        }
+
         // ── Hover tooltip (V-005) ──
         //
         // The callback runs only for the hovered item, so a large model costs one lookup per frame

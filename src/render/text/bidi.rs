@@ -120,6 +120,146 @@ pub fn visual_order_from_levels(levels: &[u8]) -> Option<Vec<usize>> {
     Some(order)
 }
 
+/// Whether `text` contains a character that can make a line right-to-left.
+///
+/// # Why this exists
+///
+/// The caret mapping below has to build one byte range and one advance per cluster before it can
+/// reorder anything, and a text field measures its caret once per frame. For the overwhelmingly
+/// common all-LTR line that work is thrown away — [`caret_visual_advance_from_levels`] returns
+/// `None` — so this cheap pre-check lets the caller skip the analysis and its allocations
+/// entirely. It is a **character-class scan, not a paragraph analysis**: with no
+/// right-to-left character in the line, UAX #9 P3 resolves the base direction to left-to-right,
+/// so no level can be odd and there is nothing to map.
+///
+/// Returns `false` in a build without `text-bidi`, where no level is ever odd.
+pub fn has_rtl_char(text: &str) -> bool {
+    #[cfg(feature = "text-bidi")]
+    {
+        text.chars().any(|ch| {
+            matches!(
+                unicode_bidi::bidi_class(ch),
+                unicode_bidi::BidiClass::R
+                    | unicode_bidi::BidiClass::AL
+                    | unicode_bidi::BidiClass::AN
+                    | unicode_bidi::BidiClass::RLE
+                    | unicode_bidi::BidiClass::RLO
+                    | unicode_bidi::BidiClass::RLI
+            )
+        })
+    }
+    #[cfg(not(feature = "text-bidi"))]
+    {
+        let _ = text;
+        false
+    }
+}
+
+/// The visual x of one **caret boundary**, in the line's own advance space.
+///
+/// `clusters` are the byte ranges in logical order, `advances` one advance per cluster in the
+/// same order, `levels` one bidi level per cluster, and `caret_byte` the logical caret offset
+/// (a boundary: the start of a cluster, or the end of the run).
+///
+/// # Why this cannot be the logical prefix advance
+///
+/// Every text entry in the crate placed its caret at "the width of the logical prefix". That is
+/// the caret's **visual** position only while the line paints in logical order. In an all-RTL
+/// line the visual order is the reverse, so typing at the start of `שלום` (logical offset 0) put
+/// the marker at the *left* end of the field while the first glyph sat at the right — off by the
+/// whole line (UX6-02).
+///
+/// The rule is the one every editor uses: the caret sits against the edge of the cluster on its
+/// **logical right**, and which edge that is depends on that cluster's direction. In an LTR run
+/// the next cluster is to the right, so the caret is at its left edge; in an RTL run the next
+/// cluster is to the left, so the caret is at its right edge. At the end of the line there is no
+/// next cluster, so the last cluster's own direction decides the end it belongs to.
+///
+/// Returns `None` for a line with no reordering (every level even), which is the zero-cost path
+/// every left-to-right field takes: the caller keeps using its prefix advance untouched.
+pub fn caret_visual_advance_from_levels(
+    levels: &[u8],
+    clusters: &[(usize, usize)],
+    advances: &[f32],
+    caret_byte: usize,
+) -> Option<f32> {
+    let n = clusters.len();
+    if n == 0 || levels.len() != n || advances.len() != n {
+        return None;
+    }
+    let order = visual_order_from_levels(levels)?;
+    // Visual start of every cluster's box, indexed by the cluster's *logical* index.
+    let mut start = crate::compat::vec![0.0f32; n];
+    let mut pen = 0.0f32;
+    for &logical in &order {
+        start[logical] = pen;
+        pen += advances[logical];
+    }
+    // The boundary index: how many clusters lie entirely before the caret.
+    let k = clusters.partition_point(|&(cluster_start, _)| cluster_start < caret_byte);
+    Some(if k < n {
+        if levels[k] % 2 == 1 {
+            start[k] + advances[k]
+        } else {
+            start[k]
+        }
+    } else {
+        let last = n - 1;
+        if levels[last] % 2 == 1 {
+            start[last]
+        } else {
+            start[last] + advances[last]
+        }
+    })
+}
+
+/// The logical caret boundary nearest a visual x — the inverse of
+/// [`caret_visual_advance_from_levels`].
+///
+/// Returns the **boundary index** (`0..=clusters.len()`), not a byte: the caller turns it into a
+/// byte offset with the same cluster table it passed in. `None` for a line with no reordering, so
+/// the caller keeps its own nearest-boundary search (which already handles proportional faces).
+pub fn caret_boundary_from_visual_advance(
+    levels: &[u8],
+    clusters: &[(usize, usize)],
+    advances: &[f32],
+    x: f32,
+) -> Option<usize> {
+    let n = clusters.len();
+    if n == 0 || levels.len() != n || advances.len() != n {
+        return None;
+    }
+    let order = visual_order_from_levels(levels)?;
+    let total: f32 = advances.iter().sum();
+    if x <= 0.0 {
+        // The visual left edge belongs to logical boundary 0 in an LTR run and to the end of the
+        // run in an RTL one, because the first logical cluster is painted rightmost.
+        return Some(if levels[order[0]] % 2 == 1 { n } else { 0 });
+    }
+    if x >= total {
+        let last_visual = order[n - 1];
+        return Some(if levels[last_visual] % 2 == 1 { 0 } else { n });
+    }
+    let mut pen = 0.0f32;
+    for &logical in &order {
+        let next = pen + advances[logical];
+        if x < next {
+            let nearer_left = (x - pen) <= (next - x);
+            let odd = levels[logical] % 2 == 1;
+            // The forward rule maps an odd cluster's *right* edge to boundary `logical` and its
+            // left edge to `logical + 1`; an even cluster is the other way round.
+            return Some(match (odd, nearer_left) {
+                (true, true) => logical + 1,
+                (true, false) => logical,
+                (false, true) => logical,
+                (false, false) => logical + 1,
+            });
+        }
+        pen = next;
+    }
+    Some(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +293,79 @@ mod tests {
         assert_eq!(visual_string("Hello, world"), "Hello, world");
         assert_eq!(visual_string(""), "");
         assert_eq!(visual_string("a"), "a");
+    }
+
+    /// UX6-02: an all-RTL line's caret walks from the right edge to the left edge.
+    ///
+    /// # What this pins
+    ///
+    /// The caret was placed at "the width of the logical prefix", which is the *left* end for
+    /// logical offset 0. In an RTL run logical offset 0 is the **right** end, so the marker was
+    /// drawn at the far side of the field from the glyph it belonged to.
+    #[test]
+    fn an_rtl_caret_walks_from_the_right_edge() {
+        let text = "\u{05e9}\u{05dc}\u{05d5}\u{05dd}"; // 4 Hebrew letters
+        let ranges = per_char(text);
+        let advances = vec![10.0f32; 4];
+        let levels = levels_for(text, &ranges);
+        assert!(levels.iter().all(|level| level % 2 == 1), "the line must be an RTL run");
+
+        let x = |caret: usize| {
+            caret_visual_advance_from_levels(&levels, &ranges, &advances, caret)
+                .expect("an RTL line is reordered")
+        };
+        // Byte offsets of the four characters plus the end of the run.
+        let bounds: Vec<usize> = ranges.iter().map(|&(start, _)| start).collect();
+        assert_eq!(x(bounds[0]), 40.0, "logical offset 0 is the right end of an RTL line");
+        assert_eq!(x(bounds[1]), 30.0);
+        assert_eq!(x(bounds[2]), 20.0);
+        assert_eq!(x(bounds[3]), 10.0);
+        assert_eq!(x(text.len()), 0.0, "the logical end is the visual left edge");
+    }
+
+    /// The cheap pre-check that keeps the all-LTR caret path allocation-free (UX6-02).
+    #[test]
+    fn only_a_line_with_a_right_to_left_character_is_reordered() {
+        assert!(!has_rtl_char(""));
+        assert!(!has_rtl_char("Hello, 123"));
+        #[cfg(feature = "text-bidi")]
+        {
+            assert!(has_rtl_char("\u{05e9}\u{05dc}\u{05d5}\u{05dd}"), "Hebrew");
+            assert!(has_rtl_char("abc \u{0645}\u{0631}\u{062d}\u{0628}\u{0627}"), "Arabic");
+            assert!(has_rtl_char("\u{202b}abc"), "an explicit right-to-left embedding");
+        }
+    }
+
+    /// The inverse mapping agrees with the forward one at every RTL boundary.
+    #[test]
+    fn the_rtl_caret_hit_test_inverts_the_paint_position() {
+        let text = "\u{05e9}\u{05dc}\u{05d5}\u{05dd}";
+        let ranges = per_char(text);
+        let advances = vec![10.0f32; 4];
+        let levels = levels_for(text, &ranges);
+        let boundary_at = |caret: usize| -> f32 {
+            // The function takes a **byte** offset, which for a two-byte script is not the
+            // boundary index.
+            let byte = ranges.get(caret).map_or(text.len(), |&(start, _)| start);
+            caret_visual_advance_from_levels(&levels, &ranges, &advances, byte).unwrap()
+        };
+        for caret in 0..=ranges.len() {
+            let x = boundary_at(caret);
+            let hit = caret_boundary_from_visual_advance(&levels, &ranges, &advances, x)
+                .expect("an RTL line is reordered");
+            assert_eq!(hit, caret, "a click at {x} (caret {caret}) must land on that caret");
+        }
+    }
+
+    /// An LTR line reports `None`, so the caller's existing prefix advance is untouched.
+    #[test]
+    fn an_ltr_line_has_no_caret_mapping_to_do() {
+        let text = "abc";
+        let ranges = per_char(text);
+        let advances = vec![7.0f32; 3];
+        let levels = levels_for(text, &ranges);
+        assert_eq!(caret_visual_advance_from_levels(&levels, &ranges, &advances, 1), None);
+        assert_eq!(caret_boundary_from_visual_advance(&levels, &ranges, &advances, 7.0), None);
     }
 
     #[test]

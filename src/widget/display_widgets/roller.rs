@@ -447,6 +447,10 @@ impl Widget for Roller {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// Reachable by keyboard: without an override the key arms can never run (U3-01).
+    fn is_focusable(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -699,6 +703,11 @@ impl Draw for Roller {
         // `size_hint` and the paint all read one face.
         let RollerChrome { bg_color, selected_bg, selected_text_color, muted_color } =
             self.chrome();
+        // U3-03: a disabled wheel recedes by the shared ink rule, instead of holding full
+        // contrast while only its handler is gated. The two inks sit on different fills, so each
+        // is derived from the surface it is actually painted on.
+        let selected_text_color = self.base.disabled_ink_on(selected_text_color, selected_bg);
+        let muted_color = self.base.disabled_ink_on(muted_color, bg_color);
 
         // One source of truth for the drawn face (`wheel_font`): the inline choice here
         // could drift from the one `item_height` and `size_hint` measure with.
@@ -811,6 +820,22 @@ mod tests {
             "Elderberry".to_string(),
         ];
         Roller::new(options, Rect::new(0, 0, 160, 120))
+    }
+
+    /// U3-03: a disabled roller must not paint the same picture as an enabled one.
+    ///
+    /// # What this pins
+    ///
+    /// The wheel gated every handler on `is_enabled` and drew its rows at full contrast in both
+    /// states, so a reader saw a live wheel that silently refused input. The rows are now derived
+    /// through `BaseWidget::disabled_ink_on`, and this asserts the picture actually changes.
+    #[test]
+    fn a_disabled_roller_recedes_its_rows() {
+        let mut roller = make_roller();
+        let enabled = crate::widget::svg::render_to_svg(&mut roller);
+        roller.base_mut().set_enabled(false);
+        let disabled = crate::widget::svg::render_to_svg(&mut roller);
+        assert_ne!(enabled, disabled, "the disabled state must change the painted picture");
     }
 
     #[test]

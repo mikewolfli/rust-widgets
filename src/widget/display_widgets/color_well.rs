@@ -462,6 +462,14 @@ impl Draw for ColorWell {
             context.draw_rect_stroke(well, border, 1);
         }
 
+        // U3-03: a disabled well keeps its sample — the colour is the datum the control exists
+        // to show — but the whole well is veiled by one shared weight, the way a disabled label
+        // recedes. The veil is the housing colour, so it follows the appearance rather than a
+        // fixed grey.
+        if !self.base.is_enabled() {
+            context.fill_rect(well, background.with_alpha(dimensions::DISABLED_VEIL_ALPHA));
+        }
+
         // Hover and press are painted as a ring and a faint wash, not a different
         // swatch: the colour is caller data and must stay readable. Both states are
         // opt-in by interaction, so an untouched well paints exactly the same bytes
@@ -485,6 +493,11 @@ impl Draw for ColorWell {
                 );
             }
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 
@@ -529,6 +542,19 @@ impl EventHandler for ColorWell {
             // the release will still be routed here.
             Event::MouseLeave { .. } => {
                 self.base.set_pressed(false);
+            }
+            // UX-05: the well is a `Tab` stop (`kind.rs` lists it as focusable), so it must be
+            // operable from the keyboard. Enter/Space is the crate's activation gesture
+            // (`button.rs`); here it opens the picker, which is the well's one action — a click
+            // already commits the colour it shows, so there is nothing else to do.
+            Event::KeyPress { key, .. }
+                if (*key == crate::event::key_codes::ENTER
+                    || *key == crate::event::key_codes::SPACE)
+                    && self.base.focus_reason().is_some() =>
+            {
+                self.clicked.emit();
+                self.picker_requested.emit();
+                self.base.request_redraw();
             }
             _ => {}
         }
@@ -666,6 +692,30 @@ mod tests {
 
         cw.set_show_border(true);
         assert!(cw.show_border());
+    }
+
+    /// UX-05: the well is a Tab stop, so Enter and Space must do what a click does.
+    ///
+    /// # What this pins
+    ///
+    /// `kind.rs` lists `ColorWell` as focusable and the control painted a focus ring, but it had
+    /// no `KeyPress` arm at all: Tab landed on it and no key did anything. Enter/Space now opens
+    /// the picker, through the same signals a double-click emits.
+    #[test]
+    fn enter_and_space_open_the_picker_from_the_keyboard() {
+        for key in [crate::event::key_codes::ENTER, crate::event::key_codes::SPACE] {
+            let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
+            let picked = Arc::new(AtomicBool::new(false));
+            cw.picker_requested.connect({
+                let picked = Arc::clone(&picked);
+                move || {
+                    picked.store(true, Ordering::SeqCst);
+                }
+            });
+            cw.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+            cw.handle_event(&Event::KeyPress { key, modifiers: 0 });
+            assert!(picked.load(Ordering::SeqCst), "key {key} must open the picker");
+        }
     }
 
     #[test]

@@ -436,6 +436,9 @@ impl Draw for MenuPanel {
         let style = self.style();
         let (surface, ink) = surface_ink(style);
         let font = effective_font(style);
+        // U3-03: a disabled panel's ink recedes by the shared rule. The border and the highlight
+        // are derived *from* `ink` below, so they follow it without a second derivation.
+        let ink = self.base.disabled_ink_on(ink, surface);
         let border = surface.blend(&ink, 0.2);
         let highlight = surface.blend(&ink, 0.12);
 
@@ -485,6 +488,11 @@ impl Draw for MenuPanel {
             }
         }
         context.draw_rect(rect, border);
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

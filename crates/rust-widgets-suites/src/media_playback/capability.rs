@@ -206,7 +206,7 @@ const VIDEO_PLAYER_EVENTS: &[EventSchema] = &[
     EventSchema { name: "media_status_changed", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema::unit("metadata_changed"),
     EventSchema { name: "mute_changed", payload: Some(K::Bool), shape: Some(S::Scalar) },
-    EventSchema { name: "on_chapter_entered", payload: Some(K::UInt), shape: Some(S::Scalar) },
+    EventSchema { name: "chapter_entered", payload: Some(K::UInt), shape: Some(S::Scalar) },
     EventSchema::unit("playback_ended"),
     EventSchema::unit("playback_paused"),
     EventSchema { name: "playback_rate_changed", payload: Some(K::Float), shape: Some(S::Scalar) },
@@ -248,7 +248,7 @@ const CAMERA_PREVIEW_EVENTS: &[EventSchema] = &[
 
 /// `chapter_list_panel`'s published events.
 const CHAPTER_LIST_PANEL_EVENTS: &[EventSchema] =
-    &[EventSchema { name: "on_chapter_selected", payload: Some(K::UInt), shape: Some(S::Scalar) }];
+    &[EventSchema { name: "chapter_selected", payload: Some(K::UInt), shape: Some(S::Scalar) }];
 
 /// `media_player`'s published events.
 const MEDIA_PLAYER_EVENTS: &[EventSchema] = &[

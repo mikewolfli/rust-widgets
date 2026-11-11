@@ -80,6 +80,9 @@ FILES = [
     "README.zh-CN.md",
     "docs/plans/codemap.md",
     "docs/plans/platform_capability_matrix.md",
+    # The architecture overview states the enum total and is the first file a new contributor
+    # reads; a stale number there is the most expensive kind of drift.
+    "docs/ARCHITECTURE.md",
     # The generated gallery states the enum count too. It is not hand-edited, but the
     # *generator* can regress to a literal — which it had, at 180 while the enum was 181.
     # Listing it here means the generated page is checked like any other document.

@@ -8,7 +8,7 @@
 //! The panel draws a rectangle representing the map's full extent and a box representing the
 //! current viewport. A press or a drag inside the rectangle is converted to normalised
 //! `(0.0 ..= 1.0)` coordinates and published through
-//! [`MapOverviewPanel::on_overview_drag`]; the host applies the position to its map.
+//! [`MapOverviewPanel::overview_drag`]; the host applies the position to its map.
 //!
 //! The control deliberately does **not** paint tiles. `MapView` exposes a camera and a tile
 //! address space, but no world bounds — a tile pyramid has no finite extent at a given zoom, and
@@ -98,7 +98,7 @@ pub struct MapOverviewPanel {
     /// The live link to a map's centre, when one is attached.
     map_center: Option<MapCenterBinding>,
     /// Emitted with the normalised position of a press or drag inside the overview.
-    pub on_overview_drag: Signal1<(f32, f32)>,
+    pub overview_drag: Signal1<(f32, f32)>,
 }
 
 impl MapOverviewPanel {
@@ -114,7 +114,7 @@ impl MapOverviewPanel {
             marker_style: CenterMarkerStyle::default(),
             dragging: false,
             map_center: None,
-            on_overview_drag: Signal1::new(),
+            overview_drag: Signal1::new(),
         }
     }
 
@@ -398,8 +398,17 @@ impl Widget for MapOverviewPanel {
 
     fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
         match name {
-            "overview_drag" | "on_overview_drag" => {
-                Some(EventSignalRef::mapped("on_overview_drag", &self.on_overview_drag, |value| {
+            "overview_drag" => {
+                Some(EventSignalRef::mapped("overview_drag", &self.overview_drag, |value| {
+                    CapabilityValue::Tuple(vec![
+                        CapabilityValue::Float(f64::from(value.0)),
+                        CapabilityValue::Float(f64::from(value.1)),
+                    ])
+                }))
+            }
+            // Legacy spelling (DX-10): the name published before the `on_` prefix was removed.
+            "on_overview_drag" => {
+                Some(EventSignalRef::mapped("on_overview_drag", &self.overview_drag, |value| {
                     CapabilityValue::Tuple(vec![
                         CapabilityValue::Float(f64::from(value.0)),
                         CapabilityValue::Float(f64::from(value.1)),
@@ -475,7 +484,7 @@ impl EventHandler for MapOverviewPanel {
                     let moved = self.set_normalized_center(x, y);
                     self.dragging = true;
                     if moved {
-                        self.on_overview_drag.emit((x, y));
+                        self.overview_drag.emit((x, y));
                     }
                 }
             }
@@ -485,7 +494,7 @@ impl EventHandler for MapOverviewPanel {
                 }
                 if let Some((x, y)) = self.normalized_at(*pos) {
                     if self.set_normalized_center(x, y) {
-                        self.on_overview_drag.emit((x, y));
+                        self.overview_drag.emit((x, y));
                     }
                 }
             }
@@ -564,7 +573,7 @@ mod tests {
     fn drag_events(panel: &mut MapOverviewPanel, events: &[Event]) -> Vec<(f32, f32)> {
         let emitted = Arc::new(Mutex::new(Vec::<(f32, f32)>::new()));
         let sink = emitted.clone();
-        panel.on_overview_drag.connect(move |value| {
+        panel.overview_drag.connect(move |value| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push((value.0, value.1));
             }

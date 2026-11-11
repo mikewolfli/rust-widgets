@@ -18,6 +18,8 @@ pub mod list_view;
 pub mod properties;
 /// Renders a recursive filter as editable condition rows.
 pub mod query_builder;
+/// Direction-aware column geometry for the table family (U2-06).
+pub(crate) mod rtl_columns;
 pub mod table_widget;
 /// COMP-F04: bounded LRU cache of down-sampled bitmaps.
 pub mod thumbnail_cache;

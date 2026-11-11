@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+check_event_model_signal_first.sh -- no wxWidgets-style event tables.
+#
+# Scans `src/`, `demo/` and `examples/` for event-table patterns; this crate is signal-first, and a
+# table would be a second, unreachable way to declare a handler.
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

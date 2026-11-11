@@ -562,7 +562,7 @@ Three layers, cheapest first:
 | Gate | Mirrors | Proves | Reverse injection |
 |---|---|---|---|
 | `tools/check_icon_data_is_opt_in.sh` (+ `tools/icon_data_opt_in_scan.py`) | `check_font_data_is_opt_in.sh` | No profile (`default`/`desktop`/`tablet`/`mobile`/`mini`/`embedded`) enables `icons`/`icons-full`; `include_str!`/`include_bytes!` for icons lives only under `src/widget/icons/` | add `"icons"` to `default` in a temp `Cargo.toml`; scan must report a finding |
-| `tools/check_icon_licences.sh` (+ `tools/icon_license_scan.py`) | `check_font_licenses.sh` | Every `GENERATED FILE` icon table is named in `NOTICE` with upstream digest + both licences; `gen_icon_data.py` exits 2 with no/unknown `--license` | inject an unrecorded table → scan fails; run generator with no `--license` → must exit 2 |
+| `tools/check_icon_licenses.sh` (+ `tools/icon_license_scan.py`) | `check_font_licenses.sh` | Every `GENERATED FILE` icon table is named in `NOTICE` with upstream digest + both licences; `gen_icon_data.py` exits 2 with no/unknown `--license` | inject an unrecorded table → scan fails; run generator with no `--license` → must exit 2 |
 | `tests/icon_census_test.rs` | `tests/control_rendering_census_test.rs` + `regenerate_census_lists.py` | Every census name has data, parses, paints non-empty ink, and is pairwise distinct | delete one name's data → compile error; alias two paths in the generator → generator refuses |
 | `bash tools/check_svg_snapshots.sh` (extended) | itself | The icon sheet regenerates byte-for-byte | hand-edit one byte of `icon_sheet.svg` → FAIL |
 
@@ -681,7 +681,7 @@ until its phase is approved.**
   "attribution must appear in all copies" requirement. **Yes — attribution is
   required in the repository source, not only in docs**, because both licences say
   "in all copies" and the strings are compiled in.
-- **Gate:** `bash tools/check_icon_licences.sh` reports `failed=0` **and** its
+- **Gate:** `bash tools/check_icon_licenses.sh` reports `failed=0` **and** its
   reverse injection fails.
 
 ### Phase 1 — The parser (no icons yet) *(gate: unit tests over adversarial input)*

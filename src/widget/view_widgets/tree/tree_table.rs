@@ -326,6 +326,8 @@ pub struct TreeTable {
     /// Reused across rows and frames: a fresh `String` per paint allocated on the first cell it
     /// wrote, which is exactly the steady-state cost this buffer removes.
     cell_text_scratch: std::cell::RefCell<String>,
+    /// The empty/error caption this table paints when it has no rows (UX-03).
+    placeholder: crate::widget::view_widgets::CollectionPlaceholder,
 }
 
 impl TreeTable {
@@ -376,6 +378,7 @@ impl TreeTable {
             delegate: None,
             editing: None,
             cell_text_scratch: std::cell::RefCell::new(String::new()),
+            placeholder: crate::widget::view_widgets::CollectionPlaceholder::new(),
         }
     }
 
@@ -516,7 +519,10 @@ impl TreeTable {
 
     /// The alignment `column` paints its cells with (V-001).
     pub fn column_alignment(&self, column: usize) -> HorizontalAlignment {
-        self.column_alignments.get(&column).copied().unwrap_or(HorizontalAlignment::Left)
+        self.column_alignments
+            .get(&column)
+            .copied()
+            .unwrap_or_else(crate::widget::view_widgets::rtl_columns::leading_alignment)
     }
 
     /// Sets one column's cell alignment, returning whether the column exists (V-001).
@@ -565,7 +571,27 @@ impl TreeTable {
     /// prefix before it, offset by the prefix before [`Self::scroll_column`]. The draw loops and
     /// the header hit test share this one derivation, so a press cannot name a column other than
     /// the one it is over.
+    #[cfg(test)]
     fn column_span(&self, column: usize) -> (i32, u32) {
+        let (x, width) = self.column_span_ltr(column);
+        if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            // The frozen tree column belongs on the right in an RTL table, and the scrolling
+            // band grows leftwards with it (U2-06).
+            (
+                crate::widget::view_widgets::rtl_columns::mirror_span(
+                    x,
+                    width,
+                    self.base.geometry(),
+                ),
+                width,
+            )
+        } else {
+            (x, width)
+        }
+    }
+
+    /// The LTR span; [`Self::column_span`] is the direction-aware form every caller uses.
+    fn column_span_ltr(&self, column: usize) -> (i32, u32) {
         let rect = self.base.geometry();
         let width = self.column_width_at(column);
         let frozen = self.frozen_columns();
@@ -588,10 +614,10 @@ impl TreeTable {
     /// The frozen column keeps its whole span; a scrolling column is clipped and reports `None` when
     /// nothing of it remains visible.
     fn visible_column_span(&self, column: usize) -> Option<(i32, u32)> {
-        let (x, width) = self.column_span(column);
+        let (x, width) = self.column_span_ltr(column);
         let frozen = self.frozen_columns();
         if column < frozen {
-            return Some((x, width));
+            return self.mirror_span_if_rtl(x, width);
         }
         let rect = self.base.geometry();
         let frozen_end = rect
@@ -602,7 +628,23 @@ impl TreeTable {
             return None;
         }
         let visible_x = x.max(frozen_end);
-        Some((visible_x, (end - visible_x).max(0) as u32))
+        self.mirror_span_if_rtl(visible_x, (end - visible_x).max(0) as u32)
+    }
+
+    /// Mirrors a LTR span for the current direction; the clipping above ran in LTR space.
+    fn mirror_span_if_rtl(&self, x: i32, width: u32) -> Option<(i32, u32)> {
+        if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            Some((
+                crate::widget::view_widgets::rtl_columns::mirror_span(
+                    x,
+                    width,
+                    self.base.geometry(),
+                ),
+                width,
+            ))
+        } else {
+            Some((x, width))
+        }
     }
 
     /// Returns the node path for visible row.
@@ -1046,8 +1088,8 @@ impl TreeTable {
         self.editing = editing_path.and_then(|(path, column)| {
             self.visible_rows.iter().position(|row| row.path == path).map(|row| (row, column))
         });
-        // A collapse (or a shorter model) can leave the row-unit scroll offset past the end; a paint
-        // starting there shows nothing while the empty caption stays suppressed.
+        // A collapse (or a shorter model) can leave the row-unit scroll offset past the end; a
+        // paint starting there would show blank rows, so the offset is clamped to the last row.
         self.scroll_row = self.scroll_row.min(self.visible_rows.len().saturating_sub(1));
         self.projection_changed.emit(self.visible_rows.len());
         self.announce_selection_change(previous_selection);
@@ -1543,6 +1585,19 @@ impl TreeTable {
     }
 }
 
+/// UX-03: the tree table publishes the same empty/error captions as the rest of the family.
+impl crate::widget::view_widgets::CollectionState for TreeTable {
+    fn collection_placeholder(&self) -> &crate::widget::view_widgets::CollectionPlaceholder {
+        &self.placeholder
+    }
+
+    fn collection_placeholder_mut(
+        &mut self,
+    ) -> &mut crate::widget::view_widgets::CollectionPlaceholder {
+        &mut self.placeholder
+    }
+}
+
 impl Widget for TreeTable {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -1919,6 +1974,22 @@ impl Draw for TreeTable {
         );
 
         if self.visible_rows.is_empty() {
+            // UX-03: an empty table says so, in the language the rest of the collection family
+            // uses. The header, when shown, keeps its own band so the caption sits under it.
+            let top = if self.show_header { rect.y + self.row_height as i32 } else { rect.y };
+            let body = Rect::new(
+                rect.x,
+                top,
+                rect.width,
+                rect.height.saturating_sub((top - rect.y).max(0) as u32),
+            );
+            crate::widget::view_widgets::paint_collection_placeholder(
+                context,
+                body,
+                &self.placeholder,
+                ink,
+                effective_font(style),
+            );
             return;
         }
 
@@ -1967,7 +2038,7 @@ impl Draw for TreeTable {
                         label,
                         cell_font,
                         ink,
-                        HorizontalAlignment::Left,
+                        crate::widget::view_widgets::rtl_columns::leading_alignment(),
                     );
                 }
                 if sort_slot > 0 {
@@ -2088,7 +2159,7 @@ impl Draw for TreeTable {
                         cell_font,
                         ink,
                         if col == 0 {
-                            HorizontalAlignment::Left
+                            crate::widget::view_widgets::rtl_columns::leading_alignment()
                         } else {
                             self.column_alignment(col)
                         },
@@ -2125,11 +2196,15 @@ impl Draw for TreeTable {
                         "Loading...",
                         cell_font,
                         ink.with_alpha_f32(0.65),
-                        HorizontalAlignment::Left,
+                        crate::widget::view_widgets::rtl_columns::leading_alignment(),
                     );
                 }
             }
         }
+
+        // Tab and Shortcut focus must be visible on the tree table as on every other control (U3-04).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring_if_needed(context, rect, radius, surface);
     }
 }
 
@@ -2269,6 +2344,21 @@ impl crate::event::EventHandler for TreeTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::view_widgets::collection_state::CollectionState;
+
+    /// UX-03: an empty tree table paints the caption the collection family publishes.
+    ///
+    /// The empty branch used to `return` on the first line, so a table with no rows painted the
+    /// frame and nothing else. The comment that claimed an "empty caption" existed had no code
+    /// behind it.
+    #[test]
+    fn an_empty_tree_table_paints_its_empty_caption() {
+        let mut table = TreeTable::new(Rect::new(0, 0, 200, 120));
+        let bare = crate::widget::svg::render_to_svg(&mut table);
+        table.set_empty_text("No rows");
+        let captioned = crate::widget::svg::render_to_svg(&mut table);
+        assert_ne!(bare, captioned, "the empty caption must reach the painted picture");
+    }
 
     struct SampleTreeTableModel;
 
@@ -3174,6 +3264,22 @@ mod tests {
         fn data(&self, path: &[usize], column: usize) -> Option<String> {
             Some(std::format!("{}:{}:{column}", path[0], 0))
         }
+    }
+
+    /// U2-06: an RTL page puts the frozen tree column on the right and mirrors the hit test.
+    #[test]
+    fn rtl_mirrors_the_column_spans() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 120));
+        tree.set_model(Arc::new(ThreeColumnModel));
+        tree.set_show_header(true);
+        tree.set_column_width(120);
+        let rect = tree.geometry();
+        crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+            assert_eq!(tree.column_span(0).0, rect.x + 180, "the frozen column is rightmost");
+            assert_eq!(tree.header_column_at(Point::new(rect.x + 299, 2)), Some(0));
+            // The leftmost 60 px of the 300 px band belong to the last column.
+            assert_eq!(tree.header_column_at(Point::new(rect.x + 1, 2)), Some(2));
+        });
     }
 
     /// A scrolling column left of `scroll_column` cannot paint over the frozen tree column.

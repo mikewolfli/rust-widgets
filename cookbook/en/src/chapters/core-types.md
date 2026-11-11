@@ -16,8 +16,7 @@ pub use font::Font;
 pub use geometry::{Orientation, Point, Rect, Size};
 pub use mutex_ext::MutexExt;
 pub use types::{
-    CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass,
-    ObjectId, PlatformCapabilities, PlatformFamily, RuntimeProfile, Version,
+    CoreConfig, CoreError, CoreObject, CoreResult, ObjectId, PlatformCapabilities, PlatformFamily, RuntimeProfile, Version,
 };
 pub mod coords;
 pub mod rect_merge;
@@ -25,7 +24,7 @@ pub mod rect_merge;
 
 | File | Contents |
 |---|---|
-| `types.rs` | `ObjectId`, `RuntimeProfile`, `DeviceClass`, `PlatformFamily`, `Version`, `PlatformCapabilities`, `CoreConfig`, `CoreError`, `CoreObject`, `CoreResult` |
+| `types.rs` | `ObjectId`, `RuntimeProfile`, `PlatformFamily`, `Version`, `PlatformCapabilities`, `CoreConfig`, `CoreError`, `CoreObject`, `CoreResult` |
 | `geometry.rs` | `Point`, `Size`, `Rect`, `Orientation` |
 | `color.rs` | `Color` — RGBA with 55+ predefined constants |
 | `alignment.rs` | `Alignment`, `HorizontalAlignment`, `VerticalAlignment` |
@@ -860,33 +859,23 @@ assert_ne!(profile, RuntimeProfile::Embedded);
 
 ---
 
-## DeviceClass
+## Device Class
 
-Form-factor classification for touch target sizing and layout adaptation.
-
-```rust
-pub enum DeviceClass {
-    Desktop,    // Large screen, mouse+keyboard, optionally touch
-    Tablet,     // Medium screen, touch-first
-    Mobile,     // Small screen, touch-first
-    Embedded,   // Constrained display, limited input
-    Projector,  // Large read-only display, remote control input
-}
-```
+There is no `DeviceClass` enum in the core crate. The family classification is
+`PlatformFamily` (below), and the per-class touch-target policy is
+`TouchTargetSize`:
 
 ```rust
-use rust_widgets::core::DeviceClass;
+use rust_widgets::platform::profile::recommended_touch_target;
+use rust_widgets::style::TouchTargetSize;
 
-let class = DeviceClass::Desktop;
-
-match class {
-    DeviceClass::Desktop   => { /* 1920x1080, mouse+keyboard */ }
-    DeviceClass::Tablet    => { /* touch-first, medium screen */ }
-    DeviceClass::Mobile    => { /* compact, touch-only */ }
-    DeviceClass::Embedded  => { /* constrained */ }
-    DeviceClass::Projector => { /* large, read-only */ }
-}
+let class: TouchTargetSize = recommended_touch_target();
+let target = class.dimensions(); // 32 / 44 / 48 / 40 px
+let spacing = class.spacing();   // 8 / 12 / 16 / 10 px
 ```
+
+See [platform-support.md § 5](platform-support.md#5-device-class-and-touch-targets)
+for the full table and the hit-area helpers.
 
 ---
 

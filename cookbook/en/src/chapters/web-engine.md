@@ -5,6 +5,17 @@ WebEngine, JavaScript engine, cookie management, privacy controls, tracking
 protection, plugin system, and browser history persistence — all implemented
 in pure Rust.
 
+> **Where these live.** The web group moved out of the core crate into the
+> optional `rust-widgets-suites` crate, behind its `webview` feature:
+>
+> ```toml
+> [dependencies]
+> rust-widgets-suites = { version = "4.2", features = ["webview"] }
+> ```
+>
+> Every path below is therefore `rust_widgets_suites::webview::…`, not a
+> `rust_widgets::…` path.
+
 ## Architecture Overview
 
 ```
@@ -38,7 +49,7 @@ in pure Rust.
 ## WebView — Embedded Web Content Widget
 
 ```rust
-use rust_widgets::web::WebViewEnhanced;
+use rust_widgets_suites::webview::WebViewEnhanced;
 use rust_widgets::core::Rect;
 
 // Create a web view widget
@@ -101,7 +112,7 @@ assert!(!new_view.is_loading());
 and settings:
 
 ```rust
-use rust_widgets::web::WebEngineViewEnhanced;
+use rust_widgets_suites::webview::WebEngineViewEnhanced;
 use rust_widgets::core::Rect;
 
 let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 1024, 768));
@@ -149,7 +160,7 @@ Both widget types delegate to a shared `WebViewCore` which manages:
 ### SessionHistory
 
 ```rust
-use rust_widgets::web::SessionHistory;
+use rust_widgets_suites::webview::SessionHistory;
 
 let mut history = SessionHistory::new(50);  // Max 50 entries
 
@@ -192,7 +203,7 @@ history.clear();
 An alternative session history implementation with timestamped entries:
 
 ```rust
-use rust_widgets::web::{NavigationHistory, NavigationEntry};
+use rust_widgets_suites::webview::{NavigationHistory, NavigationEntry};
 
 let mut history = NavigationHistory::new(100);
 
@@ -244,7 +255,7 @@ automatically when focused:
 ## Browser History Persistence
 
 ```rust
-use rust_widgets::web::{BrowserHistory, HistoryEntry};
+use rust_widgets_suites::webview::{BrowserHistory, HistoryEntry};
 
 let mut history = BrowserHistory::new();  // Default: 100 entries
 // Or: BrowserHistory::with_capacity(500)
@@ -300,7 +311,7 @@ A pure-Rust JavaScript interpreter supporting variables, functions, conditionals
 loops, arrays, and console logging:
 
 ```rust
-use rust_widgets::web::{SimpleJsEngine, JsValue, JsResult, JsContext, JsEngine};
+use rust_widgets_suites::webview::{SimpleJsEngine, JsValue, JsResult, JsContext, JsEngine};
 
 let mut engine = SimpleJsEngine::new();
 let mut ctx = JsContext::new();
@@ -343,7 +354,7 @@ for msg in ctx.console_messages() {
 The JavaScript value type supports multiple variants:
 
 ```rust
-use rust_widgets::web::JsValue;
+use rust_widgets_suites::webview::JsValue;
 
 let vals = [
     JsValue::Undefined,
@@ -393,7 +404,7 @@ view.set_javascript_enabled(true);
 ## Cookies — CookieJar
 
 ```rust
-use rust_widgets::web::{CookieJar, Cookie, SameSite};
+use rust_widgets_suites::webview::{CookieJar, Cookie, SameSite};
 
 let mut jar = CookieJar::new();
 
@@ -451,7 +462,7 @@ assert!(jar.is_empty());
 ### TrackingType — 10 Tracking Mechanisms
 
 ```rust
-use rust_widgets::web::{TrackingType, TrackingProtection, PrivacySettings};
+use rust_widgets_suites::webview::{TrackingType, TrackingProtection, PrivacySettings};
 
 let tracking_types = [
     TrackingType::Cookies,
@@ -510,7 +521,7 @@ assert_eq!(protection.blocked_count(), 0);
 ## Privacy — Domain Allow/Block Lists
 
 ```rust
-use rust_widgets::web::PrivacySettings;
+use rust_widgets_suites::webview::PrivacySettings;
 
 // Three preset levels:
 
@@ -545,7 +556,7 @@ assert!(settings.should_block_tracking_type(TrackingType::Fingerprinting));
 ## Security Settings
 
 ```rust
-use rust_widgets::web::SecuritySettings;
+use rust_widgets_suites::webview::SecuritySettings;
 
 // Default: secure by default
 let security = SecuritySettings::default();
@@ -578,7 +589,7 @@ engine.security_mut().block_malware = false;
 ## WebSettings
 
 ```rust
-use rust_widgets::web::WebSettings;
+use rust_widgets_suites::webview::WebSettings;
 
 let settings = WebSettings {
     javascript_enabled: true,
@@ -603,7 +614,7 @@ view.settings_mut().images_enabled = false;
 ### The Plugin Trait
 
 ```rust
-use rust_widgets::web::{
+use rust_widgets_suites::webview::{
     Plugin, PluginInfo, PluginState, PluginPermission, PluginError,
     PluginManager, ContentPlugin,
 };
@@ -632,7 +643,7 @@ impl Plugin for MyPlugin {
 ### PluginManager
 
 ```rust
-use rust_widgets::web::PluginManager;
+use rust_widgets_suites::webview::PluginManager;
 
 let mut manager = PluginManager::new();
 
@@ -692,7 +703,7 @@ manager.clear();
 ### ContentPlugin — Built-in Content Handler
 
 ```rust
-use rust_widgets::web::ContentPlugin;
+use rust_widgets_suites::webview::ContentPlugin;
 
 let mut plugin = ContentPlugin::new("PDF Viewer", "2.0.0");
 
@@ -717,7 +728,7 @@ plugin.on_enable();
 ## Browsing Data Clearing
 
 ```rust
-use rust_widgets::web::{BrowsingData, WebViewEnhanced};
+use rust_widgets_suites::webview::{BrowsingData, WebViewEnhanced};
 use rust_widgets::core::Rect;
 
 let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -749,7 +760,7 @@ Both `WebViewEnhanced` and `WebEngineViewEnhanced` expose signals defined on
 `WebViewCore`:
 
 ```rust
-use rust_widgets::web::WebViewEnhanced;
+use rust_widgets_suites::webview::WebViewEnhanced;
 use rust_widgets::core::Rect;
 
 let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -831,7 +842,7 @@ macro to implement the `Widget` trait by delegating to the shared `WebViewCore`:
 ## Complete Web Browser Integration
 
 ```rust
-use rust_widgets::web::{
+use rust_widgets_suites::webview::{
     WebEngineViewEnhanced, SessionHistory, BrowserHistory,
     CookieJar, PrivacySettings, TrackingProtection,
     SecuritySettings, WebSettings, PluginManager,
@@ -902,7 +913,7 @@ impl Browser {
     }
 
     fn clear_data(&mut self) {
-        use rust_widgets::web::BrowsingData;
+        use rust_widgets_suites::webview::BrowsingData;
         // Clear everything on exit (private browsing)
         self.view.clear_browsing_data(BrowsingData::all());
     }

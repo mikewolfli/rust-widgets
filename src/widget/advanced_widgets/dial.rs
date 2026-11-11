@@ -752,6 +752,12 @@ impl Draw for Dial {
             .filter(|resolved| *resolved != face)
             .unwrap_or_else(|| face.blend(&muted, 0.55));
 
+        // U3-03: a disabled dial keeps its full geometry but its ink, rim and needle recede by
+        // the shared rule, so "out of play" is visible and not only enforced in the handler.
+        let ink = self.base.disabled_ink_on(ink, face);
+        let rim = self.base.disabled_ink_on(rim, face);
+        let accent = self.base.disabled_ink_on(accent, face);
+
         context.fill_circle(center, radius, face);
         context.draw_circle(center, radius, rim);
 
@@ -856,6 +862,11 @@ impl Draw for Dial {
         };
         context.draw_line(center, to, accent);
         context.fill_circle(center, HUB_RADIUS as u32, ink);
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

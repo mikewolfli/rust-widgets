@@ -78,7 +78,7 @@ int main(void) {
 
 建置指令：
 ```sh
-gcc -o demo demo.c -Ltarget/release -lrw_ffi -lpthread -ldl
+gcc -o demo demo.c -Ltarget/release -lrust_widgets -lpthread -ldl
 ```
 
 ---
@@ -309,7 +309,7 @@ int main() {
 
 建置指令：
 ```sh
-g++ -std=c++17 -o demo example.cpp -Ltarget/release -lrw_ffi -lpthread -ldl
+g++ -std=c++17 -o demo example.cpp -Ltarget/release -lrust_widgets -lpthread -ldl
 ```
 
 ---
@@ -583,7 +583,7 @@ module.exports = RustWidgets;
 const RustWidgets = require('rust-widgets');
 
 async function main() {
-    const rw = new RustWidgets('../target/release/librw_ffi.so');
+    const rw = new RustWidgets('../target/release/librust_widgets.so');
 
     rw.init();
 
@@ -626,7 +626,7 @@ main().catch(console.error);
 
 ```sh
 cargo build --release
-# 產生：target/release/librw_ffi.{so,dylib,dll}
+# 產生：target/release/librust_widgets.{so,dylib,dll}
 ```
 
 ### Python
@@ -640,7 +640,7 @@ python example.py
 
 ```sh
 g++ -std=c++17 -Iinclude -o demo examples/cpp/example.cpp \
-    -Ltarget/release -lrw_ffi -lpthread -ldl
+    -Ltarget/release -lrust_widgets -lpthread -ldl
 ```
 
 ### Java

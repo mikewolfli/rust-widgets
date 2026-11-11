@@ -11,7 +11,7 @@ This file mirrors staged execution status.
 >
 > **本轮审计（2026-09-16，第 23 轮）**：本文件此前长期滞后。本轮用
 > 「逐条实跑 + 编译器权威取证」重核全部条目，方法与证据见
-> `docs/log/log-20260916-1.md`（§1–§19）与 `docs/log/log-20260916-2.md`（§1–§23）。
+> `docs/log/archive/log-20260916-1.md`（§1–§19）与 `docs/log/archive/log-20260916-2.md`（§1–§23）。
 >
 > **当前计数（第 23 轮结束时实跑核对）**：
 > - `[x]` 完成：**127**
@@ -54,7 +54,7 @@ This file mirrors staged execution status.
   ```
 
   This was the one item v31 explicitly re-opened as `*still open*`; it is now closed.
-  Evidence: `docs/log/log-20260916-2.md` §15.4.
+  Evidence: `docs/log/archive/log-20260916-2.md` §15.4.
 
 - [x] **Review and optimize performance-critical paths (rendering, event dispatch, etc.)**
 
@@ -84,7 +84,7 @@ This file mirrors staged execution status.
   Wired into `.github/workflows/ci.yml` as "Performance regression gate". Verified by
   reverse injection: with `TOLERANCE=0` the gate reports FAIL.
 
-  Evidence: `docs/log/log-20260916-2.md` §22.2.
+  Evidence: `docs/log/archive/log-20260916-2.md` §22.2.
 
 ### Defects found while documenting (v32)
 
@@ -93,7 +93,7 @@ code defects that no test covers. They are listed here rather than fixed silentl
 so each can be triaged on its own; every one is documented as-is in the rustdoc
 (no doc claims behaviour the code does not have).
 
-**Round 22 fixed six of them** — see `docs/log/log-20260916-2.md` §20. Each fix was
+**Round 22 fixed six of them** — see `docs/log/archive/log-20260916-2.md` §20. Each fix was
 reverse-injection verified (restore the defect → the new test fails).
 
 - [x] **Privacy allow-list** — resolved as a **documentation** defect, not a missing
@@ -219,7 +219,7 @@ reverse-injection verified (restore the defect → the new test fails).
   was verified against `src/` for the first time and **13 declared APIs did not
   exist**, identically in all three language editions (details in the entry above).
   The rustdoc pass documented 3090 items. Evidence:
-  `docs/log/log-20260916-2.md` §18 (cookbook) and §19 (rustdoc).
+  `docs/log/archive/log-20260916-2.md` §18 (cookbook) and §19 (rustdoc).
 
 - [x] **Standardize and improve inline code comments**
 
@@ -254,7 +254,7 @@ reverse-injection verified (restore the defect → the new test fails).
   the real API is `Signal::connect_scoped(owner, slot)`), 11 at `pub(crate)` items,
   and 6 at items that only exist with every feature on (so `embedded`/`mini` docs
   could not build at all). All fixed and gated. Evidence:
-  `docs/log/log-20260916-2.md` §19.
+  `docs/log/archive/log-20260916-2.md` §19.
 
 ### Dependency and Build Management
 
@@ -296,7 +296,7 @@ reverse-injection verified (restore the defect → the new test fails).
                                  positively by tools/check_harmony_cross.sh
   ```
 
-  Evidence: `docs/log/log-20260916-2.md` §13 / §14.
+  Evidence: `docs/log/archive/log-20260916-2.md` §13 / §14.
 
 - [x] **Document platform-specific limitations and workarounds**
 
@@ -447,7 +447,7 @@ reverse-injection verified (restore the defect → the new test fails).
   **creation** path. Removed (the caller owns a buffer now). The false positive was a
   test-only recording bridge, fixed in the scanner.
 
-  Evidence: `docs/log/log-20260916-2.md` §22.3.
+  Evidence: `docs/log/archive/log-20260916-2.md` §22.3.
 
 - [x] **Profile lock contention in widget creation and event loop paths**
 
@@ -463,7 +463,7 @@ reverse-injection verified (restore the defect → the new test fails).
   host during this run", which is silent about every other host and about future
   changes; the gate answers "there is nothing to contend on" for every build.
 
-  Evidence: `docs/log/log-20260916-2.md` §22.3.
+  Evidence: `docs/log/archive/log-20260916-2.md` §22.3.
 
 ### Print Module Optimization Checklist (v32)
 
@@ -480,11 +480,11 @@ reverse-injection verified (restore the defect → the new test fails).
   test result: ok. N passed; 0 failed
   ```
 
-  Evidence: `docs/log/log-20260916-2.md` §15.11 C.
+  Evidence: `docs/log/archive/log-20260916-2.md` §15.11 C.
 
 - [x] **Review trait contracts (PrintDocument, PrintContext) for completeness and extensibility**
 
-  **Reviewed and fixed in round 20** (see `docs/log/log-20260916-2.md` §17). Two real
+  **Reviewed and fixed in round 20** (see `docs/log/archive/log-20260916-2.md` §17). Two real
   defects found and fixed, plus the undocumented gaps written into the contract:
 
   1. `PrintPreviewDialog::preview_commands()` **always returned an empty list** — the
@@ -539,7 +539,7 @@ reverse-injection verified (restore the defect → the new test fails).
   test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured
   ```
 
-  Evidence: `docs/log/log-20260916-2.md` §23.
+  Evidence: `docs/log/archive/log-20260916-2.md` §23.
 
 - [x] **Refactor platform-specific print command logic for easier extension**
 
@@ -581,7 +581,7 @@ reverse-injection verified (restore the defect → the new test fails).
     rather than an empty stream.
 
   Test count for the print module: 31 → 38, all passing.
-  Evidence: `docs/log/log-20260916-2.md` §22.4.
+  Evidence: `docs/log/archive/log-20260916-2.md` §22.4.
 
 - [x] **Ensure all error messages are user-friendly and actionable**
 
@@ -619,7 +619,7 @@ reverse-injection verified (restore the defect → the new test fails).
 
   The remaining 213 are catalogued by the tool for continued work; they are terse, not
   wrong, and rewriting them wholesale would churn diffs without improving correctness.
-  Evidence: `docs/log/log-20260916-2.md` §22.5.
+  Evidence: `docs/log/archive/log-20260916-2.md` §22.5.
 
   Status: the rule is enforced by a report plus the fixes above, not by a CI gate. A
   gate would fail the build on messages that are terse but correct, so it is
@@ -634,7 +634,7 @@ reverse-injection verified (restore the defect → the new test fails).
   mirrors the desktop field so the shared method body compiles unchanged in both
   profiles; deleting it would force two divergent bodies, which is exactly how the
   drift this rule is meant to prevent gets introduced. Only the misleading `stub`
-  wording in the docs was changed. See `docs/log/log-20260916-2.md` §15.11 B.
+  wording in the docs was changed. See `docs/log/archive/log-20260916-2.md` §15.11 B.
 
 - ~~**Consolidate backend selection logic for clarity and maintainability**~~
 
@@ -802,6 +802,6 @@ checklist, the print checklist). Deleted rather than struck through so that the
 ## Stage Progress
 
 Tracked in `docs/plans/blue15.md` §8 (per-phase completion rate with evidence) and
-`docs/log/log-20260916-2.md` (per-round record). This file tracks *requirements*,
+`docs/log/archive/log-20260916-2.md` (per-round record). This file tracks *requirements*,
 not phases; the two used to drift, so from now on every status change here must name
 the command that proves it.

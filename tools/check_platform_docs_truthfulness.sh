@@ -62,16 +62,26 @@ check_claim "set_icon_from_file" "set_icon_from_file\\(" "unsupported|not implem
 check_claim "setRepresentation" "setRepresentation_:|\\.setRepresentation\\(" "unsupported|not implemented|bundle"
 check_claim "maximize()" "\\.maximize\\(\\)" "unsupported|not implemented|bundle"
 
-# The platform status files must not describe a method as implemented unless this source has an
-# override. Spot-check the four the plan names.
+# The three backend implementations must really override the method. The spot-check list used to
+# name `*-status.md` files, but the macOS status page no longer documents `set_window_state` and
+# Linux has no status page at all: an absent target made the loop skip silently. Point the check at
+# the implementation files, which is what the claim is about.
 for pair in \
-    "src/platform/macos/status.md:set_window_state" \
-    "src/platform/linux/status.md:set_window_state" \
+    "src/platform/macos/platform_impl.rs:set_window_state" \
+    "src/platform/linux/platform_impl.rs:set_window_state" \
     "src/platform/windows/platform_impl.rs:set_window_state"; do
     file="${pair%%:*}"
     method="${pair##*:}"
-    if [ -f "$ROOT/$file" ] && grep -q "$method" "$ROOT/$file"; then
+    if [ ! -f "$ROOT/$file" ]; then
+        # A spot-check target that no longer exists must be a finding, not a silent skip:
+        # the loop used to have only a pass branch, so a moved/renamed file made it green.
+        fail "$file: spot-check file is missing"
+        continue
+    fi
+    if grep -q "$method" "$ROOT/$file"; then
         pass "$file mentions $method"
+    else
+        fail "$file: does not mention $method"
     fi
 done
 

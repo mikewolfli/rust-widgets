@@ -55,7 +55,7 @@ edition = "2021"
 rust_widgets = "4.2.0"
 ```
 
-默认功能集（`desktop`）会拉取完整的桌面配置文件：通过 wgpu 的 GPU 渲染、操作系统原生平台后端、触摸支持、i18n、图表、PDF/打印、辅助功能和高级控件。
+默认功能集（`desktop`）会拉取完整的桌面配置文件：通过 wgpu 的 GPU 渲染、操作系统原生平台后端、触摸支持、i18n、图表、辅助功能和高级控件。打印与 PDF 是独立的可选特性（`print`、`pdf`），不包含在配置文件中。
 
 ---
 
@@ -68,7 +68,7 @@ rust_widgets = "4.2.0"
 
 | 配置文件 | 功能标志 | 描述 |
 |---|---|---|
-| **桌面** | `desktop`（默认） | 完整的原生平台、GPU、触摸、i18n、图表、打印、PDF、辅助功能 |
+| **桌面** | `desktop`（默认） | 完整的原生平台、GPU、触摸、i18n、图表、辅助功能（打印/PDF 为可选特性） |
 | **平板** | `tablet` | 触摸优先、GPU，不含桌面附加功能 |
 | **移动端** | `mobile` | 触摸、GPU、移动端 API |
 | **嵌入式** | `embedded` | 软件光栅化、无 GPU、低内存、精简的控件集 |
@@ -272,8 +272,8 @@ use rust_widgets::{
 };
 
 let window_id = create_window("My Window", 100, 100, 800, 600);
-let button_id = create_button("Submit", 10, 10, 120, 32);
-let label_id = create_label("Status", 10, 60, 300, 24);
+let button_id = create_button(window_id, "Submit", 10, 10, 120, 32);
+let label_id = create_label(window_id, "Status", 10, 60, 300, 24);
 ```
 
 可用的 `create_*` 函数：
@@ -281,23 +281,23 @@ let label_id = create_label("Status", 10, 60, 300, 24);
 | 函数 | 创建对象 |
 |---|---|
 | `create_window(name, x, y, w, h)` | 顶层窗口 |
-| `create_button(text, x, y, w, h)` | 按钮 |
-| `create_checkbox(text, x, y, w, h)` | 复选框 |
-| `create_radio_button(text, x, y, w, h)` | 单选按钮 |
-| `create_label(text, x, y, w, h)` | 文本标签 |
-| `create_line_edit(text, x, y, w, h)` | 单行文本输入 |
-| `create_slider(min, max, val, x, y, w, h)` | 水平滑块 |
-| `create_progress_bar(min, max, val, x, y, w, h)` | 进度指示器 |
-| `create_combo_box(x, y, w, h)` | 下拉组合框 |
-| `create_list_box(x, y, w, h)` | 滚动列表 |
-| `create_spin_box(min, max, step, val, x, y, w, h)` | 数字微调框 |
-| `create_list_view(x, y, w, h)` | 多列列表 |
-| `create_scroll_area(x, y, w, h)` | 可滚动容器 |
-| `create_panel(x, y, w, h)` | 面板/分组框 |
-| `create_message_box(title, msg)` | 模态消息对话框 |
-| `create_file_dialog(title, dir, filter)` | 文件选择器 |
-| `create_color_dialog(title)` | 颜色选择对话框 |
-| `create_font_dialog(title)` | 字体选择对话框 |
+| `create_button(parent, text, x, y, w, h)` | 按钮 |
+| `create_checkbox(parent, text, x, y, w, h)` | 复选框 |
+| `create_radio_button(parent, text, x, y, w, h)` | 单选按钮 |
+| `create_label(parent, text, x, y, w, h)` | 文本标签 |
+| `create_line_edit(parent, text, x, y, w, h)` | 单行文本输入 |
+| `create_slider(parent, x, y, w, h)` | 水平滑块 |
+| `create_progress_bar(parent, x, y, w, h)` | 进度指示器 |
+| `create_combo_box(parent, x, y, w, h)` | 下拉组合框 |
+| `create_list_box(parent, x, y, w, h)` | 滚动列表 |
+| `create_spin_box(parent, x, y, w, h)` | 数字微调框 |
+| `create_list_view(parent, x, y, w, h)` | 多列列表 |
+| `create_scroll_area(parent, x, y, w, h)` | 可滚动容器 |
+| `create_panel(parent, x, y, w, h)` | 面板/分组框 |
+| `create_message_box(parent, title, text, x, y, w, h)` | 模态消息对话框 |
+| `create_file_dialog(parent, x, y, w, h)` | 文件选择器 |
+| `create_color_dialog(parent, x, y, w, h)` | 颜色选择对话框 |
+| `create_font_dialog(parent, x, y, w, h)` | 字体选择对话框 |
 
 ### 2. App API 与类型化句柄（推荐）
 

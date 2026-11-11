@@ -107,7 +107,7 @@ of `parent`.
 pub fn show_widget(id: ObjectId);
 pub fn hide_widget(id: ObjectId);
 pub fn set_widget_geometry(id: ObjectId, x: i32, y: i32, w: u32, h: u32);
-pub fn set_widget_text(id: ObjectId, text: &str) -> String;
+pub fn set_widget_text(id: ObjectId, text: &str);
 pub fn get_widget_text(id: ObjectId) -> String;
 pub fn set_widget_enabled(id: ObjectId, enabled: bool);
 pub fn is_widget_enabled(id: ObjectId) -> bool;
@@ -197,8 +197,10 @@ The `app` module is the **preferred entry point** for production applications.
 pub struct App { /* ... */ }
 pub struct AppConfig {
     pub app_name: String,
+    pub organization: String,
+    pub version: String,
     pub enable_i18n: bool,
-    // ...
+    pub enable_accessibility: bool,
 }
 ```
 
@@ -206,10 +208,15 @@ pub struct AppConfig {
 
 | Method | Signature | Description |
 |---|---|---|
-| `new` | `fn(config: AppConfig) -> Self` | Create application with config |
-| `run` | `fn(self)` | Run the event loop |
-| `window` | `fn(&self) -> &WindowHandle` | Get the main window handle |
-| `quit` | `fn(&self)` | Quit the application |
+| `new` | `fn() -> Self` | Create application with the default config |
+| `with_config` | `fn(config: AppConfig) -> Self` | Create application with the given config |
+| `config` / `config_mut` | `fn(&self) -> &AppConfig` / `fn(&mut self) -> &mut AppConfig` | Read or adjust the active config |
+| `lifecycle` / `lifecycle_mut` | `fn(&self) -> &AppLifecycle` | Read startup/exit hooks and the lifecycle state |
+| `on_startup` | `fn(self, f: impl FnOnce() + Send + 'static) -> Self` | Run `f` when the loop starts |
+| `new_window` | `fn(&self, title: &str, x: i32, y: i32, w: u32, h: u32) -> WindowHandle` | Create a top-level window |
+| `windows` | `fn(&self) -> Vec<WindowHandle>` | Every open top-level window |
+| `run` | `fn(&self)` | Run the event loop |
+| `quit` | `fn(&mut self)` | Ask the loop to exit |
 
 ### Widget Handle Types
 
@@ -218,7 +225,7 @@ Each handle wraps an `ObjectId` and exposes type-safe operations.
 | Handle | Widget Type | Key Operations (besides WidgetHandle) |
 |---|---|---|
 | `WidgetHandle` | (base trait) | `raw_id()`, `from_raw()`, `show()`, `hide()`, `set_geometry()`, `set_text()`, `text()`, `enable()`, `disable()`, `is_enabled()`, `set_visible()`, `is_visible()`, `on_click()`, `on_value_changed()` |
-| `WindowHandle` | Window | `set_title()`, `title()`, `resize()`, `minimize()`, `maximize()`, `restore()`, `close()` |
+| `WindowHandle` | Window | `set_title()`, `title()`, `set_icon()`, `set_min_size()`, `min_size()`, `set_frame_presentation()`, `close()` |
 | `ButtonHandle` | Button | `set_text()`, `text()` — inherits `WidgetHandle` |
 | `LabelHandle` | Label | `set_text()`, `text()` |
 | `LineEditHandle` | LineEdit | `set_text()`, `text()`, `set_echo_mode()`, `echo_mode()` |
@@ -226,16 +233,16 @@ Each handle wraps an `ObjectId` and exposes type-safe operations.
 | `RadioButtonHandle` | RadioButton | `set_checked()`, `is_checked()` |
 | `SliderHandle` | Slider | `set_value()`, `value()`, `set_range()`, `range()` |
 | `ProgressBarHandle` | ProgressBar | `set_value()`, `value()`, `set_range()`, `range()` |
-| `ComboBoxHandle` | ComboBox | `add_item()`, `clear()`, `set_current_index()`, `current_index()`, `item_count()`, `item_text()` |
-| `ListBoxHandle` | ListBox | `add_item()`, `remove_item()`, `clear()`, `set_current_index()`, `current_index()`, `item_count()` |
+| `ComboBoxHandle` | ComboBox | `add_item()`, `clear_items()`, `set_current_index()`, `current_index()`, `item_count()`, `item_text()` |
+| `ListBoxHandle` | ListBox | `add_item()`, `remove_item()`, `clear_items()`, `set_current_index()`, `current_index()`, `item_count()` |
 | `SpinBoxHandle` | SpinBox | `set_value()`, `value()`, `set_range()`, `set_step()` |
-| `ScrollAreaHandle` | ScrollArea | `set_widget()`, `ensure_visible()`, `scroll_to()` |
+| `ScrollAreaHandle` | ScrollArea | `set_content_widget()`, `content_widget()`, `set_scroll_position()`, `scroll_position()`, `set_content_size()`, `content_size()`, `scroll_to_top()`, `scroll_to_bottom()` |
 | `ScrollBarHandle` | ScrollBar | `set_value()`, `value()`, `set_range()` |
 | `PanelHandle` | Panel | `set_layout()` |
 | `ListViewHandle` | ListView | `set_model()`, `model()` |
 | `TabWidgetHandle` | TabWidget | `add_tab()`, `remove_tab()`, `set_current_index()`, `current_index()` |
-| `TextEditHandle` | TextEdit | `set_text()`, `text()`, `append()`, `clear()` |
-| `WebViewHandle` | WebView | `load_url()`, `url()`, `reload()`, `go_back()`, `go_forward()` |
+| `TextEditHandle` | TextEdit | Generic `WidgetHandle` operations only |
+| `WebViewHandle` | WebView | Generic `WidgetHandle` operations only |
 | `MessageBoxHandle` | MessageBox | `set_title()`, `set_text()`, `add_button()` |
 | `DialogHandle` | Dialog | `open()`, `close()`, `result()` |
 | `FrameHandle` | Frame | Generic frame container |
@@ -833,11 +840,12 @@ pub enum CapabilityAccessError {
 }
 ```
 
-Optional packages register their own kinds into the same factory: `rust-widgets-suites` (webview group) carries
-the web controls and `rust-widgets-suites` carries control groups (today the form group — `Form`
-and `FormSet`). Their `install` calls `try_register` (which refuses a name the factory already
-answers) and `register_property_defaults` (which is where `default_property_value` finds their
-declared defaults).
+Optional packages register their own kinds into the same factory. `rust-widgets-suites` carries seven
+groups behind their own features: `form_widgets` (always compiled), `webview`, `finance`, `maps`,
+`project`, `devtools` and `media_playback` (`crates/rust-widgets-suites/src/lib.rs:66-84`). Their
+`install` calls `try_register` (which refuses a name the factory already answers) and
+`register_property_defaults` (which is where `default_property_value` finds their declared
+defaults).
 
 ### Widget state persistence *(2.9.1)*
 
@@ -936,12 +944,13 @@ pub trait WidgetProperties {
 }
 ```
 
-### The four shared properties
+### The five shared properties
 
 Every control answers these, via `base_property_get` / `base_property_set`:
 
 ```rust
-pub const BASE_PROPERTY_NAMES: &[&str] = &["enabled", "visible", "tooltip", "geometry"];
+pub const BASE_PROPERTY_NAMES: &[&str] =
+    &["enabled", "visible", "tooltip", "geometry", "a11y_role"];
 ```
 
 `geometry` is deliberately **read-only** through this contract: a control's rectangle
@@ -1334,28 +1343,69 @@ impl AnimationFrameRequest {
 ### Core Rendering Types
 
 ```rust
-pub enum BlendMode { Normal, Multiply, Screen, Overlay, Additive }
+/// Compositing mode for every pixel write until the mode changes.
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+```
 
+`RenderCommand` has roughly 45 variants (the `3d`-gated quad and mesh variants
+among them). These are the core 2D ones; `src/render/core/command.rs` is the
+source of truth for the full list and every field:
+
+```rust
 pub enum RenderCommand {
-    Noop,
-    Clear(Color),
-    DrawRect { rect: Rect, color: Color, width: u32 },
     FillRect { rect: Rect, color: Color },
-    DrawRoundedRect { rect: Rect, radius: u32, color: Color, width: u32 },
-    FillRoundedRect { rect: Rect, radius: u32, color: Color },
-    DrawCircle { cx: i32, cy: i32, radius: u32, color: Color, width: u32 },
-    FillCircle { cx: i32, cy: i32, radius: u32, color: Color },
-    DrawText { text: String, x: i32, y: i32, color: Color, font_size: f32 },
-    DrawLine { x1: i32, y1: i32, x2: i32, y2: i32, color: Color, width: u32 },
-    DrawImage { data: Vec<u8>, rect: Rect },
+    DrawRect { rect: Rect, color: Color },
+    DrawRectStroke { rect: Rect, color: Color, width: u32 },
+    FillRoundedRect { rect: Rect, radii: [u32; 4], color: Color },
+    DrawRoundedRectStroke { rect: Rect, radii: [u32; 4], color: Color, width: u32 },
+    DrawLine { from: Point, to: Point, color: Color },
+    FillCircle { center: Point, radius: u32, color: Color },
+    DrawCircleStroke { center: Point, radius: u32, color: Color, width: u32 },
+    DrawText {
+        origin: Point,
+        text: Arc<str>,
+        font: Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    },
+    DrawImage { x: i32, y: i32, width: u32, height: u32, data: Arc<[u8]> },
+    DrawImageScaled {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        source_width: u32,
+        source_height: u32,
+        data: Arc<[u8]>,
+    },
     PushClip { x: i32, y: i32, width: u32, height: u32 },
     PopClip,
-    DrawGradient { rect: Rect, gradient: Gradient },
-    DrawShadow { rect: Rect, shadow: Shadow },
-    DrawPath { commands: Vec<PathCommand>, color: Color, width: u32 },
-    FillPath { commands: Vec<PathCommand>, color: Color },
-    DrawArc { rect: Rect, start_angle: f32, span_angle: f32, color: Color, width: u32 },
-    FillArc { rect: Rect, start_angle: f32, span_angle: f32, color: Color },
+    PushLayer { bounds: Rect, effect: Option<LayerEffect> },
+    PopLayer,
+    PushLayerGroup {
+        bounds: Rect,
+        effect: Option<LayerEffect>,
+        opacity: f32,
+        cache_key: Option<u64>,
+    },
+    SetBlendMode { mode: BlendMode },
 }
 ```
 
@@ -1363,11 +1413,23 @@ pub enum RenderCommand {
 
 ```rust
 pub trait PaintBackend {
-    fn begin_frame(&mut self, clear_color: Color);
+    fn begin_frame(&mut self, clear: Color);
     fn end_frame(&mut self);
-    fn draw_pixels(&mut self, x: i32, y: i32, width: u32, height: u32, pixels: &[u8]);
+    fn execute_command(&mut self, command: &RenderCommand);
+    fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]);
     fn size(&self) -> Size;
+    fn set_size(&mut self, size: Size);
     fn dpi_scale(&self) -> f32;
+    fn set_dpi_scale(&mut self, dpi_scale: f32);
+    fn measure_text(&self, text: &str, font: &Font) -> TextMetrics;
+    fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText>;
+    fn frame_rgba(&self) -> &[u8];
+
+    // Damage tracking, layer caching and the by-reference variants have
+    // default implementations; see `src/render/backend/paint.rs`.
+    fn mark_damage(&mut self, rect: Rect) {}
+    fn damage_regions(&self) -> &[(i32, i32, u32, u32)] { &[] }
+    fn present_damage(&mut self) -> bool { false }
 }
 ```
 
@@ -1375,23 +1437,31 @@ pub trait PaintBackend {
 
 ```rust
 pub struct RenderContext<'a> {
-    // Wraps a &mut dyn PaintBackend
+    // Wraps a &mut dyn PaintBackend and tracks the current translation.
 }
 
-impl RenderContext<'_> {
-    pub fn new(backend: &mut dyn PaintBackend) -> Self;
-    pub fn begin_frame(&mut self, clear_color: Color);
-    pub fn end_frame(&mut self);
-    pub fn draw_text(&mut self, text: &str, x: i32, y: i32, font_size: f32, color: Color);
-    pub fn draw_line(&mut self, x1: i32, y1: i32, x2: i32, y2: i32, color: Color, width: u32);
-    pub fn draw_rect(&mut self, rect: Rect, color: Color, width: u32);
+impl<'a> RenderContext<'a> {
+    pub fn new(backend: &'a mut dyn PaintBackend) -> Self;
+    pub fn size(&self) -> Size;
+    pub fn dpi_scale(&self) -> f32;
     pub fn fill_rect(&mut self, rect: Rect, color: Color);
-    pub fn draw_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color, width: u32);
+    pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32);
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color);
-    pub fn draw_image(&mut self, data: &[u8], rect: Rect);
-    pub fn push_clip(&mut self, x: i32, y: i32, w: u32, h: u32);
+    pub fn draw_line(&mut self, from: Point, to: Point, color: Color);
+    pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color);
+    pub fn draw_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    );
+    pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]);
+    pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32);
     pub fn pop_clip(&mut self);
-    pub fn execute(&mut self, cmd: &RenderCommand);
+    pub fn execute_command(&mut self, command: RenderCommand);
+    pub fn execute_command_ref(&mut self, command: &RenderCommand);
 }
 ```
 
@@ -1400,14 +1470,18 @@ impl RenderContext<'_> {
 ```rust
 pub struct BackBuffer { /* ... */ }
 impl BackBuffer {
-    pub fn new(size: Size) -> Self;
-    pub fn clear(&mut self, color: Color);
-    pub fn pixel(&self, x: u32, y: u32) -> Option<Color>;
-    pub fn set_pixel(&mut self, x: u32, y: u32, color: Color);
-    pub fn pixels(&self) -> &[u8];
+    pub fn new(size: Size, dpi_scale: f32) -> Self;
+    pub fn resize(&mut self, size: Size);
     pub fn size(&self) -> Size;
-    pub fn present(&self, target: &mut dyn PaintBackend, x: i32, y: i32);
-    pub fn resize(&mut self, new_size: Size);
+    pub fn dpi_scale(&self) -> f32;
+    pub fn set_dpi_scale(&mut self, dpi_scale: f32);
+    pub fn back_mut(&mut self) -> &mut [u8];
+    pub fn front(&self) -> &[u8];
+    pub fn present(&mut self);
+    pub fn mark_damage(&mut self, rect: Rect);
+    pub fn damage_regions(&self) -> &[(i32, i32, u32, u32)];
+    pub fn clear_damage(&mut self);
+    pub fn present_damage(&mut self) -> bool;
 }
 ```
 
@@ -1416,43 +1490,61 @@ impl BackBuffer {
 ```rust
 pub struct SoftwareSurface { /* ... */ }
 impl SoftwareSurface {
-    pub fn new(size: Size) -> Self;
-    pub fn context(&mut self) -> RenderContext;
-    pub fn present(&mut self) -> &[u8];
-    pub fn resize(&mut self, new_size: Size);
+    pub fn new(size: Size, dpi_scale: f32) -> Self;
+    pub fn begin_frame(&mut self, clear: Color);
+    pub fn end_frame(&mut self);
+    pub fn resize(&mut self, size: Size);
     pub fn size(&self) -> Size;
-    pub fn set_size(&mut self, size: Size);
+    pub fn set_dpi_scale(&mut self, dpi_scale: f32);
+    pub fn frame_rgba(&self) -> &[u8];
+    pub fn frame_number(&self) -> u64;
+    pub fn set_blend_mode(&mut self, mode: BlendMode);
+    pub fn mark_damage(&mut self, rect: Rect);
+    pub fn present_damage(&mut self) -> bool;
 }
 ```
 
 ### Scene & Batch
 
 ```rust
-pub enum SceneLayer { Background, Content, Foreground, Overlay, Tooltip }
+pub struct SceneLayer { /* ... */ }
+impl SceneLayer {
+    pub fn new(z_index: i32) -> Self;
+    pub fn z_index(&self) -> i32;
+    pub fn push(&mut self, command: RenderCommand);
+    pub fn commands(&self) -> &[RenderCommand];
+}
+
 pub struct RenderScene { /* ... */ }
-pub struct BatchId(u32);
-pub struct BatchCommand { /* ... */ }
-pub struct BatchRenderer { /* ... */ }
+impl RenderScene {
+    pub fn new() -> Self;
+    pub fn clear(&mut self);
+    pub fn add_layer(&mut self, layer: SceneLayer);
+    pub fn layers(&self) -> &[SceneLayer];
+    pub fn compose_with_backend<B: PaintBackend>(&self, backend: &mut B, clear: Color);
+    pub fn compose_to(&self, surface: &mut SoftwareSurface, clear: Color);
+}
 ```
 
 ### Auto Render Backend
 
 ```rust
-pub struct AutoRenderBackend(SoftwarePaintBackend);
-impl AutoRenderBackend {
-    pub fn new(size: Size, dpi: f32) -> Self;
-}
+pub enum AutoRenderBackend { GpuWgpu, CpuSoftware }
 
+pub fn last_auto_render_backend() -> AutoRenderBackend;
 pub fn default_software_render_config() -> SoftwareRenderConfig;
 pub fn set_default_software_render_config(config: SoftwareRenderConfig);
-pub fn last_auto_render_backend() -> Option<AutoRenderBackend>;
 ```
 
 ### Text Shaping
 
 ```rust
-pub trait TextShaper {
-    fn shape(&self, text: &str, font: &Font, dpi_scale: f32) -> ShapedText;
+pub trait TextShaper: Send + Sync {
+    fn shape(&self, text: &str, font_size: f32) -> Vec<ShapedGlyphRun>;
+    fn measure_width(&self, text: &str, font_size: f32) -> f32;
+    fn measure_height(&self, text: &str, font_size: f32) -> f32;
+    fn char_advance(&self, c: char, font_size: f32) -> f32;
+    fn cache_identity(&self) -> u64 { 0 }
 }
 
 pub struct SimpleTextShaper;
@@ -1623,14 +1715,18 @@ pub struct WidgetStyle {
     pub text_color: Option<Color>,
     pub font: Option<Font>,
     pub border_color: Option<Color>,
-    pub border_width: u32,
-    pub border_radius: u32,
+    pub border_width: Option<u32>,
+    pub border_radius: Option<u32>,
     pub corner_radii: Option<CornerRadii>,
+    pub border_style: Option<BorderStyle>,
     pub padding: Padding,
     pub margin: Margin,
+    pub spacing: Option<u32>,
     pub shadow: Option<Shadow>,
+    pub surface: Option<SurfaceStyle>,
     pub touch_target: Option<Size>,
     pub opacity: Option<f32>,
+    pub theme_derived: bool,
 }
 ```
 
@@ -1849,7 +1945,7 @@ layer's padding type.
 ```
 1. Global Theme defaults (ThemeManager → Theme)
 2. ThemeOverrides per widget class (e.g. "Button", "Label")
-3. Widget instance state (StatefulTheme → WidgetState)
+3. Widget instance state (WidgetState → `resolve_style_for_state`)
 4. Inline style overrides
 ```
 
@@ -2155,8 +2251,10 @@ impl ShortcutManager {
     pub fn new() -> Self;
     pub fn register(&mut self, action_id: impl Into<String>, shortcut: Shortcut, description: impl Into<String>) -> bool;
     pub fn register_in(&mut self, scope: impl Into<String>, action_id: impl Into<String>, shortcut: Shortcut, description: impl Into<String>) -> bool;
-    pub fn unregister(&mut self, id: &str) -> bool;
-    pub fn trigger(&self, shortcut: &Shortcut) -> bool;
+    pub fn unregister(&mut self, action_id: &str) -> bool;
+    pub fn dispatch_shortcut(&mut self, key: Key, modifiers: Modifiers) -> Option<String>;
+    pub fn handle_key_event(&mut self, key: Key, modifiers: Modifiers) -> bool;
+    pub fn action_for_key(&self, key: Key, modifiers: Modifiers) -> Option<String>;
     pub fn all_shortcuts(&self) -> &HashMap<Shortcut, String>;
     pub fn push_scope(&mut self, scope: impl Into<String>);
     pub fn push_modal_scope(&mut self, scope: impl Into<String>);
@@ -2387,53 +2485,64 @@ pub struct I18nManager { /* ... */ }
 
 impl I18nManager {
     pub fn new() -> Self;
-    pub fn load_translations(&mut self, path: &str) -> Result<(), RwError>;
-    pub fn set_language(&mut self, lang: &str);
-    pub fn language(&self) -> &str;
+    pub fn load_translations(&mut self, path: &str) -> Result<(), std::io::Error>;
+    pub fn set_language(&mut self, language: &str);
+    pub fn current_language(&self) -> &String;
     pub fn translate(&self, key: &str) -> String;
-    pub fn translate_with_context(&self, key: &str, context: &[(&str, &str)]) -> String;
-    pub fn reload(&mut self) -> Result<(), RwError>;
+    pub fn reload_translation(&mut self, language: &str) -> Result<(), String>;
+    pub fn check_and_reload(&mut self) -> Vec<ReloadEvent>;
 }
 ```
 
 ### Global Functions
 
 ```rust
-pub fn init(locales_dir: &str) -> Result<(), RwError>;
-pub fn init_with_options(options: InitOptions) -> Result<InitReport, RwError>;
+pub fn init();
+pub fn init_with_options(options: InitOptions) -> InitReport;
+pub fn set_language(language: &str) -> bool;
 pub fn translate(key: &str) -> String;
-pub fn translate_with_context(key: &str, context: &[(&str, &str)]) -> String;
-pub fn get_manager() -> &'static I18nManager;
-pub fn check_and_reload_all() -> Result<(), RwError>;
+pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> String;
+pub fn get_manager() -> MutexGuard<'static, Option<I18nManager>>;
+pub fn check_and_reload_all() -> Vec<ReloadEvent>;
 
 pub use crate::tr;  // Macro: tr!("hello") → translated string
 ```
+
+`get_manager()` already hands back the locked guard, so code uses it directly
+(`if let Some(ref mut mgr) = *get_manager() { … }`). Calling `.lock()` on the
+result does not compile.
 
 ### Options & Types
 
 ```rust
 pub struct InitOptions {
-    pub fallback_language: String,
-    pub auto_load: bool,
-    pub hot_reload: bool,
-    // ...
+    pub language: String,
+    pub preload_dir: Option<String>,
+    pub diagnostics: bool,
 }
 
 pub struct InitReport {
-    pub loaded_files: Vec<String>,
+    pub files_loaded: usize,
+    pub translations_count: usize,
     pub errors: Vec<String>,
 }
 
 pub struct Translation { /* ... */ }
 pub struct TranslationFile { /* ... */ }
-pub enum ReloadEvent { FileChanged(String), Reloaded, Failed(String) }
+pub enum ReloadEvent {
+    TranslationReloaded { language: String, timestamp: std::time::SystemTime },
+    // ...
+}
 ```
 
 ### Hot Reload
 
 ```rust
-pub fn init_with_hot_reload(locales_dir: &str) -> Result<I18nFileWatcher, RwError>;
-pub fn process_reload_events(watcher: &mut I18nFileWatcher) -> Vec<ReloadEvent>;
+pub fn init_with_hot_reload(
+    options: InitOptions,
+    watch_dir: Option<&Path>,
+) -> (InitReport, I18nFileWatcher);
+pub fn process_reload_events(receiver: &Receiver<ReloadEvent>) -> Vec<ReloadEvent>;
 
 pub struct I18nFileWatcher { /* ... */ }
 ```
@@ -3056,25 +3165,40 @@ pub struct WebEngineWebChannel { /* ... */ }
 ## Undo/Redo (`undo`)
 
 ```rust
-pub trait UndoCommand: Send + Sync {
-    fn id(&self) -> &str;
-    fn execute(&mut self) -> Result<(), RwError>;
-    fn undo(&mut self) -> Result<(), RwError>;
-    fn merge_with(&mut self, other: &dyn UndoCommand) -> bool;
+use rust_widgets::undo::{CommandDescription, CommandId, MergePolicy, UndoCommand, UndoStack};
+
+pub const DEFAULT_UNDO_CAPACITY: usize = 1000;
+
+pub trait UndoCommand {
+    fn id(&self) -> CommandId;
+    fn description(&self) -> CommandDescription;
+    fn execute(&mut self) -> Result<(), String>;
+    fn undo(&mut self) -> Result<(), String>;
+    fn redo(&mut self) -> Result<(), String> { self.execute() }
+    fn merge_policy(&self) -> MergePolicy { MergePolicy::Never }
+    fn try_merge(&mut self, previous: &dyn UndoCommand) -> bool { false }
+    fn splice_record(&self) -> Option<TextSpliceRecord> { None }
 }
 
 pub struct UndoStack { /* ... */ }
 impl UndoStack {
-    pub fn new(max_undo: usize) -> Self;
+    pub fn new() -> Self;
+    pub fn with_capacity(max: usize) -> Self;
     pub fn push(&mut self, command: Box<dyn UndoCommand>);
-    pub fn undo(&mut self) -> bool;
-    pub fn redo(&mut self) -> bool;
+    pub fn undo(&mut self) -> Result<(), String>;
+    pub fn redo(&mut self) -> Result<(), String>;
     pub fn can_undo(&self) -> bool;
     pub fn can_redo(&self) -> bool;
-    pub fn clear(&mut self);
-    pub fn undo_text(&self) -> Option<&str>;
-    pub fn redo_text(&self) -> Option<&str>;
+    pub fn undo_count(&self) -> usize;
+    pub fn redo_count(&self) -> usize;
+    pub fn undo_text(&self) -> Option<String>;
+    pub fn redo_text(&self) -> Option<String>;
+    pub fn mark_clean(&mut self);
     pub fn is_clean(&self) -> bool;
+    pub fn clear(&mut self);
+    pub fn truncate_undo(&mut self, len: usize);
+    pub fn set_max_capacity(&mut self, max: usize);
+    pub fn seal_merge_run(&mut self);
 }
 ```
 
@@ -3251,11 +3375,11 @@ and 4 freely:
 
 | Feature | Description | Includes |
 |---|---|---|
-| `desktop` (default) | Full desktop | GPU, touch, i18n, chart, print, PDF, a11y, quality, advanced widgets |
+| `desktop` (default) | Full desktop | GPU, touch, i18n, chart, a11y, quality, advanced widgets (print/PDF are opt-in) |
 | `tablet` | Touch-first tablet | GPU, touch, i18n, quality |
 | `mobile` | Mobile-optimized | GPU, touch, i18n, quality, mobile API |
 | `embedded` | No GPU, software raster | Software, custom controls |
-| `mini` | LVGL-style minimal (~28 widgets) | Software, custom controls, `heapless`, `hashbrown`, `spin`, `bumpalo` |
+| `mini` | LVGL-style minimal (~28 widgets) | Software, custom controls, `heapless`, `hashbrown`, `spin` |
 
 ### Axis 2: OS Backend
 

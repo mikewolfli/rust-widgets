@@ -1438,6 +1438,17 @@ impl EventHandler for ImageView {
                 );
                 self.base.request_redraw();
             }
+            // A pure touch device delivers a pinch rather than a wheel; the two perform the
+            // same preview-level zoom, so a photo is zoomable without a mouse (U2-09).
+            #[cfg(feature = "touch")]
+            Event::Pinch { scale, .. } if scale.is_finite() && *scale > 0.0 => {
+                self.set_zoom_level(self.zoom_level * *scale);
+                self.interaction_until = Some(
+                    crate::compat::Instant::now()
+                        + core::time::Duration::from_millis(WHEEL_PREVIEW_HOLD_MS),
+                );
+                self.base.request_redraw();
+            }
             _ => {}
         }
     }
@@ -1971,6 +1982,18 @@ mod tests {
         view.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
         assert!((view.zoom_level() - WHEEL_ZOOM_IN).abs() < 1e-6);
         view.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert!((view.zoom_level() - 1.0).abs() < 1e-6);
+    }
+
+    /// A pinch zooms by its incremental scale, the touch equivalent of a wheel notch (U2-09).
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_pinch_zooms_the_picture() {
+        let image = Image::try_from_rgba(vec![90; 20 * 20 * 4], 20, 20).expect("valid fixture");
+        let mut view = ImageView::new(image, Rect::new(0, 0, 100, 100));
+        view.handle_event(&Event::pinch_at(2.0, 50, 50));
+        assert!((view.zoom_level() - 2.0).abs() < 1e-6);
+        view.handle_event(&Event::pinch_at(0.5, 50, 50));
         assert!((view.zoom_level() - 1.0).abs() < 1e-6);
     }
 

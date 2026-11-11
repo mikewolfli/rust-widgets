@@ -304,6 +304,10 @@ impl Draw for SpeedDial {
             .as_ref()
             .map(|colors| colors.primary)
             .unwrap_or(Color::PRIMARY);
+        // U3-03: a disabled dial's ink and accents recede by the shared rule rather than holding
+        // full contrast while only its handler is gated. The circles keep their geometry.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let accent = self.base.disabled_ink_on(accent, surface);
         let main = self.main_rect();
         let label_font = role_font(style, 12.0);
 
@@ -413,6 +417,11 @@ impl Draw for SpeedDial {
                 mark,
             );
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

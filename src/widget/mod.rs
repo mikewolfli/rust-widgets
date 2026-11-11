@@ -118,12 +118,19 @@ pub mod metrics;
 /// instead of an aborted process. See the module docs for the sequence that used
 /// to panic.
 pub mod numeric;
+
+// Overscroll (UX6-08): the one home for "a gesture ran past my content" — the damping a drag
+// gets at a boundary, the spring-back after release, and the no-feedback clamp a dense surface
+// uses on purpose.
+pub mod overscroll;
 /// The pointer gesture every drawing surface publishes: a legacy unit signal plus its payload.
 ///
 /// One type for every control that reports a press, a release or a double click, so the wire
 /// form of a pointer event cannot differ between surfaces (principle #54).
 pub mod pointer_event;
 pub use icon_tint::IconTint;
+/// Locale-aware number text (U2-07).
+pub(crate) mod locale_number;
 #[cfg(not(alloc_frugal))]
 pub mod runtime;
 /// Hand-written sample data for the data-bearing controls.

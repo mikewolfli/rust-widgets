@@ -1,6 +1,6 @@
 # Styling & Theming
 
-The `rust-widgets` styling system resolves widget appearance through a cascading resolution chain: **Theme → ThemeOverrides → StatefulTheme → Inline CSS**. A CSS parser with selector engine and specificity, hot-reloadable stylesheets, an animation framework with 10 easing functions plus physics-based springs, and built-in Material Light/Dark themes provide comprehensive visual customization.
+The `rust-widgets` styling system resolves widget appearance through a cascading resolution chain: **Theme → ThemeOverrides → `<kind>:<state>` state overrides → Inline CSS**. A CSS parser with selector engine and specificity, hot-reloadable stylesheets, an animation framework with 10 easing functions plus physics-based springs, and built-in Material Light/Dark themes provide comprehensive visual customization.
 
 ---
 
@@ -11,7 +11,7 @@ Widget styles are resolved through four levels, each falling through to the next
 ```
 1. Global Theme defaults (ThemeManager → Theme)
 2. ThemeOverrides per widget class (e.g., "Button", "Label")
-3. Widget instance state (StatefulTheme → WidgetState)
+3. Widget instance state (WidgetState → `resolve_style_for_state`)
 4. Inline style overrides (CSS from StyleSheetManager)
 ```
 
@@ -690,69 +690,47 @@ Save and load are inverses, and the shipped fixtures are **generated** through `
 
 ---
 
-## `ThemeStateManager` — Light/Dark/Auto Mode
+## Light/Dark/Auto Appearance
 
-Manages per-widget-state themes with light/dark/auto switching:
+There is no separate stateful-theme type. The `ThemeManager` owns the
+light/dark switch, and per-state appearance comes from the theme's
+`"<kind>:<state>"` override table.
 
 ```rust
-use rust_widgets::style::theme_state::{ThemeStateManager, ThemeMode, StatefulTheme, WidgetState, StateTheme};
+use rust_widgets::style::{ThemeMode, WidgetState};
+use rust_widgets::theme::{global_theme_manager, AppearanceMode};
 
-let mut light_theme = StatefulTheme::new("light");
+let mut manager = global_theme_manager();
 
-// Define states for a button
-light_theme.add_state(WidgetState::Normal, StateTheme::new(
-    Color::from_rgb(33, 150, 243),   // background
-    Color::WHITE,                     // foreground
-    Color::WHITE,                     // text
-));
+// Explicit light/dark
+manager.set_appearance(AppearanceMode::Dark);
 
-light_theme.add_state(WidgetState::Hover, StateTheme::new(
-    Color::from_rgb(66, 165, 245),
-    Color::WHITE,
-    Color::WHITE,
-));
+// Follow the host's system preference
+manager.follow_environment_appearance();
 
-light_theme.add_state(WidgetState::Pressed, StateTheme::new(
-    Color::from_rgb(25, 118, 210),
-    Color::WHITE,
-    Color::WHITE,
-));
+// Switch named themes
+manager.set_theme("dark");
 
-light_theme.add_state(WidgetState::Disabled, StateTheme::new(
-    Color::from_rgb(189, 189, 189),
-    Color::from_rgb(245, 245, 245),
-    Color::from_rgb(158, 158, 158),
-));
-
-// Dark theme variant
-let mut dark_theme = StatefulTheme::new("dark");
-// ... define dark states ...
-
-// Create the manager
-let mut state_manager = ThemeStateManager::new(light_theme, dark_theme);
-
-// Switch modes
-state_manager.set_mode(ThemeMode::Dark);
-state_manager.toggle_mode();  // Dark → Light → Auto mode cycle
-
-// Auto mode with time-based switching
-state_manager.set_auto_switch(18, 6);  // dark mode from 6 PM to 6 AM UTC
-
-// React to mode changes
-state_manager.on_mode_changed(|mode| {
-    match mode {
-        ThemeMode::Light => println!("Switched to light theme"),
-        ThemeMode::Dark => println!("Switched to dark theme"),
-        ThemeMode::Auto => println!("Auto mode active"),
-    }
-});
-
-// Resolve state-specific appearance
-let hover_style: &StateTheme = state_manager.get_state_theme(&WidgetState::Hover);
-widget.set_background(hover_style.background_color);
-widget.set_foreground(hover_style.foreground_color);
-widget.set_text_color(hover_style.text_color);
+// React to any of the above
+let _changed = manager.on_theme_changed();
 ```
+
+`ThemeMode` names the three policies a host may expose: `Light`, `Dark` and
+`Auto`. The manager maps `Light`/`Dark` to `AppearanceMode`; `Auto` reads the
+installed device preference and falls back to light.
+
+### Resolving a state-specific style
+
+```rust
+use rust_widgets::style::WidgetState;
+use rust_widgets::theme::global_theme_manager;
+
+let manager = global_theme_manager();
+let hover = manager.resolve_style_for_state("button", Some(WidgetState::Hover));
+```
+
+The lookup key is `"<kind>:<state>"`, so a theme author writes one rule in the
+theme's `overrides.styles` table rather than defining a whole parallel theme.
 
 ### `WidgetState` — 12 Interactive States
 
@@ -773,27 +751,25 @@ pub enum WidgetState {
 }
 ```
 
-### `StateTheme` — Per-State Visual Properties
+### `StateOverlay` — What to Lay on Top
+
+`StateOverlay` is the draw-time companion to `WidgetState`: a control can be
+hovered *and* focused at once, and the overlay says which effects to add on top
+of whichever single fill state won.
 
 ```rust
-let mut state_theme = StateTheme::new(
-    Color::WHITE,                   // background
-    Color::BLACK,                   // foreground
-    Color::from_rgb(33, 33, 33),   // text
-)
-    .with_border(Color::GRAY, 1)
-    .with_shadow(Color::rgba(0, 0, 0, 30), (0, 2), 4)
-    .with_opacity(0.95)
-    .with_property("border-radius", "8");
+use rust_widgets::style::{StateOverlay, HOVER_FILL_BLEND, PRESSED_FILL_BLEND};
+
+// Arguments are (hovered, pressed, focused).
+let overlay = StateOverlay::from_base(true, false, true);
+if !overlay.is_empty() {
+    let blend = overlay.fill_blend(); // HOVER_FILL_BLEND == 0.08 here
+}
 ```
 
-**State transitions:** define animation durations between state pairs:
-
-```rust
-stateful_theme.set_transition(WidgetState::Normal, WidgetState::Hover, 200);   // 200ms hover enter
-stateful_theme.set_transition(WidgetState::Hover, WidgetState::Normal, 150);   // 150ms hover exit
-stateful_theme.set_transition(WidgetState::Normal, WidgetState::Pressed, 50);  // instant press
-```
+**State transitions** use the motion tokens rather than per-widget durations,
+so every control changes state at the same rhythm (see
+`ThemeManager::resolve_style_for_state` and the motion-token section above).
 
 ---
 
@@ -1008,26 +984,18 @@ refresh_indicator.set_position(offset);
 fn resolve_widget_style(
     widget_id: ObjectId,
     theme_manager: &ThemeManager,
-    state_manager: &ThemeStateManager,
     class: &str,
-    state: &WidgetState,
+    state: Option<WidgetState>,
 ) -> WidgetStyle {
-    // 1. Base from theme
-    let mut style = theme_manager.resolve_style(class);
+    // 1. Base style plus the theme's "<kind>:<state>" override, in one call.
+    let mut style = theme_manager.resolve_style_for_state(class, state);
 
-    // 2. Stateful theme overlay
-    let state_theme = state_manager.get_state_theme(state);
-    style.background_color = style.background_color.or(Some(state_theme.background_color));
-    style.text_color = style.text_color.or(Some(state_theme.text_color));
-    style.border_color = style.border_color.or(Some(state_theme.border_color));
-    style.border_width = if style.border_width == 0 { state_theme.border_width } else { style.border_width };
-    style.opacity = style.opacity.map(|o| o * state_theme.opacity);
-
-    // 3. CSS overrides from global stylesheet manager
+    // 2. CSS overrides from the global stylesheet manager.
+    //    `PseudoState` is an alias of `WidgetState`, so the state passes straight through.
     let mgr = global_stylesheet_manager();
-    let _ = mgr.apply_to(class, None, None, Some(to_pseudo_state(state)), &mut style);
+    let _ = mgr.apply_to(class, None, None, state, &mut style);
 
-    // 4. Inline overrides (app-specific)
+    // 3. Inline overrides (app-specific)
     // ... merge in per-widget inline overrides ...
 
     style

@@ -786,6 +786,28 @@ pub fn focus_next_in_window(forward: bool) -> Option<ObjectId> {
     use crate::widget::runtime;
 
     let previous = runtime::focused_widget();
+    // An open popup owns the keyboard too (UX6-01): pointer delivery already refuses targets
+    // outside a grabbed popup, so Tab must stay inside the same subtree or it moves focus to a
+    // control the popup covers.
+    let popup_scope = runtime::popup_grab();
+    let within_popup = |id: ObjectId| {
+        let Some(scope) = popup_scope else {
+            return true;
+        };
+        // Same bounded parent walk `is_effectively_visible` uses; the bound keeps a corrupt
+        // parent chain from looping.
+        let mut cursor = Some(id);
+        for _ in 0..64 {
+            let Some(current) = cursor else {
+                return false;
+            };
+            if current == scope {
+                return true;
+            }
+            cursor = runtime::read_widget(current, |widget| widget.parent()).flatten();
+        }
+        false
+    };
     // With a focused control the scope is its window. With none (a freshly shown window) the
     // first candidate's window becomes the scope, so Tab cannot walk from one window into
     // another even before anything has been focused.
@@ -810,6 +832,7 @@ pub fn focus_next_in_window(forward: bool) -> Option<ObjectId> {
                     (None, Some(_)) => false,
                 };
                 in_scope
+                    && within_popup(id)
                     && runtime::read_widget(id, |widget| widget.is_enabled()).unwrap_or(false)
                     && runtime::is_effectively_visible(id)
             },

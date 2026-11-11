@@ -5,6 +5,19 @@
 
 use super::*;
 
+/// UX-03: the grid publishes the same empty/error captions as the rest of the collection family.
+impl crate::widget::view_widgets::CollectionState for DataGrid {
+    fn collection_placeholder(&self) -> &crate::widget::view_widgets::CollectionPlaceholder {
+        &self.placeholder
+    }
+
+    fn collection_placeholder_mut(
+        &mut self,
+    ) -> &mut crate::widget::view_widgets::CollectionPlaceholder {
+        &mut self.placeholder
+    }
+}
+
 impl Widget for DataGrid {
     fn base(&self) -> &BaseWidget {
         &self.base

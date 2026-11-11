@@ -2,7 +2,7 @@
 name = "rust_widgets"
 version = "4.2.0"
 edition = "2021"
-description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
+description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 231 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
 keywords = ["gui", "widget", "cross-platform", "mobile", "wasm"]
 categories = ["gui", "rendering", "graphics", "embedded", "wasm"]
@@ -159,7 +159,8 @@ builtin-languages = []
 
 # ── Axis 1: DEVICE PROFILES (mutually exclusive) ──
 
-## Full desktop: native platform, GPU, touch, i18n, chart, print, PDF.
+## Full desktop: native platform, GPU, touch, i18n, chart. `print`/`pdf` are
+## separate opt-in features (see the NOTE on the `desktop` list below).
 ## Accessibility is **always compiled** (`pub mod accessibility;` in
 ## `src/platform/mod.rs`); the `a11y` feature is a legacy no-op alias, not a gate.
 ##

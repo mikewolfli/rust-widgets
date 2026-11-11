@@ -55,8 +55,7 @@ pub fn widget_wants_keyboard_focus(id: ObjectId) -> bool {
 /// the widget's kind, so every backend asks the same question and a new entry control opts in
 /// once (`WidgetKind::accepts_ime_input`).
 pub fn accepts_ime_input(id: ObjectId) -> bool {
-    read_widget(id, |widget| widget.is_enabled() && widget.kind().accepts_ime_input())
-        .unwrap_or(false)
+    read_widget(id, |widget| widget.is_enabled() && widget.accepts_ime_input()).unwrap_or(false)
 }
 
 /// Moves keyboard focus to `id`, telling the previously focused widget it lost it.

@@ -14,7 +14,7 @@ Two things this is NOT
 * It is not a gate. A low ratio can be correct: a disabled label is supposed to be
   faint, and a watermark is supposed to recede. `tools/check_control_rendering.sh`
   owns the assertions; this is the evidence generator that tells a reviewer which
-  of the 188 controls deserve a look.
+  of the 231 controls deserve a look.
 * It does not try to model antialiasing or font hinting. The snapshot is a vector
   stream, so the colours are exact and the comparison is exact.
 

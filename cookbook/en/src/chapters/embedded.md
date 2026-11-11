@@ -30,7 +30,7 @@ Two profiles target constrained hardware. They are **mutually exclusive** with
 
 | Profile | Feature | What it gives you | What it costs |
 |---|---|---|---|
-| `mini` | `--features mini` | Software raster, ~28 core widgets, `heapless`/`bumpalo`/`spin` allocators, no OS runtime at all. | The crate is `no_std`; the platform runtime is not linked. |
+| `mini` | `--features mini` | Software raster, ~28 core widgets, `heapless`/`hashbrown`/`spin` allocators, no OS runtime at all. | The crate is `no_std`; the platform runtime is not linked. |
 | `embedded` | `--features embedded` | Software raster, no GPU, no touch, reduced widget set. | No GPU backend, no touch. |
 
 ```toml

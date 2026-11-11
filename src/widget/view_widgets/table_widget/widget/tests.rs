@@ -818,6 +818,31 @@ impl TableModel for FourColumnModel {
     }
 }
 
+/// U3-04: a table that took focus by Tab paints a focus ring.
+#[test]
+fn a_focused_table_paints_a_focus_ring() {
+    let mut table = TableWidget::new(Rect::new(0, 0, 200, 120));
+    table.set_model(Arc::new(FourColumnModel));
+    let unfocused = crate::widget::svg::render_to_svg(&mut table);
+    table.base_mut().set_focus_reason(Some(crate::event::FocusReason::Tab));
+    let focused = crate::widget::svg::render_to_svg(&mut table);
+    assert_ne!(unfocused, focused, "the ring must change the painted picture");
+}
+
+/// U2-06: an RTL page puts column 0 at the right edge and mirrors the hit test.
+#[test]
+fn rtl_places_column_zero_at_the_right_edge() {
+    let mut table = TableWidget::new(Rect::new(0, 0, 200, 160));
+    table.set_model(Arc::new(FourColumnModel));
+    let content = ControlMetrics::band_inset(table.base.geometry(), TABLE_INSET);
+    crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+        // Four equal columns fill the band: column 0 is the rightmost slice, column 3 the
+        // leftmost, and the probe at either edge names the matching column.
+        assert_eq!(table.column_at(content.x + content.width as i32 - 1), Some(0));
+        assert_eq!(table.column_at(content.x), Some(3));
+    });
+}
+
 /// V-03: a horizontal offset makes the right-hand columns paintable and clickable.
 #[test]
 fn scroll_column_reaches_the_right_hand_columns() {

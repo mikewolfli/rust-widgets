@@ -1210,6 +1210,11 @@ impl Draw for DateRangePicker {
                 self, context, panel, &dow_font, &day_font, surface, text_color, accent, is_enabled,
             );
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 
@@ -1901,6 +1906,10 @@ impl Draw for RangePresetBar {
             .unwrap_or(Color::BLACK);
         let accent =
             crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(Color::BLUE);
+        // U3-03: a disabled preset bar's label ink and active-chip accent recede by the shared
+        // rule rather than holding full contrast while only the handler is gated.
+        let text_color = self.base.disabled_ink_on(text_color, surface);
+        let accent = self.base.disabled_ink_on(accent, surface);
         let font = role_font(style, 10.0);
 
         context.face_with_gradient_corners(

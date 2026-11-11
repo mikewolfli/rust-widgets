@@ -1106,6 +1106,10 @@ impl Draw for EmojiPicker {
         // the glyph cells are content (the caller's symbols), and those are drawn in the
         // resolved ink rather than a fixed colour.
         let (panel, ink, border, field, strip) = self.chrome_colors();
+        // U3-03: a disabled picker's shell inks recede by the shared rule rather than holding
+        // full contrast while only its handler is gated. The glyph grid keeps its geometry.
+        let ink = self.base.disabled_ink_on(ink, panel);
+        let border = self.base.disabled_ink_on(border, panel);
         let style = self.base.style();
         context.face_with_gradient_corners(
             rect,
@@ -1129,6 +1133,11 @@ impl Draw for EmojiPicker {
         let visible_count = self.refresh_visible_indices();
         self.draw_grid(context, visible_count, ink);
         self.draw_footer(context, strip, ink);
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

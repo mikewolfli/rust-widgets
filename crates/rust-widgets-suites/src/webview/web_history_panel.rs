@@ -173,7 +173,7 @@ impl WebHistoryRecord {
 ///
 /// The panel is a companion rather than part of the engine: it owns no navigation state and
 /// calls none of the engine's mutating APIs. Activating a row emits
-/// [`Self::on_entry_activated`] with the URL; the host decides whether that means
+/// [`Self::entry_activated`] with the URL; the host decides whether that means
 /// `set_url`, `go_back` or opening a new tab.
 pub struct WebHistoryPanel {
     base: BaseWidget,
@@ -194,7 +194,11 @@ pub struct WebHistoryPanel {
     /// The laid-out rows and the inputs they were built from.
     row_cache: RefCell<RowCache>,
     /// Emitted with the entry's URL when a row is activated.
-    pub on_entry_activated: Signal1<String>,
+    ///
+    /// Published as `entry_activated`: `on_` is a listener-method prefix in other toolkits, not
+    /// an event name (DX-10). The old **event** spelling still resolves through
+    /// `event_signal_dyn` and the root crate's `EVENT_ALIASES`; only the Rust field moved.
+    pub entry_activated: Signal1<String>,
 }
 
 /// The inputs the row layout is a pure function of.
@@ -256,7 +260,7 @@ impl WebHistoryPanel {
             row_height: DEFAULT_ROW_HEIGHT,
             revision: 0,
             row_cache: RefCell::new(RowCache::default()),
-            on_entry_activated: Signal1::new(),
+            entry_activated: Signal1::new(),
         }
     }
 
@@ -424,7 +428,7 @@ impl WebHistoryPanel {
         let Some(url) = self.entry_url(index).map(String::from) else {
             return false;
         };
-        self.on_entry_activated.emit(url);
+        self.entry_activated.emit(url);
         true
     }
 
@@ -617,15 +621,17 @@ impl Widget for WebHistoryPanel {
     fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
         use rust_widgets::signal::EventSignalRef;
         match name {
-            "entry_activated" | "on_entry_activated" => {
-                // The reference must declare the **published** name (`on_entry_activated`), not the
-                // alias: the bridge refuses a reference whose declared name differs from the one
-                // requested (the DEV-1 class the suite-wide wiring gate now checks).
-                Some(EventSignalRef::mapped(
-                    "on_entry_activated",
-                    &self.on_entry_activated,
-                    |url| CapabilityValue::String(url.clone()),
-                ))
+            "entry_activated" => {
+                Some(EventSignalRef::mapped("entry_activated", &self.entry_activated, |url| {
+                    CapabilityValue::String(url.clone())
+                }))
+            }
+            // Legacy spelling (DX-10): same signal under the name it was published with before
+            // the rename, so a document that still says `on_entry_activated` keeps binding.
+            "on_entry_activated" => {
+                Some(EventSignalRef::mapped("on_entry_activated", &self.entry_activated, |url| {
+                    CapabilityValue::String(url.clone())
+                }))
             }
             _ => None,
         }
@@ -907,7 +913,7 @@ mod tests {
         let mut panel = three_entries();
         let activated = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&activated);
-        panel.on_entry_activated.connect(move |url: Arc<String>| {
+        panel.entry_activated.connect(move |url: Arc<String>| {
             sink.lock().unwrap().push((*url).clone());
         });
 

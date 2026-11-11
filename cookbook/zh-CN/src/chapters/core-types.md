@@ -14,8 +14,7 @@ pub use font::Font;
 pub use geometry::{Orientation, Point, Rect, Size};
 pub use mutex_ext::MutexExt;
 pub use types::{
-    CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass,
-    ObjectId, PlatformCapabilities, PlatformFamily, RuntimeProfile, Version,
+    CoreConfig, CoreError, CoreObject, CoreResult, ObjectId, PlatformCapabilities, PlatformFamily, RuntimeProfile, Version,
 };
 pub mod coords;
 pub mod rect_merge;
@@ -23,7 +22,7 @@ pub mod rect_merge;
 
 | 文件 | 内容 |
 |---|---|
-| `types.rs` | `ObjectId`, `RuntimeProfile`, `DeviceClass`, `PlatformFamily`, `Version`, `PlatformCapabilities`, `CoreConfig`, `CoreError`, `CoreObject`, `CoreResult` |
+| `types.rs` | `ObjectId`, `RuntimeProfile`, `PlatformFamily`, `Version`, `PlatformCapabilities`, `CoreConfig`, `CoreError`, `CoreObject`, `CoreResult` |
 | `geometry.rs` | `Point`, `Size`, `Rect`, `Orientation` |
 | `color.rs` | `Color` — RGBA，包含 55+ 预定义常量 |
 | `alignment.rs` | `Alignment`, `HorizontalAlignment`, `VerticalAlignment` |
@@ -852,33 +851,20 @@ assert_ne!(profile, RuntimeProfile::Embedded);
 
 ---
 
-## DeviceClass
+## Device Class
 
-用于触摸目标尺寸和布局自适应的外形因素分类。
-
-```rust
-pub enum DeviceClass {
-    Desktop,    // 大屏幕，鼠标+键盘，可选触控
-    Tablet,     // 中等屏幕，触控优先
-    Mobile,     // 小屏幕，触控优先
-    Embedded,   // 受限显示，有限输入
-    Projector,  // 大型只读显示，遥控输入
-}
-```
+核心 crate 没有 `DeviceClass` 枚举。平台家族分类是下文的 `PlatformFamily`；按设备类别的触控目标策略是 `TouchTargetSize`：
 
 ```rust
-use rust_widgets::core::DeviceClass;
+use rust_widgets::platform::profile::recommended_touch_target;
+use rust_widgets::style::TouchTargetSize;
 
-let class = DeviceClass::Desktop;
-
-match class {
-    DeviceClass::Desktop   => { /* 1920x1080, 鼠标+键盘 */ }
-    DeviceClass::Tablet    => { /* 触控优先，中等屏幕 */ }
-    DeviceClass::Mobile    => { /* 紧凑型，仅触控 */ }
-    DeviceClass::Embedded  => { /* 受限 */ }
-    DeviceClass::Projector => { /* 大型，只读 */ }
-}
+let class: TouchTargetSize = recommended_touch_target();
+let target = class.dimensions(); // 32 / 44 / 48 / 40 px
+let spacing = class.spacing();   // 8 / 12 / 16 / 10 px
 ```
+
+完整表格与命中区助手见 [platform-support.md § 5](platform-support.md#5-设备类别与触控目标)。
 
 ---
 

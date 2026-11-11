@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # ============================================================================
-# check_icon_licences.sh — BLUE25 ICON-8 (the licence chain)
+# check_icon_licenses.sh — BLUE25 ICON-8 (the licence chain)
 # ============================================================================
 # The rule this guards (blue25.md §6.7.3, Apache-2.0 §4 / §6):
 #
@@ -55,7 +55,7 @@
 #     pointed at the copy with `--notice`);
 #   * `gen_icon_data.py` with no `--license` and with a bogus one must both exit 2.
 #
-# Usage: tools/check_icon_licences.sh
+# Usage: tools/check_icon_licenses.sh
 # Exit 0 = the icon licence chain is complete and the inbound gate refuses.
 # Exit 1 = a finding is printed above.
 # ============================================================================

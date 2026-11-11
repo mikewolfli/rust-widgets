@@ -334,6 +334,30 @@ impl EventHandler for ZoomPanController {
                 // notch, so an enclosing `ScrollArea` still gets to scroll.
                 crate::widget::claim_wheel_if_moved(&before, &self.zoom_level);
             }
+            // A pinch is the touch-screen equivalent of the wheel, and the gesture carries the
+            // midpoint it must zoom around. Without this arm the recogniser's output had no
+            // consumer anywhere in the core crate (U2-09).
+            #[cfg(feature = "touch")]
+            Event::Pinch { scale, center } => {
+                if !scale.is_finite() || *scale <= 0.0 {
+                    return;
+                }
+                let before = self.zoom_level;
+                self.zoom_mode = ZoomMode::Free;
+                self.set_zoom_level(before * *scale);
+                let after = self.zoom_level;
+                if after != before {
+                    // Keep the content point under the midpoint stationary: pan is in
+                    // viewport space, so `pan' = a - (a - pan) * (zoom' / zoom)`.
+                    let ratio = after / before;
+                    let geometry = self.base.geometry();
+                    let ax = (center.x - geometry.x) as f32;
+                    let ay = (center.y - geometry.y) as f32;
+                    let pan_x = (ax - (ax - self.pan_offset.x as f32) * ratio).round() as i32;
+                    let pan_y = (ay - (ay - self.pan_offset.y as f32) * ratio).round() as i32;
+                    self.set_pan_offset(Point::new(pan_x, pan_y));
+                }
+            }
             _ => {}
         }
     }
@@ -611,5 +635,32 @@ mod tests {
         assert!((flat - 2.0).abs() < 1e-6, "an invalid source falls back to a plain clamp");
         let nan = ZoomPanController::map_zoom_to_range(f32::NAN, source, target);
         assert!((nan - 1.0).abs() < 1e-6);
+    }
+
+    /// A pinch scales the zoom and keeps the content point under the gesture midpoint fixed
+    /// (U2-09). The arithmetic is `pan' = a - (a - pan) * ratio` in viewport space.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_pinch_zooms_around_its_midpoint() {
+        let mut controller = ZoomPanController::new(Rect::new(10, 20, 320, 240));
+        controller.set_pan_offset(Point::new(30, 40));
+        // Window-space midpoint = geometry origin + viewport centre.
+        controller.handle_event(&Event::pinch_at(2.0, 10 + 160, 20 + 120));
+        assert!((controller.zoom_level() - 2.0).abs() < 1e-5);
+        // Content point before: ((160,120) - (30,40)) / 1 = (130,80).
+        // After: ((160,120) - pan') / 2 = (130,80)  =>  pan' = (-100,-40).
+        assert_eq!(controller.pan_offset(), Point::new(-100, -40));
+    }
+
+    /// A malformed scale must not divide by zero or move the pan.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_pinch_with_a_bad_scale_is_ignored() {
+        let mut controller = ZoomPanController::new(Rect::new(0, 0, 320, 240));
+        controller.set_pan_offset(Point::new(5, 6));
+        controller.handle_event(&Event::pinch_at(0.0, 100, 100));
+        controller.handle_event(&Event::pinch_at(f32::NAN, 100, 100));
+        assert_eq!(controller.zoom_level(), 1.0);
+        assert_eq!(controller.pan_offset(), Point::new(5, 6));
     }
 }

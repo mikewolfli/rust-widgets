@@ -1084,6 +1084,11 @@ impl Draw for SegmentedControl {
         let selected_bg = primary.blend(&bar, 0.55);
         let hovered_bg = primary.blend(&bar, 0.25);
 
+        // U3-03: a disabled bar's labels and dividers recede by the shared rule. A single
+        // segment's own disabled flag is a separate state and keeps its existing weight below.
+        let ink = self.base.disabled_ink_on(ink, bar);
+        let divider = self.base.disabled_ink_on(divider, bar);
+
         // ── The bar actually painted ──
         //
         // `rect` is the area the control was *given*; the control's own chrome is one row of
@@ -1243,6 +1248,11 @@ impl Draw for SegmentedControl {
                 }
             }
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

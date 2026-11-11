@@ -527,7 +527,13 @@ impl Draw for DrumColumn {
             return;
         }
         let style = self.base.style();
-        let chrome = self.resolve_chrome(style);
+        let mut chrome = self.resolve_chrome(style);
+        // U3-03: a disabled drum recedes by the shared ink rule rather than keeping full
+        // contrast while only its handlers are gated. Each ink is derived from the row surface it
+        // is actually painted on.
+        chrome.selected_ink = self.base.disabled_ink_on(chrome.selected_ink, chrome.highlight);
+        chrome.row_ink = self.base.disabled_ink_on(chrome.row_ink, chrome.drum);
+        chrome.arrow_ink = self.base.disabled_ink_on(chrome.arrow_ink, chrome.drum);
         context.fill_rect(drum_rect, chrome.drum);
         let row_height = self.effective_row_height(drum_rect);
         let font_size = (row_height as f32 * 0.38).clamp(9.0, 15.0);

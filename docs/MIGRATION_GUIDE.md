@@ -1,7 +1,76 @@
 # Migration Guide
 
-> **Latest: 4.0.x → 4.1.0** — see [the 4.1.0 section](#40x--410-the-runtime-tree-is-the-only-composition-mechanism) below.
-> The 1.x → 2.0.0 section and the earlier 0.9.x → 1.0.0 notes are kept for projects still on those lines.
+> **Latest: 4.1.x → 4.2.0** — see [the 4.2.0 section](#41x--420-icons-and-suites-out-of-the-core-crate) below.
+> The 4.0.x → 4.1.0 section and the earlier 1.x/0.9.x notes are kept for projects still on those lines.
+
+---
+
+# 4.1.x → 4.2.0: icons and suites out of the core crate
+
+## Icon resources
+
+`IconName`, `IconData` and the SVG/fallback tables moved to
+`crates/rust-widgets-icons` in 4.2.0. The main crate still re-exports `IconName`/`IconData`, and
+its `icons` feature enables that package's `data` feature, so **no import path changes**:
+`use rust_widgets::widget::Icon;` and `IconName::*` keep working. A build without `icons` (the
+sized `mini`/`embedded` profiles) no longer links the catalogue geometry; a catalogue token
+reports that it has no fallback rather than painting nothing.
+
+## Suite controls
+
+`rust-widgets-suites` owns the finance, webview, maps, project, devtools and media-playback
+groups (the form group is always compiled). Each group is a feature:
+
+```toml
+[dependencies]
+rust-widgets-suites = { version = "4.2", features = ["finance"] }
+```
+
+The public paths are `rust_widgets_suites::finance`, `::webview`, `::maps`, `::project`,
+`::devtools`, `::media_playback` — **not** `rust_widgets::…`. The cookbook chapters for those
+groups use the suites paths.
+
+## Deprecated shims still present in 4.2
+
+Every item below still compiles and emits a `#[deprecated]` warning naming its replacement.
+
+| Deprecated | Replacement |
+|---|---|
+| `mount_custom_widget` / `resize_custom_widget` / `unmount_custom_widget` / `request_custom_repaint` / `supports_custom_widgets` | `mount_surface` / `resize_surface` / `unmount_surface` / `invalidate_surface` / `supports_surfaces` |
+| `notify_native_redraw` | `notify_platform_surface_repaint` |
+| `native_handle` | `backend_handle` |
+| `NativeCapabilityContract` / `native_capability_contract` | `HostedCapabilityContract` / `hosted_capability_contract` |
+| `Widget::rect` / `Widget::set_rect` | `Widget::geometry` / `Widget::set_geometry` |
+| `FontComboBox::current_index` (and the same getter on tab/stack/carousel/toolbox/pie-menu/image-gallery) | `selected_index` (`Option<usize>`) |
+| `LineEdit` `insert_text` | `insert_str` |
+| `TextArea` `insert` | `insert_char` |
+
+### Event spellings renamed in 4.2 (DX-10)
+
+`on_` is a listener-method prefix in other toolkits, not an event name. Four published names lost it.
+The **event** is unchanged and the old spelling still binds — it is recorded in `EVENT_ALIASES` and
+`event_signal_dyn` keeps answering it — so only Rust code that names the signal **field** has to
+change:
+
+| Control | Rust field before | Rust field now | Published event name |
+|---|---|---|---|
+| `ChartReferenceLine` | `on_line_crossed` | `line_crossed` | `line_crossed` |
+| `PropertyGrid` | `on_category_toggled` | `category_toggled` | `category_toggled` |
+| `TreeView` | `on_header_clicked` | `header_clicked` | `header_clicked` |
+| `WebHistoryPanel` (suites) | `on_entry_activated` | `entry_activated` | `entry_activated` |
+| `TerminalFindBar` (suites) | `on_matches_changed` | `matches_changed` | `matches_changed` |
+| `MapOverviewPanel` (suites) | `on_overview_drag` | `overview_drag` | `overview_drag` |
+| `MapAttributionOverlay` (suites) | `on_entry_activated` | `entry_activated` | `entry_activated` |
+| `VideoPlayer` (suites) | `on_chapter_entered` | `chapter_entered` | `chapter_entered` |
+| `ChapterListPanel` (suites) | `on_chapter_selected` | `chapter_selected` | `chapter_selected` |
+| `GanttTaskGrid` (suites) | `on_task_selected` / `on_header_clicked` | `task_selected` / `header_clicked` | the same, unprefixed |
+| `WebEngineView` (suites) | `on_window_requested` | `window_requested` | `window_requested` |
+
+A document, a designer manifest or a language binding that still subscribes to `on_line_crossed`
+(and so on) keeps working: `connect_event` resolves the alias to the published row before the
+signal is looked up.
+
+---
 
 ---
 
@@ -464,21 +533,18 @@ Orphan variants now use widget-specific type aliases — import from their respe
 
 ### IME API Changes
 
-The IME bridge types have been renamed for consistency with the `Real` suffix convention:
+There is **no `*Real` suffix** in the IME bridge names; an earlier draft of this guide described a
+rename that was never applied. The real types are:
 
-| 0.9.x (Old) | 0.10.x (New) | Platform |
-|---|---|---|
-| `MacOsImeBridge` | `MacOsImeBridgeReal` | macOS (NSTextInputContext) |
-| `WindowsImeBridge` | `WindowsImeBridgeReal` | Windows (TSF) |
-| *(new)* | `LinuxImeBridgeReal` | Linux (IBus via zbus) |
+| Type | Platform |
+|---|---|
+| `MacOsImeBridge` | macOS (NSTextInputContext) |
+| `WindowsImeBridge` | Windows (TSF) |
+| `LinuxImeBridge` | Linux (IBus via zbus) |
 
-**Action required:** Update type references and imports:
+**Action required:** none for these three names. They have been stable since 0.10.
 ```rust
-// 0.9.x
 use crate::platform::ime_macos::MacOsImeBridge;
-
-// 1.0.0
-use crate::platform::ime_macos::MacOsImeBridgeReal;
 ```
 
 ### Feature Profile Renames
@@ -596,8 +662,7 @@ as the base for production builds.
 | State-only macOS backend | Native objc2 AppKit FFI | 0.11 |
 | State-only iOS backend | Native UIKit FFI via `ios-uikit-ffi` | 0.11 |
 | State-only Wayland backend | Native wayland-client protocol via `wayland-native` | 0.12 |
-| `MacOsImeBridge` (old name) | `MacOsImeBridgeReal` | 0.11 |
-| `WindowsImeBridge` (old name) | `WindowsImeBridgeReal` | 0.11 |
+| `MacOsImeBridge` / `WindowsImeBridge` | No rename: these are the current names | — |
 | `ToolBox` WidgetKind variant | `Toolbox` (lowercase 'b') | 0.11 |
 
 ---
@@ -624,13 +689,12 @@ my-app = ["rust_widgets/desktop", "rust_widgets/objc2-macos"]
 
 ### Step 2: Replace Deprecated API Calls
 
-Search your codebase for deprecated identifiers and update:
+Search your codebase for `#[deprecated]` warnings and apply the table in
+[4.1.x → 4.2.0](#41x--420-icons-and-suites-out-of-the-core-crate). There is no
+`Real`-suffixed macOS IME bridge: the only one is `MacOsImeBridge`.
 ```rust
-// Before
+// The real (and only) macOS IME bridge:
 use rust_widgets::platform::ime_macos::MacOsImeBridge;
-
-// After
-use rust_widgets::platform::ime_macos::MacOsImeBridgeReal;
 ```
 
 ### Step 3: Update WidgetKind References

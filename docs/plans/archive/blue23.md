@@ -1,6 +1,6 @@
 # BLUE23 — 从「度量正确」到「手感丝滑」：状态层、动效总线与 主流声明式实现 / 外部对标 / 参考工具包 三方配色对标
 
-> ✅ **本计划已归档（已完成）。** 归档轮：第 100 轮（见 `docs/log/log-20260924-1.md` §100）。
+> ✅ **本计划已归档（已完成）。** 归档轮：第 100 轮（见 `docs/log/archive/log-20260924-1.md` §100）。
 > 收口状态：**0 个 `[ ]`**；§A.11.1 的 **8 批全部 ✅**；5 个跟踪扫描 0 失败
 > （`state_source_scan` 274 / `animation_driver_scan` 275 / `declared_tokens_scan` 17 /
 > `text_model_single_source_scan` 3 / `focus_ring_scan` 275）。

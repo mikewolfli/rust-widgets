@@ -59,7 +59,8 @@ rust_widgets = "4.2.0"
 
 The default feature set (`desktop`) pulls in the full desktop profile: GPU
 rendering via wgpu, OS-native platform backend, touch support, i18n, charts,
-PDF/printing, accessibility, and advanced widgets.
+accessibility, and advanced widgets. Printing and PDF generation are separate
+opt-in features (`print`, `pdf`), not part of the profile.
 
 ---
 
@@ -73,7 +74,7 @@ compose axes 3 and 4 freely:
 
 | Profile | Feature Flag | Description |
 |---|---|---|
-| **Desktop** | `desktop` (default) | Full OS integration, GPU, touch, i18n, charts, print, PDF, a11y |
+| **Desktop** | `desktop` (default) | Full OS integration, GPU, touch, i18n, charts, a11y (print/PDF are opt-in features) |
 | **Tablet** | `tablet` | Touch-first, GPU, no desktop extras |
 | **Mobile** | `mobile` | Touch, GPU, mobile API surface |
 | **Embedded** | `embedded` | Software raster, no GPU, low memory, reduced widget set |
@@ -285,8 +286,8 @@ use rust_widgets::{
 };
 
 let window_id = create_window("My Window", 100, 100, 800, 600);
-let button_id = create_button("Submit", 10, 10, 120, 32);
-let label_id = create_label("Status", 10, 60, 300, 24);
+let button_id = create_button(window_id, "Submit", 10, 10, 120, 32);
+let label_id = create_label(window_id, "Status", 10, 60, 300, 24);
 ```
 
 Available `create_*` functions:
@@ -294,23 +295,23 @@ Available `create_*` functions:
 | Function | Creates |
 |---|---|
 | `create_window(name, x, y, w, h)` | Top-level window |
-| `create_button(text, x, y, w, h)` | Push button |
-| `create_checkbox(text, x, y, w, h)` | Check box |
-| `create_radio_button(text, x, y, w, h)` | Radio button |
-| `create_label(text, x, y, w, h)` | Text label |
-| `create_line_edit(text, x, y, w, h)` | Single-line text input |
-| `create_slider(min, max, val, x, y, w, h)` | Horizontal slider |
-| `create_progress_bar(min, max, val, x, y, w, h)` | Progress indicator |
-| `create_combo_box(x, y, w, h)` | Drop-down combo |
-| `create_list_box(x, y, w, h)` | Scrolling list |
-| `create_spin_box(min, max, step, val, x, y, w, h)` | Numeric spinner |
-| `create_list_view(x, y, w, h)` | Multi-column list |
-| `create_scroll_area(x, y, w, h)` | Scrollable container |
-| `create_panel(x, y, w, h)` | Panel/GroupBox |
-| `create_message_box(title, msg)` | Modal message dialog |
-| `create_file_dialog(title, dir, filter)` | File chooser |
-| `create_color_dialog(title)` | Color picker dialog |
-| `create_font_dialog(title)` | Font selection dialog |
+| `create_button(parent, text, x, y, w, h)` | Push button |
+| `create_checkbox(parent, text, x, y, w, h)` | Check box |
+| `create_radio_button(parent, text, x, y, w, h)` | Radio button |
+| `create_label(parent, text, x, y, w, h)` | Text label |
+| `create_line_edit(parent, text, x, y, w, h)` | Single-line text input |
+| `create_slider(parent, x, y, w, h)` | Horizontal slider |
+| `create_progress_bar(parent, x, y, w, h)` | Progress indicator |
+| `create_combo_box(parent, x, y, w, h)` | Drop-down combo |
+| `create_list_box(parent, x, y, w, h)` | Scrolling list |
+| `create_spin_box(parent, x, y, w, h)` | Numeric spinner |
+| `create_list_view(parent, x, y, w, h)` | Multi-column list |
+| `create_scroll_area(parent, x, y, w, h)` | Scrollable container |
+| `create_panel(parent, x, y, w, h)` | Panel/GroupBox |
+| `create_message_box(parent, title, text, x, y, w, h)` | Modal message dialog |
+| `create_file_dialog(parent, x, y, w, h)` | File chooser |
+| `create_color_dialog(parent, x, y, w, h)` | Color picker dialog |
+| `create_font_dialog(parent, x, y, w, h)` | Font selection dialog |
 
 ### 2. App API with Typed Handles (Recommended)
 

@@ -42,6 +42,17 @@ pub fn language_generation() -> u64 {
     LANGUAGE_GENERATION.load(Ordering::Relaxed)
 }
 
+/// The active language tag, or `None` when i18n has not been initialized.
+///
+/// A control that formats a number or a date needs the locale, and the manager is the one
+/// owner of that fact. Callers that format on every frame should cache their result keyed by
+/// [`language_generation`] rather than take the lock each frame; `widget::locale_number` does
+/// exactly that.
+pub fn current_language() -> Option<String> {
+    let guard = get_manager();
+    guard.as_ref().map(|manager| manager.current_language().clone())
+}
+
 fn bump_language_generation() {
     LANGUAGE_GENERATION.fetch_add(1, Ordering::Relaxed);
 }

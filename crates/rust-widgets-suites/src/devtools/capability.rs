@@ -131,7 +131,7 @@ const DIFF_FILE_LIST_EVENTS: &[EventSchema] = &[
 /// The bar publishes exactly `on_matches_changed`; the control resolves it and emits it from every
 /// path that changes or reports the match set.
 const TERMINAL_FIND_BAR_EVENTS: &[EventSchema] =
-    &[EventSchema { name: "on_matches_changed", payload: Some(K::UInt), shape: Some(S::Tuple2) }];
+    &[EventSchema { name: "matches_changed", payload: Some(K::UInt), shape: Some(S::Tuple2) }];
 
 pub fn terminal_view_capability() -> WidgetCapability {
     WidgetCapability {

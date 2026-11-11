@@ -16,8 +16,10 @@
 | [`blue25.md`](blue25.md) | 全控件缺陷清理 + 图标库（Material Symbols，Apache-2.0） | **42/42 闭环**（A 6 / B 3 / C 9 / D 11 / ICON-1…8 / §8 五项）；逐条证据见 [`../log/`](../log/) |
 | [`blue26.md`](blue26.md) | Rustage 设计器所需的上游契约补齐（B26.01–B26.12） | **全部处置**：B26.01–B26.08、B26.10–B26.12 已实现；B26.09 的处置是**「探针完成、裁定不新增类型」**（是决定，不是未做）。随 2.8.5 发布，证据见 [`../log/log-20261011-1.md`](../log/log-20261011-1.md) |
 | [`blue27.md`](blue27.md) | 统一图标设计（内容 / 描述 / 绘制分离） | **U0–U7 8/8 🟢；DoD 1–9 闭合**；RTL 布局镜像是**具名排除**（出口 = 另立独立计划，理由见其 §19.14.4）|
-| [`blue28.md`](blue28.md) | 全平台平台层完整性补齐（B28.01–B28.44） | **提案，全部 `[ ]`**：含 GUI 职责边界评估（核心/可选/非目标）、166 个 `Platform` 方法审计、winit 能力清单对照、统一探针、移动输入转发、窗口属性真正应用、macOS DPI、Wayland/Web/Harmony 平台事实、环境事实、文件/外部打开、光标、IME、无障碍、显示器元数据、剪贴板富内容、拖放、移动 GUI 核心、打印、系统字体、raw-window-handle、多窗口、音频/GPU/视频/资源监视、事实矩阵与真机证据 |
+| [`blue28.md`](blue28.md) | 全平台平台层完整性补齐（B28.01–B28.44） | **35/38 已勾选，3 项未完成**（`[x]` 35 / `[ ]` 3，2026-11-11 实测 `grep -c`）；原“提案，全部 `[ ]`”的描述已失效。范围含 GUI 职责边界评估、`Platform` 方法审计、winit 能力对照、统一探针、移动输入转发、窗口属性、macOS DPI、Wayland/Web/Harmony 平台事实、IME、无障碍、剪贴板富内容、拖放、打印、系统字体、多窗口、GPU/视频/资源监视、事实矩阵与真机证据 |
 | [`blue29.md`](blue29.md) | wgpu 路径选择 + 端到端上屏（B29.01–B29.16）+ **§8 与 breprs 的协同裁定** | **B29.01–B29.05 已实现 + B29.06 仅登记**（第 2 轮）；**§7 第 1 轮实施**：`FramePresenter` 在 macOS 真机把已知帧逐字节上屏（256000 B 相同）、行带损伤、resize、300 帧计数；平台能力契约 + Android/OpenHarmony 句柄 + 四次交叉编译；`check_present_matrix.sh` / `run_present_macos.sh` 实跑。**两个 macOS 画布均已消费意图**（`set_frame_presentation` 为真且真会履行）。**`Smooth` 交付路径已在 presenter 层真机通过**（命令流→管线→surface→读回）。**第 5 轮**：60 s 空闲零提交与「隐藏→显示即恢复」已真机计时实跑，并修掉它暴露的画布侧缺陷（同样的像素被当成全帧损伤，60 s 内无意义提交 4 次）；**画布侧 `Smooth` 取流已接线**（`paint_tree_into` / `paint_widget_into` / `smooth_commands`，与 `render_frame_tree` 逐字节对拍），命令路径的真机计时因显示器休眠具名 `SKIP(host-limited)`。**§8**：核实 breprs 的 `L0~L3` 是 **CPU 线程档**（非多级渲染），裁定 **breprs 配合本库**（作几何内核、作宿主），硬约束为共用同一 `Device/Queue`，并给出三步接缝契约与三个冲突点的裁定。**第 6–12 轮**：`Smooth` 桥接面逐家族闭合（描边/填充路径、虚线、AA 线、弧、**渐变**（参考自己的 256 项 ramp）、缩放图像（B 档，带漂移门槛）、**纯图层=裁剪**、**帧区域读改写模糊**：`Blur` + 两种模糊阴影一套机制），真实控件树里的模糊阴影 **`forces_cpu=0` 且逐字节**。**未闭环（具名）**：2D 恒为 `ForcesCpu` 只剩 7 个变体（4 个结构不可达的记录器变体 + `PushClipRoundedRect` + `ClipPath` + matte 三件套）+ 条件回落 + 5 个 3D，且都是按需项；宿主受限三项仍是 Android 实跑（B29.13）、其它平台画布（B29.12）、真实帧计时（B29.15）——见其 §7.9–§7.15/§8.8。证据见 [`../log/log-20261030-2.md`](../log/log-20261030-2.md) §10、§14–§23 |
+| [`blue30.md`](blue30.md) | RW-44 / RW-58 / RW-63 收编与扩展（隐藏 setter、行单位滚动、逐控件焦点订阅） | **RW-63 已闭合；RW-44 的账/门控/A 类收编已完成；RW-58 全部行单位容器已接入**（census：rows=31 + `suggestion_popup`，pixels=2，未分类 0，ROW-UNIT GAP 0）——见文件头“状态（2026-11-02 第九轮）” |
+| [`blue31.md`](blue31.md) | 编辑器分层重构 + CLI 双向转换器 | **计划阶段**：文件只记录设计，不表示已实现（其 §“本次范围声明”）|
 
 > **BLUE23 已归档** → [`archive/blue23.md`](archive/blue23.md)（本轮收口：0 个 `[ ]`，
 > 全部批次 ✅，5 个跟踪扫描 0 失败）。
@@ -30,8 +32,10 @@
 - **blue1 ~ blue23**：✅ 已完成 → 见 [`archive/`](archive/)
 - **blue24**：**主体已完成**，且仍是 BLUE24 自身后续条目（§12）的唯一入口
 - **blue25 / blue26 / blue27**：**主体已完成**，保留在根目录（引用原因见 §4 的说明）
-- **blue28**：**提案 / 未开工**（平台层完整性，条目 B28.01–B28.44）
+- **blue28**：**35/38 已完成**（平台层完整性，条目 B28.01–B28.44；`[x]` 35 / `[ ]` 3）
 - **blue29**：**部分实现**（wgpu 路径选择 B29.01–B29.06 已实现；端到端上屏 B29.07–B29.16：presenter 真机闭环 + 两个 macOS 画布接线 + 空闲零提交/恢复实跑 + 画布 `Smooth` 取流；§8 已裁定「breprs 配合本库」并给出共用设备的三步接缝契约；第 6–12 轮把 `Smooth` 桥接面逐家族闭合，2D 恒为 `ForcesCpu` 只剩 7 个具名变体；剩余是宿主受限三项（Android 实跑、其它平台画布、真实帧计时）、按需桥接（matte/圆角裁剪/3D）与 breprs 接缝实施；与 `archive/blue22.md` 无主题关系）
+- **blue30**：**RW-63 已闭合；RW-44 的账/门控/A 类收编已完成；RW-58 行单位容器全部接入**
+- **blue31**：**计划阶段**（编辑器分层重构 + CLI 双向转换器；文件自述“只记录计划”）
 
 ---
 
@@ -72,7 +76,7 @@
 
 > **三份已完成计划（`blue25`–`blue27`）为何不在 `archive/`（具名决定，不是遗漏）**：
 > `src/render/path/parser.rs`、`src/render/path/flatten.rs`、`src/widget/icon_registry.rs` 与
-> `tools/check_icon_licences.sh` **按路径**引用 `docs/plans/blue25.md` 与 `docs/plans/research-icons.md`。
+> `tools/check_icon_licenses.sh` **按路径**引用 `docs/plans/blue25.md` 与 `docs/plans/research-icons.md`。
 > 把它们迁入 `archive/` 会把这些引用变成悬空路径——修一条、造三条，不是净改善。
 
 > **本表逐份列名**（`tools/check_plan_archive_has_index.sh` 断言每一份都在此有一行）：

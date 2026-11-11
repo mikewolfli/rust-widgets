@@ -107,13 +107,26 @@ impl Draw for TableWidget {
             );
             let font = effective_font(style);
             let mut left = content.x - self.horizontal_offset() as i32;
+            let rtl = crate::widget::view_widgets::rtl_columns::is_rtl();
             for column in 0..column_count {
                 let width = self.resolved_column_width(column, content.width);
                 if column >= self.scroll_column {
-                    if left >= content.x + content.width as i32 {
+                    let band_x = if rtl {
+                        crate::widget::view_widgets::rtl_columns::mirror_span(left, width, content)
+                    } else {
+                        left
+                    };
+                    // LTR stops once the next column starts past the right edge; RTL walks
+                    // leftwards, so it stops once a column ends before the left edge.
+                    let out_of_view = if rtl {
+                        band_x + width as i32 <= content.x
+                    } else {
+                        band_x >= content.x + content.width as i32
+                    };
+                    if out_of_view {
                         break;
                     }
-                    let band = Rect::new(left, header.y, width, header.height);
+                    let band = Rect::new(band_x, header.y, width, header.height);
                     // The title precedence lives in one accessor: explicit structure, then a
                     // host label, then the model/source's own column name (RW-5).
                     if let Some(label) = self.column_title(column) {
@@ -122,7 +135,7 @@ impl Draw for TableWidget {
                             &label,
                             font,
                             ink,
-                            HorizontalAlignment::Left,
+                            crate::widget::view_widgets::rtl_columns::leading_alignment(),
                         );
                     }
                 }
@@ -226,20 +239,31 @@ impl Draw for TableWidget {
                     context.fill_rect(row_box, hovered_bg);
                 }
                 let mut col_x = content.x - self.horizontal_offset() as i32;
+                let rtl = crate::widget::view_widgets::rtl_columns::is_rtl();
                 for c in 0..col_count {
                     // The column's box follows the same composition the hit test and the header
                     // read, so a click, the heading and the cell cannot disagree about which
                     // column an x belongs to.
                     let col_w = self.resolved_column_width(c, content.width);
-                    let x = col_x;
+                    let ltr_x = col_x;
                     col_x += col_w as i32;
                     if c < self.scroll_column {
                         continue;
                     }
-                    // Past the right edge nothing can be painted — the cell is clipped away — so
-                    // stop instead of fetching data and measuring text for every column to the
-                    // right of the viewport. The header loop above breaks for the same reason.
-                    if x >= content.x + content.width as i32 {
+                    let x = if rtl {
+                        crate::widget::view_widgets::rtl_columns::mirror_span(ltr_x, col_w, content)
+                    } else {
+                        ltr_x
+                    };
+                    // Past the trailing edge nothing can be painted — the cell is clipped away —
+                    // so stop instead of fetching data and measuring text for every column off
+                    // screen. RTL walks leftwards, so its trailing edge is the left one.
+                    let out_of_view = if rtl {
+                        x + col_w as i32 <= content.x
+                    } else {
+                        x >= content.x + content.width as i32
+                    };
+                    if out_of_view {
                         break;
                     }
                     self.cell_text.clear();
@@ -280,15 +304,17 @@ impl Draw for TableWidget {
                                 &self.cell_text,
                                 font,
                                 ink,
-                                HorizontalAlignment::Left,
+                                crate::widget::view_widgets::rtl_columns::leading_alignment(),
                             );
                         }
                     }
-                    // Draw column separator
+                    // Draw column separator. The boundary is this column's trailing edge: the
+                    // left edge in LTR, the right edge in RTL.
                     if c + 1 < col_count {
+                        let edge = if rtl { x } else { x + col_w as i32 };
                         context.draw_line(
-                            crate::core::Point::new(x + col_w as i32, y),
-                            crate::core::Point::new(x + col_w as i32, y + row_h),
+                            crate::core::Point::new(edge, y),
+                            crate::core::Point::new(edge, y + row_h),
                             grid_ink,
                         );
                     }
@@ -307,5 +333,9 @@ impl Draw for TableWidget {
 
         // Hand the window back for the next frame.
         self.window_cache = window;
+
+        // Tab and Shortcut focus must be visible on the table as on every other control (U3-04).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring_if_needed(context, rect, radius, surface);
     }
 }

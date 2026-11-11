@@ -23,6 +23,9 @@ use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::collection_state::{
+    paint_collection_placeholder, CollectionPlaceholder, CollectionState,
+};
 use super::data_source::{DataRole, IncrementalTableDataSource};
 use super::table_widget::TableEditTriggers;
 
@@ -240,6 +243,8 @@ pub struct GridTableWidget {
     pub context_menu_requested: Signal1<Point>,
     /// Whether a vertical scroll-bar thumb is painted.
     show_scrollbar: bool,
+    /// The empty/error caption this grid paints when it has no rows (UX-03).
+    placeholder: CollectionPlaceholder,
 }
 
 impl GridTableWidget {
@@ -324,6 +329,7 @@ impl GridTableWidget {
             edit_requested: Signal1::new(),
             context_menu_requested: Signal1::new(),
             show_scrollbar: false,
+            placeholder: CollectionPlaceholder::new(),
         }
     }
 
@@ -849,7 +855,11 @@ impl GridTableWidget {
         self.show_scrollbar
     }
 
-    /// Enables or disables the vertical scroll-bar thumb.
+    /// Forces the vertical scroll-bar thumb on (or off as an explicit rail preference).
+    ///
+    /// Since UX-04 an overflowing grid paints the thumb anyway: this flag no longer decides
+    /// *whether* a hidden row set is indicated, only whether a permanent rail is drawn when the
+    /// content happens to fit.
     pub fn set_show_scrollbar(&mut self, show: bool) {
         if self.show_scrollbar == show {
             return;
@@ -1417,7 +1427,15 @@ impl GridTableWidget {
                     break;
                 }
                 let width = self.column_width(ci) as i32;
-                spans.push((ci, x, width));
+                // Mirror the whole run inside the control's data band (U2-06): column 0
+                // belongs on the right in an RTL table, and every consumer of this cache
+                // (paint, hit test, resize handles) then speaks visual coordinates.
+                let visual_x = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+                    build_extent - x - width
+                } else {
+                    x
+                };
+                spans.push((ci, visual_x, width));
                 x = x.saturating_add(width);
             }
             *cache = Some(ColumnSpanCache {
@@ -1449,7 +1467,9 @@ impl GridTableWidget {
         f: impl FnOnce(&[(usize, i32, i32)]) -> R,
     ) -> R {
         let run = self.span_run(extent);
-        let visible = run.spans.iter().take_while(|(_, x, _)| *x < extent).count();
+        // `filter` rather than `take_while`: mirrored spans descend, so a leading run would stop
+        // at the first (rightmost) column. A span is visible when it overlaps `0..extent`.
+        let visible = run.spans.iter().filter(|(_, x, width)| *x < extent && x + width > 0).count();
         f(&run.spans[..visible])
     }
 
@@ -1563,8 +1583,11 @@ impl GridTableWidget {
         let extent = (rect.x + rect.width as i32) - (rect.x + rnw);
         let handle_width = Self::RESIZE_HANDLE_WIDTH as i32;
         self.with_visible_column_spans(extent, |spans| {
+            let rtl = crate::widget::view_widgets::rtl_columns::is_rtl();
             for (ci, x, cw) in spans.iter().copied() {
-                if (point.x - (rect.x + rnw + x + cw)).abs() <= handle_width {
+                // A column's resize edge is its trailing edge: right in LTR, left in RTL.
+                let edge = if rtl { rect.x + rnw + x } else { rect.x + rnw + x + cw };
+                if (point.x - edge).abs() <= handle_width {
                     return Some(ci);
                 }
             }
@@ -1576,6 +1599,17 @@ impl GridTableWidget {
 // ---------------------------------------------------------------------------
 // Widget trait
 // ---------------------------------------------------------------------------
+
+/// UX-03: the grid publishes the same empty/error captions as the rest of the collection family.
+impl CollectionState for GridTableWidget {
+    fn collection_placeholder(&self) -> &CollectionPlaceholder {
+        &self.placeholder
+    }
+
+    fn collection_placeholder_mut(&mut self) -> &mut CollectionPlaceholder {
+        &mut self.placeholder
+    }
+}
 
 impl Widget for GridTableWidget {
     fn base(&self) -> &BaseWidget {
@@ -2050,6 +2084,25 @@ impl Draw for GridTableWidget {
                 grid_color,
                 1,
             );
+            // UX-03: an empty grid says so, in the same language the other collection views use
+            // (`CollectionPlaceholder`), instead of leaving a bare frame. Painted in the body
+            // band so the caption sits under the header rather than over it.
+            let body = Rect::new(
+                rect.x + rnw,
+                rect.y + header_h,
+                rect.width.saturating_sub(rnw.max(0) as u32),
+                rect.height.saturating_sub(header_h.max(0) as u32),
+            );
+            paint_collection_placeholder(
+                context,
+                body,
+                &self.placeholder,
+                ink,
+                effective_font(self.base.style()),
+            );
+            // An empty grid still takes Tab focus, so it must still show the ring (U3-04).
+            let radius = self.style().resolved_corner_radii().to_array()[0];
+            self.base.draw_focus_ring_if_needed(context, rect, radius, surface);
             return;
         }
 
@@ -2077,9 +2130,8 @@ impl Draw for GridTableWidget {
             context.fill_rect(header_rect, header_bg);
             context.draw_rect(header_rect, grid_color);
 
-            let mut hx = data_left;
-            for &(ci, _, cw) in spans {
-                let cell_rect = Rect::new(hx, rect.y, cw as u32, self.header_height);
+            for &(ci, sx, cw) in spans {
+                let cell_rect = Rect::new(data_left + sx, rect.y, cw as u32, self.header_height);
                 context.draw_rect(cell_rect, grid_color);
 
                 // Which way this column is sorted, if at all.
@@ -2129,7 +2181,7 @@ impl Draw for GridTableWidget {
                     header_text,
                     cell_font,
                     header_text_color,
-                    HorizontalAlignment::Left,
+                    crate::widget::view_widgets::rtl_columns::leading_alignment(),
                 );
 
                 // The direction was once a `▼`/`▲` appended to the header text, but no bundled
@@ -2151,8 +2203,6 @@ impl Draw for GridTableWidget {
                     };
                     crate::widget::draw_icon_at(context, icon_rect, header_text_color, icon_name);
                 }
-
-                hx += cw;
             }
         }
 
@@ -2204,9 +2254,8 @@ impl Draw for GridTableWidget {
                 break;
             }
 
-            let mut cx = data_left;
-            for &(ci, _, cw) in spans {
-                let cell_rect = Rect::new(cx, cy, cw as u32, self.row_height);
+            for &(ci, sx, cw) in spans {
+                let cell_rect = Rect::new(data_left + sx, cy, cw as u32, self.row_height);
 
                 // Selection highlight
                 let is_selected = self.is_cell_selected(abs_row, ci);
@@ -2237,8 +2286,6 @@ impl Draw for GridTableWidget {
                         self.column_alignment(ci),
                     );
                 }
-
-                cx += cw;
             }
             cy += rh;
         }
@@ -2252,26 +2299,28 @@ impl Draw for GridTableWidget {
             1,
         );
 
-        // The scroll-bar thumb is opt-in: the grid is virtualized, so the wheel and keyboard
-        // already reach every row; the thumb is the visible statement of how much is off-screen.
-        if self.show_scrollbar {
-            let total = self.row_count().max(1);
-            let visible = self.visible_rows.max(1).min(total);
-            let track = rect.height.max(1);
-            let thumb =
-                ((track as u64 * visible as u64) / total as u64).max(24).min(track as u64) as u32;
-            let travel = track.saturating_sub(thumb);
-            let max_scroll = total.saturating_sub(visible);
-            let offset = if max_scroll == 0 {
-                0
-            } else {
-                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
-            };
-            context.fill_rect(
-                Rect::new(rect.x + rect.width as i32 - 6, rect.y + offset as i32, 4, thumb),
-                accent.with_alpha(120),
-            );
+        // The thumb is opt-in as a **force-on** override: the grid is virtualized, so the wheel
+        // and keyboard already reach every row; the thumb is the visible statement of how much is
+        // off-screen. Since UX-04 it is also derived — an overflowing grid paints it whether or
+        // not a caller asked, because a scrolling grid with no indication is chrome that lies.
+        let total = self.row_count();
+        let visible = self.visible_rows.min(total).max(1);
+        // A 2 px inset keeps the thumb off the frame's own stroke.
+        let track = Rect::new(rect.x, rect.y, rect.width.saturating_sub(2), rect.height);
+        if let Some(band) = crate::widget::overscroll::scroll_thumb_rect(
+            track,
+            total.max(1),
+            visible,
+            self.scroll_row,
+            4,
+            self.show_scrollbar,
+        ) {
+            context.fill_rect(band, accent.with_alpha(120));
         }
+
+        // Tab and Shortcut focus must be visible on the grid as on every other control (U3-04).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring_if_needed(context, rect, radius, surface);
     }
 }
 
@@ -2444,6 +2493,24 @@ impl EventHandler for GridTableWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::view_widgets::collection_state::CollectionState;
+
+    /// UX-03: an empty grid paints the caption the collection family publishes.
+    ///
+    /// # What this pins
+    ///
+    /// The empty branch drew the frame and returned, so a grid with no rows was indistinguishable
+    /// from a grid that had failed to load — and from one that was still loading. The caption now
+    /// comes from the shared `CollectionPlaceholder`, the same one `TableWidget` and `ListView`
+    /// paint.
+    #[test]
+    fn an_empty_grid_paints_its_empty_caption() {
+        let mut grid = GridTableWidget::new(Rect::new(0, 0, 200, 120));
+        let bare = crate::widget::svg::render_to_svg(&mut grid);
+        grid.set_empty_text("No rows");
+        let captioned = crate::widget::svg::render_to_svg(&mut grid);
+        assert_ne!(bare, captioned, "the empty caption must reach the painted picture");
+    }
 
     /// Minimal data source for testing.
     struct TestSource {
@@ -2755,6 +2822,25 @@ mod tests {
     // -----------------------------------------------------------------------
     // Hit testing
     // -----------------------------------------------------------------------
+
+    /// U2-06: an RTL page mirrors the column run and the hit test reads the same spans.
+    #[test]
+    fn rtl_mirrors_the_column_run() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 400));
+        tbl.set_data_source(Arc::new(TestSource { rows: 10, cols: 5 }));
+        tbl.ensure_column_widths(5);
+        tbl.column_widths[0] = 100;
+        tbl.update_visibility();
+        let rect = tbl.geometry();
+        let data_width = rect.width as i32 - tbl.row_number_width as i32;
+        crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+            let spans = tbl.visible_column_spans(data_width);
+            assert_eq!(spans[0].1, data_width - 100, "column 0 is right-aligned");
+            // The right edge of the data band names column 0.
+            let point = Point::new(rect.x + rect.width as i32 - 1, tbl.header_height as i32 + 5);
+            assert_eq!(tbl.cell_at_point(point).map(|(_, column)| column), Some(0));
+        });
+    }
 
     #[test]
     fn cell_at_point_returns_correct_cell() {

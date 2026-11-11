@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+check_profiles.sh -- every non-default feature profile must compile, and its named tests run.
+#
+# Runs the profile matrix CI uses (`mini`, `embedded`, `tablet`, `desktop+gpu-wgpu`, ...) with one
+# bounded `cargo` step each, and fails when a filter matches no test at all.
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

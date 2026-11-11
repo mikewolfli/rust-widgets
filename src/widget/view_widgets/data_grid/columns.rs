@@ -634,13 +634,20 @@ impl DataGrid {
     pub(crate) fn column_view_x(&self, column: usize) -> i32 {
         let frozen = self.frozen_columns.min(self.column_count());
         let frozen_width = self.column_prefix_width(frozen);
-        if column < frozen {
+        let x = if column < frozen {
             self.column_prefix_width(column)
         } else {
             // The scrolling band starts after the pinned prefix, not at the leading edge: a
             // scrolling column must never paint over the frozen one it sits behind.
             let start = self.scroll_column.max(frozen);
             frozen_width + (self.column_prefix_width(column) - self.column_prefix_width(start))
+        };
+        if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            // Mirror the whole layout, frozen prefix included: in an RTL grid the pinned
+            // columns belong on the right and the scrolling band grows leftwards (U2-06).
+            self.cells_box().width as i32 - x - self.column_width_at(column) as i32
+        } else {
+            x
         }
     }
 
@@ -701,6 +708,13 @@ impl DataGrid {
 
     /// The column at `dx` pixels into the cells box.
     pub(crate) fn column_at_dx(&self, dx: i32) -> Option<usize> {
+        // Mirror the probe, not the layout: the walk below is the LTR one and stays correct,
+        // and the painted column and the hit-tested column keep one derivation (U2-06).
+        let dx = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            self.cells_box().width as i32 - 1 - dx
+        } else {
+            dx
+        };
         if dx < 0 {
             return None;
         }

@@ -2,10 +2,10 @@
 
 > 状态：**已完成（Phase A–F 全部 100%，含 Phase E′）**
 > 完成率：**取证 100% · Phase A–F 100% · 多平台门控 100%**
-> 执行日志：[`docs/log/log-20260917-4.md`](../log/log-20260917-4.md)（第 29 轮：Phase E′ + E/F 收尾，含反向注入）
+> 执行日志：[`docs/log/archive/log-20260917-4.md`](../log/log-20260917-4.md)（第 29 轮：Phase E′ + E/F 收尾，含反向注入）
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE18 全部规则，含 #1–#94）
 > 上轮计划：[`docs/plans/blue17.md`](blue17.md)
-> 上轮日志：[`docs/log/log-20260917-3.md`](../log/log-20260917-3.md)
+> 上轮日志：[`docs/log/archive/log-20260917-3.md`](../log/log-20260917-3.md)
 > 目标基线（本轮实跑）：`WidgetKind` **169** 个（第 29 轮删除 `PagerPageView`/`TileView` 后）、
 > 门禁脚本 **30** 个、`cargo test --lib` **4751** passed
 >

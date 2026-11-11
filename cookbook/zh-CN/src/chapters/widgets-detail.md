@@ -10,7 +10,7 @@
 
 * **标题** —— `WidgetKind` 变体，括号内是规范工厂名。一个类型可以有多个注册名（`line_edit`、`password_edit`、`phone_input`、`email_input` 都报告 `WidgetKind::LineEdit`）；每个名称都有自己的条目，因为各有自己的构造函数与角色。
 
-* **属性** —— 属性名、`PropertyValueKind`，枚举属性还列出可接受的 token。只读属性会标注。每个 schema 还带下一节说明的四个共享属性。条目中给出的常量名（`BUTTON_PROPERTIES` 等）就是该控件发布的 schema，可在 `src/widget/capability/` 中核对。
+* **属性** —— 属性名、`PropertyValueKind`，枚举属性还列出可接受的 token。只读属性会标注。每个 schema 还带下一节说明的五个共享属性。条目中给出的常量名（`BUTTON_PROPERTIES` 等）就是该控件发布的 schema，可在 `src/widget/capability/` 中核对。
 
 * **事件** —— `WidgetFactory::connect_event` 接受的事件名，以及载荷类型与形状（`Scalar`、`Tuple2`、列表、可选、混合）。无载荷事件就是普通通知。名称与载荷来自生成的 `event_payloads.rs` 表，`tools/check_event_payload_types.py` 保证它与真实信号一致。
 
@@ -25,18 +25,19 @@
 ```rust
 use rust_widgets::core::Rect;
 use rust_widgets::signal::CustomSignalHub;
-use rust_widgets::widget::capability::WidgetFactory;
+use rust_widgets::widget::capability::{CapabilityValue, WidgetFactory};
 
 let factory = WidgetFactory::shared();
 let mut button = factory
     .create("button", Rect::new(10, 10, 120, 32), "保存")
-    .expect("注册表认识 `button`");
+    .expect("the registry knows `button`");
 
 factory
-    .write_property("button", &mut *button, "text", "另存为")
-    .expect("`text` 是可写 String 属性");
+    .write_property(&mut *button, "text", CapabilityValue::String("另存为".into()))
+    .expect("`text` is a writable String property");
 let current = factory
-    .read_property("button", &*button, "text")
+    .read_property(&*button, "text")
+    .expect("`text` is readable");
     .expect("`text` 可读");
 
 let hub = CustomSignalHub::new();
@@ -49,9 +50,9 @@ factory
     .expect("`click` 是已发布命令");
 ```
 
-## 四个共享属性
+## 五个共享属性
 
-`src/widget/capability/` 中的每个属性 schema 都以同样的四个条目结尾。它们由基础层实现，而不是各控件自行实现，因此在各处行为一致：
+每个控件都暴露同样的五个属性。前四个会重复出现在每个控件自己的属性 schema 中，并由基础层实现（而非各控件自行实现），因此在各处行为一致；`a11y_role` 是一份共享事实，当控件表未声明它时由 factory 与 manifest 追加。
 
 | 属性 | 类型 | 含义 |
 |---|---|---|
@@ -59,6 +60,7 @@ factory
 | `visible` | Bool | 控件是否绘制并参与命中测试。 |
 | `tooltip` | String | 悬停时显示的提示。`TooltipManager` 配套控件也可为整个子树驱动工具提示。 |
 | `geometry` | String | 控件的矩形。schema 把可读与可写都声明为 `false`，因此它*不能*通过 `read_property`/`write_property` 访问；放置属于布局与 `Widget::set_geometry`。 |
+| `a11y_role` | String | 显式的无障碍角色覆盖（RW-35）。空字符串表示“由控件 kind 推导角色”；值存放在 a11y 树读取的进程级角色注册表中。 |
 
 一些控件还通过属性暴露枚举的字符串拼写，可接受 token 列在条目中。这些 token 与控件 setter 解析的拼写相同，因此从 schema 读出的 token 一定能写回。标为*只读*的属性可读，写入返回 `ReadOnlyProperty`；条目中不存在的属性根本没有发布，写入返回 `UnknownProperty`。
 
@@ -100,7 +102,7 @@ factory
 
 顶层窗口：标题、带关闭入口的标题栏，以及承载其他控件的表面。每个顶层界面用一个；次要或临时窗口用 `Dialog` 或 `PopupWindow`，因为它们自带模态与生命周期。
 
-**属性.** 除四个共享属性外共 4 项：`title`: String · `title_bar_height`: UInt · `close_button_size`: UInt · `button_spacing`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`title`: String · `title_bar_height`: UInt · `close_button_size`: UInt · `button_spacing`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `closed`
 
@@ -114,7 +116,7 @@ factory
 
 `Panel` 是 `GroupBox` 外壳的第二个工厂名：带标题、用于归组相关控件的框。完整构建中 `create_panel` 挂载 `panel` 名称，控件报告 `WidgetKind::GroupBox`；按 `GroupBox` 的方式使用即可，不要寻找 `Panel` 专属的 capability 行——它不存在。
 
-**属性.** 除四个共享属性外共 4 项：`title`: String · `alignment`: Enum (`left` | `centre` | `right` | `top` | `bottom`) · `checkable`: Bool · `checked`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`title`: String · `alignment`: Enum (`left` | `centre` | `right` | `top` | `bottom`) · `checkable`: Bool · `checked`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `toggled`: Bool
 
@@ -126,7 +128,7 @@ factory
 
 边框为一个子控件绘制边框、3D 阴影或分隔线。用于给布局已经放好的内容加视觉结构；不要用它排列或裁剪子控件——它只画外壳。
 
-**属性.** 除四个共享属性外共 7 项：`frame_shape`: Enum (`no_frame` | `box` | `panel` | `styled_panel` | `hline` | `vline` | `win_panel`) · `frame_shadow`: Enum (`plain` | `raised` | `sunken`) · `line_width`: Float · `mid_line_width`: Float · `frame_width`: Float · `contents_margins`: String · `theme_bevel`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`frame_shape`: Enum (`no_frame` | `box` | `panel` | `styled_panel` | `hline` | `vline` | `win_panel`) · `frame_shadow`: Enum (`plain` | `raised` | `sunken`) · `line_width`: Float · `mid_line_width`: Float · `frame_width`: Float · `contents_margins`: String · `theme_bevel`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -140,7 +142,7 @@ factory
 
 按钮在激活时发出 `clicked`，并分别报告按下、释放与取消。每个按钮表达一个确定动作；需要菜单时设置 `menu_open` 并用 `MenuPanel` 配套控件，而不是自建弹层；也不要把它当导航容器。
 
-**属性.** 除四个共享属性外共 17 项：`text`: String · `pressed`: Bool · `default`: Bool · `icon_source`: IconSpec · `icon_size`: UInt · `shortcut`: String · `auto_default`: Bool · `auto_exclusive`: Bool · `flat`: Bool · `elide`: Enum (`none` | `left` | `middle` | `right`) · `drag_enabled`: Bool · `accepts_drops`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt · `menu_open`: Bool · `menu_item_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 17 项：`text`: String · `pressed`: Bool · `default`: Bool · `icon_source`: IconSpec · `icon_size`: UInt · `shortcut`: String · `auto_default`: Bool · `auto_exclusive`: Bool · `flat`: Bool · `elide`: Enum (`none` | `left` | `middle` | `right`) · `drag_enabled`: Bool · `accepts_drops`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt · `menu_open`: Bool · `menu_item_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `canceled` · `clicked` · `item_triggered`: UInt · `pressed` · `released` · `state_changed`: String
 
@@ -154,7 +156,7 @@ factory
 
 不可编辑的文本面，支持对齐、换行、省略、缩进，以及带链接的可选富文本。用于说明、帮助文本与内联链接；用户需要修改文本时改用 `LineEdit`、`TextArea` 或 `RichEdit`。
 
-**属性.** 除四个共享属性外共 10 项：`text`: String · `alignment`: Enum (`left` | `centre` | `right` | `top` | `bottom`) · `word_wrap`: Bool · `elide`: Enum (`none` | `left` | `middle` | `right`) · `margin`: UInt · `scaled_contents`: Bool · `indent`: UInt · `text_format`: Enum (`plain` | `rich`) · `open_external_links`: Bool · `link_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`text`: String · `alignment`: Enum (`left` | `centre` | `right` | `top` | `bottom`) · `word_wrap`: Bool · `elide`: Enum (`none` | `left` | `middle` | `right`) · `margin`: UInt · `scaled_contents`: Bool · `indent`: UInt · `text_format`: Enum (`plain` | `rich`) · `open_external_links`: Bool · `link_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `link_activated`: String · `link_hovered`: String
 
@@ -168,7 +170,7 @@ factory
 
 带标签的方框，拥有独立的选中状态与可选的第三态 `partially_checked`。用于彼此独立的设置；多个选项中必须恰好选一个时用 `RadioButton`，并注意 `auto_exclusive` 可以让同级控件互斥而无需单选组。
 
-**属性.** 除四个共享属性外共 8 项：`text`: String · `state`: Enum (`unchecked` | `partially_checked` | `checked`) · `checked`: Bool · `tristate_enabled`: Bool · `auto_exclusive`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`text`: String · `state`: Enum (`unchecked` | `partially_checked` | `checked`) · `checked`: Bool · `tristate_enabled`: Bool · `auto_exclusive`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `state_changed`: String · `toggled`: Bool
 
@@ -180,7 +182,7 @@ factory
 
 圆形选择控件，与共享 `group_id` 的其他单选按钮互斥。用于数量少、需要始终可见的备选项；列表很长时用 `ComboBox`，选项彼此独立时用 `CheckBox`。
 
-**属性.** 除四个共享属性外共 7 项：`text`: String · `checked`: Bool · `group_id`: String · `auto_exclusive`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`text`: String · `checked`: Bool · `group_id`: String · `auto_exclusive`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `checked_changed`: Bool · `selected`
 
@@ -192,7 +194,7 @@ factory
 
 在选中与未选中之间锁存的按钮，可选带弹出箭头（`arrow_type`/`popup_mode`）与菜单。用于保持开启的模式，或拥有菜单的工具按钮；一次性动作用普通 `Button`，设置式开关行用 `Switch`。
 
-**属性.** 除四个共享属性外共 14 项：`text`: String · `checked`: Bool · `auto_exclusive`: Bool · `auto_raise`: Bool · `group_id`: String · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt · `icon_source`: IconSpec · `arrow_type`: Enum (`none` | `down` | `up` | `left` | `right`) · `popup_mode`: Enum (`instant` | `menu_button` | `delayed`) · `menu_open`: Bool · `menu_item_count`: UInt (只读) · `state`: Enum (`normal` | `hover` | `pressed` | `checked` | `disabled`) (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 14 项：`text`: String · `checked`: Bool · `auto_exclusive`: Bool · `auto_raise`: Bool · `group_id`: String · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt · `icon_source`: IconSpec · `arrow_type`: Enum (`none` | `down` | `up` | `left` | `right`) · `popup_mode`: Enum (`instant` | `menu_button` | `delayed`) · `menu_open`: Bool · `menu_item_count`: UInt (只读) · `state`: Enum (`normal` | `hover` | `pressed` | `checked` | `disabled`) (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `checked_changed`: Bool · `item_triggered`: UInt · `pressed` · `released` · `state_changed`: String · `toggled`: Bool
 
@@ -216,7 +218,7 @@ factory
 
 整宽、持久的通知，带严重级别、最多若干动作，以及由用户关闭的状态。用于用户必须看到并确认的状况；瞬时信息用 `Snackbar` 或 `Toast`，必须应答后才能继续时用 `MessageBox`。
 
-**属性.** 除四个共享属性外共 5 项：`text`: String · `severity`: Enum (`info` | `success` | `warning` | `error`) · `dismissible`: Bool · `dismissed`: Bool (只读) · `action_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`text`: String · `severity`: Enum (`info` | `success` | `warning` | `error`) · `dismissible`: Bool · `dismissed`: Bool (只读) · `action_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `action_clicked`: String · `dismissed`
 
@@ -230,7 +232,7 @@ factory
 
 圆形、带高度的主操作按钮，浮在内容之上。每页一个，表达主操作；如果主操作会展开成多个，配 `SpeedDial` 配套控件，而不是堆多个 FAB；不要用于破坏性或极少使用的命令。
 
-**属性.** 除四个共享属性外共 2 项：`icon`: String · `icon_source`: IconSpec — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`icon`: String · `icon_source`: IconSpec — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `clicked`
 
@@ -244,7 +246,7 @@ factory
 
 下拉刷新表面：用户把内容下拉超过阈值，控件发出 `refresh_triggered`；工作期间宿主设置 `refreshing`。用于触屏设备上的可滚动主体；桌面端优先提供显式刷新命令。
 
-**属性.** 除四个共享属性外共 1 项：`refreshing`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`refreshing`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `refresh_triggered`
 
@@ -258,7 +260,7 @@ factory
 
 启动画面：标志/标题、可选副标题与进度，由程序在初始化完成时关闭，而不是由用户关闭。仅在应用启动期间使用；窗口已经可见后由用户发起的工作改用 `ProgressDialog`。
 
-**属性.** 除四个共享属性外共 4 项：`title`: String · `subtitle`: String · `progress`: Float · `skippable`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`title`: String · `subtitle`: String · `progress`: Float · `skippable`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `fade_out_finished` · `finished`: String · `skipped`: String
 
@@ -272,7 +274,7 @@ factory
 
 手势容器：子内容被滑动时露出动作背景，超过阈值后发出 `dismissed`。用于以滑动为主要删除手势的列表行；为键盘与桌面用户保留可见的替代操作；背景需要多个动作时配 `SwipeActions`。
 
-**属性.** 除四个共享属性外共 1 项：`is_dismissed`: Bool (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`is_dismissed`: Bool (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `dismissed`
 
@@ -296,7 +298,7 @@ factory
 
 把 `AppBar`、内容区与可选底部导航栏组合成一个自适应框架的脚手架。用于平板与移动端的顶层页面外壳；桌面端应显式放置导航外壳，让窗口自身的菜单栏仍是主命令面。
 
-**属性.** 除四个共享属性外共 5 项：`title`: String · `badge_style`: Enum (`text` | `dot`) · `drawer_animated`: Bool · `scrim_opacity`: Float · `page_transition`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`title`: String · `badge_style`: Enum (`text` | `dot`) · `drawer_animated`: Bool · `scrim_opacity`: Float · `page_transition`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `nav_selected`: UInt
 
@@ -310,7 +312,7 @@ factory
 
 顶部栏：标题、前置返回入口与后置动作；两个文本入口按阅读方向（`direction`）放置，而不是固定左右。用于页面标题加一两个动作；动作更多时收进溢出菜单，桌面端用 `ToolBar`。
 
-**属性.** 除四个共享属性外共 2 项：`title`: String · `direction`: Enum (`ltr` | `rtl`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`title`: String · `direction`: Enum (`ltr` | `rtl`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `action_index_pressed`: UInt · `action_overflow_pressed` · `action_pressed` · `back_pressed`
 
@@ -324,7 +326,7 @@ factory
 
 底部一行三到五个顶层目的地，带选中状态。用于手机宽度的顶层导航；目的地更多时用 `NavigationDrawer`；页面是同一屏幕内的并列内容而非应用级目的地时用 `TabView`。
 
-**属性.** 除四个共享属性外共 2 项：`item_count`: UInt (只读) · `selected_index`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`item_count`: UInt (只读) · `selected_index`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `current_changed`: UInt
 
@@ -338,7 +340,7 @@ factory
 
 侧滑面板，包含分区、标题与选中项，并带一个可关闭它的遮罩。用于较长的目的地列表或账户/设置入口；用 `DrawerSectionHeader` 配套控件给行分组；宽布局下不要让它常驻打开——那种场景应在布局里放侧栏。
 
-**属性.** 除四个共享属性外共 3 项：`open`: Bool · `width`: Float · `section_separator_visible`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`open`: Bool · `width`: Float · `section_separator_visible`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `closed` · `header_clicked` · `item_selected`: UInt · `opened`
 
@@ -352,7 +354,7 @@ factory
 
 压栈/出栈页面栈：`push`、`pop`、`set_current_page`，`navigation_changed` 报告新的顶层页面。用于返回必须回到上一页的下钻流程；由程序而非用户选页、且不隐含历史时用 `StackedWidget`。
 
-**属性.** 除四个共享属性外共 3 项：`page_count`: UInt (只读) · `current_page`: UInt · `back_visible`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`page_count`: UInt (只读) · `current_page`: UInt · `back_visible`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `action_index_pressed`: UInt · `navigation_changed`: String
 
@@ -366,7 +368,7 @@ factory
 
 编号分页索引：页大小、相邻页数量、可选导航按钮与滚轮翻页。它不持有内容：页面由 `Carousel`、表格或列表持有，`Pagination` 只报告用户请求的页号。不要把它当页面容器本身。
 
-**属性.** 除四个共享属性外共 8 项：`total`: UInt · `page_size`: UInt · `page`: UInt · `page_count`: UInt (只读) · `last_page`: UInt (只读) · `sibling_count`: UInt · `show_nav_buttons`: Bool · `wheel_paging_enabled`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`total`: UInt · `page_size`: UInt · `page`: UInt · `page_count`: UInt (只读) · `last_page`: UInt (只读) · `sibling_count`: UInt · `show_nav_buttons`: Bool · `wheel_paging_enabled`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `clicked`: UInt · `page_changed`: UInt · `page_hover_changed`: UInt or null
 
@@ -380,7 +382,7 @@ factory
 
 标签条加内容槽，可选键盘导航，关闭/移动请求以事件报告。用于同一屏幕内的并列页面；每页是需要自身布局的任意子容器时用 `TabWidget`，应用级目的地用 `BottomNavigationBar`。
 
-**属性.** 除四个共享属性外共 3 项：`tab_count`: UInt (只读) · `selected_index`: UInt · `keyboard_navigation_enabled`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`tab_count`: UInt (只读) · `selected_index`: UInt · `keyboard_navigation_enabled`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `tab_changed`: UInt · `tab_close_requested`: UInt · `tab_moved`: UInt ×2
 
@@ -404,7 +406,7 @@ factory
 
 单行文本字段，支持选择、撤销/重做可用性、回显模式与校验装饰（`helper`、`error`、`counter`、`validation_state`）。用于一行自由文本；段落用 `TextArea`，固定格式用 `MaskedEdit`，数值用 `SpinBox`。
 
-**属性.** 除四个共享属性外共 21 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (只读) · `over_limit`: Bool (只读) · `valid`: Bool (只读) · `validation_message`: String (只读) · `validation_state`: String (只读) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 21 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (只读) · `over_limit`: Bool (只读) · `valid`: Bool (只读) · `validation_message`: String (只读) · `validation_state`: String (只读) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `copy_available`: Bool · `cursor_position_changed`: UInt · `editing_finished` · `redo_available`: Bool · `return_pressed` · `selection_changed` · `text_changed`: String · `text_edited`: String · `undo_available`: Bool
 
@@ -418,7 +420,7 @@ factory
 
 `LineEdit` 的密码角色：`echo_mode` 为 `password`，`password_echo_on_edit` 控制输入时的短暂显示。用于机密；不要记录其值；`phone_input` 与 `email_input` 只用于各自的取值形状。
 
-**属性.** 除四个共享属性外共 21 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (只读) · `over_limit`: Bool (只读) · `valid`: Bool (只读) · `validation_message`: String (只读) · `validation_state`: String (只读) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 21 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (只读) · `over_limit`: Bool (只读) · `valid`: Bool (只读) · `validation_message`: String (只读) · `validation_state`: String (只读) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `copy_available`: Bool · `cursor_position_changed`: UInt · `editing_finished` · `redo_available`: Bool · `return_pressed` · `selection_changed` · `text_changed`: String · `text_edited`: String · `undo_available`: Bool
 
@@ -432,7 +434,7 @@ factory
 
 `LineEdit` 的电话角色：构造函数安装电话校验器，拒绝空白与非电话字符，`valid` 报告值是否为 7 到 15 位数字。用于电话号码；它会校验，但不会替你做显示格式化。
 
-**属性.** 除四个共享属性外共 21 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (只读) · `over_limit`: Bool (只读) · `valid`: Bool (只读) · `validation_message`: String (只读) · `validation_state`: String (只读) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 21 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (只读) · `over_limit`: Bool (只读) · `valid`: Bool (只读) · `validation_message`: String (只读) · `validation_state`: String (只读) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `copy_available`: Bool · `cursor_position_changed`: UInt · `editing_finished` · `redo_available`: Bool · `return_pressed` · `selection_changed` · `text_changed`: String · `text_edited`: String · `undo_available`: Bool
 
@@ -446,7 +448,7 @@ factory
 
 `LineEdit` 的电子邮件角色：构造函数安装邮件校验器，拒绝空白，`valid` 报告值是否为 `local@domain.tld`。用于地址；它校验形状，但无效值如何处理仍由你决定。
 
-**属性.** 除四个共享属性外共 21 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (只读) · `over_limit`: Bool (只读) · `valid`: Bool (只读) · `validation_message`: String (只读) · `validation_state`: String (只读) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 21 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (只读) · `over_limit`: Bool (只读) · `valid`: Bool (只读) · `validation_message`: String (只读) · `validation_state`: String (只读) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `copy_available`: Bool · `cursor_position_changed`: UInt · `editing_finished` · `redo_available`: Bool · `return_pressed` · `selection_changed` · `text_changed`: String · `text_edited`: String · `undo_available`: Bool
 
@@ -460,7 +462,7 @@ factory
 
 可滚动条目列表，支持单选、多选或扩展选择，并有当前行。用于规模适中、已完全物化、每行是纯文本的列表；行需要模型、委托或虚拟化时改用 `ListView` 或 `VirtualList`。
 
-**属性.** 除四个共享属性外共 9 项：`item_count`: UInt (只读) · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `current_row`: UInt · `item_height`: Float · `selected_count`: UInt (只读) · `selected_indices`: String (只读) · `hovered_row`: UInt (只读) · `font_size`: Float (只读) · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`item_count`: UInt (只读) · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `current_row`: UInt · `item_height`: Float · `selected_count`: UInt (只读) · `selected_indices`: String (只读) · `hovered_row`: UInt (只读) · `font_size`: Float (只读) · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `drag_finished`: String · `item_activated`: UInt · `item_changed`: UInt · `item_selected`: UInt · `rename_requested`: UInt · `selection_changed`
 
@@ -472,7 +474,7 @@ factory
 
 带步进按钮、范围、小数位、可选前后缀与特殊值的数值字段。用于有界数字；滚轮式选择用 `NumberPicker`，角度式操作用 `Dial`，非数值输入用 `LineEdit`。
 
-**属性.** 除四个共享属性外共 14 项：`minimum`: Number · `maximum`: Number · `value`: Number · `single_step`: Number · `decimals`: UInt · `prefix`: String · `suffix`: String · `display_text`: String (只读) · `value_text`: String (只读) · `special_value_text`: String · `wrapping`: Bool · `keyboard_tracking`: Bool · `direction`: Enum (`ltr` | `rtl`) · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 14 项：`minimum`: Number · `maximum`: Number · `value`: Number · `single_step`: Number · `decimals`: UInt · `prefix`: String · `suffix`: String · `display_text`: String (只读) · `value_text`: String (只读) · `special_value_text`: String · `wrapping`: Bool · `keyboard_tracking`: Bool · `direction`: Enum (`ltr` | `rtl`) · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `editing_finished` · `validation_failed`: String · `value_changed`: Int
 
@@ -484,7 +486,7 @@ factory
 
 带下拉列表、可选可编辑文本与可见弹层状态的条目字段。用于固定选项集合与单个当前值；用户可以输入列表外的值时用 `EditableComboBox`；选项是命令菜单而不是取值时用 `DropdownMenu`。
 
-**属性.** 除四个共享属性外共 13 项：`item_count`: UInt (只读) · `insert_policy`: Enum (`no_insert` | `insert_at_top` | `insert_at_current` | `insert_at_bottom` | `insert_alphabetically`) · `size_adjust_policy`: Enum (`adjust_to_minimum_contents_length` | `adjust_to_contents` | `adjust_to_contents_on_first_show`) · `items`: StringList · `current_index`: UInt · `current_text`: String · `placeholder_text`: String · `minimum_contents_length`: UInt · `editable`: Bool · `max_visible_items`: UInt · `open`: Bool · `direction`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 13 项：`item_count`: UInt (只读) · `insert_policy`: Enum (`no_insert` | `insert_at_top` | `insert_at_current` | `insert_at_bottom` | `insert_alphabetically`) · `size_adjust_policy`: Enum (`adjust_to_minimum_contents_length` | `adjust_to_contents` | `adjust_to_contents_on_first_show`) · `items`: StringList · `current_index`: UInt · `current_text`: String · `placeholder_text`: String · `minimum_contents_length`: UInt · `editable`: Bool · `max_visible_items`: UInt · `open`: Bool · `direction`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `activated`: UInt · `current_index_changed`: UInt or null · `current_text_changed`: String · `highlighted`: UInt · `popup_visibility_changed`: Bool · `text_edited`: String
 
@@ -496,7 +498,7 @@ factory
 
 独立下拉选择器，带占位文本、展开状态与可见条目数。字段只是选择器、不承载可编辑文本时用；控件同时拥有文本值时用 `ComboBox`，弹层是命令菜单时用 `MenuButton`。
 
-**属性.** 除四个共享属性外共 8 项：`text`: String (只读) · `placeholder`: String · `selected_index`: UInt · `item_count`: UInt (只读) · `expanded`: Bool · `max_visible`: UInt · `scroll_offset`: UInt · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`text`: String (只读) · `placeholder`: String · `selected_index`: UInt · `item_count`: UInt (只读) · `expanded`: Bool · `max_visible`: UInt · `scroll_offset`: UInt · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `activated`: UInt · `changed` · `highlighted`: UInt
 
@@ -510,7 +512,7 @@ factory
 
 多行纯文本输入，支持软换行、内容边距、块数上限与横向滚动。用于段落与自由笔记；需要带边框、按行换行的编辑器控件时用 `TextEdit`，结构化源码用 `CodeEditor`。
 
-**属性.** 除四个共享属性外共 8 项：`text`: String · `placeholder`: String · `read_only`: Bool · `max_length`: UInt · `soft_wrap`: Bool · `content_margin`: UInt · `max_block_count`: UInt · `scroll_x`: Int (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`text`: String · `placeholder`: String · `read_only`: Bool · `max_length`: UInt · `soft_wrap`: Bool · `content_margin`: UInt · `max_block_count`: UInt · `scroll_x`: Int (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `changed` · `context_menu_requested`: String · `cursor_position_changed`: UInt · `redo_available`: Bool · `selection_changed` · `undo_available`: Bool
 
@@ -524,7 +526,7 @@ factory
 
 带边框的多行编辑器，支持选择文本、光标位置与换行开关。用于需要编辑器外壳的通用多行字段；需要格式属性时用 `RichEdit`，带提示符的追加式输出用 `TerminalView`。
 
-**属性.** 除四个共享属性外共 6 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `line_wrap`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `line_wrap`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `cursor_position_changed`: UInt · `selection_changed` · `text_changed`: String
 
@@ -536,7 +538,7 @@ factory
 
 带标题、说明描述与可选盾牌标记的按钮——Windows 风格的命令链接。用于对话框里少量、需要解释的选项；一行标题就够时用普通 `Button`。
 
-**属性.** 除四个共享属性外共 3 项：`text`: String · `description`: String · `shield`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`text`: String · `description`: String · `shield`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `clicked` · `hovered`: Bool
 
@@ -548,7 +550,7 @@ factory
 
 以已安装字体填充、每项用自身字体渲染、并带过滤与示例文本的下拉框。用于 `FontDialog` 或设置表单里的字体选择；用 `FontPreview` 展示当前选择的更大字样。
 
-**属性.** 除四个共享属性外共 9 项：`current_font_family`: String (只读) · `item_count`: Int (只读) · `current_index`: Int · `editable`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `max_visible_items`: Int · `font_filters`: String · `writing_system_filter`: String · `sample_text`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`current_font_family`: String (只读) · `item_count`: Int (只读) · `current_index`: Int · `editable`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `max_visible_items`: Int · `font_filters`: String · `writing_system_filter`: String · `sample_text`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `activated`: Int · `current_font_changed`: String · `current_index_changed`: Int · `popup_hidden` · `popup_shown` · `text_edited`: String
 
@@ -560,7 +562,7 @@ factory
 
 屏幕虚拟键盘，支持 qwerty 或数字布局、大小写状态与按键事件；`text_committed` 携带要插入的字符。用于没有硬件键盘的触屏设备；同时保留硬件输入路径，桌面端不要展示它以免占用屏幕。
 
-**属性.** 除四个共享属性外共 3 项：`layout`: Enum (`qwerty` | `numeric`) · `lowercase`: Bool · `press_animation`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`layout`: Enum (`qwerty` | `numeric`) · `lowercase`: Bool · `press_animation`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `backspace_pressed` · `enter_pressed` · `key_pressed`: UInt ×2 · `space_pressed` · `text_committed`: String
 
@@ -574,7 +576,7 @@ factory
 
 在光标前补全 token、且一个字段可包含多个提及的文本字段。用于消息或评论里的 `@` 提及；整段字段按单个建议补全时用 `AutoCompleteEdit`。
 
-**属性.** 除四个共享属性外共 9 项：`text`: String · `trigger`: String · `candidate_count`: UInt (只读) · `visible_candidate_count`: UInt (只读) · `mention_count`: UInt (只读) · `popup_open`: Bool (只读) · `caret`: UInt (只读) · `max_visible`: UInt · `row_height`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`text`: String · `trigger`: String · `candidate_count`: UInt (只读) · `visible_candidate_count`: UInt (只读) · `mention_count`: UInt (只读) · `popup_open`: Bool (只读) · `caret`: UInt (只读) · `max_visible`: UInt · `row_height`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `mention_inserted`: String · `popup_toggled`: Bool · `text_changed`: String
 
@@ -588,7 +590,7 @@ factory
 
 多级选择器，沿选项树走一条路径并报告所选路径。用于每一级都有意义的层级分类；平面列表用 `ComboBox`，层级本身需要始终可见可浏览时用 `TreeView`。
 
-**属性.** 除四个共享属性外共 8 项：`value`: String (只读) · `placeholder`: String · `depth`: UInt (只读) · `expanded`: Bool · `separator`: String · `filterable`: Bool · `filter`: String (只读) · `max_visible`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`value`: String (只读) · `placeholder`: String · `depth`: UInt (只读) · `expanded`: Bool · `separator`: String · `filterable`: Bool · `filter`: String (只读) · `max_visible`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `selection_changed`: list of UInt
 
@@ -602,7 +604,7 @@ factory
 
 单行搜索字段，前置搜索入口与后置清除按钮；`search_submitted` 携带查询。用于列表或表格上方的快速过滤；还需要取消动作与平台搜索样式时用 `SearchBar`。
 
-**属性.** 除四个共享属性外共 3 项：`text`: String · `placeholder`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`text`: String · `placeholder`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `search_submitted`: String · `text_changed`: String
 
@@ -616,7 +618,7 @@ factory
 
 按回车或逗号生成可移除标签的文本字段，支持多行模式。用于自由形式的短标签集合；集合固定、只改变选择状态时用 `Chip` 行控件；token 指向人而不是任意标签时用 `Mention`。
 
-**属性.** 除四个共享属性外共 4 项：`tags`: String (只读) · `multiline`: Bool · `placeholder`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`tags`: String (只读) · `multiline`: Bool · `placeholder`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `tags_changed`: list of String
 
@@ -630,7 +632,7 @@ factory
 
 在宿主给定位置绘制输入法预编辑文本与光标的浮层。仅在自定义文本面上实现 IME 组合时使用；已经接受 IME 输入的控件（`LineEdit`、`TextArea` 等）会自行放置预编辑文本。
 
-**属性.** 除四个共享属性外共 2 项：`text`: String · `cursor_position`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`text`: String · `cursor_position`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -644,7 +646,7 @@ factory
 
 就地开始与结束编辑的小型编辑器，供表格与树单元格使用。用于回车提交、Escape 放弃的单元格编辑；字段是表单常驻部分时用 `LineEdit`。
 
-**属性.** 除四个共享属性外共 3 项：`text`: String · `editing`: Bool · `edit_triggers`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`text`: String · `editing`: Bool · `edit_triggers`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `edit_accepted`: String · `edit_canceled`
 
@@ -658,7 +660,7 @@ factory
 
 由掩码驱动的格式化文本字段，拒绝不符合的输入，并用 `input_rejected` 报告出错位置。用于电话、日期、邮编与形状固定的标识；格式只是建议而非强制时用 `LineEdit` 加校验。
 
-**属性.** 除四个共享属性外共 3 项：`text`: String · `mask`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`text`: String · `mask`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `editing_finished` · `input_rejected`: UInt · `return_pressed` · `text_changed`: String
 
@@ -672,7 +674,7 @@ factory
 
 整段值与候选列表匹配、并提供下拉的文本字段，支持匹配模式、大小写敏感、内联补全与关闭策略。用于从建议中选择单个值；token 补全用 `Mention`，列表封闭时用 `ComboBox`。
 
-**属性.** 除四个共享属性外共 15 项：`text`: String · `placeholder`: String · `suggestion_count`: UInt (只读) · `selected_index`: UInt · `selected_suggestion`: String (只读) · `dropdown_visible`: Bool (只读) · `max_visible`: UInt · `alignment`: Enum (`left` | `centre` | `right`) · `can_undo`: Bool (只读) · `can_redo`: Bool (只读) · `match_mode`: Enum (`contains` | `starts_with` | `ends_with` | `fixed_string` | `regexp`) · `case_sensitive`: Bool · `inline_completion`: Bool · `close_policy`: Enum (`always` | `never` | `on_commit`) · `completion_prefix`: String (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 15 项：`text`: String · `placeholder`: String · `suggestion_count`: UInt (只读) · `selected_index`: UInt · `selected_suggestion`: String (只读) · `dropdown_visible`: Bool (只读) · `max_visible`: UInt · `alignment`: Enum (`left` | `centre` | `right`) · `can_undo`: Bool (只读) · `can_redo`: Bool (只读) · `match_mode`: Enum (`contains` | `starts_with` | `ends_with` | `fixed_string` | `regexp`) · `case_sensitive`: Bool · `inline_completion`: Bool · `close_policy`: Enum (`always` | `never` | `on_commit`) · `completion_prefix`: String (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `suggestion_selected`: String · `text_changed`: String
 
@@ -686,7 +688,7 @@ factory
 
 列表中保留多个选择、并以选中集合报告的下拉框。用于紧凑多选字段；选项需要始终可见的独立行时用 `CheckListBox`；用户还可以输入未提供的值时用 `TagInput`。
 
-**属性.** 除四个共享属性外共 5 项：`selected_count`: UInt (只读) · `selected_items`: String (只读) · `placeholder`: String · `expanded`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`selected_count`: UInt (只读) · `selected_items`: String (只读) · `placeholder`: String · `expanded`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `selection_changed`: list of UInt
 
@@ -700,7 +702,7 @@ factory
 
 双把手滑块，在同一轨道上选择上下界，并以 `range_changed` 同时报告两者。用于两端在视觉上一起移动的粗略范围；边界必须精确键入时用两个 `SpinBox`，日期范围用 `DateRangePicker`。
 
-**属性.** 除四个共享属性外共 11 项：`min_value`: Float · `step`: Float · `min_range`: Float · `tick_interval`: Float · `tick_labels`: Bool · `value_hint_enabled`: Bool · `max_value`: Float · `lower`: Float · `upper`: Float · `orientation`: Enum (`horizontal` | `vertical`) · `direction`: Enum (`ltr` | `rtl`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 11 项：`min_value`: Float · `step`: Float · `min_range`: Float · `tick_interval`: Float · `tick_labels`: Bool · `value_hint_enabled`: Bool · `max_value`: Float · `lower`: Float · `upper`: Float · `orientation`: Enum (`horizontal` | `vertical`) · `direction`: Enum (`ltr` | `rtl`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `range_changed`: Float ×2
 
@@ -714,7 +716,7 @@ factory
 
 字段可以保存列表外文本的下拉框；`item_selected` 报告选择，`text_changed` 报告键入。用于通常选择、偶尔输入的值；封闭集合用 `ComboBox`，需要边输入边匹配建议时用 `AutoCompleteEdit`。
 
-**属性.** 除四个共享属性外共 6 项：`text`: String · `item_count`: UInt (只读) · `cursor_position`: UInt · `max_visible_items`: UInt · `scroll_offset`: UInt · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`text`: String · `item_count`: UInt (只读) · `cursor_position`: UInt · `max_visible_items`: UInt · `scroll_offset`: UInt · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `editing_finished` · `item_selected`: UInt · `return_pressed` · `text_changed`: String
 
@@ -728,7 +730,7 @@ factory
 
 平台风格的搜索字段，带取消动作、`search_submitted` 与 `text_changed`。用于 iOS 风格界面里的搜索-取消流程；桌面端紧凑、无取消入口的字段用 `SearchBox`。
 
-**属性.** 除四个共享属性外共 3 项：`text`: String · `placeholder`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`text`: String · `placeholder`: String · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `canceled` · `search_submitted`: String · `text_changed`: String
 
@@ -742,7 +744,7 @@ factory
 
 按类别分组、可搜索的快捷键列表，支持过滤、空状态与撤销/重做可用性。用于快捷键参考/编辑面板；任务是录制一个新快捷键时用 `KeySequenceEdit`。
 
-**属性.** 除四个共享属性外共 8 项：`filter_text`: String · `shortcut_count`: UInt (只读) · `visible_count`: UInt (只读) · `category_count`: UInt (只读) · `categories`: String (只读) · `empty`: Bool (只读) · `can_undo`: Bool (只读) · `can_redo`: Bool (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`filter_text`: String · `shortcut_count`: UInt (只读) · `visible_count`: UInt (只读) · `category_count`: UInt (只读) · `categories`: String (只读) · `empty`: Bool (只读) · `can_undo`: Bool (只读) · `can_redo`: Bool (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `shortcut_changed`: mixed (String parts)
 
@@ -756,7 +758,7 @@ factory
 
 分段验证码字段：每字符一格、自动前进，支持粘贴、退格与完成信号。用于一次性验证码与短 PIN；较长的格式化标识用 `MaskedEdit`，普通密码用 `LineEdit`。
 
-**属性.** 除四个共享属性外共 8 项：`value`: String · `length`: UInt · `masked`: Bool · `read_only`: Bool · `digits_only`: Bool · `separator`: String · `focused_index`: UInt (只读) · `is_complete`: Bool (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`value`: String · `length`: UInt · `masked`: Bool · `read_only`: Bool · `digits_only`: Bool · `separator`: String · `focused_index`: UInt (只读) · `is_complete`: Bool (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `canceled` · `completed`: String · `submitted`: String · `value_changed`: String
 
@@ -770,7 +772,7 @@ factory
 
 纵向滚动的数字轮，显示相邻值，通过拖拽或轻扫而非逐步点击改变。用于从短范围中选择有界数字；需要精确键入或逐步调整时用 `SpinBox`。
 
-**属性.** 除四个共享属性外共 12 项：`value`: Int · `minimum`: Int · `maximum`: Int · `step`: Int · `wrap`: Bool · `suffix`: String · `prefix`: String · `decimals`: UInt · `special_value_text`: String · `row_count`: UInt (只读) · `selected_row`: UInt (只读) · `row_height`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 12 项：`value`: Int · `minimum`: Int · `maximum`: Int · `step`: Int · `wrap`: Bool · `suffix`: String · `prefix`: String · `decimals`: UInt · `special_value_text`: String · `row_count`: UInt (只读) · `selected_row`: UInt (只读) · `row_height`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `value_changed`: Int
 
@@ -784,7 +786,7 @@ factory
 
 带字符与段落格式属性、只读与换行开关、光标/选择事件的多行编辑器。用于富格式散文；来源是 Markdown 时用 `MarkdownEditor`，纯文本用 `TextArea`。
 
-**属性.** 除四个共享属性外共 5 项：`text`: String · `line_count`: UInt (只读) · `read_only`: Bool · `line_wrap`: Bool · `placeholder_text`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`text`: String · `line_count`: UInt (只读) · `read_only`: Bool · `line_wrap`: Bool · `placeholder_text`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `cursor_position_changed`: UInt · `read_only_changed`: Bool · `selection_changed`: (UInt, UInt) or null · `text_changed`: String
 
@@ -808,7 +810,7 @@ factory
 
 沿轨道拖动把手，在范围内选择整数，支持刻度、翻页步进与跟踪。用于可直接操纵的粗略值；精确输入用 `SpinBox`，角度式仪表用 `Dial`，双边界用 `RangeSlider`。
 
-**属性.** 除四个共享属性外共 10 项：`minimum`: Int · `maximum`: Int · `value`: Int · `single_step`: Int · `page_step`: Int · `orientation`: Enum (`horizontal` | `vertical`) · `tick_position`: Enum (`none` | `above` | `below` | `both`) · `tick_interval`: Int · `tracking`: Bool · `slider_position`: Int — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`minimum`: Int · `maximum`: Int · `value`: Int · `single_step`: Int · `page_step`: Int · `orientation`: Enum (`horizontal` | `vertical`) · `tick_position`: Enum (`none` | `above` | `below` | `both`) · `tick_interval`: Int · `tracking`: Bool · `slider_position`: Int — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `slider_moved`: Int · `slider_pressed` · `slider_released` · `value_changed`: Int
 
@@ -820,7 +822,7 @@ factory
 
 有界填充指示器，可选文本标签、方向与不确定模式。用于已知总量中的已知比例；紧凑圆环用 `ProgressCircle`，时长未知、只表达活动时用 `Spinner`。
 
-**属性.** 除四个共享属性外共 9 项：`minimum`: Int · `maximum`: Int · `value`: Int · `text_visible`: Bool · `orientation`: Enum (`horizontal` | `vertical`) · `inverted_appearance`: Bool · `indeterminate`: Bool · `direction`: Enum (`ltr` | `rtl`) · `progress`: Float (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`minimum`: Int · `maximum`: Int · `value`: Int · `text_visible`: Bool · `orientation`: Enum (`horizontal` | `vertical`) · `inverted_appearance`: Bool · `indeterminate`: Bool · `direction`: Enum (`ltr` | `rtl`) · `progress`: Float (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `value_changed`: Int
 
@@ -832,7 +834,7 @@ factory
 
 轨道上的滑块，用于滚动视口，支持空闲淡出、翻页步进与滑块比例。用于自定义可滚动表面旁边；希望 crate 拥有视口并自动放置滚动条时用 `ScrollArea`。
 
-**属性.** 除四个共享属性外共 11 项：`idle_delay_ms`: UInt · `idle_opacity`: Float · `minimum`: Int · `maximum`: Int · `value`: Int · `single_step`: Int · `page_step`: Int · `orientation`: Enum (`horizontal` | `vertical`) · `direction`: Enum (`ltr` | `rtl`) · `slider_size`: Float (只读) · `slider_position`: Float (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 11 项：`idle_delay_ms`: UInt · `idle_opacity`: Float · `minimum`: Int · `maximum`: Int · `value`: Int · `single_step`: Int · `page_step`: Int · `orientation`: Enum (`horizontal` | `vertical`) · `direction`: Enum (`ltr` | `rtl`) · `slider_size`: Float (只读) · `slider_position`: Float (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `slider_moved`: Int · `slider_pressed` · `slider_released` · `value_changed`: Int
 
@@ -844,7 +846,7 @@ factory
 
 七段数码读数，可配置位数、进制与段样式。用于仪表式数字（计数器、时钟、测量值）；普通文本用 `Label`，数值还需要范围语境时用 `Meter`。
 
-**属性.** 除四个共享属性外共 7 项：`value`: Float · `min_value`: Float · `max_value`: Float · `num_digits`: Int · `small_decimal_point`: Bool · `mode`: Enum (`hex` | `dec` | `oct` | `bin`) · `segment_style`: Enum (`outline` | `filled` | `flat`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`value`: Float · `min_value`: Float · `max_value`: Float · `num_digits`: Int · `small_decimal_point`: Bool · `mode`: Enum (`hex` | `dec` | `oct` | `bin`) · `segment_style`: Enum (`outline` | `filled` | `flat`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `overflow` · `value_changed`: Float
 
@@ -856,7 +858,7 @@ factory
 
 环形进度或指示弧，支持扫过角度、粗细、可选圆角端点与居中数值。用于紧凑的单值表盘；Material 风格进度环用 `ProgressCircle`，需要刻度与指针时用 `Gauge`。
 
-**属性.** 除四个共享属性外共 10 项：`value_format`: String · `value`: UInt · `minimum`: UInt · `maximum`: UInt · `thickness`: UInt · `sweep_angle`: UInt · `start_angle`: Float · `indeterminate`: Bool · `rounded`: Bool · `show_value`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`value_format`: String · `value`: UInt · `minimum`: UInt · `maximum`: UInt · `thickness`: UInt · `sweep_angle`: UInt · `start_angle`: Float · `indeterminate`: Bool · `rounded`: Bool · `show_value`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `changed`
 
@@ -870,7 +872,7 @@ factory
 
 旋转活动指示器，支持弧线或辐条样式、速度、粗细与尺寸比例。用于请求进行中且时长未知时；已知比例时用 `ProgressBar`，操作结束要停止，避免永久动画。
 
-**属性.** 除四个共享属性外共 7 项：`active`: Bool · `track_color`: Color · `arc_color`: Color · `thickness`: UInt · `speed`: Float · `size_ratio`: Float · `style`: Enum (`arc` | `spokes`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`active`: Bool · `track_color`: Color · `arc_color`: Color · `thickness`: UInt · `speed`: Float · `size_ratio`: Float · `style`: Enum (`arc` | `spokes`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `active_changed`: Bool
 
@@ -884,7 +886,7 @@ factory
 
 滚轮式选择器，显示当前选项及上下相邻项；拖拽或轻扫改变选择。用于触屏上的短小有序选项集；桌面用 `ComboBox`，数值用 `NumberPicker`。
 
-**属性.** 除四个共享属性外共 4 项：`options`: StringList · `selected_index`: UInt · `visible_count`: UInt · `item_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`options`: StringList · `selected_index`: UInt · `visible_count`: UInt · `item_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `changed`
 
@@ -898,7 +900,7 @@ factory
 
 开/关轨道与滑块控件，支持 Material、Cupertino 或 macOS 几何。用于立即生效的设置；选择属于稍后提交的表单时用 `CheckBox`，设计要求 iOS 呈现时用 `CupertinoSwitch`。
 
-**属性.** 除四个共享属性外共 4 项：`checked`: Bool · `thumb_color`: Color · `on_track_color`: Color · `switch_geometry`: Enum (`material` | `cupertino` | `macos`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`checked`: Bool · `thumb_color`: Color · `on_track_color`: Color · `switch_geometry`: Enum (`material` | `cupertino` | `macos`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `toggled`: Bool
 
@@ -912,7 +914,7 @@ factory
 
 水平或垂直线，带粗细与颜色，用作轻量分隔。自定义布局中需要一条线时用；需要平台分隔样式与方向属性时用 `Divider`。
 
-**属性.** 除四个共享属性外共 3 项：`orientation`: Enum (`horizontal` | `vertical`) · `thickness`: UInt · `color`: Color — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`orientation`: Enum (`horizontal` | `vertical`) · `thickness`: UInt · `color`: Color — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -926,7 +928,7 @@ factory
 
 带范围、刻度、可选单位与阈值带的表计。用于有实际量程的测量值；完整径向表盘用 `Gauge`，紧凑圆环用 `Arc`，普通完成度用 `ProgressBar`。
 
-**属性.** 除四个共享属性外共 8 项：`value`: UInt · `minimum`: UInt · `maximum`: UInt · `tick_count`: UInt · `show_tick_labels`: Bool · `unit`: String · `value_text`: String (只读) · `threshold_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`value`: UInt · `minimum`: UInt · `maximum`: UInt · `tick_count`: UInt · `show_tick_labels`: Bool · `unit`: String · `value_text`: String (只读) · `threshold_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `changed`
 
@@ -940,7 +942,7 @@ factory
 
 字形选择器外壳：分类、搜索、最近使用与网格；字形表本身由调用方通过 `set_glyphs` 提供，因为 crate 不打包 emoji 数据。用于编辑器或反应选择器，并在 `glyph_chosen` 中插入字符。
 
-**属性.** 除四个共享属性外共 7 项：`recent_capacity`: UInt · `glyph_count`: UInt (只读) · `visible_glyph_count`: UInt (只读) · `tab_count`: UInt (只读) · `active_tab`: UInt · `search`: String · `recent_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`recent_capacity`: UInt · `glyph_count`: UInt (只读) · `visible_glyph_count`: UInt (只读) · `tab_count`: UInt (只读) · `active_tab`: UInt · `search`: String · `recent_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `glyph_chosen`: String · `glyph_hover_changed`: String
 
@@ -954,7 +956,7 @@ factory
 
 无坐标轴的紧凑折线或柱状图，用于行、卡片或磁贴内。用于一眼可读的趋势；仅折线、带容量与末端标记的内联趋势用 `Sparkline`，需要坐标轴与交互时用图表族。
 
-**属性.** 除四个共享属性外共 1 项：`chart_type`: Enum (`line` | `bar`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`chart_type`: Enum (`line` | `bar`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `point_hover_changed`: UInt or null
 
@@ -968,7 +970,7 @@ factory
 
 显示 `Image` 的控件，支持缩放、旋转、翻转、对齐、边距与缩放/平移偏移。用于单张静态图片；多图带缩略图用 `ImageGallery`，逐帧动画用 `AnimatedImage`，需要共享缩放与感兴趣区域状态时配 `ZoomPanController`。
 
-**属性.** 除四个共享属性外共 6 项：`scaled`: Bool · `rotation`: Enum (`0` | `90` | `180` | `270`) · `flip_horizontal`: Bool · `flip_vertical`: Bool · `zoom_level`: Float · `pan_offset`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`scaled`: Bool · `rotation`: Enum (`0` | `90` | `180` | `270`) · `flip_horizontal`: Bool · `flip_vertical`: Bool · `zoom_level`: Float · `pan_offset`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `double_clicked` · `image_changed` · `load_failed`: String
 
@@ -982,7 +984,7 @@ factory
 
 小型即时模式绘图表面，提供填充/描边原语与清空。用于装饰性绘制或自定义小标记；需要图层、缩放与指针路由时用完整 `Canvas`；不要在没有绘制入口的控件里硬塞绘图逻辑。
 
-**属性.** 该 schema 没有自己的属性；每个控件都带四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 该 schema 没有自己的属性；每个控件都带五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `clicked` · `mouse_pressed` · `mouse_released`
 
@@ -994,7 +996,7 @@ factory
 
 小型浮层标记，承载计数、圆点或短标签，锚定在另一控件上。用于未读数与状态点；它是注解而不是按钮，可点击行为应放在被锚定的控件上。
 
-**属性.** 除四个共享属性外共 4 项：`text`: String · `count`: Int · `dot_mode`: Bool · `level`: Enum (`info` | `success` | `warning` | `error`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`text`: String · `count`: Int · `dot_mode`: Bool · `level`: Enum (`info` | `success` | `warning` | `error`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `count_changed`: UInt · `level_changed`: String
 
@@ -1008,7 +1010,7 @@ factory
 
 内容加载期间显示的灰色占位块，支持矩形、圆形与文本行形状。用于保持布局并表达进度；内容到达后不要继续显示；没有可预览形状时用 `Spinner`。
 
-**属性.** 除四个共享属性外共 3 项：`active`: Bool · `text_line_rows`: UInt · `shape`: Enum (`rect` | `circle` | `text_line`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`active`: Bool · `text_line_rows`: UInt · `shape`: Enum (`rect` | `circle` | `text_line`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1022,7 +1024,7 @@ factory
 
 分隔相邻区块的细线，支持线型、方向、粗细与颜色。用于表单或列表中的组间分隔；自定义绘制里需要独立线条时用 `Line`。
 
-**属性.** 除四个共享属性外共 4 项：`line_style`: Enum (`plain` | `sunken` | `raised`) · `orientation`: String · `thickness`: Float · `color`: Color — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`line_style`: Enum (`plain` | `sunken` | `raised`) · `orientation`: String · `thickness`: Float · `color`: Color — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1036,7 +1038,7 @@ factory
 
 一行可选择的星形或图标，支持半步与数值。用于主观评分；连续量用 `Slider`，评分还需要精确键入时用 `SpinBox`。
 
-**属性.** 除四个共享属性外共 6 项：`value`: Float · `allow_half_step`: Bool · `max`: UInt · `star_size`: UInt · `fill`: Float (只读) · `display_text`: String (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`value`: Float · `allow_half_step`: Bool · `max`: UInt · `star_size`: UInt · `fill`: Float (只读) · `display_text`: String (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `rating_changed`: UInt
 
@@ -1050,7 +1052,7 @@ factory
 
 视图无内容时显示的占位：消息、描述与可选次要动作。用于内容可能为空的列表、表格或页面；不要把它当加载指示器——那是 `SkeletonLoader` 或 `Spinner`。
 
-**属性.** 除四个共享属性外共 3 项：`message`: String · `secondary_action_text`: String · `description`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`message`: String · `secondary_action_text`: String · `description`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `action_pressed`
 
@@ -1064,7 +1066,7 @@ factory
 
 最近使用颜色的历史，以色块网格呈现，支持添加、删除、选择与悬停信号。用于颜色选择器旁，让用户回到最近的选择；固定调色板用 `Swatch`，单个当前颜色用 `ColorWell`。
 
-**属性.** 除四个共享属性外共 1 项：`color_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`color_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `color_added`: Color · `color_hovered`: Color · `color_removed`: UInt · `color_selected`: Color · `context_menu_requested`: UInt
 
@@ -1076,7 +1078,7 @@ factory
 
 紧凑色块，显示一个当前颜色并发出 `clicked` 与 `picker_requested`。用作颜色字段的折叠形态；收到 `picker_requested` 时打开 `ColorPicker` 或 `ColorDialog`，色块只持有当前值。
 
-**属性.** 除四个共享属性外共 2 项：`color`: Color · `show_border`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`color`: Color · `show_border`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `clicked` · `color_changed`: Color · `picker_requested`
 
@@ -1088,7 +1090,7 @@ factory
 
 带浮动标签的文本字段，字段有内容或获得焦点时标签浮到输入上方。用于紧凑的 Material 风格表单字段；字段上方静态标签更合适时用 `LineEdit`；不要用于多行文本。
 
-**属性.** 除四个共享属性外共 5 项：`text`: String · `label`: String · `placeholder`: String · `focused`: Bool · `floating_label_behavior`: Enum (`auto` | `always` | `never`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`text`: String · `label`: String · `placeholder`: String · `focused`: Bool · `floating_label_behavior`: Enum (`auto` | `always` | `never`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `text_changed`: String
 
@@ -1102,7 +1104,7 @@ factory
 
 字样面板，用选定的字族与字号渲染示例字符串。用于 `FontComboBox` 旁或 `FontDialog` 内，让用户以可读尺寸看到选择；它只是预览，不持有字体选择状态。
 
-**属性.** 除四个共享属性外共 3 项：`font_family`: String · `font_size`: Float · `preview_text`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`font_family`: String · `font_size`: Float · `preview_text`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1116,7 +1118,7 @@ factory
 
 圆形进度指示器，支持粗细、颜色、直径、不确定模式与可选中心文本。用于紧凑完成度指示；表盘式扫过用 `Arc`，时长未知时用 `Spinner`。
 
-**属性.** 除四个共享属性外共 7 项：`value`: Float · `thickness`: Float · `progress_color`: Color · `diameter`: UInt · `indeterminate`: Bool · `show_center_text`: Bool · `center_text_format`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`value`: Float · `thickness`: Float · `progress_color`: Color · `diameter`: UInt · `indeterminate`: Bool · `show_center_text`: Bool · `center_text_format`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `indeterminate_changed`: Bool · `value_changed`: Float
 
@@ -1130,7 +1132,7 @@ factory
 
 按名称或来源描述、以指定尺寸与颜色渲染图标的控件。用于工具栏与空状态里的独立字形；字形属于标签或按钮时，设置该控件的 `icon_source`，不要额外叠一个 `Icon`。
 
-**属性.** 除四个共享属性外共 4 项：`icon_name`: String · `icon_source`: IconSpec · `size`: Float · `color`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`icon_name`: String · `icon_source`: IconSpec · `size`: Float · `color`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1144,7 +1146,7 @@ factory
 
 紧凑胶囊标签，用于分类或过滤内容，带色调、可选图标与关闭入口。用于单个只读分类标记；多条目可选/可重排的行用 `Chip`，用户创建标签时用 `TagInput`。
 
-**属性.** 除四个共享属性外共 5 项：`text`: String · `icon`: String · `tone`: Enum (`neutral` | `primary` | `success` | `warning` | `error`) · `selected`: Bool · `closable`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`text`: String · `icon`: String · `tone`: Enum (`neutral` | `primary` | `success` | `warning` | `error`) · `selected`: Bool · `closable`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `closed`: String · `selected_changed`: Bool
 
@@ -1158,7 +1160,7 @@ factory
 
 模拟时钟面，显示一天中的时间，可选秒针，时间来源可以是手动值或系统时钟。用于时钟展示；选日期用 `Calendar`，编辑时间用 `TimePicker`。
 
-**属性.** 除四个共享属性外共 5 项：`hour`: UInt · `minute`: UInt · `second`: UInt · `show_seconds`: Bool · `time_source`: Enum (`manual` | `system`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`hour`: UInt · `minute`: UInt · `second`: UInt · `show_seconds`: Bool · `time_source`: Enum (`manual` | `system`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `tick`: UInt
 
@@ -1182,7 +1184,7 @@ factory
 
 带标题的框架，用于归组相关控件，可选可勾选，以便用一个状态启用/禁用整组。用于表单中带标签的区块；没有标题时用普通 `Frame`，需要折叠时用 `Accordion`。
 
-**属性.** 除四个共享属性外共 4 项：`title`: String · `alignment`: Enum (`left` | `centre` | `right` | `top` | `bottom`) · `checkable`: Bool · `checked`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`title`: String · `alignment`: Enum (`left` | `centre` | `right` | `top` | `bottom`) · `checkable`: Bool · `checked`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `toggled`: Bool
 
@@ -1194,7 +1196,7 @@ factory
 
 可拖拽分隔条，把容器分成可调整大小的窗格，拖动时报告布局变化与实时预览。用于用户需要在两个区域间取舍空间；同一行为在布局族名称下是 `split_layout`；比例永不变化时用固定 `Flex`。
 
-**属性.** 除四个共享属性外共 2 项：`orientation`: Enum (`horizontal` | `vertical`) · `pane_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`orientation`: Enum (`horizontal` | `vertical`) · `pane_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `orientation_changed`: String · `pane_layout_changed`: list of Float · `pane_layout_preview`: list of Float
 
@@ -1208,7 +1210,7 @@ factory
 
 纵向或横向的带标题区块堆叠，一次展开一个，支持互斥、非互斥或弹出模式。用于紧凑工具面板；页面内容区块用 `Accordion`，每个区块是完整页面时用 `TabWidget`。
 
-**属性.** 除四个共享属性外共 4 项：`item_count`: UInt (只读) · `current_index`: UInt · `orientation`: Enum (`horizontal` | `vertical`) · `mode`: Enum (`exclusive` | `non_exclusive` | `popup`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`item_count`: UInt (只读) · `current_index`: UInt · `orientation`: Enum (`horizontal` | `vertical`) · `mode`: Enum (`exclusive` | `non_exclusive` | `popup`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `current_changed`: UInt · `item_expanded_changed`: mixed (String parts)
 
@@ -1220,7 +1222,7 @@ factory
 
 可滚动视口，裁剪并偏移一个更大的子控件，水平与垂直滚动策略独立，并可选粘性区域。整个子树可能超出可见区域时使用；用 `StickyHeader` 配套控件保持条带可见；不要在同方向嵌套滚动区域。
 
-**属性.** 除四个共享属性外共 8 项：`widget_resizable`: Bool · `horizontal_scroll_bar_policy`: Enum (`always_on` | `always_off` | `as_needed`) · `vertical_scroll_bar_policy`: Enum (`always_on` | `always_off` | `as_needed`) · `scroll_position_x`: Int · `scroll_position_y`: Int · `content_width`: UInt · `content_height`: UInt · `sticky_region_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`widget_resizable`: Bool · `horizontal_scroll_bar_policy`: Enum (`always_on` | `always_off` | `as_needed`) · `vertical_scroll_bar_policy`: Enum (`always_on` | `always_off` | `as_needed`) · `scroll_position_x`: Int · `scroll_position_y`: Int · `content_width`: UInt · `content_height`: UInt · `sticky_region_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `scroll_position_changed`: Int ×2
 
@@ -1232,7 +1234,7 @@ factory
 
 标签页容器，仅显示选中页，标签可关闭、可移动，位置与形状可配置。每页是需要自身布局的容器时使用；轻量并列页面用 `TabView`，由程序切页且不需要标签条时用 `StackedWidget`。
 
-**属性.** 除四个共享属性外共 9 项：`tab_count`: UInt (只读) · `current_index`: UInt · `text`: String · `title`: String · `closable`: Bool · `movable`: Bool · `tab_position`: Enum (`north` | `south` | `west` | `east`) · `tab_shape`: Enum (`rounded` | `triangular` | `rectangular`) · `document_mode`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`tab_count`: UInt (只读) · `current_index`: UInt · `text`: String · `title`: String · `closable`: Bool · `movable`: Bool · `tab_position`: Enum (`north` | `south` | `west` | `east`) · `tab_shape`: Enum (`rounded` | `triangular` | `rectangular`) · `document_mode`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `current_changed`: UInt · `drag_finished`: String · `tab_bar_clicked`: UInt · `tab_bar_double_clicked`: UInt · `tab_close_requested`: UInt · `tab_moved`: UInt ×2
 
@@ -1244,7 +1246,7 @@ factory
 
 一次显示一个子页面、由程序按索引选择的容器。用于由宿主决定页面的向导式或模式化内容；用户选页时用 `TabWidget`，存在返回历史时用 `NavigationStack`。
 
-**属性.** 除四个共享属性外共 2 项：`widget_count`: UInt (只读) · `current_index`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`widget_count`: UInt (只读) · `current_index`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `current_changed`: UInt
 
@@ -1258,7 +1260,7 @@ factory
 
 带可点击标题、用于展开或隐藏一个内容子控件的区块。用于单个可选详情块；多个此类区块需要协同用 `Accordion`，区块始终展开用 `GroupBox`。
 
-**属性.** 除四个共享属性外共 2 项：`title`: String · `collapsed`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`title`: String · `collapsed`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `toggled`: Bool
 
@@ -1272,7 +1274,7 @@ factory
 
 一个可停靠面板，带标题，可浮动或停靠到边缘。用于用户可以重新排列的单个工具面板；多区域停靠系统不是这个控件，`MdiArea` 承载独立子窗口而不是停靠边缘。
 
-**属性.** 除四个共享属性外共 3 项：`title`: String · `floating`: Bool · `docked`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`title`: String · `floating`: Bool · `docked`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `dock_location_changed`: String · `features_changed`: String · `top_level_changed`: Bool
 
@@ -1286,7 +1288,7 @@ factory
 
 承载多个独立子窗口的工作区，支持子窗口或标签视图，并跟踪活动子窗口。用于以文档为中心的桌面应用；简单页面用 `TabWidget`，单一线性历史用 `NavigationStack`。
 
-**属性.** 除四个共享属性外共 3 项：`subwindow_count`: UInt (只读) · `active_subwindow`: UInt (只读) · `view_mode`: Enum (`sub_window_view` | `tabbed`) (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`subwindow_count`: UInt (只读) · `active_subwindow`: UInt (只读) · `view_mode`: Enum (`sub_window_view` | `tabbed`) (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `subwindow_activated`: UInt · `subwindow_title_changed`: mixed (String parts)
 
@@ -1300,7 +1302,7 @@ factory
 
 两侧带加减按钮、按固定步长调整数值的数字字段。用于小的整数数量（计数、购物车数量）；用户还可以键入数值时用 `SpinBox`，滚轮用 `NumberPicker`。
 
-**属性.** 除四个共享属性外共 4 项：`value`: Int · `minimum`: Int · `maximum`: Int · `step`: Int — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`value`: Int · `minimum`: Int · `maximum`: Int · `step`: Int — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `value_changed`: Int
 
@@ -1314,7 +1316,7 @@ factory
 
 Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间距。用于高度不定的卡片（照片、笔记）；行需要对齐时用 `FlowLayout`/`WrapLayout`，每个单元格同尺寸时用 `Grid`。
 
-**属性.** 除四个共享属性外共 3 项：`column_count`: UInt · `item_count`: UInt (只读) · `item_spacing`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`column_count`: UInt · `item_count`: UInt (只读) · `item_spacing`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `item_clicked`: UInt
 
@@ -1328,7 +1330,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 按上、下、左、右内缩内容的容器，避免刘海、状态栏与 Home 指示条重叠。用于移动端屏幕根部；内缩值应来自平台查询，而不是硬编码设备度量。
 
-**属性.** 除四个共享属性外共 4 项：`top_inset`: Float · `bottom_inset`: Float · `left_inset`: Float · `right_inset`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`top_inset`: Float · `bottom_inset`: Float · `left_inset`: Float · `right_inset`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1342,7 +1344,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 可横向滑动的页面轮播，带圆点、条或数字指示器，可选循环与自动播放。用于少量整宽页面；页索引需要放在轮播之外时配 `Pagination`；页面由标签而非滑动选择时用 `TabView`。
 
-**属性.** 除四个共享属性外共 7 项：`current_index`: UInt · `item_count`: UInt (只读) · `current_page_title`: String (只读) · `loop`: Bool · `autoplay_interval`: UInt · `indicator_style`: Enum (`dots` | `bars` | `numeric` | `hidden`) · `indicator_position`: Enum (`bottom` | `top` | `left` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`current_index`: UInt · `item_count`: UInt (只读) · `current_page_title`: String (只读) · `loop`: Bool · `autoplay_interval`: UInt · `indicator_style`: Enum (`dots` | `bars` | `numeric` | `hidden`) · `indicator_position`: Enum (`bottom` | `top` | `left` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `page_changed`: UInt
 
@@ -1356,7 +1358,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 在线性布局中消耗剩余空间的空白不可见区域，带弹性权重、基础尺寸与可选绘制提示。用于把同级控件推开；它什么都不画是契约，因此不要期待背景或边框。
 
-**属性.** 除四个共享属性外共 4 项：`flex`: UInt · `base_size`: UInt · `paint_hint`: Bool · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`flex`: UInt · `base_size`: UInt · `paint_hint`: Bool · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1370,7 +1372,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 单子盒子，把内容居中，可选按父容器宽高的比例。用于居中表单或消息；需要中心以外的九个锚点之一时用 `Align`。
 
-**属性.** 除四个共享属性外共 6 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `width_factor`: Float · `height_factor`: Float · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `width_factor`: Float · `height_factor`: Float · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1384,7 +1386,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 单子盒子，把内容放在九个锚点之一。用于把子控件固定到角或边；中心情形用 `Center`；偏移是固定内缩而不是锚点时用 `Padding`。
 
-**属性.** 除四个共享属性外共 5 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `alignment`: Enum (`top_left` | `top_centre` | `top_right` | `centre_left` | `centre` | `centre_right` | `bottom_left` | `bottom_centre` | `bottom_right`) · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `alignment`: Enum (`top_left` | `top_centre` | `top_right` | `centre_left` | `centre` | `centre_right` | `bottom_left` | `bottom_centre` | `bottom_right`) · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1398,7 +1400,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 具有固定宽高、包含一个子控件的盒子。用于预留精确槽位（`box_width`、`box_height`）；一个维度应随另一个变化时用 `AspectRatio`，尺寸应随内容变化时用 `IntrinsicWidth`。
 
-**属性.** 除四个共享属性外共 6 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `box_width`: UInt · `box_height`: UInt · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `box_width`: UInt · `box_height`: UInt · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1412,7 +1414,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 单子盒子，用四个独立边距内缩内容。用于属于内容而不是父容器的间距；同级之间的间隙用父容器的 `spacing`/`gap`。
 
-**属性.** 除四个共享属性外共 8 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `padding_top`: UInt · `padding_right`: UInt · `padding_bottom`: UInt · `padding_left`: UInt · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `padding_top`: UInt · `padding_right`: UInt · `padding_bottom`: UInt · `padding_left`: UInt · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1426,7 +1428,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 沿主轴占据剩余空间、按 `flex` 加权的子控件，必须放在线性布局内。用于让一个子控件吸收余量；子控件也可以停在首选尺寸而不填满时用 `Flexible`。
 
-**属性.** 除四个共享属性外共 5 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `flex`: UInt · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `flex`: UInt · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1440,7 +1442,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 可以收缩到下限、但最多增长到偏好尺寸的子控件，`fit` 选择宽松或紧致约束。用于同级控件应让出空间但不一定填满时；必须填满时用 `Expanded`。
 
-**属性.** 除四个共享属性外共 6 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `flex`: UInt · `fit`: Enum (`loose` | `tight`) · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `flex`: UInt · `fit`: Enum (`loose` | `tight`) · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1454,7 +1456,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 宽度取内容自身首选宽度的盒子，使字段或标签不被拉伸。用于收缩适配的列；精确宽度用 `SizedBox`，高度需要随宽度变化时用 `AspectRatio`。
 
-**属性.** 除四个共享属性外共 4 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1468,7 +1470,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 通过固定比例从一个维度推导另一个维度的盒子，可选服从父约束。用于媒体磁贴与缩略图；两个维度都已知时用 `SizedBox`，内容应决定宽度时用 `IntrinsicWidth`。
 
-**属性.** 除四个共享属性外共 6 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `ratio`: Float · `respect_parent`: Bool · `widget`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`content`: String · `content_width`: UInt · `content_height`: UInt · `ratio`: Float · `respect_parent`: Bool · `widget`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -1482,7 +1484,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 沿行或列按权重分配子控件的线性布局，支持换行、主轴对齐、交叉轴对齐与间隙。用于大多数一维布局；二维用 `Grid`，需要按测量尺寸换行时用 `FlowLayout`/`WrapLayout`。
 
-**属性.** 除四个共享属性外共 6 项：`item_count`: UInt (只读) · `direction`: Enum (`row` | `row_reverse` | `column` | `column_reverse`) · `wrap`: Enum (`no_wrap` | `wrap` | `wrap_reverse`) · `justify_content`: Enum (`flex_start` | `flex_end` | `center` | `space_between` | `space_around` | `space_evenly`) · `align_items`: Enum (`stretch` | `flex_start` | `flex_end` | `center` | `baseline`) · `gap`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`item_count`: UInt (只读) · `direction`: Enum (`row` | `row_reverse` | `column` | `column_reverse`) · `wrap`: Enum (`no_wrap` | `wrap` | `wrap_reverse`) · `justify_content`: Enum (`flex_start` | `flex_end` | `center` | `space_between` | `space_around` | `space_evenly`) · `align_items`: Enum (`stretch` | `flex_start` | `flex_end` | `center` | `baseline`) · `gap`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `item_clicked`: UInt
 
@@ -1496,7 +1498,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 按阅读顺序放置子控件、行满后开始新行的布局，每一行由子控件自身提示决定尺寸，并遵循书写方向。用于应自然流动的标签、chip 与工具按钮；行是固定尺寸单元格网格时用 `WrapLayout`。
 
-**属性.** 除四个共享属性外共 6 项：`item_count`: UInt (只读) · `direction`: Enum (`horizontal` | `vertical`) · `alignment`: Enum (`start` | `center` | `end` | `space_between` | `space_around`) · `spacing`: UInt · `padding`: UInt · `wrap`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`item_count`: UInt (只读) · `direction`: Enum (`horizontal` | `vertical`) · `alignment`: Enum (`start` | `center` | `end` | `space_between` | `space_around`) · `spacing`: UInt · `padding`: UInt · `wrap`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `item_clicked`: UInt
 
@@ -1510,7 +1512,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 放置固定尺寸子控件、满后换到下一行的布局，支持独立间距与行间距。用于等大单元格的画廊；子控件应保持自身测量尺寸并遵循书写方向时用 `FlowLayout`。
 
-**属性.** 除四个共享属性外共 6 项：`item_count`: UInt (只读) · `direction`: Enum (`horizontal` | `vertical`) · `alignment`: Enum (`start` | `center` | `end` | `space_between` | `space_around`) · `spacing`: UInt · `run_spacing`: UInt · `padding`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`item_count`: UInt (只读) · `direction`: Enum (`horizontal` | `vertical`) · `alignment`: Enum (`start` | `center` | `end` | `space_between` | `space_around`) · `spacing`: UInt · `run_spacing`: UInt · `padding`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `item_clicked`: UInt
 
@@ -1524,7 +1526,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 纵向可折叠区块堆叠，支持单展开或多展开模式。用于 FAQ 式或设置分组；单个独立区块用 `CollapsiblePane`，区块是工具面板而非页面内容时用 `ToolBox`。
 
-**属性.** 除四个共享属性外共 3 项：`section_count`: UInt (只读) · `single_expand`: Bool · `expanded_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`section_count`: UInt (只读) · `single_expand`: Bool · `expanded_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `section_toggled`: mixed (String parts)
 
@@ -1538,7 +1540,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 `Splitter` 的布局族拼写：窗格间的可拖拽分隔条，带方向与窗格数。分割属于布局描述而不是控件子树时使用；它报告与 `Splitter` 相同的三个布局信号。
 
-**属性.** 除四个共享属性外共 2 项：`orientation`: Enum (`horizontal` | `vertical`) · `pane_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`orientation`: Enum (`horizontal` | `vertical`) · `pane_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `orientation_changed`: String · `pane_layout_changed`: list of Float · `pane_layout_preview`: list of Float
 
@@ -1562,7 +1564,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 模型驱动的列表，支持视图模式（列表、图标、详情、缩略图）、焦点行与选择。用于携带模型或委托的行；小型纯文本列表用 `ListBox`，模型大到需要窗口化投影时用 `VirtualList`。
 
-**属性.** 除四个共享属性外共 7 项：`has_model`: Bool (只读) · `row_count`: UInt (只读) · `focused_row`: UInt · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `view_mode`: Enum (`list` | `icon` | `details` | `thumbnails`) · `alignment`: Enum (`left` | `centre` | `right`) · `icon_visible_in_list_mode`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`has_model`: Bool (只读) · `row_count`: UInt (只读) · `focused_row`: UInt · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `view_mode`: Enum (`list` | `icon` | `details` | `thumbnails`) · `alignment`: Enum (`left` | `centre` | `right`) · `icon_visible_in_list_mode`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `focused_row_changed`: UInt or null · `row_activated`: UInt · `row_reordered`: UInt ×2 · `selection_changed`: UInt
 
@@ -1574,7 +1576,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 层级视图，可展开/折叠节点，带焦点节点、选中节点、懒加载与动画展开。用于树模型；每行还需要列时用 `TreeTable`；`ColumnView` 是同一树族的别名角色，而不是第二个控件。
 
-**属性.** 除四个共享属性外共 10 项：`has_model`: Bool (只读) · `node_count`: UInt (只读) · `focused_node`: UInt · `selected_node`: UInt (只读) · `has_delegate`: Bool (只读) · `expanded_focused_node`: Bool (只读) · `expansion_animated`: Bool · `lazy_loading`: Bool · `loading_indicator_visible`: Bool · `fetch_timeout_ms`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`has_model`: Bool (只读) · `node_count`: UInt (只读) · `focused_node`: UInt · `selected_node`: UInt (只读) · `has_delegate`: Bool (只读) · `expanded_focused_node`: Bool (只读) · `expansion_animated`: Bool · `lazy_loading`: Bool · `loading_indicator_visible`: Bool · `fetch_timeout_ms`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `activated`: UInt · `collapsed`: UInt · `expanded`: UInt · `fetch_finished`: mixed (String parts) · `fetch_started`: list of UInt · `focused_node_changed`: UInt or null · `node_double_clicked`: UInt · `selection_changed`: UInt
 
@@ -1586,7 +1588,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 单元格表格，带表头、当前行、选择模式与编辑请求信号。用于规模适中的平面网格；需要排序、筛选与冻结列时用 `DataGrid`，大模型用 `VirtualTable`。
 
-**属性.** 除四个共享属性外共 8 项：`has_model`: Bool (只读) · `has_delegate`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `header_visible`: Bool · `editable`: Bool · `edit_triggers`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`has_model`: Bool (只读) · `has_delegate`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `header_visible`: Bool · `editable`: Bool · `edit_triggers`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `edit_requested`: UInt ×2 · `focused_row_changed`: UInt or null · `row_activated`: UInt · `selection_changed`: UInt
 
@@ -1598,7 +1600,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 同一表格控件在 `table_widget` 之外的 `table` 工厂名；两个名称接受相同的属性与事件契约。按宿主已有拼写选择其一，不要为同一个控件同时注册两个。
 
-**属性.** 除四个共享属性外共 8 项：`has_model`: Bool (只读) · `has_delegate`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `header_visible`: Bool · `editable`: Bool · `edit_triggers`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`has_model`: Bool (只读) · `has_delegate`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `header_visible`: Bool · `editable`: Bool · `edit_triggers`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `edit_requested`: UInt ×2 · `focused_row_changed`: UInt or null · `row_activated`: UInt · `selection_changed`: UInt
 
@@ -1610,7 +1612,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 数据网格，带数据源、排序、筛选、冻结列、行高列宽、选择行为与汇总。排序/筛选是功能一部分时使用；更轻的网格用 `GridTable`，行有层级时用 `TreeTable`。
 
-**属性.** 除四个共享属性外共 18 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `column_width`: UInt · `frozen_columns`: UInt · `sort_spec_count`: UInt (只读) · `filter_count`: UInt (只读) · `sort_specs`: String · `filters`: String · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) · `selection_behavior`: Enum (`cells` | `rows` | `columns`) · `sort_indicator_visible`: Bool · `section_resize_mode`: Enum (`fixed` | `stretch` | `interactive`) · `current_cell`: String (只读) · `summary_text`: String (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 18 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `column_width`: UInt · `frozen_columns`: UInt · `sort_spec_count`: UInt (只读) · `filter_count`: UInt (只读) · `sort_specs`: String · `filters`: String · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) · `selection_behavior`: Enum (`cells` | `rows` | `columns`) · `sort_indicator_visible`: Bool · `section_resize_mode`: Enum (`fixed` | `stretch` | `interactive`) · `current_cell`: String (只读) · `summary_text`: String (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `edit_requested`: UInt ×2 · `filter_changed`: String · `header_clicked`: UInt · `page_applied`: UInt · `sort_changed`: mixed (String parts) · `visible_window_changed`: UInt ×4
 
@@ -1622,7 +1624,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 层级表格：行构成可展开/折叠的树，每行还带列单元格，支持排序角色、大小写敏感与窗口化/即时投影。用于节点还带表格属性的树；纯树用 `TreeView`，平面行用 `Table`。
 
-**属性.** 除四个共享属性外共 15 项：`has_model`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `selected_row`: UInt · `row_height`: UInt · `column_width`: UInt · `header_visible`: Bool · `expands_on_double_click`: Bool · `middle_click_expands`: Bool · `sort_role`: Enum (`text` | `number`) · `case_sensitive`: Bool · `projection_strategy`: Enum (`windowed` | `eager`) · `lazy_loading`: Bool · `loading_indicator_visible`: Bool · `fetch_timeout_ms`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 15 项：`has_model`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `selected_row`: UInt · `row_height`: UInt · `column_width`: UInt · `header_visible`: Bool · `expands_on_double_click`: Bool · `middle_click_expands`: Bool · `sort_role`: Enum (`text` | `number`) · `case_sensitive`: Bool · `projection_strategy`: Enum (`windowed` | `eager`) · `lazy_loading`: Bool · `loading_indicator_visible`: Bool · `fetch_timeout_ms`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `expansion_changed`: mixed (String parts) · `fetch_finished`: mixed (String parts) · `fetch_started`: list of UInt · `projection_changed`: UInt · `selection_changed`: UInt or null · `sort_changed`: mixed (String parts)
 
@@ -1634,7 +1636,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 基于数据源、只投影可见窗口的表格，支持行列过扫描与滚轮滚动模式。用于大型远程数据表；需要排序/筛选且模型在本地时用 `DataGrid`。
 
-**属性.** 除四个共享属性外共 12 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `column_width`: UInt · `overscan_rows`: UInt · `overscan_columns`: UInt · `visible_window`: String (只读) · `wheel_scroll_mode`: Enum (`per_row` | `per_page`) · `header_visible`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 12 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `column_width`: UInt · `overscan_rows`: UInt · `overscan_columns`: UInt · `visible_window`: String (只读) · `wheel_scroll_mode`: Enum (`per_row` | `per_page`) · `header_visible`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `selection_changed`: (UInt, UInt) or null · `visible_window_changed`: UInt ×4
 
@@ -1646,7 +1648,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 基于数据源的单列虚拟列表，支持可见窗口、过扫描与多选。用于等高空行的长列表；行需要视图模式或委托时用 `ListView`，短小已物化列表用 `ListBox`。
 
-**属性.** 除四个共享属性外共 8 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `scroll_row`: UInt · `row_height`: UInt · `overscan`: UInt · `selected_row`: UInt (只读) · `selected_rows`: NumberList (只读) · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `scroll_row`: UInt · `row_height`: UInt · `overscan`: UInt · `selected_row`: UInt (只读) · `selected_rows`: NumberList (只读) · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `drag_finished`: String · `selected_rows_changed`: list of UInt · `selection_changed`: UInt or null · `visible_window_changed`: UInt ×2
 
@@ -1658,7 +1660,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 `VirtualList` 的 `data_view` 拼写；它呈现一列模型行，不切换显示模式。宿主希望以通用 data-view 名称使用虚拟列表契约时用它，不要期待第二套实现。
 
-**属性.** 除四个共享属性外共 8 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `scroll_row`: UInt · `row_height`: UInt · `overscan`: UInt · `selected_row`: UInt (只读) · `selected_rows`: NumberList (只读) · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `scroll_row`: UInt · `row_height`: UInt · `overscan`: UInt · `selected_row`: UInt (只读) · `selected_rows`: NumberList (只读) · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `drag_finished`: String · `selected_rows_changed`: list of UInt · `selection_changed`: UInt or null · `visible_window_changed`: UInt ×2
 
@@ -1670,7 +1672,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 功能丰富的虚拟化表格，带网格线、表头、排序、选择与数据源。用于表单内的电子表格式表面；需要筛选/冻结列时用 `DataGrid`，表头需要在网格外共享时配 `GridViewHeader`。
 
-**属性.** 除四个共享属性外共 12 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `selection_mode`: Enum (`none` | `cell` | `row` | `column`) · `sort_spec_count`: UInt (只读) · `selected_cell`: String (只读) · `sorting_enabled`: Bool · `sort_role`: String · `auto_refresh`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 12 项：`has_data_source`: Bool (只读) · `row_count`: UInt (只读) · `column_count`: UInt (只读) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `selection_mode`: Enum (`none` | `cell` | `row` | `column`) · `sort_spec_count`: UInt (只读) · `selected_cell`: String (只读) · `sorting_enabled`: Bool · `sort_role`: String · `auto_refresh`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `cell_double_clicked`: UInt ×2 · `cell_selected`: UInt ×2 · `context_menu_requested`: String · `edit_requested`: UInt ×2 · `header_clicked`: UInt · `sort_changed`: mixed (String parts)
 
@@ -1682,7 +1684,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 把递归过滤条件编辑成“字段、运算符、操作数”行的构建器，带连接词、实时更新与提交延迟。用于需要可导出文本的结构化筛选；表格旁的快速一行筛选用 `FilterRow`，自由文本搜索用 `SearchBox`。
 
-**属性.** 除四个共享属性外共 8 项：`row_count`: UInt (只读) · `incomplete_row_count`: UInt (只读) · `field_count`: UInt (只读) · `conjunction`: Enum (`and` | `or`) · `active_row`: UInt · `live_update`: Bool · `commit_delay_ms`: UInt · `has_pending_commit`: Bool (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`row_count`: UInt (只读) · `incomplete_row_count`: UInt (只读) · `field_count`: UInt (只读) · `conjunction`: Enum (`and` | `or`) · `active_row`: UInt · `live_update`: Bool · `commit_delay_ms`: UInt · `has_pending_commit`: Bool (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `query_changed`: String · `query_committed`: String · `row_field_clicked`: UInt · `row_operator_clicked`: UInt · `rows_changed`: list of Records
 
@@ -1696,7 +1698,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 分类属性编辑器，以网格布局排列行，并报告编辑、文件选择请求与编辑器打开。用于画布旁的检查器；较扁平的两列表单用 `PropertyGrid`，分类重要时用 `PropertiesPanel`。
 
-**属性.** 除四个共享属性外共 3 项：`property_count`: UInt (只读) · `description_mode`: Enum (`tooltip` | `status_bar` | `hidden`) · `edit_trigger`: Enum (`single_click` | `double_click`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`property_count`: UInt (只读) · `description_mode`: Enum (`tooltip` | `status_bar` | `hidden`) · `edit_trigger`: Enum (`single_click` | `double_click`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `editor_opened`: String · `file_picker_requested`: String · `property_changed`: String ×2
 
@@ -1710,7 +1712,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 两列编辑器，列出命名属性与可编辑值单元格，带选中行与逐单元格变化信号。用于紧凑键/值检查器；行需要按类别分组时用 `PropertiesPanel`。
 
-**属性.** 除四个共享属性外共 2 项：`property_count`: UInt (只读) · `selected_index`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`property_count`: UInt (只读) · `selected_index`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `cell_changed`: mixed (String parts) · `context_menu_requested`: String · `selected`: UInt
 
@@ -1724,7 +1726,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 图片浏览器，带主图、缩略图条、滚轮模式与全屏请求。用于需要显示当前索引的照片集合；单张图片用 `ImageView`，缩略图条很大时配 `ThumbnailCache`。
 
-**属性.** 除四个共享属性外共 7 项：`current_index`: UInt · `thumbnail_size`: UInt · `show_thumbnails`: Bool · `strip_offset`: UInt · `strip_scroll_enabled`: Bool · `wheel_mode`: Enum (`strip` | `navigate` | `zoom`) · `arrow_key_navigation_enabled`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`current_index`: UInt · `thumbnail_size`: UInt · `show_thumbnails`: Bool · `strip_offset`: UInt · `strip_scroll_enabled`: Bool · `wheel_mode`: Enum (`strip` | `navigate` | `zoom`) · `arrow_key_navigation_enabled`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `fullscreen_requested`: UInt · `image_changed`: UInt · `selection_changed`: list of UInt · `strip_scrolled`: UInt
 
@@ -1738,7 +1740,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 网格或表格的共享表头条：可排序、可调整的区段与筛选入口。表头需要位于滚动主体之外时使用，并把 `section_clicked`、`section_resized`、`filter_clicked` 报告给持有模型的网格。
 
-**属性.** 除四个共享属性外共 6 项：`columns`: StringList · `column_count`: UInt (只读) · `sort_indicator_visible`: Bool · `resize_mode`: Enum (`fixed` | `stretch` | `stretch_last` | `interactive`) · `filter_icon_visible`: Bool · `sort_columns`: String (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`columns`: StringList · `column_count`: UInt (只读) · `sort_indicator_visible`: Bool · `resize_mode`: Enum (`fixed` | `stretch` | `stretch_last` | `interactive`) · `filter_icon_visible`: Bool · `sort_columns`: String (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `filter_clicked`: UInt · `section_clicked`: UInt · `section_resized`: UInt ×2
 
@@ -1762,7 +1764,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 用于一个或多个有序序列的笛卡尔折线图，通过共享图表引擎绘制。用于有序轴上的趋势；趋势需要内联且无需坐标轴时用 `Sparkline`，技术指标用 `IndicatorChart`。
 
-**属性.** 除四个共享属性外共 1 项：`stroke_width`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`stroke_width`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `point_clicked`: UInt ×2 · `point_hovered`: UInt ×2 · `point_unhovered`: UInt ×2
 
@@ -1776,7 +1778,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 无坐标轴、网格与边距的紧凑内联趋势，由值列表构建，带末端标记与悬停报告。用于表格单元格或 KPI 磁贴；需要坐标轴或缩放时用 `LineChart`。它有意不接入图表引擎，因为它没有引擎要统一的轴、网格、刻度与边距。
 
-**属性.** 除四个共享属性外共 7 项：`data`: NumberList · `stroke_width`: Float · `show_end_value`: Bool · `fill`: Bool · `show_points`: Bool · `show_last_marker`: Bool · `capacity`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`data`: NumberList · `stroke_width`: Float · `show_end_value`: Bool · `fill`: Bool · `show_points`: Bool · `show_last_marker`: Bool · `capacity`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `last_value_clicked`: Float · `value_hovered`: mixed (String parts)
 
@@ -1790,7 +1792,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 用于分类比较的纵向柱状图，支持柱间距与逐柱悬停/点击信号。用于少量分类；有序序列用 `LineChart`，占比用 `PieChart`，多轴轮廓用 `RadarChart`。
 
-**属性.** 除四个共享属性外共 1 项：`bar_spacing`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`bar_spacing`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `bar_clicked`: UInt · `bar_hovered`: UInt · `bar_unhovered`: UInt
 
@@ -1804,7 +1806,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 带彩色扇区的圆形图，可选环形，报告指针下的扇区与被点击的扇区。用于少量扇区的占比快照；分类很多或数值接近时用 `BarChart`。
 
-**属性.** 除四个共享属性外共 1 项：`donut`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`donut`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `slice_clicked`: UInt · `slice_hovered`: UInt · `slice_unhovered`: UInt
 
@@ -1818,7 +1820,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 径向表盘，用范围、色带、刻度、指针样式与可选单位标签显示单个值。用于有实际量程的单个测量值；线性仪表用 `Meter`，完成度用 `Arc`/`ProgressCircle`。
 
-**属性.** 除四个共享属性外共 14 项：`value`: Float · `minimum`: Float · `maximum`: Float · `label`: String · `unit`: String · `zone_count`: UInt (只读) · `animated`: Bool · `thickness`: UInt · `bands`: StringList · `tick_count`: UInt · `start_angle`: Float · `end_angle`: Float · `needle_style`: Enum (`none` | `line` | `triangle`) · `unit_label`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 14 项：`value`: Float · `minimum`: Float · `maximum`: Float · `label`: String · `unit`: String · `zone_count`: UInt (只读) · `animated`: Bool · `thickness`: UInt · `bands`: StringList · `tick_count`: UInt · `start_angle`: Float · `end_angle`: Float · `needle_style`: Enum (`none` | `line` | `triangle`) · `unit_label`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `band_clicked`: String · `value_changed`: Float
 
@@ -1842,7 +1844,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 可由菜单与工具栏渲染的命令描述：文本、图标、快捷键、可勾选/选中状态、分隔符标记与命令 id。用于同一命令出现在多个命令面；不要把它单独当可见按钮——具体控件由命令面实例化。
 
-**属性.** 除四个共享属性外共 8 项：`text`: String · `icon_text`: String · `shortcut`: String · `checkable`: Bool · `checked`: Bool · `icon_source`: IconSpec · `separator`: Bool (只读) · `command_id`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`text`: String · `icon_text`: String · `shortcut`: String · `checkable`: Bool · `checked`: Bool · `icon_source`: IconSpec · `separator`: Bool (只读) · `command_id`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `changed` · `hovered` · `toggled`: Bool · `triggered`: Bool
 
@@ -1856,7 +1858,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 命令与子菜单的下拉列表，带悬停、动作触发、子菜单请求与显示/隐藏前信号。用于从菜单栏、按钮或上下文点击打开的命令；弹层选择值时用 `DropdownMenu`，按钮拥有菜单时用 `MenuButton`。
 
-**属性.** 除四个共享属性外共 6 项：`title`: String · `item_count`: UInt (只读) · `hovered_index`: UInt (只读) · `direction`: Enum (`ltr` | `rtl`) · `show_heading`: Bool · `column_count`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`title`: String · `item_count`: UInt (只读) · `hovered_index`: UInt (只读) · `direction`: Enum (`ltr` | `rtl`) · `show_heading`: Bool · `column_count`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `about_to_hide` · `about_to_show` · `action_triggered`: String · `submenu_requested`: String · `tearoff_requested` · `triggered`: String · `triggered_index`: UInt
 
@@ -1868,7 +1870,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 `ContextMenu` 是 `Menu` 的角色拼写（`pub type ContextMenu = Menu`），以自己的名称注册，用于在指针处打开的菜单。用于次要点击菜单；它不是第二套菜单实现，属性与事件就是 `Menu` 的集合。
 
-**属性.** 除四个共享属性外共 6 项：`title`: String · `item_count`: UInt (只读) · `hovered_index`: UInt (只读) · `direction`: Enum (`ltr` | `rtl`) · `show_heading`: Bool · `column_count`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`title`: String · `item_count`: UInt (只读) · `hovered_index`: UInt (只读) · `direction`: Enum (`ltr` | `rtl`) · `show_heading`: Bool · `column_count`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `about_to_hide` · `about_to_show` · `action_triggered`: String · `submenu_requested`: String · `tearoff_requested` · `triggered`: String · `triggered_index`: UInt
 
@@ -1882,7 +1884,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 顶层菜单标题的横向条，跟踪活动与悬停条目。用于窗口顶部的应用命令分组；常用命令用 `ToolBar`，页面内单个下拉用 `MenuButton`。
 
-**属性.** 除四个共享属性外共 3 项：`entry_count`: UInt (只读) · `active_index`: UInt (只读) · `hovered_index`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`entry_count`: UInt (只读) · `active_index`: UInt (只读) · `hovered_index`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `entry_hovered`: String · `triggered`: String · `triggered_entry`: mixed (String parts)
 
@@ -1894,7 +1896,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 图标按钮与分隔条的条带，可横向或纵向、可移动、可浮动，并报告方向与可见性变化。用于常用命令；命令需要带标签的分组与标签页时用 `RibbonBar`，单个条目用 `ToolButton`。
 
-**属性.** 除四个共享属性外共 5 项：`orientation`: Enum (`horizontal` | `vertical`) · `icon_size`: Float · `movable`: Bool · `floatable`: Bool · `item_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`orientation`: Enum (`horizontal` | `vertical`) · `icon_size`: Float · `movable`: Bool · `floatable`: Bool · `item_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `action_triggered`: String · `customize_requested` · `float_changed`: Bool · `orientation_changed`: Bool · `top_level_changed`: Bool · `visibility_changed`: Bool
 
@@ -1906,7 +1908,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 窗口底部的简短状态行，带消息与尺寸抓手。用于瞬时状态文本；`Snackbar` 也以这个类型注册，但它是浮动通知，不要混淆——这里设置 `message`，由宿主更新。
 
-**属性.** 除四个共享属性外共 1 项：`message`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`message`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `message_changed`: String · `size_grip_dragged`: Int ×2
 
@@ -1920,7 +1922,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 用于工具栏的紧凑图标加标题按钮，带选中状态与点击/切换信号。用于 `ToolBar` 或 `SplitButton` 组内；标题是主要目标时用完整 `Button`，按钮拥有弹层时用 `ToggleButton`。
 
-**属性.** 除四个共享属性外共 3 项：`text`: String · `checked`: Bool · `icon_source`: IconSpec — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`text`: String · `checked`: Bool · `icon_source`: IconSpec — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `clicked`: Bool · `toggled`: Bool · `triggered`
 
@@ -1934,7 +1936,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 拆成主操作与备选菜单的工具按钮，支持弹出方向、行高与滚动位置。用于一个默认操作、多个变体共享空间时；每次点击都打开菜单时用 `MenuButton`。
 
-**属性.** 除四个共享属性外共 7 项：`text`: String · `action_count`: UInt (只读) · `menu_open`: Bool · `row_height`: UInt · `popup_direction`: Enum (`down` | `up` | `auto`) · `max_menu_height`: UInt · `menu_scroll`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`text`: String · `action_count`: UInt (只读) · `menu_open`: Bool · `row_height`: UInt · `popup_direction`: Enum (`down` | `up` | `auto`) · `max_menu_height`: UInt · `menu_scroll`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `action_selected`: String · `menu_toggled`: Bool · `triggered`: String
 
@@ -1946,7 +1948,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 带条目列表、选中索引、展开状态与子菜单请求的下拉选择器。弹层从列表选值时使用；字段还需要在文本框中显示当前值时用 `ComboBox`，条目是命令时用 `Menu`。
 
-**属性.** 除四个共享属性外共 4 项：`item_count`: UInt (只读) · `selected_index`: UInt · `expanded`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`item_count`: UInt (只读) · `selected_index`: UInt · `expanded`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `about_to_hide` · `about_to_show` · `item_selected`: String · `item_toggled`: String · `submenu_requested`: String
 
@@ -1958,7 +1960,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 点击后打开菜单的按钮，带图标、条目数与显示/隐藏前及条目触发信号。用于页面内单个下拉命令面；主操作也必须可点击时用 `SplitButton`。
 
-**属性.** 除四个共享属性外共 4 项：`text`: String · `icon_source`: IconSpec · `item_count`: UInt (只读) · `expanded`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`text`: String · `icon_source`: IconSpec · `item_count`: UInt (只读) · `expanded`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `about_to_hide` · `about_to_show` · `clicked` · `item_triggered`: UInt · `submenu_requested`: String
 
@@ -1982,7 +1984,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 带标题、承载一个内容控件的对话框外壳，带模态、接受/拒绝/结果与帮助信号。需要在自己的对话框框体内放内容时使用；标准决策用 `MessageBox` 与 alert/confirm 对话框，仅浮层外壳用 `PopupWindow`。
 
-**属性.** 除四个共享属性外共 7 项：`title`: String · `modal`: Bool · `has_content`: Bool (只读) · `result`: Int (只读) · `accepted`: Bool (只读) · `rejected`: Bool (只读) · `closable`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`title`: String · `modal`: Bool · `has_content`: Bool (只读) · `result`: Int (只读) · `accepted`: Bool (只读) · `rejected`: Bool (只读) · `closable`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `accepted` · `closed` · `finished`: Int · `help_requested` · `opened` · `rejected`
 
@@ -1994,7 +1996,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 带图标、提示与详细文本、可选复选框与固定响应按钮的模态消息。用于简短决策或确认；更风格化的提示用 `AlertDialog`/`ConfirmDialog`，内容自定义时用 `Dialog`。
 
-**属性.** 除四个共享属性外共 10 项：`title`: String · `text`: String · `icon`: Enum (`none` | `information` | `question` | `warning` | `critical`) · `modal`: Bool · `informative_text`: String · `detailed_text`: String · `check_box`: String · `check_box_checked`: Bool · `default_button`: String · `escape_button`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`title`: String · `text`: String · `icon`: Enum (`none` | `information` | `question` | `warning` | `critical`) · `modal`: Bool · `informative_text`: String · `detailed_text`: String · `check_box`: String · `check_box_checked`: Bool · `default_button`: String · `escape_button`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `accepted` · `button_clicked`: String · `details_toggled`: Bool · `focus_changed`: UInt · `rejected`
 
@@ -2008,7 +2010,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 模态文件系统浏览器，支持打开、多选打开、保存与选择目录模式，带导航历史与侧栏。用户必须选择文件路径时使用；`DirectoryDialog` 是这个控件的目录模式角色，不是独立实现。
 
-**属性.** 除四个共享属性外共 12 项：`title`: String · `modal`: Bool · `directory`: String · `selected_file`: String · `mode`: Enum (`open_file` | `open_files` | `save_file` | `select_directory`) · `label_text`: String · `default_suffix`: String · `file_count`: UInt (只读) · `can_go_back`: Bool (只读) · `can_go_forward`: Bool (只读) · `view_mode`: Enum (`list` | `details`) · `sidebar_urls`: StringList — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 12 项：`title`: String · `modal`: Bool · `directory`: String · `selected_file`: String · `mode`: Enum (`open_file` | `open_files` | `save_file` | `select_directory`) · `label_text`: String · `default_suffix`: String · `file_count`: UInt (只读) · `can_go_back`: Bool (只读) · `can_go_forward`: Bool (只读) · `view_mode`: Enum (`list` | `details`) · `sidebar_urls`: StringList — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `accepted` · `current_changed`: String · `directory_entered`: String · `file_selected`: String · `files_selected`: list of String · `focus_changed`: UInt · `overwrite_requested`: String · `quick_look_requested`: String · `rejected` · `selection_changed`: list of String · `sort_changed`: mixed (String parts) · `url_selected`: String
 
@@ -2020,7 +2022,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 模态颜色选择器，带色轮或色轨、预设、十六进制输入与可选屏幕取色。用于完整颜色决策；选择器嵌在表单内时用内联 `ColorPicker`，单色块折叠字段用 `ColorWell`。
 
-**属性.** 除四个共享属性外共 10 项：`current_color`: String (只读) · `hex_rgba`: String · `preset_index`: UInt · `show_hex_input`: Bool · `show_presets`: Bool · `show_hue_rail`: Bool · `custom_color_count`: UInt (只读) · `modal`: Bool · `options_alpha`: Bool · `show_screen_picker`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`current_color`: String (只读) · `hex_rgba`: String · `preset_index`: UInt · `show_hex_input`: Bool · `show_presets`: Bool · `show_hue_rail`: Bool · `custom_color_count`: UInt (只读) · `modal`: Bool · `options_alpha`: Bool · `show_screen_picker`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `accepted` · `color_selected`: Color · `current_color_changed`: Color · `focus_changed`: UInt · `rejected` · `screen_color_sampled`: Color · `screen_pick_canceled` · `screen_pick_started`
 
@@ -2034,7 +2036,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 模态字体选择器，支持字族、样式与字号选择、预览与接受/拒绝。用户必须选择字体并看到字样时使用；内联字族字段用 `FontComboBox`，旁边的字样用 `FontPreview`。
 
-**属性.** 除四个共享属性外共 5 项：`modal`: Bool · `underline`: Bool · `strikethrough`: Bool · `no_buttons`: Bool · `show_preview`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`modal`: Bool · `underline`: Bool · `strikethrough`: Bool · `no_buttons`: Bool · `show_preview`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `accepted` · `font_selected`: String · `rejected`
 
@@ -2046,7 +2048,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 模态单值提示，支持文本、整数、浮点或条目模式，并带对应值属性与变化信号。需要不搭表单就取一个值时使用；涉及多个值或校验时用带真实字段的 `Dialog`。
 
-**属性.** 除四个共享属性外共 9 项：`title`: String · `label_text`: String · `mode`: Enum (`text` | `integer` | `double` | `item`) · `text_value`: String · `int_value`: Int · `double_value`: Float · `int_step`: Int · `current_item`: UInt · `dropdown_open`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`title`: String · `label_text`: String · `mode`: Enum (`text` | `integer` | `double` | `item`) · `text_value`: String · `int_value`: Int · `double_value`: Float · `int_step`: Int · `current_item`: UInt · `dropdown_open`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `accepted` · `double_value_changed`: Float · `focus_changed`: UInt · `int_value_changed`: Int · `rejected` · `text_value_changed`: String
 
@@ -2058,7 +2060,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 模态进度界面，带标签、进度条、范围、可选取消按钮与自动重置。用于用户发起的可取消工作；程序拥有的启动工作用 `SplashScreen`，工作内联且不阻塞时用普通 `ProgressBar`。
 
-**属性.** 除四个共享属性外共 11 项：`title`: String · `label_text`: String · `value`: Int · `minimum`: Int · `maximum`: Int · `auto_reset`: Bool · `show_cancel_button`: Bool · `show_bar`: Bool · `minimum_duration`: UInt · `animated`: Bool · `accent_fill`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 11 项：`title`: String · `label_text`: String · `value`: Int · `minimum`: Int · `maximum`: Int · `auto_reset`: Bool · `show_cancel_button`: Bool · `show_bar`: Bool · `minimum_duration`: UInt · `animated`: Bool · `accent_fill`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `canceled` · `finished` · `label_changed`: String · `value_changed`: Int
 
@@ -2070,7 +2072,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 无边框、可选瞬态的浮动窗口，带自己的外壳标志、标题、内容与调整大小信号。用于只需要浮层外壳、不是完整对话框的内容；锚定气泡用 `Popover`，需要模态语义时用 `Dialog`。
 
-**属性.** 除四个共享属性外共 6 项：`title`: String · `has_content`: Bool (只读) · `modal`: Bool · `transient_parent`: UInt · `floating_chrome`: Bool · `resizable`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`title`: String · `has_content`: Bool (只读) · `modal`: Bool · `transient_parent`: UInt · `floating_chrome`: Bool · `resizable`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `closed` · `opened` · `resized`: UInt ×2
 
@@ -2084,7 +2086,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 从底边滑上、可拖回的 panel，带 peek 高度与展开状态。用于触屏布局的次要内容；sheet 必须阻塞页面时用 `ModalBottomSheet`，小型锚定气泡用 `Popover`。
 
-**属性.** 除四个共享属性外共 2 项：`expanded`: Bool · `peek_height`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`expanded`: Bool · `peek_height`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `dismissed`
 
@@ -2098,7 +2100,7 @@ Pinterest 风格瀑布流网格，把条目放入最短列，支持列数与间�
 
 Material 风格模态底部面板，高度可配置、带动画呈现与拖拽关闭的 `dismissed` 信号。用于手机上阻塞式的选项或详情；非阻塞 peek 内容用 `BottomSheet`，短消息决策用 `Dialog`。
 
-**属性.** 除四个共享属性外共 2 项：`sheet_height`: UInt · `animated`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`sheet_height`: UInt · `animated`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `dismissed`
 
@@ -2112,7 +2114,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 悬停时显示上下文信息的小弹层文本，支持换行与显示状态。用于已有可见标签的控件的提示；不要把必要说明只放在工具提示里；延迟与位置需要多个控件共享时用 `TooltipManager` 配套控件。
 
-**属性.** 除四个共享属性外共 3 项：`text`: String · `shown`: Bool · `wrap`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`text`: String · `shown`: Bool · `wrap`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -2126,7 +2128,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 带锚定箭头的浮动气泡卡片，支持瞬态/半瞬态/常驻行为与显示状态。用于控件附近的小块上下文内容；仅文本提示用 `Tooltip`，内容需要窗口外壳时用 `PopupWindow`。
 
-**属性.** 除四个共享属性外共 6 项：`shown`: Bool · `text`: String (只读) · `behavior`: Enum (`transient` | `semi_transient` | `permanent`) · `arrow_direction`: Enum (`auto` | `up` | `down` | `left` | `right`) · `placeholder_text`: String · `translucent`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`shown`: Bool · `text`: String (只读) · `behavior`: Enum (`transient` | `semi_transient` | `permanent`) · `arrow_direction`: Enum (`auto` | `up` | `down` | `left` | `right`) · `placeholder_text`: String · `translucent`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `about_to_hide` · `about_to_show` · `dismissed` · `shown`
 
@@ -2140,7 +2142,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 查找/替换对话框，带查询与替换字段、大小写/全词/正则开关、全部高亮与循环查找，以及下一个/上一个/替换/全部替换信号。需要自有模态的整文档搜索用；编辑器内联条用 `FindBar`。
 
-**属性.** 除四个共享属性外共 7 项：`find_text`: String · `replace_text`: String · `match_case`: Bool · `whole_word`: Bool · `use_regex`: Bool · `highlight_all`: Bool · `wrap_around`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`find_text`: String · `replace_text`: String · `match_case`: Bool · `whole_word`: Bool · `use_regex`: Bool · `highlight_all`: Bool · `wrap_around`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `close` · `find_next`: String · `find_previous`: String · `focus_changed`: UInt · `replace`: String · `replace_all`: String ×3
 
@@ -2154,7 +2156,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 多页对话框，按顺序引导用户完成步骤，支持上一步/下一步/完成、逐步有效性与侧栏页面。顺序重要的设置流程用；步骤不是模态流程时用 `StackedWidget` 加自建按钮；单页用 `Dialog`。
 
-**属性.** 除四个共享属性外共 6 项：`title`: String · `subtitle`: String · `current_step`: UInt (只读) · `step_count`: UInt (只读) · `can_go_back`: Bool (只读) · `can_go_forward`: Bool (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`title`: String · `subtitle`: String · `current_step`: UInt (只读) · `step_count`: UInt (只读) · `can_go_back`: Bool (只读) · `can_go_forward`: Bool (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `canceled` · `custom_button_clicked`: UInt · `finished` · `help_requested` · `sidebar_page_activated`: UInt · `step_changed`: UInt
 
@@ -2168,7 +2170,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 模态提示，带消息、图标与一个确认动作，以及可选提示/详细文本与复选框。用于用户必须确认的信息；存在真正的接受/取消选择时用 `ConfirmDialog`，经典固定按钮形式用 `MessageBox`。
 
-**属性.** 除四个共享属性外共 10 项：`title`: String · `message`: String · `button_text`: String · `informative_text`: String · `detailed_text`: String · `modal`: Bool · `default_button`: UInt · `check_box`: String · `check_box_checked`: Bool · `icon`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`title`: String · `message`: String · `button_text`: String · `informative_text`: String · `detailed_text`: String · `modal`: Bool · `default_button`: UInt · `check_box`: String · `check_box_checked`: Bool · `icon`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `accepted` · `focus_changed`: UInt · `rejected`
 
@@ -2182,7 +2184,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 模态问题，带接受动作、取消动作、可选提示/详细文本与复选框。用于破坏性或不可逆操作之前；仅信息用 `AlertDialog`，按钮必须是经典集合时用 `MessageBox`。
 
-**属性.** 除四个共享属性外共 11 项：`title`: String · `message`: String · `accept_text`: String · `reject_text`: String · `informative_text`: String · `detailed_text`: String · `modal`: Bool · `default_button`: UInt · `check_box`: String · `check_box_checked`: Bool · `icon`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 11 项：`title`: String · `message`: String · `accept_text`: String · `reject_text`: String · `informative_text`: String · `detailed_text`: String · `modal`: Bool · `default_button`: UInt · `check_box`: String · `check_box_checked`: Bool · `icon`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `accepted` · `focus_changed`: UInt · `rejected`
 
@@ -2196,7 +2198,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 标准应用信息对话框：应用名、版本、消息、提示与详细文本，以及可选复选框。用于帮助/关于；不要把它当通用对话框——这些字段就是全部契约。
 
-**属性.** 除四个共享属性外共 11 项：`title`: String · `application_name`: String · `version`: String · `message`: String · `informative_text`: String · `detailed_text`: String · `modal`: Bool · `default_button`: UInt · `check_box`: String · `check_box_checked`: Bool · `icon`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 11 项：`title`: String · `application_name`: String · `version`: String · `message`: String · `informative_text`: String · `detailed_text`: String · `modal`: Bool · `default_button`: UInt · `check_box`: String · `check_box_checked`: Bool · `icon`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `closed`
 
@@ -2220,7 +2222,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 自由绘图表面，带图层、缩放、平移、网格吸附与携带位置的指针事件。用于宿主自行绘制的场景；场景是可编辑的可选形状集合时用 `ShapeCanvas`，小型即时模式装饰用 `MiniCanvas`。
 
-**属性.** 除四个共享属性外共 8 项：`command_count`: UInt (只读) · `layer_count`: UInt (只读) · `anti_alias`: Bool · `show_grid`: Bool · `grid_step`: UInt · `snap_to_grid`: Bool · `zoom_range`: NumberList · `zoom_step`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`command_count`: UInt (只读) · `layer_count`: UInt (只读) · `anti_alias`: Bool · `show_grid`: Bool · `grid_step`: UInt · `snap_to_grid`: Bool · `zoom_range`: NumberList · `zoom_step`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `command_picked`: UInt · `content_changed`: UInt · `context_menu_requested`: String · `double_clicked`: mixed (String parts) · `layer_changed`: UInt · `mouse_moved`: String · `mouse_pressed`: mixed (String parts) · `mouse_released`: mixed (String parts) · `zoom_changed`: Float
 
@@ -2234,7 +2236,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 瓦片地图视图，带中心、缩放、投影与标记，并拥有 `TileLoader`、`ZoomControl`、`ScaleBar`、`Compass` 配套控件。宿主抓取瓦片并调用 `deliver_tile`/`reject_tile`；视图通过 `tile_requested` 请求，控件本身不做 I/O。
 
-**属性.** 除四个共享属性外共 6 项：`center_x`: Float · `center_y`: Float · `zoom`: Float · `marker_count`: UInt (只读) · `selected_marker_id`: String (只读) · `projection`: Enum (`linear` | `mercator`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`center_x`: Float · `center_y`: Float · `zoom`: Float · `marker_count`: UInt (只读) · `selected_marker_id`: String (只读) · `projection`: Enum (`linear` | `mercator`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `center_changed`: Float ×2 · `cluster_clicked`: Float ×2 · `marker_clicked`: String · `marker_selected`: String · `tile_requested`: mixed (String parts) · `zoom_changed`: Float
 
@@ -2246,7 +2248,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 通用图表控件：图表类型（柱状、折线、面积、饼、散点、瀑布、漏斗、蜡烛、箱线）、数据序列、标签、缩放与悬停读数。类型在运行时选择时使用；固定类型用专用 `LineChart`/`BarChart`/`PieChart`，行情数据用金融族。
 
-**属性.** 除四个共享属性外共 4 项：`chart_type`: Enum (`bar` | `line` | `area` | `pie` | `scatter` | `waterfall` | `funnel` | `candlestick` | `box_plot`) · `point_count`: UInt (只读) · `label_count`: UInt (只读) · `series_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`chart_type`: Enum (`bar` | `line` | `area` | `pie` | `scatter` | `waterfall` | `funnel` | `candlestick` | `box_plot`) · `point_count`: UInt (只读) · `label_count`: UInt (只读) · `series_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `data_point_clicked`: UInt · `data_point_hovered`: UInt · `data_point_unhovered`: UInt · `viewport_changed`: UInt ×2 · `zoom_changed`: (Float, Float) or null
 
@@ -2260,7 +2262,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 按视口绘制任务的甘特图，支持里程碑、依赖、关键路径、进度调整与今日标记；它拥有 `TimelineAxis` 与 `DependencyEditor`。用于项目排程；非排程的事件车道视图用 `TimelineWidget`。
 
-**属性.** 除四个共享属性外共 7 项：`task_count`: UInt (只读) · `selected_id`: String (只读) · `viewport_start`: Int · `viewport_end`: Int · `row_height`: UInt · `show_critical_path`: Bool · `show_today`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`task_count`: UInt (只读) · `selected_id`: String (只读) · `viewport_start`: Int · `viewport_end`: Int · `row_height`: UInt · `show_critical_path`: Bool · `show_today`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `dependency_added`: String ×2 · `dependency_removed`: String ×2 · `link_selected`: String ×2 · `task_rescheduled`: String · `task_resize_finished`: String · `task_resize_started`: String · `task_selected`: String · `viewport_changed`: Int ×2
 
@@ -2274,7 +2276,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 按时间轴放置条目的时间线，支持行或车道紧凑布局与可选条目。用于事件历史与动态流；任务有工期、依赖与进度时用 `GanttWidget`。
 
-**属性.** 除四个共享属性外共 7 项：`item_count`: UInt (只读) · `selected_index`: UInt (只读) · `viewport_start`: Int · `viewport_end`: Int · `row_height`: UInt · `show_time_labels`: Bool · `lane_mode`: Enum (`row` | `lane_packed`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`item_count`: UInt (只读) · `selected_index`: UInt (只读) · `viewport_start`: Int · `viewport_end`: Int · `row_height`: UInt · `show_time_labels`: Bool · `lane_mode`: Enum (`row` | `lane_packed`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `item_hovered`: String or null · `item_selected`: String · `viewport_changed`: Int ×2
 
@@ -2288,7 +2290,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 内联 HSVA 颜色选择器，带十六进制输入、alpha、预设与色相值；它嵌在表单里而不是放在窗口中。颜色字段始终可见时使用；模态选择器用 `ColorDialog`，折叠单色块字段用 `ColorWell`。
 
-**属性.** 除四个共享属性外共 5 项：`hex_rgba`: String · `show_alpha`: Bool · `preset_count`: UInt (只读) · `presets`: StringList · `hue_degrees`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`hex_rgba`: String · `show_alpha`: Bool · `preset_count`: UInt (只读) · `presets`: StringList · `hue_degrees`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `canceled` · `color_changed`: Color · `color_committed`: Color · `color_previewed`: Color · `hex_changed`: String
 
@@ -2300,7 +2302,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 把子控件排成行列单元格的矩形容器，支持间距、单元格尺寸、表头与分页。用于固定的控件或数值矩阵；单元格来自模型时用 `Table`，纯布局放置用 `Flex`/`Grid` 布局名称。
 
-**属性.** 除四个共享属性外共 11 项：`rows`: UInt · `columns`: UInt · `spacing`: UInt · `line_color`: String · `cell_width`: UInt (只读) · `cell_height`: UInt (只读) · `selected_cell`: UInt · `selected_count`: UInt (只读) · `page`: UInt · `page_count`: UInt (只读) · `headers`: StringList — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 11 项：`rows`: UInt · `columns`: UInt · `spacing`: UInt · `line_color`: String · `cell_width`: UInt (只读) · `cell_height`: UInt (只读) · `selected_cell`: UInt · `selected_count`: UInt (只读) · `page`: UInt · `page_count`: UInt (只读) · `headers`: StringList — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `cell_clicked`: UInt ×2 · `cell_hovered`: UInt ×2 · `context_menu_requested`: UInt ×2 · `page_changed`: UInt
 
@@ -2314,7 +2316,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 基于路径、非矩形的可点击形状，带填充、描边、顶点、历史与移动/顶点信号。用于图节点或自定义命中区域；多个形状组成可编辑场景时用 `ShapeCanvas`，非交互绘图用 `MiniCanvas`。
 
-**属性.** 除四个共享属性外共 5 项：`path_kind`: Enum (`bubble` | `rounded_rect` | `polygon` | `star` | `heart` | `custom`) (只读) · `fill_rgba`: String · `stroke_rgba`: String · `stroke_width`: UInt · `movable`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`path_kind`: Enum (`bubble` | `rounded_rect` | `polygon` | `star` | `heart` | `custom`) (只读) · `fill_rgba`: String · `stroke_rgba`: String · `stroke_width`: UInt · `movable`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `clicked` · `geometry_changed`: Rect · `history_changed`: UInt ×2 · `hover_changed`: Bool · `moved`: String · `pressed_changed`: Bool · `vertex_changed`: mixed (String parts)
 
@@ -2326,7 +2328,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 雷达（蜘蛛）图，带共享维度轴、以闭合多边形绘制的多个序列、网格、轴标签与图例。用于维度可比的轮廓（技能、KPI）；单一有序轴用 `LineChart`，矩阵数据用 `Heatmap`。
 
-**属性.** 除四个共享属性外共 7 项：`axis_count`: UInt (只读) · `series_count`: UInt (只读) · `show_grid`: Bool · `show_axis_labels`: Bool · `show_legend`: Bool · `hovered_axis`: UInt (只读) · `series_names`: StringList — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`axis_count`: UInt (只读) · `series_count`: UInt (只读) · `show_grid`: Bool · `show_axis_labels`: Bool · `show_legend`: Bool · `hovered_axis`: UInt (只读) · `series_names`: StringList — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `axis_hovered`: UInt · `series_clicked`: UInt · `vertex_clicked`: UInt ×2 · `vertex_hovered`: UInt ×2
 
@@ -2340,7 +2342,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 以彩色单元格渲染的值矩阵，带色阶范围、标签、图例与视口窗口。用于两个轴都是分类的密度或相关性矩阵；普通单元格用 `Grid`，按索引的单值序列用 `Chart`。
 
-**属性.** 除四个共享属性外共 10 项：`row_count`: UInt (只读) · `column_count`: UInt (只读) · `scale_minimum`: Float · `scale_maximum`: Float · `resolved_minimum`: Float (只读) · `resolved_maximum`: Float (只读) · `show_labels`: Bool · `show_legend`: Bool · `viewport_rows`: UInt · `viewport_columns`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`row_count`: UInt (只读) · `column_count`: UInt (只读) · `scale_minimum`: Float · `scale_maximum`: Float · `resolved_minimum`: Float (只读) · `resolved_maximum`: Float (只读) · `show_labels`: Bool · `show_legend`: Bool · `viewport_rows`: UInt · `viewport_columns`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `cell_clicked`: UInt ×2 · `cell_double_clicked`: UInt ×2 · `cell_hovered`: UInt ×2 · `region_selected`: UInt ×4
 
@@ -2354,7 +2356,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 由列组成、承载可拖拽卡片的看板，支持泳道、列宽、水平偏移与卡片移动/激活信号。配 `KanbanColumnHeader` 提供重命名/计数/WIP 外壳；卡片需要真实可编辑控件时配 `KanbanCardView`；看板持有模型与放置规则。
 
-**属性.** 除四个共享属性外共 9 项：`column_count`: UInt (只读) · `card_count`: UInt (只读) · `dragging_card_id`: String (只读) · `hovered_column`: UInt (只读) · `column_width`: UInt · `horizontal_scroll_offset`: UInt · `lane_mode`: Enum (`none` | `lanes`) · `swimlanes`: Bool · `lane_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`column_count`: UInt (只读) · `card_count`: UInt (只读) · `dragging_card_id`: String (只读) · `hovered_column`: UInt (只读) · `column_width`: UInt · `horizontal_scroll_offset`: UInt · `lane_mode`: Enum (`none` | `lanes`) · `swimlanes`: Bool · `lane_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `card_activated`: String · `card_moved`: String ×2
 
@@ -2368,7 +2370,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 触屏友好的手写签名表面：带宽度、颜色、平滑阈值与压力的笔画，支持撤销与笔画完成信号。用于签名或手写输入；不要把它当通用绘图软件——它保存折线而不是位图。
 
-**属性.** 除四个共享属性外共 9 项：`stroke_count`: UInt (只读) · `stroke_width`: UInt · `stroke_color`: Color · `min_point_distance`: Float · `min_point_interval_ms`: UInt · `pressure_affects_width`: Bool · `last_pressure`: Float (只读) · `last_tilt_x`: Float (只读) · `last_tilt_y`: Float (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`stroke_count`: UInt (只读) · `stroke_width`: UInt · `stroke_color`: Color · `min_point_distance`: Float · `min_point_interval_ms`: UInt · `pressure_affects_width`: Bool · `last_pressure`: Float (只读) · `last_tilt_x`: Float (只读) · `last_tilt_y`: Float (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `changed` · `stroke_completed`: String
 
@@ -2382,7 +2384,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 由区段组成的横向导航轨迹，支持折叠、溢出、内联路径编辑与逐区段激活。用于用户可向上跳转的层级；编号分页用 `Pagination`，顶层命令用 `MenuBar`。
 
-**属性.** 除四个共享属性外共 4 项：`segment_count`: UInt (只读) · `selected_index`: UInt (只读) · `collapsed_count`: UInt (只读) · `separator`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`segment_count`: UInt (只读) · `selected_index`: UInt (只读) · `collapsed_count`: UInt (只读) · `separator`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `context_menu_requested`: String · `overflow_clicked`: UInt · `path_edited`: String · `segment_activated`: String
 
@@ -2396,7 +2398,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 多条目胶囊行：chip 可选择、移除、重排与溢出，并带焦点索引。用于作为一组编辑的 token/标签集合；单个只读标签用 `Tag`，用户键入新值时用 `TagInput`。
 
-**属性.** 除四个共享属性外共 4 项：`item_count`: UInt (只读) · `multi_select`: Bool · `focused_index`: UInt (只读) · `selected_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`item_count`: UInt (只读) · `multi_select`: Bool · `focused_index`: UInt (只读) · `selected_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `chip_removed`: String · `chip_reordered`: String · `chip_toggled`: String · `overflow_activated`: UInt
 
@@ -2410,7 +2412,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 单条瞬时通知消息，带级别、存活时间与关闭信号。应通过 toast 面或 `ToastHost` 队列创建，而不是管理大量独立 toast；通知需要持久时用 `Banner`，属于窗口边缘时用 `Snackbar`。
 
-**属性.** 除四个共享属性外共 4 项：`message`: String · `level`: Enum (`info` | `success` | `warning` | `error`) · `ttl_ms`: UInt · `dismissible`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`message`: String · `level`: Enum (`info` | `success` | `warning` | `error`) · `ttl_ms`: UInt · `dismissible`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `dismissed`: String
 
@@ -2424,7 +2426,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 排队并布局 toast 的容器，带可见数、最大可见数、锚点与堆叠方向。作为 toast 放置的唯一所有者；队列需要在进入堆栈前过期与限流时配 `ToastHost`。
 
-**属性.** 除四个共享属性外共 6 项：`toast_count`: UInt (只读) · `selected_id`: String (只读) · `row_height`: UInt · `max_visible`: UInt · `anchor`: Enum (`top_left` | `top_right` | `bottom_left` | `bottom_right`) · `stacking_direction`: Enum (`newest_at_bottom` | `newest_at_top`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`toast_count`: UInt (只读) · `selected_id`: String (只读) · `row_height`: UInt · `max_visible`: UInt · `anchor`: Enum (`top_left` | `top_right` | `bottom_left` | `bottom_right`) · `stacking_direction`: Enum (`newest_at_bottom` | `newest_at_top`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `toast_action`: String · `toast_activated`: String · `toast_dismissed`: String · `toast_expired`: String
 
@@ -2438,7 +2440,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 可搜索的命令列表浮层：查询、过滤后数量、高亮索引与 `command_activated`。用于键盘优先的启动器；鼠标驱动的命令列表用 `Menu`，编辑绑定用 `ShortcutEditor`。
 
-**属性.** 除四个共享属性外共 6 项：`query`: String · `entry_count`: UInt (只读) · `filtered_count`: UInt (只读) · `highlighted_index`: UInt (只读) · `row_height`: UInt · `group_by_category`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`query`: String · `entry_count`: UInt (只读) · `filtered_count`: UInt (只读) · `highlighted_index`: UInt (只读) · `row_height`: UInt · `group_by_category`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `command_activated`: String · `query_changed`: String
 
@@ -2452,7 +2454,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 通知列表，带未读数、级别过滤、最大条目与激活/关闭/全部清除信号。用于事件的持久收件箱；瞬时打断用 `Toast`/`ToastStack`，单条持久通知用 `Banner`。
 
-**属性.** 除四个共享属性外共 6 项：`item_count`: UInt (只读) · `unread_count`: UInt (只读) · `selected_index`: UInt (只读) · `row_height`: UInt · `level_filter`: Enum (`all` | `info` | `warning` | `error`) · `max_items`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`item_count`: UInt (只读) · `unread_count`: UInt (只读) · `selected_index`: UInt (只读) · `row_height`: UInt · `level_filter`: Enum (`all` | `info` | `warning` | `error`) · `max_items`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `clear_all_requested` · `notification_activated`: String · `notification_dismissed`: String · `notification_selected`: String · `unread_count_changed`: UInt
 
@@ -2466,7 +2468,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 对两段文本做并排或统一差异视图，带变更数、折叠阈值、空白模式、词级粒度与差异块展开。用于展示比较；配 `DiffFileList` 在多文件间选择；不要把它当编辑器——它是只读的。
 
-**属性.** 除四个共享属性外共 12 项：`left_text`: String · `right_text`: String · `line_count`: UInt (只读) · `change_count`: UInt (只读) · `selected_index`: UInt (只读) · `view_mode`: Enum (`side_by_side` | `unified`) · `fold_unchanged`: Bool · `fold_threshold`: UInt · `fold_context_lines`: UInt · `unified_changed_pair`: Bool · `whitespace_mode`: Enum (`show` | `ignore_eol` | `ignore_all` | `mark_blank_changes`) · `word_granularity`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 12 项：`left_text`: String · `right_text`: String · `line_count`: UInt (只读) · `change_count`: UInt (只读) · `selected_index`: UInt (只读) · `view_mode`: Enum (`side_by_side` | `unified`) · `fold_unchanged`: Bool · `fold_threshold`: UInt · `fold_context_lines`: UInt · `unified_changed_pair`: Bool · `whitespace_mode`: Enum (`show` | `ignore_eol` | `ignore_all` | `mark_blank_changes`) · `word_granularity`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `compared`: UInt · `fold_changed`: Bool · `hunk_expanded`: UInt · `selection_changed`: UInt or null · `view_mode_changed`: String
 
@@ -2480,7 +2482,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 单选分段条，指示器在区段间滑动，每段有 id。用于两到五个互斥视图；多选或图标分段用 `SegmentedButton`，区段是页面标签时用 `TabBar`。
 
-**属性.** 除四个共享属性外共 6 项：`item_count`: UInt (只读) · `selected_index`: UInt (只读) · `selected_id`: String (只读) · `size_to_fit`: Bool · `min_segment_width`: UInt · `multi_select`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`item_count`: UInt (只读) · `selected_index`: UInt (只读) · `selected_id`: String (只读) · `size_to_fit`: Bool · `min_segment_width`: UInt · `multi_select`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `selection_changed`: String
 
@@ -2492,7 +2494,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 锚定在窗口边缘的瞬时消息，带动作标签、队列长度与最大队列。用于不阻塞地确认已完成动作；消息需要持久时用 `Banner`，多条消息需要堆叠时用 `ToastStack`。
 
-**属性.** 除四个共享属性外共 5 项：`message`: String · `action_label`: String (只读) · `queued_count`: UInt (只读) · `max_queued`: UInt · `anchor`: Enum (`top` | `center` | `bottom`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`message`: String · `action_label`: String (只读) · `queued_count`: UInt (只读) · `max_queued`: UInt · `anchor`: Enum (`top` | `center` | `bottom`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `action_triggered`: String · `dismissed`
 
@@ -2506,7 +2508,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 媒体表面，带来源、播放/暂停、位置、时长、音量与全屏，并报告播放与位置变化。宿主提供媒体管线时使用；配 `MediaTransportBar`、`MediaScrubber`、`SubtitleBar` 配套控件，而不是重写这些控件。
 
-**属性.** 除四个共享属性外共 9 项：`source`: String · `playing`: Bool · `duration_ms`: UInt (只读) · `position_ms`: UInt · `volume`: UInt · `muted`: Bool · `fullscreen`: Bool · `playlist_index`: UInt · `track_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`source`: String · `playing`: Bool · `duration_ms`: UInt (只读) · `position_ms`: UInt · `volume`: UInt · `muted`: Bool · `fullscreen`: Bool · `playlist_index`: UInt · `track_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `chapter_selected`: UInt · `fullscreen_requested`: Bool · `media_ended` · `playback_changed`: Bool · `position_changed`: UInt · `source_changed`: String · `volume_changed`: UInt
 
@@ -2518,7 +2520,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 承载、选择与排序形状的场景，带新增/修改/移除/选择信号、吸附与网格步长。用于图编辑器；单个形状用 `FreeformShape`，非形状对象的任意绘图用 `Canvas`。
 
-**属性.** 除四个共享属性外共 6 项：`shapes`: NumberList (只读) · `shape_count`: UInt (只读) · `selection`: NumberList · `editable`: Bool · `snap_to_grid`: Bool · `grid_step`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`shapes`: NumberList (只读) · `shape_count`: UInt (只读) · `selection`: NumberList · `editable`: Bool · `snap_to_grid`: Bool · `grid_step`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `shape_added`: UInt · `shape_modified`: UInt · `shape_removed`: UInt · `shape_selected`: list of UInt
 
@@ -2532,7 +2534,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 看板列中的真实卡片控件：标题、描述、标签、负责人、完成状态与就地编辑。卡片必须是真正可编辑控件时使用；`KanbanBoard` 持有放置与拖拽状态，本控件持有一张卡片的内容与编辑生命周期。
 
-**属性.** 除四个共享属性外共 7 项：`title`: String · `description`: String · `done`: Bool · `tags`: StringList · `assignee`: String · `draggable`: Bool · `editing`: Bool (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`title`: String · `description`: String · `done`: Bool · `tags`: StringList · `assignee`: String · `draggable`: Bool · `editing`: Bool (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `card_clicked` · `card_done_toggled`: Bool · `card_edited`: String
 
@@ -2546,7 +2548,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 看板列的真实表头：标题、卡片数、WIP 上限、折叠与就地重命名。放在 `KanbanBoard` 列上方；表头持有自己的重命名与折叠状态，并报告 `column_renamed`、`column_collapsed_changed` 与 `add_card_requested`。
 
-**属性.** 除四个共享属性外共 7 项：`title`: String · `count`: UInt · `wip_limit`: UInt · `collapsed`: Bool · `editable`: Bool · `at_wip_limit`: Bool (只读) · `editing`: Bool (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`title`: String · `count`: UInt · `wip_limit`: UInt · `collapsed`: Bool · `editable`: Bool · `at_wip_limit`: Bool (只读) · `editing`: Bool (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `add_card_requested` · `column_collapsed_changed`: Bool · `column_renamed`: String
 
@@ -2560,7 +2562,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 差异查看器旁的多文件选择器：路径列表，带选择模式与激活/选择信号。比较由查看器持有；本控件只选择查看器应显示哪个路径。
 
-**属性.** 除四个共享属性外共 4 项：`files`: StringList · `file_count`: UInt (只读) · `selected_path`: String (只读) · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`files`: StringList · `file_count`: UInt (只读) · `selected_path`: String (只读) · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `file_activated`: String · `file_selected`: String
 
@@ -2574,7 +2576,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 颜色控件共享的可选色格网格，带选中索引与激活/选择信号。当前颜色由对话框或选择器持有；色格持有调色板与选择状态，因此把 `swatch_selected` 接到拥有者的颜色属性。
 
-**属性.** 除四个共享属性外共 4 项：`colors`: Color · `selected_index`: UInt · `cell_size`: UInt · `columns`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`colors`: Color · `selected_index`: UInt · `cell_size`: UInt · `columns`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `swatch_activated`: Color · `swatch_selected`: UInt
 
@@ -2588,7 +2590,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 每列一个编辑器、发布该行过滤条件与实时标志的控件。用于表格旁的紧凑多列过滤；模型由表格或网格持有，本行只产生条件。
 
-**属性.** 除四个共享属性外共 4 项：`columns`: StringList · `conditions`: StringList · `operator`: Enum (`contains` | `equals` | `starts_with` | `ends_with` | `not_contains` | `equals_number` | `greater_than` | `greater_or_equal` | `less_than` | `less_or_equal`) · `live`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`columns`: StringList · `conditions`: StringList · `operator`: Enum (`contains` | `equals` | `starts_with` | `ends_with` | `not_contains` | `equals_number` | `greater_than` | `greater_or_equal` | `less_than` | `less_or_equal`) · `live`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `filter_changed`: String · `filter_cleared`
 
@@ -2602,7 +2604,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 图表与画布宿主的可勾选序列键：条目、方向、位置与点击/切换信号。图表持有序列数据；图例持有哪些序列可见，因此把 `series_toggled` 转给图表的可见性状态。
 
-**属性.** 除四个共享属性外共 4 项：`entries`: StringList · `orientation`: Enum (`horizontal` | `vertical`) · `checkable`: Bool · `position`: Enum (`top` | `right` | `bottom` | `left` | `outside`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`entries`: StringList · `orientation`: Enum (`horizontal` | `vertical`) · `checkable`: Bool · `position`: Enum (`top` | `right` | `bottom` | `left` | `outside`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `entry_clicked`: UInt · `series_toggled`: mixed (String parts)
 
@@ -2616,7 +2618,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 跟随指针、承载图表序列值的浮泡，带锚点、偏移、跟随标志与内容行。图表通过 `show_at` 定位它；工具提示只持有文本与可见性。
 
-**属性.** 除四个共享属性外共 4 项：`anchor`: NumberList · `offset`: NumberList · `follow_pointer`: Bool · `content`: StringList — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`anchor`: NumberList · `offset`: NumberList · `follow_pointer`: Bool · `content`: StringList — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `hidden` · `shown`
 
@@ -2630,7 +2632,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 把悬停转换为延迟工具提示的宿主管线：延迟、持续时间、跟随指针与最大宽度，并带显示/隐藏索引。多个控件共享提示时序时，为一个子树使用一个管理器；单个控件仍可用自己的 `tooltip` 属性。
 
-**属性.** 除四个共享属性外共 4 项：`delay_ms`: UInt · `duration_ms`: UInt · `follow_pointer`: Bool · `max_width`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`delay_ms`: UInt · `duration_ms`: UInt · `follow_pointer`: Bool · `max_width`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `tooltip_hidden`: UInt · `tooltip_shown`: UInt
 
@@ -2644,7 +2646,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 图像视图的缩放、平移与感兴趣区域状态，带缩放模式、上下限与变化信号。多个控件必须共享同一视图变换时使用；图像视图负责绘制，控制器持有变换。
 
-**属性.** 除四个共享属性外共 6 项：`zoom_level`: Float · `pan_offset`: NumberList · `zoom_mode`: Enum (`free` | `fit_width` | `fit_height` | `original`) · `min_zoom`: Float · `max_zoom`: Float · `roi`: Rect — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`zoom_level`: Float · `pan_offset`: NumberList · `zoom_mode`: Enum (`free` | `fit_width` | `fit_height` | `original`) · `min_zoom`: Float · `max_zoom`: Float · `roi`: Rect — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `pan_changed`: Int ×2 · `roi_changed`: Rect or null · `zoom_changed`: Float
 
@@ -2658,7 +2660,7 @@ Material 风格模态底部面板，高度可配置、带动画呈现与拖拽�
 
 toast 堆栈前的有界、会过期队列：最大可见、最大排队、默认时长、锚点、堆叠方向与溢出策略。toast 数量必须限流时使用；堆栈负责绘制，宿主决定哪些 toast 能存活到进入堆栈。
 
-**属性.** 除四个共享属性外共 6 项：`max_visible`: UInt · `max_queued`: UInt · `default_duration_ms`: UInt · `anchor`: Enum (`top_left` | `top_center` | `top_right` | `bottom_left` | `bottom_center` | `bottom_right`) · `stacking_direction`: Enum (`newest_at_top` | `newest_at_bottom`) · `overflow_policy`: Enum (`drop_oldest` | `drop_newest` | `queue`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`max_visible`: UInt · `max_queued`: UInt · `default_duration_ms`: UInt · `anchor`: Enum (`top_left` | `top_center` | `top_right` | `bottom_left` | `bottom_center` | `bottom_right`) · `stacking_direction`: Enum (`newest_at_top` | `newest_at_bottom`) · `overflow_policy`: Enum (`drop_oldest` | `drop_newest` | `queue`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `queue_overflow`: UInt · `toast_dismissed`: UInt · `toast_expired`: UInt
 
@@ -2672,7 +2674,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 地图视图的瓦片寻址、缓存与加载结果：URL 模板、缩放范围、瓦片尺寸、缓存上限与加载成功/失败信号。地图视图持有一个并索取 URL；宿主执行请求并调用 `deliver_tile`。
 
-**属性.** 除四个共享属性外共 6 项：`url_template`: String · `min_zoom`: UInt · `max_zoom`: UInt · `tile_size`: UInt · `cache_limit`: UInt · `cache_size`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`url_template`: String · `min_zoom`: UInt · `max_zoom`: UInt · `tile_size`: UInt · `cache_limit`: UInt · `cache_size`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `tile_failed`: Int ×3 · `tile_loaded`: Int ×3
 
@@ -2686,7 +2688,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 地图旁的三按钮缩放条：缩放级别、上下限与 `zoom_requested` 信号。地图持有该条并应用请求；如果地图也报告缩放变化，不要让该条直接修改地图缩放。
 
-**属性.** 除四个共享属性外共 3 项：`zoom_level`: Float · `min`: Float · `max`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`zoom_level`: Float · `min`: Float · `max`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `zoom_requested`: Float
 
@@ -2700,7 +2702,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 地图的公制或英制距离图例，由每像素米数计算。地图持有并更新换算；该条只负责绘制图例。
 
-**属性.** 除四个共享属性外共 3 项：`meters_per_pixel`: Float · `units`: Enum (`metric` | `imperial`) · `style`: Enum (`plain` | `boxed`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`meters_per_pixel`: Float · `units`: Enum (`metric` | `imperial`) · `style`: Enum (`plain` | `boxed`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -2714,7 +2716,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 可点击的方位盘，点击时请求正北朝上，并报告自身方位。用于可旋转地图之上；地图持有方位并响应 `reset_north_requested`。
 
-**属性.** 除四个共享属性外共 2 项：`bearing_deg`: Float · `clickable`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`bearing_deg`: Float · `clickable`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `reset_north_requested`
 
@@ -2728,7 +2730,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 日期/数值轴，支持像素换算、刻度密度、缩放与刻度变化报告。甘特图持有一个并使用 `pixel_to_date`/`date_to_pixel`；宿主也可以在图表旁再放一个以共享同一映射。
 
-**属性.** 除四个共享属性外共 6 项：`tick_density`: UInt · `date_format`: Enum (`numeric` | `iso`) · `zoom_level`: Float · `range`: NumberList (只读) · `range_start`: Int · `range_end`: Int — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`tick_density`: UInt · `date_format`: Enum (`numeric` | `iso`) · `zoom_level`: Float · `range`: NumberList (只读) · `range_start`: Int · `range_end`: Int — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `scale_changed`: Int ×2
 
@@ -2742,7 +2744,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 甘特图的可编辑前置/后继边，带新增/移除/选择信号、命中测试与连线几何。甘特图持有一个并可从任务同步依赖；编辑器持有边列表与校验。
 
-**属性.** 除四个共享属性外共 2 项：`dependencies`: UInt (只读) · `editable`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`dependencies`: UInt (只读) · `editable`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `dependency_added`: String ×2 · `dependency_removed`: String ×2 · `link_selected`: String ×2
 
@@ -2779,7 +2781,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 自带缓冲区的源码编辑器：行数、光标行列、标记、折叠、跳转条与断点槽，并报告光标、折叠、标记与搜索事件。用于源码文本；散文用 `MarkdownEditor`，格式文本用 `RichEdit`，追加输出用 `TerminalView`。
 
-**属性.** 除四个共享属性外共 9 项：`text`: String · `line_count`: UInt (只读) · `cursor_line`: UInt (只读) · `cursor_column`: UInt (只读) · `marker_count`: UInt (只读) · `undo_stack_limit`: UInt · `undo_depth`: UInt (只读) · `goto_bar_visible`: Bool · `breakpoint_gutter`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 9 项：`text`: String · `line_count`: UInt (只读) · `cursor_line`: UInt (只读) · `cursor_column`: UInt (只读) · `marker_count`: UInt (只读) · `undo_stack_limit`: UInt · `undo_depth`: UInt (只读) · `goto_bar_visible`: Bool · `breakpoint_gutter`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `breakpoint_toggled`: mixed (String parts) · `completion_changed`: Bool · `cursor_moved`: UInt ×2 · `fold_changed`: UInt · `marker_activated`: UInt · `palette_changed` · `search_changed`: UInt · `search_result`: UInt ×4 · `selection_changed`: Rect or null · `tab_changed`: UInt · `text_changed`: String · `zoom_changed`: Float
 
@@ -2791,7 +2793,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 带源码与预览模式、标题计数、光标跟踪与可交给 `MarkdownOutlinePanel` 显示的大纲的 Markdown 编辑器。用于 Markdown 文档；配 `FindBar` 做内联搜索；非 Markdown 格式用 `RichEdit`。
 
-**属性.** 除四个共享属性外共 10 项：`text`: String · `preview_mode`: Bool · `line_count`: UInt (只读) · `word_count`: UInt (只读) · `heading_count`: UInt (只读) · `cursor_line`: UInt (只读) · `show_scrollbar`: Bool · `gfm_extensions`: Bool · `code_highlight`: Bool · `undo_stack_limit`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`text`: String · `preview_mode`: Bool · `line_count`: UInt (只读) · `word_count`: UInt (只读) · `heading_count`: UInt (只读) · `cursor_line`: UInt (只读) · `show_scrollbar`: Bool · `gfm_extensions`: Bool · `code_highlight`: Bool · `undo_stack_limit`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `heading_activated`: UInt · `preview_mode_changed`: Bool · `selection_changed`: Bool · `text_changed`: String
 
@@ -2805,7 +2807,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 编辑器内联搜索条：查询、大小写、全词、替换文本、匹配数与当前范围，并报告搜索与替换请求。用于编辑器表面内；搜索必须模态时用 `FindReplaceDialog`。
 
-**属性.** 除四个共享属性外共 7 项：`query`: String · `case_sensitive`: Bool · `whole_word`: Bool · `replace_text`: String · `replace_visible`: Bool · `match_count`: UInt (只读) · `current_range`: String (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`query`: String · `case_sensitive`: Bool · `whole_word`: Bool · `replace_text`: String · `replace_visible`: Bool · `match_count`: UInt (只读) · `current_range`: String (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `replace_requested`: mixed (String parts) · `search_changed`: UInt ×2
 
@@ -2819,7 +2821,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 导航 Markdown 编辑器的标题大纲：条目、活动索引与宽度，发出 `entry_selected`。编辑器持有文档与 `outline()`；面板只列出标题，并通过 `goto_outline` 把所选索引报告回去。
 
-**属性.** 除四个共享属性外共 4 项：`entries`: StringList · `active_index`: UInt · `width`: UInt · `entry_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`entries`: StringList · `active_index`: UInt · `width`: UInt · `entry_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `entry_selected`: UInt
 
@@ -2833,7 +2835,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 追加式终端表面：回滚输出、输入行、提示符、光标样式、ANSI 调色板与 `command_submitted` 信号。用于展示进程或命令控制台；可编辑文本用 `TextArea`，源码用 `CodeEditor`。
 
-**属性.** 除四个共享属性外共 10 项：`output_line_count`: UInt (只读) · `input_line`: String · `scrollback_lines`: UInt · `wrap_output`: Bool · `show_scrollbar`: Bool · `caret_style`: Enum (`line` | `block` | `underline`) · `caret_blink_enabled`: Bool · `prompt`: String · `selection_mode`: Enum (`lines` | `characters`) · `ansi_palette`: NumberList — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 10 项：`output_line_count`: UInt (只读) · `input_line`: String · `scrollback_lines`: UInt · `wrap_output`: Bool · `show_scrollbar`: Bool · `caret_style`: Enum (`line` | `block` | `underline`) · `caret_blink_enabled`: Bool · `prompt`: String · `selection_mode`: Enum (`lines` | `characters`) · `ansi_palette`: NumberList — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `command_submitted`: String · `completion_requested`: String · `interrupt_requested`: String · `output_received`: String · `resized`: UInt ×2 · `selection_changed`: Bool
 
@@ -2857,7 +2859,7 @@ toast 堆栈前的有界、会过期队列：最大可见、最大排队、默�
 
 OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变化。用作行情视图的主价格面板；其下对齐 `VolumeChart`，技术面板用 `IndicatorChart`。不要用于非 OHLC 业务数据。
 
-**属性.** 除四个共享属性外共 4 项：`series`: String · `overlay_count`: UInt · `show_price_levels`: Bool · `show_overlay_legend`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`series`: String · `overlay_count`: UInt · `show_price_levels`: Bool · `show_overlay_legend`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `bar_clicked`: UInt · `bar_hovered`: UInt · `bar_unhovered`: UInt · `view_changed`: UInt ×2
 
@@ -2871,7 +2873,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 与蜡烛图柱对齐的成交量柱状图，支持按方向或统一着色与顶部留白。价格图持有时间轴；本面板读取同一序列并渲染成交量，因此宿主需要同步两个视口。
 
-**属性.** 除四个共享属性外共 3 项：`series`: String · `color_mode`: Enum (`direction` | `uniform`) · `headroom`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`series`: String · `color_mode`: Enum (`direction` | `uniform`) · `headroom`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `bar_clicked`: UInt · `bar_hovered`: UInt · `view_changed`: UInt ×2
 
@@ -2885,7 +2887,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 累计买卖深度曲线，深度可配置、买卖颜色分离，并报告指针下的价格档位。用于流动性；带挂单量的离散阶梯用 `OrderBook`。
 
-**属性.** 除四个共享属性外共 3 项：`depth`: UInt · `bid_color`: Color · `ask_color`: Color — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`depth`: UInt · `bid_color`: Color · `ask_color`: Color — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `level_clicked`: Float · `level_hovered`: Float
 
@@ -2899,7 +2901,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 实时买卖阶梯，每档带挂单量、价差行与逐档悬停/点击。用于蜡烛图旁的市场微观结构；平滑累计曲线用 `DepthChart`，多标的自选用 `QuoteBoard`。
 
-**属性.** 除四个共享属性外共 3 项：`depth`: UInt · `decimals`: UInt · `show_spread`: Bool (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`depth`: UInt · `decimals`: UInt · `show_spread`: Bool (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `level_clicked`: mixed (String parts) · `level_hovered`: mixed (String parts) · `level_unhovered`: mixed (String parts)
 
@@ -2913,7 +2915,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 标的表格，带最新价、涨跌、成交量与排序模式，并报告报价点击/悬停/选择。用作自选列表；单个标的的阶梯用 `OrderBook`，非行情数据用 `Table`。
 
-**属性.** 除四个共享属性外共 4 项：`sort`: Enum (`none` | `symbol` | `last_descending` | `change_magnitude`) · `selected_index`: UInt · `row_height`: UInt (只读) · `scroll_offset`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`sort`: Enum (`none` | `symbol` | `last_descending` | `change_magnitude`) · `selected_index`: UInt · `row_height`: UInt (只读) · `scroll_offset`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `quote_clicked`: String · `quote_hovered`: String · `selection_changed`: String or null
 
@@ -2927,7 +2929,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 技术指标面板：MACD、RSI、随机指标、资金流量、ATR 或能量潮，带周期与参考线。放在价格图下方；它消费同一序列而不拥有行情数据，因此宿主需要同时喂两个面板。
 
-**属性.** 除四个共享属性外共 4 项：`series`: String · `mode`: Enum (`macd` | `rsi` | `stochastic` | `money_flow_index` | `atr` | `on_balance_volume`) · `period`: UInt · `show_reference_levels`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`series`: String · `mode`: Enum (`macd` | `rsi` | `stochastic` | `money_flow_index` | `atr` | `on_balance_volume`) · `period`: UInt · `show_reference_levels`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `bar_clicked`: UInt · `bar_hovered`: UInt · `view_changed`: UInt ×2
 
@@ -2951,7 +2953,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 用于浏览与选择日期的月历网格，支持单选、多选或范围选择、周数、可配置首日与日期上下限。用作主日期表面；带弹层的字段用 `DatePicker`，带预设的起止对用 `DateRangePicker`。
 
-**属性.** 除四个共享属性外共 12 项：`selected_date`: String · `minimum_date`: String · `maximum_date`: String · `first_day_of_week`: Enum (`mon` | `tue` | `wed` | `thu` | `fri` | `sat` | `sun`) · `grid_visible`: Bool · `navigation_bar_visible`: Bool · `horizontal_header_visible`: Bool · `vertical_header_visible`: Bool · `date_format`: String · `show_week_numbers`: Bool · `selection_mode`: Enum (`single` | `multi` | `range`) · `selected_dates`: StringList — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 12 项：`selected_date`: String · `minimum_date`: String · `maximum_date`: String · `first_day_of_week`: Enum (`mon` | `tue` | `wed` | `thu` | `fri` | `sat` | `sun`) · `grid_visible`: Bool · `navigation_bar_visible`: Bool · `horizontal_header_visible`: Bool · `vertical_header_visible`: Bool · `date_format`: String · `show_week_numbers`: Bool · `selection_mode`: Enum (`single` | `multi` | `range`) · `selected_dates`: StringList — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `activated`: String · `current_page_changed`: mixed (String parts) · `selection_changed`: String
 
@@ -2965,7 +2967,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 单行日期字段，打开日历弹层，带显示格式、日期上下限与弹层/日期变化信号。用于表单中的一个日期；网格始终可见时用 `Calendar`，值包含时间时用 `DateTimePicker`。
 
-**属性.** 除四个共享属性外共 7 项：`date`: String · `minimum_date`: String · `maximum_date`: String · `display_format`: String · `calendar_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `calendar_first_day`: Enum (`mon` | `tue` | `wed` | `thu` | `fri` | `sat` | `sun`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`date`: String · `minimum_date`: String · `maximum_date`: String · `display_format`: String · `calendar_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `calendar_first_day`: Enum (`mon` | `tue` | `wed` | `thu` | `fri` | `sat` | `sun`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `calendar_closed` · `calendar_opened` · `date_changed`: String · `popup_visibility_changed`: Bool
 
@@ -2979,7 +2981,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 单行时间字段，带时钟弹层、12/24 小时制、时间上下限与 `time_changed` 信号。用于一天中的时间；选择器风格的拼写用 `TimePicker`，还需要日期时用 `DateTimePicker`。
 
-**属性.** 除四个共享属性外共 7 项：`time`: String · `minimum_time`: String · `maximum_time`: String · `display_format`: String · `clock_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `time_format`: Enum (`12h` | `24h`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`time`: String · `minimum_time`: String · `maximum_time`: String · `display_format`: String · `clock_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `time_format`: Enum (`12h` | `24h`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `popup_visibility_changed`: Bool · `time_changed`: String
 
@@ -2993,7 +2995,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 带时钟弹层的时间字段的 `time_picker` 工厂名；它与 `time_edit` 共享 `TimePicker` 类型与 `TIME_EDIT_PROPERTIES` schema。按宿主已有拼写选择其一，不要为同一个值同时挂载两者。
 
-**属性.** 除四个共享属性外共 7 项：`time`: String · `minimum_time`: String · `maximum_time`: String · `display_format`: String · `clock_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `time_format`: Enum (`12h` | `24h`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`time`: String · `minimum_time`: String · `maximum_time`: String · `display_format`: String · `clock_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `time_format`: Enum (`12h` | `24h`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `popup_visibility_changed`: Bool · `time_changed`: String
 
@@ -3007,7 +3009,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 组合日期时间字段，带日历弹层、显示格式、日期上下限，以及日期与日期时间两种变化信号。一个值同时包含两部分时使用；两者分开编辑时用 `DatePicker` 加 `TimePicker`。
 
-**属性.** 除四个共享属性外共 7 项：`datetime`: String · `display_format`: String · `calendar_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `minimum`: String · `maximum`: String · `calendar_first_day`: Enum (`mon` | `tue` | `wed` | `thu` | `fri` | `sat` | `sun`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`datetime`: String · `display_format`: String · `calendar_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `minimum`: String · `maximum`: String · `calendar_first_day`: Enum (`mon` | `tue` | `wed` | `thu` | `fri` | `sat` | `sun`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `calendar_closed` · `calendar_opened` · `date_changed`: String · `datetime_changed`: String · `editing_finished` · `popup_visibility_changed`: Bool · `time_changed`: String
 
@@ -3021,7 +3023,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 把角度映射为有界整数的旋钮，带刻度、目标刻度与回绕。用于角度自然成立的仪表式控制（音量、声像、表盘）；线性范围用 `Slider`，精确输入用 `SpinBox`。
 
-**属性.** 除四个共享属性外共 8 项：`minimum`: Int · `maximum`: Int · `value`: Int · `single_step`: Int · `page_step`: Int · `notches_visible`: Bool · `notch_target`: Float · `wrapping`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`minimum`: Int · `maximum`: Int · `value`: Int · `single_step`: Int · `page_step`: Int · `notches_visible`: Bool · `notch_target`: Float · `wrapping`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `slider_pressed` · `slider_released` · `value_changed`: Int
 
@@ -3035,7 +3037,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 与页面解耦的独立标签条：标签数、当前索引、可关闭、可移动、最小/最大宽度与标签事件。标签条与页面容器分离时使用；控件应同时拥有两者时用 `TabWidget`。
 
-**属性.** 除四个共享属性外共 7 项：`tab_count`: UInt (只读) · `current_index`: UInt · `closable`: Bool · `movable`: Bool · `tab_min_width`: UInt · `tab_max_width`: UInt · `direction`: Enum (`ltr` | `rtl`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`tab_count`: UInt (只读) · `current_index`: UInt · `closable`: Bool · `movable`: Bool · `tab_min_width`: UInt · `tab_max_width`: UInt · `direction`: Enum (`ltr` | `rtl`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `current_changed`: UInt · `tab_bar_clicked`: UInt or null · `tab_close_requested`: UInt · `tab_moved`: UInt ×2
 
@@ -3047,7 +3049,7 @@ OHLC 蜡烛图，带叠加序列、价格轴、逐柱悬停/点击与视图变�
 
 Office 风格功能区：标签、命令组、大小条目、快速访问条与折叠/最小化。用于命令密集的桌面应用；单行动作用 `ToolBar`，经典菜单用 `MenuBar`。
 
-**属性.** 除四个共享属性外共 6 项：`tab_count`: UInt (只读) · `current_tab`: UInt · `expanded`: Bool · `minimized`: Bool · `quick_access_items`: StringList · `quick_access_overflow_menu`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`tab_count`: UInt (只读) · `current_tab`: UInt · `expanded`: Bool · `minimized`: Bool · `quick_access_items`: StringList · `quick_access_overflow_menu`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `application_clicked` · `current_tab_changed`: UInt · `group_overflow_clicked`: UInt ×2 · `item_triggered`: UInt ×3 · `quick_access_clicked`: UInt · `quick_access_overflow_clicked`
 
@@ -3061,7 +3063,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 径向菜单，条目围绕指针排成一圈，带外半径、内半径与当前索引。用于在某个点调用少量次级动作；更长或需要键盘导航的列表用 `Menu`/`ContextMenu`。
 
-**属性.** 除四个共享属性外共 4 项：`item_count`: UInt (只读) · `radius`: Float · `inner_radius`: Float · `current_index`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`item_count`: UInt (只读) · `radius`: Float · `inner_radius`: Float · `current_index`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `about_to_hide` · `about_to_show` · `triggered`: UInt · `triggered_text`: String
 
@@ -3075,7 +3077,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 把键盘快捷键录制为按键序列的字段，报告冲突与新序列。该 schema 没有发布属性行，因此应通过控件 API 与信号驱动，而不是通过 `WidgetFactory` 的属性名。
 
-**属性.** 该 schema 没有自己的属性；每个控件都带四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 该 schema 没有自己的属性；每个控件都带五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `conflict_detected`: String · `editing_finished` · `key_sequence_changed`: String · `sequence_changed`: list of String
 
@@ -3099,7 +3101,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 按 MIME 类型过滤的命名拖放目标，带悬停状态、多文件标志与进入/离开/放下/拒绝信号。宿主接受文件或拖拽载荷时使用；目标本身是已有控件而不是独立区域时，直接实现 `DropTarget`。
 
-**属性.** 除四个共享属性外共 8 项：`accepted_type`: String · `state`: Enum (`idle` | `hovering` | `accepted` | `rejected` | `dropped`) · `hovered`: Bool (只读) · `accepted_types`: StringList · `multi_file`: Bool · `hover_style`: String · `show_count_badge`: Bool · `dropped_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`accepted_type`: String · `state`: Enum (`idle` | `hovering` | `accepted` | `rejected` | `dropped`) · `hovered`: Bool (只读) · `accepted_types`: StringList · `multi_file`: Bool · `hover_style`: String · `show_count_badge`: Bool · `dropped_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `drop_rejected` · `dropped`: list of String · `payload_dropped`: String · `zone_entered`: list of String · `zone_exited`: list of String
 
@@ -3113,7 +3115,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 为触屏而非桌面日历网格布局的日期选择器，带年份跨度与日期变化信号。用于手机布局；桌面端用 `Calendar` 或 `DatePicker`，需要 iOS 滚轮时用 `CupertinoDatePicker`。
 
-**属性.** 除四个共享属性外共 2 项：`selected_date`: String · `year_span`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`selected_date`: String · `year_span`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `date_changed`: String
 
@@ -3125,7 +3127,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 从数据字符串渲染确定性 QR 图案的控件，带尺寸、静区、纠错级别、版本边界与颜色。用于显示供用户扫描的码；它只渲染不解码，读取用 `BarcodeScanner`。
 
-**属性.** 除四个共享属性外共 8 项：`data`: String · `size`: UInt · `quiet_zone`: UInt · `ec_level`: Enum (`L` | `M` | `Q` | `H`) · `min_version`: UInt · `max_version`: UInt · `foreground_color`: Color · `background_color`: Color — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`data`: String · `size`: UInt · `quiet_zone`: UInt · `ec_level`: Enum (`L` | `M` | `Q` | `H`) · `min_version`: UInt · `max_version`: UInt · `foreground_color`: Color · `background_color`: Color — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** 该控件不发布任何 capability 事件。
 
@@ -3139,7 +3141,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 圆形或方形用户图像占位，带首字母回退、尺寸、可选徽标、图像来源与圆环。用于个人或账户身份；只有在计数属于别处时才额外配 `Badge`——头像本身已经有 `badge` 文本。
 
-**属性.** 除四个共享属性外共 7 项：`initials`: String · `square`: Bool · `size`: UInt · `image_source`: String · `badge`: String · `ring_color`: Color · `ring_width`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`initials`: String · `square`: Bool · `size`: UInt · `image_source`: String · `badge`: String · `ring_color`: Color · `ring_width`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `avatar_clicked`
 
@@ -3153,7 +3155,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 带 id 与图标、支持单选或多选与组 id 的横向可选分段组。用于 Material 3 风格图标分段或多选；单选、带标签、指示器滑动时用 `SegmentedControl`，iOS 胶囊外观用 `CupertinoSegmentedControl`。
 
-**属性.** 除四个共享属性外共 5 项：`selected_index`: UInt · `selected_indices`: String · `allows_multiple`: Bool · `segment_count`: UInt (只读) · `group_id`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`selected_index`: UInt · `selected_indices`: String · `allows_multiple`: Bool · `segment_count`: UInt (只读) · `group_id`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `current_changed`: UInt
 
@@ -3167,7 +3169,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 基于日历的起止范围选择器，带预设、双月视图与最少/最多夜数。用于预订或报表区间；预设需要放在选择器之外时配 `RangePresetBar`，单个日期用 `Calendar`。
 
-**属性.** 除四个共享属性外共 6 项：`start_date`: String · `end_date`: String · `presets`: StringList · `double_month`: Bool · `min_nights`: UInt · `max_nights`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`start_date`: String · `end_date`: String · `presets`: StringList · `double_month`: Bool · `min_nights`: UInt · `max_nights`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `preset_selected`: UInt · `range_changed`: String
 
@@ -3181,7 +3183,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 扫描取景器，带扫描标志与 `barcode_detected` 载荷。摄像头与解码由宿主负责；本控件持有扫描状态并报告解码文本。`QRCode` 用于渲染码，不用于读取。
 
-**属性.** 除四个共享属性外共 1 项：`is_scanning`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`is_scanning`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `barcode_detected`: String
 
@@ -3195,7 +3197,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 用于自定义缓动曲线的交互式三次 Bézier 编辑器：控制点、段数、吸附与曲线变化载荷。用于运动或动画设置面板；保存发出的曲线文本并交给动画引擎，而不是重新计算。
 
-**属性.** 除四个共享属性外共 3 项：`snap_to_grid`: Bool · `segments`: UInt (只读) · `curve_points`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`snap_to_grid`: Bool · `segments`: UInt (只读) · `curve_points`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `curve_changed`: mixed (String parts)
 
@@ -3209,7 +3211,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 范围选择器旁的一行快速日期区间 chip，带方向、紧凑模式与选中标签。日期由选择器持有；该条只报告所选预设，因此把 `preset_selected` 接到 `DateRangePicker::apply_preset` 或你自己的映射。
 
-**属性.** 除四个共享属性外共 4 项：`presets`: StringList · `orientation`: Enum (`horizontal` | `vertical`) · `compact`: Bool · `selected_label`: String (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`presets`: StringList · `orientation`: Enum (`horizontal` | `vertical`) · `compact`: Bool · `selected_label`: String (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `preset_selected`: String ×2
 
@@ -3233,7 +3235,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 播放动图（GIF、APNG 或 WebP 帧序列），支持播放/暂停、方向、帧缓存上限与帧/动画完成信号。用于逐帧序列资源；矢量动画用 `LottieWidget` 或 `RiveWidget`，定时媒体用 `VideoPlayer`。
 
-**属性.** 除四个共享属性外共 3 项：`playing`: Bool · `direction`: Enum (`forward` | `reverse`) · `frame_cache_limit`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`playing`: Bool · `direction`: Enum (`forward` | `reverse`) · `frame_cache_limit`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `animation_finished` · `frame_changed`: UInt
 
@@ -3247,7 +3249,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 在两个布局之间插值位置、尺寸与透明度的共享元素转场，带进度值与完成信号。同一对象出现在两个屏幕时使用；宿主驱动 `animation_progress`，结束时换回真实内容。
 
-**属性.** 除四个共享属性外共 1 项：`animation_progress`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`animation_progress`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `animation_completed`
 
@@ -3261,7 +3263,7 @@ Office 风格功能区：标签、命令组、大小条目、快速访问条与�
 
 Lottie JSON 动画播放器，支持播放/暂停、循环次数、方向与速度。用于设计工具导出的矢量动效资源；动画需要交互式状态机与输入时用 `RiveWidget`。
 
-**属性.** 除四个共享属性外共 5 项：`playing`: Bool · `loop_count`: Int · `loops_completed`: Int (只读) · `direction`: Enum (`forward` | `reverse`) · `speed`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 5 项：`playing`: Bool · `loop_count`: Int · `loops_completed`: Int (只读) · `direction`: Enum (`forward` | `reverse`) · `speed`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `animation_finished`
 
@@ -3275,7 +3277,7 @@ Lottie JSON 动画播放器，支持播放/暂停、循环次数、方向与速�
 
 Rive 运行时表面，带播放状态、循环、状态字符串与输入触发/状态变化信号。用于带状态机的交互动画；线性导出动画用 `LottieWidget`，逐帧序列用 `AnimatedImage`。
 
-**属性.** 除四个共享属性外共 4 项：`is_playing`: Bool · `loop_count`: Int · `loops_completed`: Int (只读) · `state`: String (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`is_playing`: Bool · `loop_count`: Int · `loops_completed`: Int (只读) · `state`: String (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `animation_finished` · `input_fired`: String · `state_changed`: String
 
@@ -3289,7 +3291,7 @@ Rive 运行时表面，带播放状态、循环、状态字符串与输入触发
 
 视频表面，带播放状态、音量、静音、播放速率、控件、循环与帧/元数据/错误信号集。宿主提供媒体管线时使用；配传输配套控件，并且只通过控件自身方法停止/定位，以保持其时钟权威。
 
-**属性.** 除四个共享属性外共 7 项：`is_playing`: Bool · `volume`: Float · `muted`: Bool · `playback_rate`: Float · `controls_visible`: Bool · `looping`: Bool · `pipeline`: String (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`is_playing`: Bool · `volume`: Float · `muted`: Bool · `playback_rate`: Float · `controls_visible`: Bool · `looping`: Bool · `pipeline`: String (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `buffering_progress_changed`: Float · `duration_changed`: Float · `error_occurred`: String · `frame_available`: UInt · `frame_presented`: Float · `fullscreen_changed`: Bool · `media_status_changed`: String · `metadata_changed` · `mute_changed`: Bool · `playback_ended` · `playback_paused` · `playback_rate_changed`: Float · `playback_started` · `time_updated`: Float · `volume_changed`: Float
 
@@ -3303,7 +3305,7 @@ Rive 运行时表面，带播放状态、循环、状态字符串与输入触发
 
 实时音频电平或频谱视图，带柱数、峰值阈值、模式与周期性电平报告。用于音频播放时的反馈；分析由宿主完成并喂入电平；不要把它当音频编辑器。
 
-**属性.** 除四个共享属性外共 4 项：`bar_count`: UInt · `peak_threshold`: Float · `mode`: Enum (`waveform` | `spectrum`) · `level_report_interval`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`bar_count`: UInt · `peak_threshold`: Float · `mode`: Enum (`waveform` | `spectrum`) · `level_report_interval`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `level_changed`: Float · `mode_changed`: String · `peak_exceeded`: Float
 
@@ -3317,7 +3319,7 @@ Rive 运行时表面，带播放状态、循环、状态字符串与输入触发
 
 摄像头取景器，带活动标志、像素格式、目标帧率与摄像头 id，并报告帧、格式协商、权限拒绝与错误。用于拍摄或扫描；设备会话由宿主持有，控件只呈现会话报告的事实。
 
-**属性.** 除四个共享属性外共 4 项：`is_active`: Bool · `pixel_format`: String · `target_fps`: UInt · `camera_id`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`is_active`: Bool · `pixel_format`: String · `target_fps`: UInt · `camera_id`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `error_occurred`: String · `format_negotiated`: UInt ×2 · `frame_available`: UInt · `frame_presented`: Float · `permission_denied`
 
@@ -3341,7 +3343,7 @@ Web 族只暴露一个控件 `WebEngineView`，以及定位同一视图不同部
 
 内嵌 Web 视图：URL、加载状态、标题、前进/后退、用户代理、透明背景与 Cookie 持久化，并带导航、加载、控制台、下载、证书与崩溃信号。仅用于宿主不拥有的 HTML；把每个信号都当作宿主必须决定的事项。
 
-**属性.** 除四个共享属性外共 8 项：`url`: String · `loading`: Bool (只读) · `title`: String · `can_go_back`: Bool · `can_go_forward`: Bool · `user_agent`: String · `background_transparent`: Bool · `cookie_persistence_enabled`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 8 项：`url`: String · `loading`: Bool (只读) · `title`: String · `can_go_back`: Bool · `can_go_forward`: Bool · `user_agent`: String · `background_transparent`: Bool · `cookie_persistence_enabled`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `certificate_error`: String · `channel_message`: String ×2 · `console_message`: mixed (String parts) · `download_requested`: String · `error_occurred`: String · `js_evaluated`: mixed (String parts) · `link_hovered`: String · `load_progress_changed`: UInt · `loading_finished`: String · `loading_started`: String · `navigation_state_changed`: Bool ×2 · `page_created`: UInt · `page_destroyed`: UInt · `render_process_crashed`: String · `title_changed`: String · `url_changed`: String
 
@@ -3365,7 +3367,7 @@ Web 族只暴露一个控件 `WebEngineView`，以及定位同一视图不同部
 
 iOS 风格开关，拥有自己的类型、capability 行与构造函数；它不是 `Switch` 的别名。需要 iOS 拇指与轨道呈现时使用；只有几何不同时用 `Switch` 并设置 `switch_geometry`。
 
-**属性.** 除四个共享属性外共 4 项：`checked`: Bool · `thumb_color`: Color · `on_track_color`: Color · `switch_geometry`: Enum (`material` | `cupertino` | `macos`) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`checked`: Bool · `thumb_color`: Color · `on_track_color`: Color · `switch_geometry`: Enum (`material` | `cupertino` | `macos`) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `toggled`: Bool
 
@@ -3379,7 +3381,7 @@ iOS 风格开关，拥有自己的类型、capability 行与构造函数；它�
 
 iOS 风格模态警告框，带标题、消息与确认/取消结果。用于二选一的 iOS 警告；桌面警告族用 `AlertDialog`/`ConfirmDialog`，经典固定按钮形式用 `MessageBox`。
 
-**属性.** 除四个共享属性外共 2 项：`title`: String · `message`: String — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`title`: String · `message`: String — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `canceled` · `confirmed`
 
@@ -3393,7 +3395,7 @@ iOS 风格模态警告框，带标题、消息与确认/取消结果。用于二
 
 iOS 风格滑块，圆角轨道与圆形把手，带浮点值与上下限。用于 iOS 风格界面上的连续值；整数步进用 `Slider`，双边界用 `RangeSlider`。
 
-**属性.** 除四个共享属性外共 3 项：`value`: Float · `min`: Float · `max`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 3 项：`value`: Float · `min`: Float · `max`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `value_changed`: Float
 
@@ -3407,7 +3409,7 @@ iOS 风格滑块，圆角轨道与圆形把手，带浮点值与上下限。用�
 
 iOS 风格导航栏，带标题、可选大标题、提示、前后置条目与折叠偏移。用于 iOS 屏幕顶部；标题需要跟随页面栈时配 `CupertinoNavigationStack` 配套控件。
 
-**属性.** 除四个共享属性外共 4 项：`title`: String · `large_title`: Bool · `prompt`: String · `collapse_offset`: Float — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`title`: String · `large_title`: Bool · `prompt`: String · `collapse_offset`: Float — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `back_pressed` · `leading_item_pressed`: UInt · `trailing_item_pressed`: UInt
 
@@ -3421,7 +3423,7 @@ iOS 风格导航栏，带标题、可选大标题、提示、前后置条目与�
 
 iOS 风格胶囊分段控件，带选中索引与值变化信号。用于 iOS 屏幕上两到五个互斥选择；桌面呈现用 `SegmentedControl`，多选用 `SegmentedButton`。
 
-**属性.** 除四个共享属性外共 2 项：`selected_index`: UInt · `segment_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`selected_index`: UInt · `segment_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `value_changed`: UInt
 
@@ -3435,7 +3437,7 @@ iOS 风格胶囊分段控件，带选中索引与值变化信号。用于 iOS �
 
 iOS UIPickerView 风格滚动轮日期选择器，支持日期、时间、日期时间或倒计时模式、24 小时制与分钟间隔。用于 iOS 风格面板内；Material 触屏布局用 `MobileDatePicker`，桌面用 `DatePicker`。
 
-**属性.** 除四个共享属性外共 4 项：`selected_date`: String · `mode`: Enum (`date` | `time` | `datetime` | `countdown`) · `use_24_hour`: Bool · `minute_interval`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`selected_date`: String · `mode`: Enum (`date` | `time` | `datetime` | `countdown`) · `use_24_hour`: Bool · `minute_interval`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `date_changed`: mixed (String parts) · `time_changed`: UInt ×2
 
@@ -3449,7 +3451,7 @@ iOS UIPickerView 风格滚动轮日期选择器，支持日期、时间、日期
 
 Material snackbar，带消息、动作标签、持续时间与滑入进度。用于带一个动作的简短确认；持久通知用 `Banner`，多条消息需要排队时用 `ToastStack`/`ToastHost`。
 
-**属性.** 除四个共享属性外共 4 项：`message`: String · `action_text`: String · `duration_ms`: UInt · `slide_progress`: Float (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`message`: String · `action_text`: String · `duration_ms`: UInt · `slide_progress`: Float (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `action_pressed` · `dismissed`
 
@@ -3461,7 +3463,7 @@ Material snackbar，带消息、动作标签、持续时间与滑入进度。用
 
 平板宽度布局的 Material 侧导航栏，带选中索引与当前变化信号。窗口太窄放不下抽屉、又太宽不适合底部栏时使用；长目的地列表用 `NavigationDrawer`，手机用 `BottomNavigationBar`。
 
-**属性.** 除四个共享属性外共 1 项：`selected_index`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 1 项：`selected_index`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `current_changed`: UInt
 
@@ -3485,7 +3487,7 @@ macOS 界面需要匹配平台度量与交互习惯时选它们。不要在其�
 
 分段控件的 macOS 呈现：选中索引、分段数与值变化信号，采用平台度量。用于 macOS 原生外壳；通用控件用 `SegmentedControl`，iOS 用 `CupertinoSegmentedControl`。
 
-**属性.** 除四个共享属性外共 2 项：`selected_index`: UInt · `segment_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 2 项：`selected_index`: UInt · `segment_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `value_changed`: UInt
 
@@ -3497,7 +3499,7 @@ macOS 界面需要匹配平台度量与交互习惯时选它们。不要在其�
 
 步进器的 macOS 呈现，在通用值/范围/步长模型上增加 `wraps`、`repeat_delay_ms` 与 `repeat_interval_ms`。用于 macOS 原生数字外壳；可移植控件用 `Stepper`，需要键入时用 `SpinBox`。
 
-**属性.** 除四个共享属性外共 7 项：`value`: Int · `minimum`: Int · `maximum`: Int · `step`: Int · `wraps`: Bool · `repeat_delay_ms`: UInt · `repeat_interval_ms`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`value`: Int · `minimum`: Int · `maximum`: Int · `step`: Int · `wraps`: Bool · `repeat_delay_ms`: UInt · `repeat_interval_ms`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `value_changed`: Int
 
@@ -3509,7 +3511,7 @@ macOS 界面需要匹配平台度量与交互习惯时选它们。不要在其�
 
 macOS 统一样式的工具栏呈现：条目、图标尺寸、方向、可选/选中条目与溢出数。用于 macOS 窗口顶部；可移植条用 `ToolBar`，命令需要带标签分组时用 `RibbonBar`。
 
-**属性.** 除四个共享属性外共 6 项：`item_count`: UInt (只读) · `icon_size`: Float · `orientation`: String (只读) · `selectable`: Bool · `selected_index`: UInt · `overflow_count`: UInt (只读) — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 6 项：`item_count`: UInt (只读) · `icon_size`: Float · `orientation`: String (只读) · `selectable`: Bool · `selected_index`: UInt · `overflow_count`: UInt (只读) — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `item_activated`: UInt · `overflow_activated`: UInt · `overflow_changed`: UInt
 
@@ -3521,7 +3523,7 @@ macOS 统一样式的工具栏呈现：条目、图标尺寸、方向、可选/�
 
 列表的 macOS 源列表呈现：分区、行、选中行、行高与徽标/选择信号。用于 macOS 侧栏；可移植列表用 `ListView`，使用抽屉时配 `DrawerSectionHeader`。
 
-**属性.** 除四个共享属性外共 4 项：`section_count`: UInt (只读) · `row_count`: UInt (只读) · `row_height`: UInt (只读) · `selected_row`: UInt — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 4 项：`section_count`: UInt (只读) · `row_count`: UInt (只读) · `row_height`: UInt (只读) · `selected_row`: UInt — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `badge_changed`: mixed (String parts) · `selection_changed`: String
 
@@ -3533,7 +3535,7 @@ macOS 统一样式的工具栏呈现：条目、图标尺寸、方向、可选/�
 
 macOS 窗口外壳：标题、外壳高度、交通灯按钮、拖拽/全屏/文档已编辑标志与窗口生命周期请求。macOS 窗口需要匹配平台标题栏时使用；可移植窗口用 `Window`。
 
-**属性.** 除四个共享属性外共 7 项：`title`: String · `chrome_height`: UInt (只读) · `buttons_visible`: Bool · `draggable`: Bool · `fullscreen`: Bool · `document_edited`: Bool · `focused`: Bool — 外加四个共享属性 `enabled`、`visible`、`tooltip`、`geometry`。
+**属性.** 除共享属性外共 7 项：`title`: String · `chrome_height`: UInt (只读) · `buttons_visible`: Bool · `draggable`: Bool · `fullscreen`: Bool · `document_edited`: Bool · `focused`: Bool — 外加五个共享属性 `enabled`、`visible`、`tooltip`、`geometry`、`a11y_role`。
 
 **事件.** `close_requested` · `fullscreen_requested` · `minimize_requested` · `window_focus_changed`: Bool · `zoom_requested`
 
@@ -3808,7 +3810,7 @@ macOS 窗口外壳：标题、外壳高度、交通灯按钮、拖拽/全屏/文
 
 * **Profile 门控。** 大多数变体声明在 `#[cfg(widgets_unstripped)]` 下。精简（`mini` 或 `embedded`）构建只保留始终可用的子集，因此面向此类构建的宿主必须确认名称可构造，而不能假设本章的每个控件都存在。
 
-* **`key_sequence_editor` 不发布属性行。** 除四个共享属性外，它的 schema 为空。条目如实说明，而不是编造名称；通过构造函数与信号驱动它。
+* **`key_sequence_editor` 不发布属性行。** 除五个共享属性外，它的 schema 为空。条目如实说明，而不是编造名称；通过构造函数与信号驱动它。
 
 * **别名与子项类型。** `Panel`、`DockPanel`、`MenuItem`、`ContextMenu`、`CheckListBox`、`DoubleSpinBox`、`Wizard`、`DirectoryDialog`、`ActivityIndicator`、`ColumnView`、`UndoView` 没有自己的 capability 行。它们在所属族中记录，并说明解析到的名称。
 

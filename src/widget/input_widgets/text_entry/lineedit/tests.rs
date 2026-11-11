@@ -125,6 +125,41 @@ fn focused_lineedit_draws_a_caret() {
     );
 }
 
+/// UX6-02: an all-RTL value routes its caret through the **visual** order.
+///
+/// # What this pins
+///
+/// The caret was placed at "the width of the logical prefix", which is the caret's visual
+/// position only while the line paints in logical order. In an RTL run the two orders differ and
+/// the marker sat a whole line away from the glyph it belonged to.
+///
+/// The exact geometry is pinned by `render::text::bidi`'s caret tests with fixed advances; this
+/// asserts the **wiring** — that a right-to-left value takes the reordering path at all, and that
+/// a left-to-right one keeps the untouched prefix path. Glyph advances cannot be used here: the
+/// default profile carries no Hebrew face, so every cluster measures zero and the two caret
+/// positions would coincide whatever the mapping said.
+#[test]
+fn an_rtl_value_routes_the_caret_through_the_visual_order() {
+    let rect = Rect::new(0, 0, 200, 32);
+    let font = {
+        let field = LineEdit::new(rect);
+        crate::widget::metrics::effective_font(field.base().style()).clone()
+    };
+
+    let mut rtl = LineEdit::new(rect);
+    // Three Hebrew letters (`אבג`), stored logical-first.
+    rtl.set_text("\u{05d0}\u{05d1}\u{05d2}");
+    let mapped = rtl
+        .with_prefix_advances(&font, |advances| advances.visual_advance_at(rtl.text(), &font, 0));
+    assert!(mapped.is_some(), "an RTL value must be placed through the visual order");
+
+    let mut ltr = LineEdit::new(rect);
+    ltr.set_text("abc");
+    let unmapped = ltr
+        .with_prefix_advances(&font, |advances| advances.visual_advance_at(ltr.text(), &font, 0));
+    assert_eq!(unmapped, None, "an LTR value keeps the caller's prefix advance");
+}
+
 /// Renders a widget into an RGBA frame for comparison.
 fn render(widget: &mut LineEdit, rect: Rect) -> Vec<u8> {
     use crate::core::{Color, Size};

@@ -501,7 +501,11 @@ pub struct TreeView {
     /// How the multi-column header decides its section widths (V-003).
     section_resize_mode: ColumnWidthMode,
     /// Emitted with the column index when a header section is clicked (V-003).
-    pub on_header_clicked: Signal1<usize>,
+    ///
+    /// Published as `header_clicked`: `on_` is a listener-method prefix in other toolkits, not an
+    /// event name (DX-10). The old **event** spelling still resolves through `event_signal_dyn`
+    /// and `EVENT_ALIASES`; only the Rust field moved.
+    pub header_clicked: Signal1<usize>,
     /// Per-node tooltip source (V-005); `None` keeps the historical no-tooltip behaviour.
     node_tooltip: Option<Arc<dyn Fn(usize) -> Option<String> + Send + Sync>>,
     /// Expansion snapshot replayed after a model reset (V-004).
@@ -567,7 +571,7 @@ impl TreeView {
             sort_column: None,
             sort_descending: false,
             section_resize_mode: ColumnWidthMode::Fixed,
-            on_header_clicked: Signal1::new(),
+            header_clicked: Signal1::new(),
             node_tooltip: None,
             saved_expansion: Vec::new(),
             fetch_failures: Vec::new(),
@@ -1299,7 +1303,11 @@ impl TreeView {
         self.show_scrollbar
     }
 
-    /// Enables or disables the vertical scroll-bar thumb.
+    /// Forces the vertical scroll-bar thumb on (or off as an explicit rail preference).
+    ///
+    /// Since UX-04 an overflowing tree paints the thumb anyway: this flag no longer decides
+    /// *whether* hidden rows are indicated, only whether a permanent rail is drawn when the
+    /// content happens to fit.
     pub fn set_show_scrollbar(&mut self, show: bool) {
         if self.show_scrollbar == show {
             return;
@@ -2261,7 +2269,7 @@ impl Widget for TreeView {
         use crate::signal::EventSignalRef;
         match name {
             "header_clicked" | "on_header_clicked" => {
-                Some(EventSignalRef::mapped("header_clicked", &self.on_header_clicked, |column| {
+                Some(EventSignalRef::mapped("header_clicked", &self.header_clicked, |column| {
                     CapabilityValue::UInt(*column as u64)
                 }))
             }
@@ -2621,6 +2629,11 @@ impl Draw for TreeView {
             crate::style::palette_shared().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let focused_bg = surface.blend(&accent, 0.30);
         let selected_bg = surface.blend(&accent, 0.30);
+
+        // U3-03: a disabled tree's ink and rim recede by the shared rule rather than holding
+        // full contrast while only its handlers are gated; the rows keep their geometry.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let border = self.base.disabled_ink_on(border, surface);
 
         // Draw background
         context.face_with_gradient_corners(
@@ -3007,26 +3020,27 @@ impl Draw for TreeView {
             }
         }
 
-        // The thumb is opt-in: wheel and keyboard already reach every row, so the bar is the
-        // visible statement of how much of the tree is off-screen.
-        if self.show_scrollbar {
-            let total = self.visible_row_count().max(1);
-            let visible = (rect.height / TREE_ROW_HEIGHT.max(1) as u32).max(1) as usize;
-            let track = rect.height.max(1);
-            let thumb =
-                ((track as u64 * visible as u64) / total as u64).max(24).min(track as u64) as u32;
-            let travel = track.saturating_sub(thumb);
-            let max_scroll = total.saturating_sub(visible);
-            let offset = if max_scroll == 0 {
-                0
-            } else {
-                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
-            };
-            context.fill_rect(
-                Rect::new(rect.x + rect.width as i32 - 6, rect.y + offset as i32, 4, thumb),
-                accent.with_alpha(120),
-            );
+        // The thumb is opt-in as a **force-on** override; since UX-04 it is also derived, so a
+        // tree whose rows run past the viewport paints it whether or not a caller asked.
+        let total = self.visible_row_count();
+        let visible = (rect.height / TREE_ROW_HEIGHT.max(1) as u32).max(1) as usize;
+        // A 2 px inset keeps the thumb off the frame's own stroke.
+        let track = Rect::new(rect.x, rect.y, rect.width.saturating_sub(2), rect.height);
+        if let Some(band) = crate::widget::overscroll::scroll_thumb_rect(
+            track,
+            total.max(1),
+            visible,
+            self.scroll_row,
+            4,
+            self.show_scrollbar,
+        ) {
+            context.fill_rect(band, accent.with_alpha(120));
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 impl crate::event::EventHandler for TreeView {
@@ -3042,9 +3056,9 @@ impl crate::event::EventHandler for TreeView {
         match event {
             crate::event::Event::MousePress { pos, button, modifiers } if *button == 1 => {
                 // A press on the header band names a section rather than a row (V-003): it emits
-                // `on_header_clicked` and advances that column's sort state.
+                // `header_clicked` and advances that column's sort state.
                 if let Some(column) = self.header_column_at(*pos) {
-                    self.on_header_clicked.emit(column);
+                    self.header_clicked.emit(column);
                     let _ = self.toggle_sort_column(column);
                     return;
                 }

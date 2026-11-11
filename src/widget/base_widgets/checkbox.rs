@@ -993,6 +993,15 @@ impl EventHandler for CheckBox {
             }
             #[cfg(feature = "touch")]
             Event::TouchEnd { .. } => self.end_auto_repeat(),
+            // A platform that delivers the recognized gesture instead of raw touches sends
+            // `Tap` alone. Without this arm the box was unusable on a pure touch screen
+            // (U2-08); the radio button already had the arm.
+            #[cfg(feature = "touch")]
+            Event::Tap { pos }
+                if self.base.is_enabled() && self.hit_area().contains_point(*pos) =>
+            {
+                self.toggle();
+            }
             #[cfg(feature = "touch")]
             event if crate::event::translator::is_touch_cancel(event) => self.end_auto_repeat(),
             // Keyboard toggling is reachable only while the checkbox holds focus: a box
@@ -1692,7 +1701,16 @@ mod tests {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         assert_eq!(cb.state(), CheckState::Unchecked);
         cb.handle_event(&Event::Tap { pos: Point::new(10, 10) });
-        // Current implementation does not match Tap – falls through to _
+        assert_eq!(cb.state(), CheckState::Checked);
+        cb.handle_event(&Event::Tap { pos: Point::new(10, 10) });
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_tap_outside_the_control_does_not_toggle() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.handle_event(&Event::Tap { pos: Point::new(200, 200) });
         assert_eq!(cb.state(), CheckState::Unchecked);
     }
 

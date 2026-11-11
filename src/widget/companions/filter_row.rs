@@ -285,6 +285,10 @@ impl Draw for FilterRow {
         let style = self.style();
         let (surface, ink) = surface_ink(style);
         let accent = accent_color();
+        // U3-03: a disabled row's ink, cell rims and active-column accent recede by the shared
+        // rule rather than holding full contrast while only the handler is gated.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let accent = self.base.disabled_ink_on(accent, surface);
         let font = effective_font(style);
         context.fill_rect(rect, surface);
         context.draw_rect(rect, surface.blend(&ink, 0.18));
@@ -329,6 +333,11 @@ impl Draw for FilterRow {
                 crate::core::HorizontalAlignment::Left,
             );
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

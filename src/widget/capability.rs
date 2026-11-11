@@ -1062,6 +1062,71 @@ pub static EVENT_ALIASES: &[EventAlias] = &[
         canonical: "hover_changed",
         note: "W-21: the subject is the control itself, so the template is `hover_changed`",
     },
+    // DX-10: `on_` is a listener-method prefix in other toolkits, not an event name. The
+    // published name is `line_crossed`; the `on_` spelling still resolves so a document or a
+    // binding written against the old name keeps working.
+    EventAlias {
+        alias: "on_line_crossed",
+        canonical: "line_crossed",
+        note: "DX-10: `on_` is a listener-method prefix; the published name is `line_crossed`",
+    },
+    EventAlias {
+        alias: "on_category_toggled",
+        canonical: "category_toggled",
+        note: "DX-10: `on_` is a listener-method prefix; the published name is `category_toggled`",
+    },
+    EventAlias {
+        alias: "on_header_clicked",
+        canonical: "header_clicked",
+        note: "DX-10: `on_` is a listener-method prefix; the published name is `header_clicked`",
+    },
+    // The suites crate's first migrated spelling. Its published name is now `entry_activated`;
+    // this row is what keeps a document written against the old name bound.
+    EventAlias {
+        alias: "on_entry_activated",
+        canonical: "entry_activated",
+        note: "DX-10: `on_` is a listener-method prefix; the published name is `entry_activated`",
+    },
+    EventAlias {
+        alias: "on_matches_changed",
+        canonical: "matches_changed",
+        note:
+            "DX-10: the suites crate's old `on_` spelling; the published name is `matches_changed`",
+    },
+    EventAlias {
+        alias: "on_overview_drag",
+        canonical: "overview_drag",
+        note: "DX-10: the suites crate's old `on_` spelling; the published name is `overview_drag`",
+    },
+    EventAlias {
+        alias: "on_chapter_entered",
+        canonical: "chapter_entered",
+        note:
+            "DX-10: the suites crate's old `on_` spelling; the published name is `chapter_entered`",
+    },
+    EventAlias {
+        alias: "on_chapter_selected",
+        canonical: "chapter_selected",
+        note:
+            "DX-10: the suites crate's old `on_` spelling; the published name is `chapter_selected`",
+    },
+    EventAlias {
+        alias: "on_header_clicked",
+        canonical: "header_clicked",
+        note:
+            "DX-10: the suites crate's old `on_` spelling; the published name is `header_clicked`",
+    },
+    EventAlias {
+        alias: "on_task_selected",
+        canonical: "task_selected",
+        note: "DX-10: the suites crate's old `on_` spelling; the published name is `task_selected`",
+    },
+    EventAlias {
+        alias: "on_window_requested",
+        canonical: "window_requested",
+        note:
+            "DX-10: the suites crate's old `on_` spelling; the published name is `window_requested`",
+    },
 ];
 
 /// The canonical spelling for an alias, or `None` when `name` is already canonical.

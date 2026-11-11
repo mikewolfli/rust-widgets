@@ -84,7 +84,7 @@ This file tracks items that are currently not feasible to complete in the presen
     `UIWindow` created through the Rust C ABI, real `UIButton`/`UILabel`/
     `UITextField` subviews, a text round-trip, visibility round-trip, and that a
     geometry change reaches the live `UIButton.frame` (`{{20, 60}, {140, 44}}`).
-  - Evidence: `docs/log/log-20260911-2.md`; status in `src/platform/ios/status.md`.
+  - Evidence: `docs/log/archive/log-20260911-2.md`; status in `src/platform/ios/status.md`.
   - Remaining: physical-device (signing/provisioning) run; a `UIWindowScene`-based
     `initWithWindowScene:` path (the library has no scene instance today).
 
@@ -131,7 +131,7 @@ This file tracks items that are currently not feasible to complete in the presen
     `create_native_dialog` guard. `add_to_parent_window` / `sync_list_box_native`
     also skip nil (`ptr == 0`) receivers, which the cocoa crate aborts on.
   - Evidence: `cargo test --lib --features desktop` → 3836 passed / 0 failed
-    (previously the process aborted). See `docs/log/log-20260911-2.md`.
+    (previously the process aborted). See `docs/log/archive/log-20260911-2.md`.
 
 - [x] ITEM 6b: `full` profile duplicate `create_native_platform` (macOS host)
   - Fixed 2026-09-11.

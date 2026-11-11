@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+check_visual_regression.sh -- the snapshot tests, run as one report.
+#
+# Bounded per test, with the results written to `target/qa/visual_regression_report.md` so a
+# render change is reviewable as a list rather than as a truncated console.
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

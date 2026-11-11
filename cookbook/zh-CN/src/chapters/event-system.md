@@ -347,12 +347,12 @@ let expired = timers.poll();  // returns Vec<(ObjectId, u32)> of expired timer I
 
 ```rust
 #[cfg(feature = "touch")]
-use rust_widgets::event::translator::TouchTranslator;
+use rust_widgets::event::translator::TouchEventTranslator;
 
-let translator = TouchTranslator::new();
+let translator = TouchEventTranslator::new();
 
 // Feed touch events; the translator emits synthetic mouse events
-let events = translator.translate_touch_event(&touch_event);
+let events = translator.translate(&touch_event);
 
 for synthetic_event in events {
     widget.handle_event(&synthetic_event);

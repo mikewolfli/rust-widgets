@@ -641,7 +641,7 @@ render 并保留旧公共函数的兼容 re-export，避免 render 反向依赖 
 **推荐最终形态：一个轻量的图标内容模型、一套共享绘制接缝、适用层的资源描述与解析，
 以及各控件薄适配。不是一个全局万能注册表，也不是复制多套图标控件。**
 
-### 19.14 执行状态与后续步骤（跟进用；实施记录见 `docs/log/log-20261012-1.md`）
+### 19.14 执行状态与后续步骤（跟进用；实施记录见 `docs/log/archive/log-20261012-1.md`）
 
 本节不改变上面的设计裁决，只记录**执行进度**与**剩余步骤的顺序**，便于后续接手时不必重读全部日志。
 每完成一格就把证据补进日志并在本表更新；判定"完成"一律按上面 §19.13 的 Definition of Done，
@@ -660,7 +660,7 @@ render 并保留旧公共函数的兼容 re-export，避免 render 反向依赖 
 | U6 | 🟢 闭环 | Builtin `IconSpec` 生成并在 `mini`/`embedded` 真实编译；resource 在生成时被报告为需 resolver（不生成假 setter）；**（2026-10-13）**`GenerationReport::icon_tokens` 可达性报告（收集点即发射点）+ 引用裁剪测试（无图标文档产出零 `IconName::`）+ 未知 kind 在生成前拒绝 + `check_generator_output_compiles.sh` 实跑编译产物（fixture 含行级图标） | 「自定义 geometry/image 的发射」为**格式层具名边界**：持久化联合只有 `builtin`/`resource` 两种，`IconSource::StaticGeometry` 是借用数据、运行期句柄不得写入文档，故生成器对无文档形态的 kind 一律**生成前拒绝**而不伪造 setter（详见日志 §2.3） |
 | U7 | 🟢 闭环 | `Platform::supports_menu_item_icons` → `ControlBackend` → `crate::native_menu_item_icons_supported()` → `WindowHandle::new_menu_item_with_icon`（不支持时保留文本并报告 unsupported presentation）；`tests/native_icon_capability_test.rs`（I15；2026-10-13：I06/I01/I02 三个单案例文件合并为 `tests/icon_contract_test.rs`，I15 因只需 `not(alloc_frugal)` 而**单独保留**——并入会把它窄化成 `full_widgets`，静默丢掉 `embedded` 覆盖）；窗口图标保持 §13 路径契约 | — |
 
-**DoD 进度：第 1–9 条全部闭合**（第三轮补齐第 5/6/9 条，证据见 `docs/log/log-20261012-1.md` 第三轮会话 §6.2；第四轮补齐 U0/U2/U5 的阶段闭环证据，见同文第四轮会话）。
+**DoD 进度：第 1–9 条全部闭合**（第三轮补齐第 5/6/9 条，证据见 `docs/log/archive/log-20261012-1.md` 第三轮会话 §6.2；第四轮补齐 U0/U2/U5 的阶段闭环证据，见同文第四轮会话）。
 阶段完整闭环数：**8/8**（U0–U7 全部）。**这个计数的口径必须写清：🟢 表示「该阶段没有
 未处置的缺陷」，不表示「该阶段涉及的所有集合都已改造」。** U4 的准确含义是条目身份模型未处置项为零；
 同一模式在全仓库仍有 **53 处 / 6 个文件**（`menu_button` 12、`chip` 8、`dropdown_menu` 8、

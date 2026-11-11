@@ -450,7 +450,7 @@ pub struct WebEngineView {
     ///
     /// The view cannot create a platform window, so the request is reported and the host decides
     /// whether to call [`Self::create_page`] or refuse it (WEB-001).
-    pub on_window_requested: Signal1<String>,
+    pub window_requested: Signal1<String>,
     /// Emitted with a host-supplied reason when the render process exits abnormally.
     pub render_process_crashed: Signal1<String>,
     /// Emitted when a deferred JavaScript evaluation finishes, with `(ok, payload)`.
@@ -935,7 +935,7 @@ impl WebEngineView {
             channel_message: Signal1::new(),
             link_hovered: Signal1::new(),
             link_activated: Signal1::new(),
-            on_window_requested: Signal1::new(),
+            window_requested: Signal1::new(),
             render_process_crashed: Signal1::new(),
             js_evaluated: Signal1::new(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
@@ -2164,18 +2164,18 @@ impl WebEngineView {
     /// This is the signal half of the request: the view has no platform window to open, so the
     /// host decides whether to call [`Self::create_page`] or refuse it (WEB-001).
     pub fn request_new_window(&mut self, url: impl Into<String>) {
-        self.on_window_requested.emit(url.into());
+        self.window_requested.emit(url.into());
     }
 
     /// Resolves a link activation against its `target` attribute.
     ///
     /// `target` is the raw attribute value. `_blank` is reported through
-    /// [`Self::on_window_requested`]; any other target is an ordinary navigation and is reported
+    /// [`Self::window_requested`]; any other target is an ordinary navigation and is reported
     /// through [`Self::link_activated`] for the host to perform.
     pub fn activate_link(&mut self, url: impl Into<String>, target: Option<&str>) {
         let url = url.into();
         if target == Some("_blank") {
-            self.on_window_requested.emit(url);
+            self.window_requested.emit(url);
         } else {
             self.link_activated.emit(url);
         }
@@ -2334,11 +2334,17 @@ impl Widget for WebEngineView {
                     rust_widgets::widget::capability::CapabilityValue::String((*v).clone())
                 }))
             }
-            "on_window_requested" => Some(EventSignalRef::mapped(
-                "on_window_requested",
-                &self.on_window_requested,
-                |v| rust_widgets::widget::capability::CapabilityValue::String((*v).clone()),
-            )),
+            "window_requested" => {
+                Some(EventSignalRef::mapped("window_requested", &self.window_requested, |v| {
+                    rust_widgets::widget::capability::CapabilityValue::String((*v).clone())
+                }))
+            }
+            // Legacy spelling (DX-10): the name published before the `on_` prefix was removed.
+            "on_window_requested" => {
+                Some(EventSignalRef::mapped("on_window_requested", &self.window_requested, |v| {
+                    rust_widgets::widget::capability::CapabilityValue::String((*v).clone())
+                }))
+            }
             "render_process_crashed" => Some(EventSignalRef::mapped(
                 "render_process_crashed",
                 &self.render_process_crashed,

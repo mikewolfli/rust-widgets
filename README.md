@@ -60,7 +60,7 @@ rust_widgets = { version = "4.2.0", default-features = false, features = ["mini"
 
 | Profile | Intended for |
 |---|---|
-| `desktop` | Windows, macOS, Linux/BSD — native surface, wgpu, print/PDF, charts, accessibility, bundled text |
+| `desktop` | Windows, macOS, Linux/BSD — native surface, wgpu, charts, accessibility, bundled text (print/PDF are opt-in) |
 | `tablet` | Touch-first devices — wgpu, native controls, bundled text, no desktop extras |
 | `mobile` | iOS, Android, HarmonyOS — touch, wgpu, mobile platform services |
 | `embedded` | Software rasteriser only, no OS services |
@@ -155,12 +155,13 @@ into the same `WidgetFactory` and owns its names, schemas and constructors.
 
 ## What lives under `crates/`
 
-Four packages sit beside the library. None of them is compiled into the core `rust_widgets`
+Five packages sit beside the library. None of them is compiled into the core `rust_widgets`
 package; a host opts in explicitly.
 
 | Crate | What it is | How a host uses it |
 |---|---|---|
 | `rust-widgets-font` | The OFL font payloads behind the `fonts-*` features, split out so the core package stays under crates.io's 10 MiB ceiling. | Implicitly, by enabling a `fonts-*` feature. Do not depend on it directly. |
+| `rust-widgets-icons` | The Material Symbols outlined icon payloads and the `IconName` table behind the `icons-*` features, split out for the same size reason. `IconName` and the `register_icon` family are re-exported by the core package, so existing call sites are unchanged. | Implicitly, by enabling an `icons-*` feature; runtime icons go through `register_icon` / `register_icon_on_grid`. |
 | `rust-widgets-suites` | Seven optional control groups — `form`, `webview`, `finance`, `maps`, `project`, `devtools`, `media-playback` — **39 controls** with the same property, event, layout, wiring and accessibility surfaces as a core control. The web family that used to be the separate `rust-widgets-webview` crate is now the `webview` group. | `rust_widgets_suites::install(&mut factory)`, or one group's `install_*_group`. |
 | `mobile-services` | Mobile application-shell services for Android, iOS and HarmonyOS: keep-awake, haptics, permissions, notifications, share, deep links, safe-area insets and orientation lock. Not GUI core. | `rust_widgets_mobile_services::*` on a mobile target; a desktop build never links it. |
 | `rust-widgets-cli` | The designer CLI, binary `rwui`: validate a project bundle (`check`), generate committed Rust from it (`json2rust`, with `--check` for drift), normalise a document (`fmt`), and scaffold a runnable project for one device profile (`create`). It drives the library's own generator, so it cannot disagree with it. CSS cascade and reverse parsing are later BLUE31 stages, not part of this binary yet. | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`. |

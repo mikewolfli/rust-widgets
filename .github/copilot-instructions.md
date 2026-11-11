@@ -1,7 +1,17 @@
 
 
 # 🔥 PUA-Enforced Code Review Standards
-## go-on Project (Rust + TypeScript)
+## rust-widgets (Rust, 5 packages)
+
+**Repository map (read this before editing):**
+
+- `src/` — the library. Controls live in `src/widget/<family>/`; `WidgetKind` is `src/widget/kind.rs`; platform backends are `src/platform/`.
+- `crates/` — `rust-widgets-suites` (finance / webview / maps / project / devtools / media), `rust-widgets-icons`, `rust-widgets-font`, `mobile-services`.
+- `tools/` — ~131 gate scripts (`check_*.sh`, `*.py`). Run one directly (`bash tools/check_<name>.sh`); the batch runner is `tools/run_all_gates.sh`.
+- `docs/plans/principle.md` — the 106 engineering principles every change must follow.
+- `docs/issues/` — scan reports; `docs/log/` — per-round evidence logs.
+- `.dsh/skills/rust-widgets-maintainer/SKILL.md` — repository-specific maintenance guide (authoritative file-layout list).
+- Tests are mostly inline (`#[cfg(test)] mod tests`); integration tests are in `tests/`.
 
 **ATTENTION: This project uses PUA (Performance Improvement Plan) enforcement. AI assists cannot give up, make excuses, or claim completion without proof.**
 
@@ -14,7 +24,7 @@
 - ❌ "I think it works" / "Should compile"
 - ✅ Show actual build output: `cargo check --all: Finished dev`
 - ❌ "Probably works after this fix"
-- ✅ Run and show: `npm build` or `cargo test` output
+- ✅ Run and show: `cargo test` output (or the specific `bash tools/check_*.sh` result)
 
 ### 🚫 Red Line 2: Fact-Driven (Verify Before Attributing)
 **Say "probably environment issue"? Verify first. Unverified attribution = blame-shifting.**
@@ -24,7 +34,7 @@
 - ✅ "I verified permissions with `ls -la`; the real issue is X"
 
 ### 🚫 Red Line 3: Exhaust Everything
-**Say "I can't"? Did you complete all 5 methodology steps? No? Keep going.**
+**Say "I can't"? Did you complete the methodology checklist (the 7-point L3 list below)? No? Keep going.**
 - ❌ "This is beyond my scope"
 - ✅ "Executed 5 approaches, escalated to L3, 7-point checklist shows X is the root"
 - ❌ "Need more context"
@@ -243,19 +253,22 @@ Prefer using `Result`/`Option`, and validate all input types and ranges.
 
 ## Demo / Example Project Convention
 
-**`main()` 只作为入口桩（stub），所有业务逻辑放在 `app` 模块中。**
+**`main()` stays an entry stub; all business logic lives in the `app` module.**
 
 ```rust
-// ✅ 正确：main.rs
+// ✅ Correct: main.rs
 mod app;
 
 fn main() {
     app::run();
 }
 
-// ✅ 正确：app.rs — 所有逻辑集中在此
+// ✅ Correct: app.rs — the real logic
 pub fn run() {
-    // App 创建、窗口管理、控件构建、事件循环全部在此
+    let mut app = rust_widgets::app::App::new();
+    app.init();
+    // Build the window and its controls here, then pump the event loop.
+    app.run();
 }
 ```
 

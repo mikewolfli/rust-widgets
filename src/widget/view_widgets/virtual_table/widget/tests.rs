@@ -64,6 +64,20 @@ impl IncrementalTableDataSource for StaticSource {
     }
 }
 
+/// U2-06: an RTL page mirrors the cell grid and the hit test with it.
+#[test]
+fn rtl_mirrors_the_cell_grid() {
+    let mut table = VirtualTable::new(Rect::new(0, 0, 240, 80));
+    table.set_data_source(Arc::new(StaticSource));
+    let rect = table.geometry();
+    crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+        // Column 0 (120 px wide) occupies the right half of the 236 px content band.
+        assert_eq!(table.column_at(rect.x + rect.width as i32 - 3), Some(0));
+        // The leftmost pixel mirrors to the band's right edge, which is column 1.
+        assert_eq!(table.column_at(rect.x + 2), Some(1));
+    });
+}
+
 /// A menu request selects the cell under the pointer before it is emitted (C-9).
 #[test]
 fn a_menu_request_selects_the_cell_under_the_pointer() {
@@ -1186,4 +1200,52 @@ fn switching_to_single_selection_reports_the_surviving_cell() {
     assert_eq!(table.selected_cells(), vec![(5, 0)], "the last row survives the trim");
     assert_eq!(*single.lock().expect("lock"), vec![Some((5, 0))]);
     assert_eq!(*whole.lock().expect("lock"), vec![vec![(5, 0)]]);
+}
+
+/// UX-04: the scroll thumb is derived from the overflow, so a grid whose rows run past its
+/// viewport reports that fact even though the opt-in flag is off by default.
+#[test]
+#[cfg(all(device_profile, feature = "desktop"))]
+fn an_overflowing_grid_derives_its_scroll_thumb() {
+    use crate::core::Color;
+
+    struct TwoRowSource;
+    impl IncrementalTableDataSource for TwoRowSource {
+        fn row_count(&self) -> usize {
+            2
+        }
+        fn column_count(&self) -> usize {
+            2
+        }
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            Some(format!("{row}:{column}"))
+        }
+    }
+
+    let _guard = crate::theme::theme_test_guard();
+    crate::widget::census::install_preset_appearances();
+    crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+
+    let palette = crate::style::palette_shared();
+    let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
+    let thumb = format!("rgba({},{},{},", accent.r, accent.g, accent.b);
+
+    let mut overflow = VirtualTable::new(Rect::new(0, 0, 320, 200));
+    overflow.set_data_source(Arc::new(StaticSource)); // 100 of 20 columns
+    crate::theme::apply_theme_to_widget(&mut overflow);
+    let painted = render_to_svg(&mut overflow);
+    assert!(
+        painted.contains(&thumb),
+        "an overflowing grid must paint a thumb in the accent colour, so a reader can see that \
+         rows are off-screen"
+    );
+
+    let mut fits = VirtualTable::new(Rect::new(0, 0, 320, 200));
+    fits.set_data_source(Arc::new(TwoRowSource));
+    crate::theme::apply_theme_to_widget(&mut fits);
+    let bare = render_to_svg(&mut fits);
+    assert!(
+        !bare.contains(&thumb),
+        "a grid whose rows all fit has nothing to report, so it must not paint a thumb"
+    );
 }

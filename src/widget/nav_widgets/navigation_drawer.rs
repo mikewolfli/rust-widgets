@@ -707,6 +707,10 @@ impl Widget for NavigationDrawer {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// Reachable by keyboard: without an override the key arms can never run (U3-01).
+    fn is_focusable(&self) -> bool {
+        true
+    }
     /// The drawer's item list scrolls under the wheel (C2-D0).
     fn accepts_wheel(&self) -> bool {
         true

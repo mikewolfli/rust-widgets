@@ -968,6 +968,10 @@ impl Widget for Pagination {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// Reachable by keyboard: without an override the key arms can never run (U3-01).
+    fn is_focusable(&self) -> bool {
+        true
+    }
     /// A pager moves one page per wheel notch (C2-D0).
     fn accepts_wheel(&self) -> bool {
         true
@@ -1239,6 +1243,10 @@ impl Draw for Pagination {
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         let selected_background = style.border_color.unwrap_or(Color::rgb(60, 90, 160));
         let outline = style.border_color.unwrap_or(Color::rgb(210, 210, 210));
+        // U3-03: a disabled bar's labels and rim recede by the shared ink rule instead of holding
+        // full contrast while only the handler is gated.
+        let text_color = self.base.disabled_ink_on(text_color, background);
+        let outline = self.base.disabled_ink_on(outline, background);
         // The glyph size is derived from the **bar's** height, not the control's.
         //
         // The rasteriser paints a glyph **downward** from its origin, so a 48 px font in a

@@ -273,27 +273,27 @@ fn pixel_from_color(c: Color) -> u32 {
 
 ## 控制后端定制
 
-控制后端管理控件调度策略和路由：
+控制后端决定由谁绘制控件，并提供后端契约：
 
 ```rust
-use rust_widgets::control_backend::Dispatcher;
-use rust_widgets::core::ObjectId;
+use rust_widgets::control_backend::{
+    get_control_backend, route_preference_for_widget_kind, ControlBackend,
+    ControlBackendKind, ControlRoutePreference,
+};
+use rust_widgets::widget::WidgetKind;
 
-// 配置调度策略
-struct CustomDispatchPolicy;
+// 进程级后端（当前所有 profile 中都是库自己的绘制器）。
+let backend: &'static dyn ControlBackend = get_control_backend();
+let kind: ControlBackendKind = backend.kind();
+let name: &str = backend.backend_name();
 
-impl Dispatcher for CustomDispatchPolicy {
-    fn should_dispatch_to_widget(&self, widget_id: ObjectId, action: &str) -> bool {
-        // 自定义路由逻辑
-        !action.contains("internal")
-    }
-
-    fn route_action(&self, widget_id: ObjectId, action: &str) -> Option<ObjectId> {
-        // 将动作路由到特定处理器
-        None  // 默认路由
-    }
-}
+// 按控件的路由偏好：必须由哪种机制绘制。
+let preference: ControlRoutePreference =
+    route_preference_for_widget_kind(WidgetKind::Button);
+assert_eq!(preference, ControlRoutePreference::CustomRequired);
 ```
+
+不存在 `Dispatcher` trait：路由是一张按 kind 的偏好表，加上进程级后端，因此调用方不需要安装策略对象。
 
 ## 信号/槽高级模式
 
@@ -419,7 +419,7 @@ assert_eq!(greeting.get(), "Hello, Jane Doe!");
 实现图表 trait 以创建自定义可视化：
 
 ```rust
-use rust_widgets::chart::{
+use rust_widgets::widget::chart_widgets::{
     ChartContext, Chart, ChartData,
 };
 
@@ -933,7 +933,7 @@ mod tests {
 | 自定义控件 | `Widget` + `EventHandler` + `Draw` trait |
 | 自定义布局 | `Layout` trait，包含 `update()`、`add_widget()` |
 | 自定义后端 | `PaintBackend` trait（fill_rect、draw_rect 等） |
-| 控制后端 | `Dispatcher` trait 用于调度策略 |
+| 控制后端 | `ControlBackend` trait 加按 kind 的路由表 |
 | 信号/槽 | `ConnectionScope`、`connect_once()`、重入安全性 |
 | 数据绑定 | `Binding<T>`、`Computed<T>`、`FnListener` |
 | 自定义图表 | `Chart` trait + `ChartContext` |

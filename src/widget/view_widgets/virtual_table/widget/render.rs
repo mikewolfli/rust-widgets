@@ -264,25 +264,28 @@ impl Draw for VirtualTable {
             }
         }
 
-        if self.show_scrollbar {
-            let total_rows = self.row_count().max(1);
-            let (rows, _) = self.visible_grid(rect);
-            let visible_rows = rows.max(1).min(total_rows);
-            let track = rect.height.saturating_sub(4).max(1);
-            let thumb = ((track as u64 * visible_rows as u64) / total_rows as u64)
-                .max(24)
-                .min(track as u64) as u32;
-            let max_scroll = total_rows.saturating_sub(visible_rows);
-            let travel = track.saturating_sub(thumb);
-            let offset = if max_scroll == 0 {
-                0
-            } else {
-                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
-            };
-            context.fill_rect(
-                Rect::new(rect.x + rect.width as i32 - 6, rect.y + 2 + offset as i32, 4, thumb),
-                accent.with_alpha(120),
-            );
+        // The thumb is derived (UX-04): a virtualized table whose rows run past the viewport
+        // paints it whether or not a caller asked, because a scrolling table with no indication
+        // is chrome that lies. The flag stays as a force-on override.
+        let total_rows = self.row_count().max(1);
+        let (rows, _) = self.visible_grid(rect);
+        let visible_rows = rows.max(1).min(total_rows);
+        // A 2 px inset keeps the thumb off the frame's own stroke.
+        let track = Rect::new(
+            rect.x,
+            rect.y + 2,
+            rect.width.saturating_sub(2),
+            rect.height.saturating_sub(4).max(1),
+        );
+        if let Some(band) = crate::widget::overscroll::scroll_thumb_rect(
+            track,
+            total_rows,
+            visible_rows,
+            self.scroll_row,
+            4,
+            self.show_scrollbar,
+        ) {
+            context.fill_rect(band, accent.with_alpha(120));
         }
     }
 }

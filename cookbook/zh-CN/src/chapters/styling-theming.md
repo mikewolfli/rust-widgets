@@ -1,6 +1,6 @@
 # 样式与主题
 
-`rust-widgets` 样式系统通过级联解析链解析窗口部件的外观：**主题（Theme）→ ThemeOverrides → StatefulTheme → 内联 CSS**。系统包含一个带有选择器引擎和特异性的 CSS 解析器、可热重载的样式表、一个具有 10 种缓动函数和基于物理的弹簧的动画框架，以及内置的 Material 亮色/暗色主题，提供全面的视觉定制能力。
+`rust-widgets` 样式系统通过级联解析链解析窗口部件的外观：**主题（Theme）→ ThemeOverrides → `<kind>:<state>` 状态覆盖 → 内联 CSS**。系统包含一个带有选择器引擎和特异性的 CSS 解析器、可热重载的样式表、一个具有 10 种缓动函数和基于物理的弹簧的动画框架，以及内置的 Material 亮色/暗色主题，提供全面的视觉定制能力。
 
 ---
 
@@ -11,7 +11,7 @@
 ```
 1. 全局主题默认值 (ThemeManager → Theme)
 2. 按窗口部件类别的 ThemeOverrides（例如 "Button"、"Label"）
-3. 窗口部件实例状态 (StatefulTheme → WidgetState)
+3. 窗口部件实例状态 (WidgetState → `resolve_style_for_state`)
 4. 内联样式覆盖 (StyleSheetManager 中的 CSS)
 ```
 
@@ -689,69 +689,42 @@ manager.save_theme("exported_theme.json")?;
 
 ---
 
-## `ThemeStateManager` — 亮色/暗色/自动模式
+## 亮色/暗色/自动外观
 
-管理按窗口部件状态的主题，支持亮色/暗色/自动切换：
+并不存在单独的“状态主题”类型。亮/暗切换由 `ThemeManager` 持有，按状态的外观来自主题的 `<kind>:<state>` 覆盖表。
 
 ```rust
-use rust_widgets::style::theme_state::{ThemeStateManager, ThemeMode, StatefulTheme, WidgetState, StateTheme};
+use rust_widgets::style::{ThemeMode, WidgetState};
+use rust_widgets::theme::{global_theme_manager, AppearanceMode};
 
-let mut light_theme = StatefulTheme::new("light");
+let mut manager = global_theme_manager();
 
-// 为按钮定义各状态
-light_theme.add_state(WidgetState::Normal, StateTheme::new(
-    Color::from_rgb(33, 150, 243),   // 背景
-    Color::WHITE,                     // 前景
-    Color::WHITE,                     // 文本
-));
+// 显式亮色/暗色
+manager.set_appearance(AppearanceMode::Dark);
 
-light_theme.add_state(WidgetState::Hover, StateTheme::new(
-    Color::from_rgb(66, 165, 245),
-    Color::WHITE,
-    Color::WHITE,
-));
+// 跟随宿主的系统偏好
+manager.follow_environment_appearance();
 
-light_theme.add_state(WidgetState::Pressed, StateTheme::new(
-    Color::from_rgb(25, 118, 210),
-    Color::WHITE,
-    Color::WHITE,
-));
+// 切换到命名主题
+manager.set_theme("dark");
 
-light_theme.add_state(WidgetState::Disabled, StateTheme::new(
-    Color::from_rgb(189, 189, 189),
-    Color::from_rgb(245, 245, 245),
-    Color::from_rgb(158, 158, 158),
-));
-
-// 暗色主题变体
-let mut dark_theme = StatefulTheme::new("dark");
-// ... 定义暗色状态 ...
-
-// 创建管理器
-let mut state_manager = ThemeStateManager::new(light_theme, dark_theme);
-
-// 切换模式
-state_manager.set_mode(ThemeMode::Dark);
-state_manager.toggle_mode();  // 暗色 → 亮色 → 自动模式循环
-
-// 基于时间的自动切换
-state_manager.set_auto_switch(18, 6);  // UTC 时间 18:00 到 6:00 为暗色模式
-
-// 响应模式变化
-state_manager.on_mode_changed(|mode| {
-    match mode {
-        ThemeMode::Light => println!("切换到亮色主题"),
-        ThemeMode::Dark => println!("切换到暗色主题"),
-        ThemeMode::Auto => println("自动模式已激活"),
-    }
-});
-
-// 解析状态特定的外观
-let hover_style: &StateTheme = state_manager.get_state_theme(&WidgetState::Hover);
-widget.set_background(hover_style.background_color);
-widget.set_foreground(hover_style.foreground_color);
-widget.set_text_color(hover_style.text_color);
+// 响应以上任一变化
+let _changed = manager.on_theme_changed();
 ```
+
+`ThemeMode` 只描述宿主可暴露的三种策略：`Light`、`Dark`、`Auto`。管理器把 `Light`/`Dark` 映射到 `AppearanceMode`；`Auto` 读取已安装的设备偏好并在缺失时回退到亮色。
+
+### 解析状态特定的样式
+
+```rust
+use rust_widgets::style::WidgetState;
+use rust_widgets::theme::global_theme_manager;
+
+let manager = global_theme_manager();
+let hover = manager.resolve_style_for_state("button", Some(WidgetState::Hover));
+```
+
+查找键是 `<kind>:<state>`，因此主题作者只需在主题的 `overrides.styles` 表中写一条规则，不必另外定义一套并行主题。
 
 ### `WidgetState` — 12 种交互状态
 
@@ -772,27 +745,21 @@ pub enum WidgetState {
 }
 ```
 
-### `StateTheme` — 每状态的视觉属性
+### `StateOverlay` — 叠加在填充之上的效果
+
+`StateOverlay` 是 `WidgetState` 的绘制期补充：控件可以同时处于悬停与聚焦状态，叠加层说明在“胜出的那一个填充状态”之上还要加哪些效果。
 
 ```rust
-let mut state_theme = StateTheme::new(
-    Color::WHITE,                   // 背景
-    Color::BLACK,                   // 前景
-    Color::from_rgb(33, 33, 33),   // 文本
-)
-    .with_border(Color::GRAY, 1)
-    .with_shadow(Color::rgba(0, 0, 0, 30), (0, 2), 4)
-    .with_opacity(0.95)
-    .with_property("border-radius", "8");
+use rust_widgets::style::{StateOverlay, HOVER_FILL_BLEND, PRESSED_FILL_BLEND};
+
+// 参数依次为（悬停, 按下, 聚焦）。
+let overlay = StateOverlay::from_base(true, false, true);
+if !overlay.is_empty() {
+    let blend = overlay.fill_blend(); // 此处为 HOVER_FILL_BLEND == 0.08
+}
 ```
 
-**状态过渡：** 定义状态对之间的动画持续时间：
-
-```rust
-stateful_theme.set_transition(WidgetState::Normal, WidgetState::Hover, 200);   // 200ms 悬停进入
-stateful_theme.set_transition(WidgetState::Hover, WidgetState::Normal, 150);   // 150ms 悬停退出
-stateful_theme.set_transition(WidgetState::Normal, WidgetState::Pressed, 50);  // 瞬时按下
-```
+**状态过渡**使用动效 token，而不是每个控件各自写时长，因而所有控件的状态变化节奏一致（参见上文的动效 token 与 `ThemeManager::resolve_style_for_state`）。
 
 ---
 
@@ -1007,27 +974,19 @@ refresh_indicator.set_position(offset);
 fn resolve_widget_style(
     widget_id: ObjectId,
     theme_manager: &ThemeManager,
-    state_manager: &ThemeStateManager,
     class: &str,
-    state: &WidgetState,
+    state: Option<WidgetState>,
 ) -> WidgetStyle {
-    // 1. 基于主题的基础样式
-    let mut style = theme_manager.resolve_style(class);
+    // 1. 基础样式 + 主题的 "<kind>:<state>" 覆盖，一次调用完成。
+    let mut style = theme_manager.resolve_style_for_state(class, state);
 
-    // 2. 状态主题覆盖
-    let state_theme = state_manager.get_state_theme(state);
-    style.background_color = style.background_color.or(Some(state_theme.background_color));
-    style.text_color = style.text_color.or(Some(state_theme.text_color));
-    style.border_color = style.border_color.or(Some(state_theme.border_color));
-    style.border_width = if style.border_width == 0 { state_theme.border_width } else { style.border_width };
-    style.opacity = style.opacity.map(|o| o * state_theme.opacity);
-
-    // 3. 全局样式表管理器中的 CSS 覆盖
+    // 2. 来自全局样式表管理器的 CSS 覆盖。
+    //    `PseudoState` 是 `WidgetState` 的别名，因此状态可直接传入。
     let mgr = global_stylesheet_manager();
-    let _ = mgr.apply_to(class, None, None, Some(to_pseudo_state(state)), &mut style);
+    let _ = mgr.apply_to(class, None, None, state, &mut style);
 
-    // 4. 内联覆盖（应用特定）
-    // ... 合并每个窗口部件的内联覆盖 ...
+    // 3. 内联覆盖（应用自定义）
+    // ... 合并每个控件的内联覆盖 ...
 
     style
 }

@@ -1363,6 +1363,12 @@ impl EventHandler for FontComboBox {
         // The gesture is resolved before the base records the event: the base clears
         // `pressed` on the release, so the commit guard must read the value the press set.
         match event {
+            // Committed text is the same insertion as a printable key, but it arrives after
+            // the input method resolved a composition. Without this arm an IME user could
+            // type into the list only through raw key codes (U3-02).
+            Event::TextInput { text } | Event::ImeCommit { text } if self.editable => {
+                self.edit_insert(text);
+            }
             Event::KeyPress { key, modifiers } if self.editable => {
                 // Mirrors `EditableComboBox`'s key convention: 8 is backspace, 127 forward
                 // delete, 13 Enter, 27 Escape, the caret keys move the insertion point (Shift

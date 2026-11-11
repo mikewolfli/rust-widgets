@@ -290,6 +290,11 @@ impl Widget for GridFindBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// The query/replace fields edit text, so composition text belongs to this control even
+    /// though its kind is the shared `Panel` (U3-02).
+    fn accepts_ime_input(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }

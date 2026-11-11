@@ -4,6 +4,11 @@ rust-widgets includes a built-in charting system with five chart types, a
 pluggable drawing backend, SVG export, and widget integration — all through
 the same rendering pipeline with no external charting dependency.
 
+> **Feature gate.** `rust_widgets::widget::chart_widgets` is compiled when the
+> `chart` feature is on, which the `desktop`/`tablet`/`mobile` profiles enable
+> by default. On a profile built with `--no-default-features` add `chart`
+> explicitly.
+
 ---
 
 ## 1. Data Types
@@ -11,7 +16,7 @@ the same rendering pipeline with no external charting dependency.
 ### `DataPoint`
 
 ```rust
-use rust_widgets::chart::DataPoint;
+use rust_widgets::widget::chart_widgets::DataPoint;
 
 let point = DataPoint {
     x: 1.0,
@@ -36,7 +41,7 @@ let simple = DataPoint {
 ### `ChartSeries`
 
 ```rust
-use rust_widgets::chart::{ChartSeries, DataPoint};
+use rust_widgets::widget::chart_widgets::{ChartSeries, DataPoint};
 use rust_widgets::core::Color;
 
 let series = ChartSeries {
@@ -77,7 +82,7 @@ pub enum ChartType {
 ### Factory Method
 
 ```rust
-use rust_widgets::chart::ChartType;
+use rust_widgets::widget::chart_widgets::ChartType;
 
 // Create a boxed chart from a type variant
 let chart: Box<dyn Chart> = ChartType::Line.create_chart();
@@ -106,7 +111,7 @@ pub trait Chart {
 Every chart type implements this trait, making them interchangeable:
 
 ```rust
-use rust_widgets::chart::{Chart, ChartType, ChartSeries};
+use rust_widgets::widget::chart_widgets::{Chart, ChartType, ChartSeries};
 use rust_widgets::core::Rect;
 
 let mut chart = ChartType::Line.create_chart();
@@ -121,7 +126,7 @@ chart.draw(Rect::new(0, 0, 800, 400), &mut context);
 
 ---
 
-## 4. The `ChartContext` Trait (14 Drawing Primitives)
+## 4. The `ChartContext` Trait (13 Drawing Primitives)
 
 `ChartContext` is the pluggable drawing backend. Two implementations are provided:
 `SvgChartContext` for vector output and `MemoryChartContext` for testing.
@@ -131,6 +136,8 @@ pub trait ChartContext {
     fn draw_line(&mut self, from: Point, to: Point, width: f32, color: Color);
     fn draw_rect(&mut self, rect: Rect, color: Color);
     fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, color: Color);
+    fn measure_text(&self, text: &str, font_size: f32) -> f32;
+    fn text_line(&self, band: Rect, font_size: f32) -> Rect;
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color);
     fn draw_polygon(&mut self, points: &[Point], color: Color);
     fn draw_path_segment(&mut self, start: Point, end: Point, width: f32, color: Color);
@@ -147,14 +154,16 @@ pub trait ChartContext {
 | 1 | `draw_line` | Line segment from-to with width |
 | 2 | `draw_rect` | Filled rectangle at rect with color |
 | 3 | `draw_text` | Text at position with font size and color |
-| 4 | `draw_circle` | Filled circle at center with radius |
-| 5 | `draw_polygon` | Filled polygon from point list |
-| 6 | `draw_path_segment` | Single path segment (line) |
-| 7 | `draw_arc` | Arc approximation via polygon segments |
-| 8 | `draw_path` | Multi-segment SVG path |
-| 9 | `draw_ellipse` | Filled ellipse |
-| 10 | `set_fill_color` | Set fill color for subsequent draws |
-| 11 | `set_stroke_color` | Set stroke color for subsequent draws |
+| 4 | `measure_text` | Measured advance of one line (default implementation) |
+| 5 | `text_line` | The line box a glyph origin is placed from |
+| 6 | `draw_circle` | Filled circle at center with radius |
+| 7 | `draw_polygon` | Filled polygon from point list |
+| 8 | `draw_path_segment` | Single path segment (line) |
+| 9 | `draw_arc` | Arc approximation via polygon segments |
+| 10 | `draw_path` | Multi-segment SVG path |
+| 11 | `draw_ellipse` | Filled ellipse |
+| 12 | `set_fill_color` | Set fill color for subsequent draws |
+| 13 | `set_stroke_color` | Set stroke color for subsequent draws |
 
 ---
 
@@ -163,9 +172,9 @@ pub trait ChartContext {
 ### LineChart
 
 ```rust
-use rust_widgets::chart::{LineChart, Chart, ChartSeries, DataPoint};
+use rust_widgets::widget::chart_widgets::{LineChart, Chart, ChartSeries, DataPoint};
 use rust_widgets::core::{Color, Rect};
-use rust_widgets::chart::svg::MemoryChartContext;
+use rust_widgets::widget::chart_widgets::svg::MemoryChartContext;
 
 let mut chart = LineChart::new();
 chart.set_title("Temperature Trend".into());
@@ -197,7 +206,7 @@ println!("Commands: {:?}", ctx.commands);
 ### BarChart
 
 ```rust
-use rust_widgets::chart::BarChart;
+use rust_widgets::widget::chart_widgets::BarChart;
 
 let mut chart = BarChart::new();
 chart.set_title("Monthly Sales".into());
@@ -234,7 +243,7 @@ chart.add_series(ChartSeries {
 ### PieChart
 
 ```rust
-use rust_widgets::chart::PieChart;
+use rust_widgets::widget::chart_widgets::PieChart;
 
 let mut chart = PieChart::new();
 chart.set_title("Market Share".into());
@@ -264,7 +273,8 @@ chart.add_series(ChartSeries {
 ### ScatterChart & AreaChart
 
 ```rust
-use rust_widgets::chart::{ScatterChart, AreaChart};
+use rust_widgets::widget::chart_widgets::charts::{ScatterChart, AreaChart};
+use rust_widgets::widget::chart_widgets::Chart;
 
 // Scatter chart — individual points
 let mut scatter = ScatterChart::new();
@@ -340,8 +350,8 @@ verification.
 ### Render to SVG File
 
 ```rust
-use rust_widgets::chart::{Chart, ChartType};
-use rust_widgets::chart::svg::render_chart_to_svg_file;
+use rust_widgets::widget::chart_widgets::{Chart, ChartType};
+use rust_widgets::widget::chart_widgets::svg::render_chart_to_svg_file;
 use rust_widgets::core::Rect;
 
 let mut chart = ChartType::Line.create_chart();
@@ -359,7 +369,7 @@ render_chart_to_svg_file(
 ### Render to SVG String
 
 ```rust
-use rust_widgets::chart::svg::SvgChartContext;
+use rust_widgets::widget::chart_widgets::svg::SvgChartContext;
 use rust_widgets::core::Rect;
 
 let mut ctx = SvgChartContext::new(800, 400);
@@ -394,8 +404,8 @@ Text is XML-escaped (`&`, `<`, `>`).
 without rendering:
 
 ```rust
-use rust_widgets::chart::svg::MemoryChartContext;
-use rust_widgets::chart::{Chart, ChartType, ChartSeries, DataPoint};
+use rust_widgets::widget::chart_widgets::svg::MemoryChartContext;
+use rust_widgets::widget::chart_widgets::{Chart, ChartType, ChartSeries, DataPoint};
 use rust_widgets::core::{Color, Rect};
 
 let mut chart = ChartType::Line.create_chart();
@@ -442,7 +452,7 @@ assert!(ctx.commands.iter().any(|cmd| cmd.starts_with("line:")));
 position from a given bounding rectangle:
 
 ```rust
-use rust_widgets::chart::charts::compute_cartesian_layout;
+use rust_widgets::widget::chart_widgets::charts::compute_cartesian_layout;
 use rust_widgets::core::Rect;
 
 let rect = Rect::new(0, 0, 800, 400);
@@ -462,7 +472,7 @@ println!("Legend at: ({}, {})", layout.legend_x, layout.legend_y);
 ### Axis and Tick Drawing Functions
 
 ```rust
-use rust_widgets::chart::charts::{
+use rust_widgets::widget::chart_widgets::charts::{
     draw_cartesian_axes,
     draw_x_ticks,
     draw_y_ticks,
@@ -488,7 +498,7 @@ draw_legend(&mut ctx, &layout, &visible_series);
 container:
 
 ```rust
-use rust_widgets::chart::layout::ChartLayout;
+use rust_widgets::widget::chart_widgets::layout::ChartLayout;
 use rust_widgets::layout::Layout;
 use rust_widgets::core::Rect;
 
@@ -528,10 +538,10 @@ layout.clear();
 ## 11. Complete Chart Example with Real Data
 
 ```rust
-use rust_widgets::chart::{
+use rust_widgets::widget::chart_widgets::{
     Chart, ChartType, ChartSeries, DataPoint,
 };
-use rust_widgets::chart::svg::{SvgChartContext, MemoryChartContext};
+use rust_widgets::widget::chart_widgets::svg::{SvgChartContext, MemoryChartContext};
 use rust_widgets::core::{Color, Rect};
 
 fn main() {
@@ -632,7 +642,7 @@ fn main() {
                  │ draw(rect, context)
      ┌───────────▼───────────┐
      │   ChartContext Trait   │
-     │  14 drawing primitives │
+     │  13 drawing primitives │
      └───────────┬───────────┘
                  │
      ┌───────────┼───────────┐
@@ -649,7 +659,7 @@ fn main() {
 | `ChartSeries` | Named collection of data points with color and visibility |
 | `ChartType` | Enum with factory method for chart instantiation |
 | `Chart` trait | Universal chart interface: series management, axis labels, draw |
-| `ChartContext` trait | Pluggable drawing backend with 14 primitives |
+| `ChartContext` trait | Pluggable drawing backend with 13 primitives |
 | `LineChart` | Polyline chart with ticks, grid, legend |
 | `BarChart` | Vertical bar chart with grouped series |
 | `PieChart` | Pie/donut chart with arc rendering |

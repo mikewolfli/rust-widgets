@@ -373,6 +373,79 @@ impl PrefixAdvances {
     pub(super) fn byte_at(&self, count: usize) -> usize {
         self.cuts.get(count).map(|(offset, _)| *offset).unwrap_or(0)
     }
+
+    /// The **visual** advance of the caret at `byte`, or `None` when the line needs no reordering.
+    ///
+    /// # Why the logical prefix advance is not the caret's visual position
+    ///
+    /// This table's cumulative advances are in **logical** order, which is the paint order only
+    /// for a left-to-right line. In an RTL run the visual order is reversed, so the caret at
+    /// logical offset 0 belongs at the *right* end (UX6-02). [`crate::render::text::bidi`] owns
+    /// the mapping; this method supplies it with the same per-character advances the hit test and
+    /// the scroll bounds already read, so the three cannot disagree.
+    ///
+    /// `text` must be the string this table was built from — the callers pass the field's own
+    /// value, which is what [`Self::rebuild`] measured.
+    pub(super) fn visual_advance_at(&self, text: &str, font: &Font, byte: usize) -> Option<i32> {
+        // The all-LTR line is the steady state, and it pays nothing: no ranges, no levels, no
+        // ordering (a text field measures its caret every frame).
+        if !crate::render::text::bidi::has_rtl_char(text) {
+            return None;
+        }
+        let (ranges, advances) = self.clusters_and_advances();
+        if ranges.is_empty() {
+            return None;
+        }
+        let levels = crate::render::text::line::line_bidi_levels(text, &ranges, font, 1.0);
+        crate::render::text::bidi::caret_visual_advance_from_levels(
+            levels.as_ref(),
+            &ranges,
+            &advances,
+            byte,
+        )
+        .map(|x| x.round() as i32)
+    }
+
+    /// The byte boundary nearest the **visual** advance `x`, or `None` when the line is LTR.
+    pub(super) fn visual_byte_at(&self, text: &str, font: &Font, x: i32) -> Option<usize> {
+        if !crate::render::text::bidi::has_rtl_char(text) {
+            return None;
+        }
+        let (ranges, advances) = self.clusters_and_advances();
+        if ranges.is_empty() {
+            return None;
+        }
+        let levels = crate::render::text::line::line_bidi_levels(text, &ranges, font, 1.0);
+        let boundary = crate::render::text::bidi::caret_boundary_from_visual_advance(
+            levels.as_ref(),
+            &ranges,
+            &advances,
+            x as f32,
+        )?;
+        Some(
+            ranges
+                .get(boundary)
+                .map_or_else(|| ranges.last().map_or(0, |&(_, end)| end), |&(start, _)| start),
+        )
+    }
+
+    /// One `(start, end)` range and one advance per character, in logical order.
+    ///
+    /// The table is built one entry per `char`, which is the granularity the hit test has always
+    /// used; the bidi levels are read per range, so the mapping is consistent with it even where
+    /// the shaper would merge a base and its combining mark into one painted cluster.
+    fn clusters_and_advances(&self) -> (Vec<(usize, usize)>, Vec<f32>) {
+        let count = self.cuts.len().saturating_sub(1);
+        let mut ranges = Vec::with_capacity(count);
+        let mut advances = Vec::with_capacity(count);
+        for pair in self.cuts.windows(2) {
+            let (start, before) = pair[0];
+            let (end, after) = pair[1];
+            ranges.push((start, end));
+            advances.push((after - before) as f32);
+        }
+        (ranges, advances)
+    }
 }
 
 /// The memoised decoration layout and the inputs it was derived from (I-P13).
@@ -1079,13 +1152,9 @@ impl LineEdit {
     /// predicate only asked `is_whitespace`, so `Ctrl+Right` on `foo,bar` treated the comma as
     /// part of the word and never stopped at it (I-012).
     pub(super) fn char_class(ch: char) -> u8 {
-        if ch.is_whitespace() {
-            0
-        } else if ch.is_alphanumeric() || ch == '_' {
-            1
-        } else {
-            2
-        }
+        // UX6-09: the class rule is shared with the rest of the text-entry family, so a
+        // double-click selects the same word in a `LineEdit` and in a `SearchBox`.
+        crate::widget::text_utils::char_class(ch)
     }
 
     /// The byte range of the word around `index`, for a double-click selection.
@@ -1094,37 +1163,7 @@ impl LineEdit {
     /// whitespace or punctuation selects that run itself, which is what keeps a double-click on a
     /// gap or a separator from silently doing nothing.
     pub(super) fn word_range_at(&self, index: usize) -> (usize, usize) {
-        let index = floor_char_boundary(&self.text, index.min(self.text.len()));
-        // The character the press landed on; at the end of the value the class is taken from the
-        // character before it, so a double-click on the trailing edge selects the last word.
-        let sampled = self.text[index..]
-            .chars()
-            .next()
-            .or_else(|| self.text[..index].chars().next_back())
-            .unwrap_or(' ');
-        let class = Self::char_class(sampled);
-        let same_class = |ch: char| Self::char_class(ch) == class;
-        let mut start = index;
-        for (i, ch) in self.text[..index].char_indices().rev() {
-            if !same_class(ch) {
-                break;
-            }
-            start = i;
-        }
-        let mut end = index;
-        for (i, ch) in self.text[index..].char_indices() {
-            if !same_class(ch) {
-                break;
-            }
-            end = index + i + ch.len_utf8();
-        }
-        // A press on the boundary between two words selects the word, not the empty run.
-        if start == end {
-            if let Some((i, ch)) = self.text[..index].char_indices().next_back() {
-                return (i, i + ch.len_utf8());
-            }
-        }
-        (start, end)
+        crate::widget::text_utils::word_range_at(&self.text, index)
     }
 
     /// The byte offset of the start of the word before `from`.

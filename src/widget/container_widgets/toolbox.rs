@@ -1057,6 +1057,10 @@ impl Widget for ToolBox {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// Reachable by keyboard: without an override the key arms can never run (U3-01).
+    fn is_focusable(&self) -> bool {
+        true
+    }
     fn scrollable_rows(&self) -> Option<&dyn crate::widget::container_widgets::ScrollableRows> {
         Some(self)
     }

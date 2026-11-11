@@ -263,6 +263,11 @@ impl Widget for TreeFindBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// The query/replace fields edit text, so composition text belongs to this control even
+    /// though its kind is the shared `Panel` (U3-02).
+    fn accepts_ime_input(&self) -> bool {
+        true
+    }
     /// A closed bar paints nothing, so it must not accept a press over its rectangle.
     fn contains_point(&self, point: Point) -> bool {
         self.visible && self.base.contains_point_with_touch_expansion(point)

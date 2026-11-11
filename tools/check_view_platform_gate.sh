@@ -113,8 +113,11 @@ check_profile() {
   shift 2
 
   local out status
+  # N2-03: this was the only unbounded `cargo` call left in a gate. Every other gate goes
+  # through `rw_run_bounded`/`rw_cargo_cached`, so a hung compile here blocked the calling
+  # `check_profiles.sh` (which CI runs directly) with no watchdog.
   set +e
-  out="$(cargo test --test view_platform_gate_probe --no-run "$@" 2>&1)"
+  out="$(rw_cargo_cached "${RW_GATE_TIMEOUT:-900}" test --test view_platform_gate_probe --no-run "$@" 2>&1)"
   status=$?
   set -e
 

@@ -405,55 +405,67 @@ match platform::runtime_gui_mode() {
 
 ---
 
-## 5. Device Environment Detection
+## 5. Device Class and Touch Targets
 
-`DeviceEnvironment` provides runtime detection of device class, touch capability,
-screen size, DPI, orientation, and accessibility preferences.
+The supported device classes live in `TouchTargetSize`, and the running build
+extends one of them through a platform fact (never through an OS check in the
+caller).
 
 ```rust
-use rust_widgets::platform::detector::DeviceEnvironment;
-use rust_widgets::core::{DeviceClass, Size};
+use rust_widgets::core::Size;
+use rust_widgets::platform::profile::recommended_touch_target;
 
-// Auto-detect from screen dimensions and DPI
-let env = DeviceEnvironment::detect(Size::new(1920, 1080), 1.0);
+// Which class this build is: Phone (mobile), Tablet, Desktop or Embedded.
+let class = recommended_touch_target();
 
-println!("Device class:  {:?}", env.device_class);  // Desktop
-println!("Touch capable: {}", env.touch_capable);
-println!("Orientation:   {:?}", env.orientation);
-println!("DPI scale:     {:.1}", env.dpi_scale);
+// Recommended minimum target and spacing in logical pixels.
+let target = class.dimensions();
+let spacing = class.spacing();
+println!("target {}x{}, spacing {}", target.width, target.height, spacing);
 
-// Touch target recommendations (logical pixels)
-let target = env.min_touch_target();  // Desktop: 32×32, Tablet: 44×44, Mobile: 48×48
-println!("Min touch target: {}×{}", target.width, target.height);
-println!("Touch spacing:    {}", env.touch_spacing());
+// Expand only the hit-test region; visual geometry is unchanged.
+let hit = rect.expand_to_touch_target(target);
 
-// Layout scale (projection mode adds 20%)
-println!("Layout scale: {:.1}", env.layout_scale());
+// A layout can grow a child instead (the caller clamps it to the parent).
+let child = rust_widgets::layout::grow_to_min_touch_size(child_rect, target);
 
-// Detect device class by screen size heuristic (no feature flags):
-//   width < 480     → Mobile
-//   width < 1024    → Tablet
-//   DPI ≥ 2.0, <1440 → Tablet
-//   otherwise       → Desktop
+// Same fact, asked where a theme or control needs it.
+let minimum_hit = rust_widgets::widget::metrics::minimum_hit_size();
 ```
 
-### Device Class Enum
+### Touch Target Sizes
 
-| Class | Touch Target | Touch Spacing | Typical Use |
+| Class | Target | Spacing | Typical Device |
 |-------|:---:|:---:|-------------|
-| `Desktop` | 32×32 | 8px | Mouse + keyboard |
-| `Tablet` | 44×44 | 12px | Touch-first large screen |
-| `Mobile` | 48×48 | 16px | One-handed touch |
-| `Embedded` | 40×40 | 10px | Dedicated hardware |
-| `Projector` | 24×24 | 6px | Remote control navigation |
+| `TouchTargetSize::Desktop` | 32×32 | 8px | Mouse + keyboard, optional touch |
+| `TouchTargetSize::Tablet` | 44×44 | 12px | Touch-first large screen |
+| `TouchTargetSize::Phone` | 48×48 | 16px | One-handed touch |
+| `TouchTargetSize::Embedded` | 40×40 | 10px | Dedicated hardware |
+| `TouchTargetSize::Projection` | 24×24 | 6px | Remote control (`projection` feature) |
 
-### Accessibility Preferences
+`LayoutContext::min_touch_size` defaults to the same value, so a layout and a
+control's own hit region cannot disagree.
+
+### Environment Preferences
+
+Scale and motion preferences come from the installed environment snapshot:
 
 ```rust
-let mut env = DeviceEnvironment::default();
-env.set_high_contrast(true);
-env.set_reduced_motion(true);
-env.set_font_scale(1.5);  // Clamped to [0.5, 3.0]
+use rust_widgets::style::environment::environment;
+
+let env = environment();
+let text_scale = env.effective_text_scale();    // clamped to 0.25..=8.0
+let layout_scale = env.effective_layout_scale();
+let reduced_motion = env.prefers_reduced_motion();
+```
+
+High contrast is a theme setting rather than an environment field:
+
+```rust
+use rust_widgets::style::HighContrastMode;
+use rust_widgets::theme::global_theme_manager;
+
+global_theme_manager().set_high_contrast(HighContrastMode::WhiteOnBlack);
 ```
 
 ---
@@ -1023,12 +1035,12 @@ wire_focus_manager_to_a11y(&mut fm);
 
 ```rust
 use rust_widgets::platform;
-use rust_widgets::platform::detector::DeviceEnvironment;
-use rust_widgets::core::{Size, RuntimeProfile};
+use rust_widgets::platform::profile::recommended_touch_target;
+use rust_widgets::core::RuntimeProfile;
 
 fn main() {
-    let env = DeviceEnvironment::detect(Size::new(1920, 1080), 1.0);
-    println!("Running on {:?} device", env.device_class);
+    let class = recommended_touch_target();
+    println!("Running on {:?} device class", class);
 
     platform::init();
 

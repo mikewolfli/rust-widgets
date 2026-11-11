@@ -221,6 +221,11 @@ impl Draw for Swatch {
         let style = self.style();
         let (surface, ink) = surface_ink(style);
         let accent = accent_color();
+        // U3-03: a disabled strip's ink and selection ring recede by the shared rule rather than
+        // holding full contrast while only the handler is gated. The colour cells themselves are
+        // caller data and stay verbatim.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let accent = self.base.disabled_ink_on(accent, surface);
         let font = effective_font(style);
 
         context.fill_rect(rect, surface);
@@ -249,6 +254,11 @@ impl Draw for Swatch {
                 context.draw_rect(ring, accent);
             }
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

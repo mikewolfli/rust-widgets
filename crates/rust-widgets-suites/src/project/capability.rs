@@ -173,8 +173,8 @@ const GANTT_WIDGET_EVENTS: &[EventSchema] = &[
 
 /// `gantt_task_grid`'s published events.
 const GANTT_TASK_GRID_EVENTS: &[EventSchema] = &[
-    EventSchema { name: "on_header_clicked", payload: Some(K::UInt), shape: Some(S::Scalar) },
-    EventSchema { name: "on_task_selected", payload: Some(K::String), shape: Some(S::Scalar) },
+    EventSchema { name: "header_clicked", payload: Some(K::UInt), shape: Some(S::Scalar) },
+    EventSchema { name: "task_selected", payload: Some(K::String), shape: Some(S::Scalar) },
 ];
 
 /// `timeline_axis`'s published events.

@@ -1327,6 +1327,11 @@ impl Draw for CommandPalette {
         let header_background = background.blend(&text_color, 0.06);
         let highlight = background.blend(&text_color, 0.18);
 
+        // U3-03: a disabled palette's ink and rim recede by the shared rule. The header and row
+        // fills below are derived from these two, so they follow without a second derivation.
+        let text_color = self.base.disabled_ink_on(text_color, background);
+        let border = self.base.disabled_ink_on(border, background);
+
         context.face_with_gradient_corners(
             rect,
             background,

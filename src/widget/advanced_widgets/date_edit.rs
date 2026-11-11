@@ -1940,6 +1940,11 @@ impl Draw for DateEdit {
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.35));
 
+        // U3-03: a disabled field's ink, rim and calendar glyph recede by the shared rule rather
+        // than holding full contrast while only the handler is gated.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let border = self.base.disabled_ink_on(border, surface);
+
         context.face_with_gradient_corners(
             rect,
             surface,
@@ -2069,6 +2074,11 @@ impl Draw for DateEdit {
                 context.pop_clip();
             }
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

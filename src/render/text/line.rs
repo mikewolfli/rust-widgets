@@ -203,7 +203,12 @@ pub(crate) fn shape_line(text: &str, font: &Font, scale: f32) -> ShapedText {
 /// `cached_bidi_levels` hands back a shared buffer, so a repeat of an unchanged line is a refcount
 /// bump instead of a fresh `BidiInfo` analysis. Without a face there is no shaping key to cache
 /// under, so the uncached entry point runs — the same answer, just recomputed (G-17).
-fn line_bidi_levels(text: &str, ranges: &[(usize, usize)], font: &Font, scale: f32) -> Rc<[u8]> {
+pub(crate) fn line_bidi_levels(
+    text: &str,
+    ranges: &[(usize, usize)],
+    font: &Font,
+    scale: f32,
+) -> Rc<[u8]> {
     #[cfg(feature = "text-shaping")]
     if let Some(levels) =
         crate::render::text::shaping::cached_bidi_levels(text, ranges, font, scale)

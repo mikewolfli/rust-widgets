@@ -185,7 +185,11 @@ impl LineEdit {
         // The caret's prefix width comes from the same table the hit test and `draw`'s scroll
         // bounds use, instead of a second, differently-rounded estimate (I-P13).
         let caret_advance = self.with_prefix_advances(font, |advances| {
-            advances.advance_at(caret).unwrap_or_else(|| advances.total())
+            // A reordered (RTL) value places the caret by *visual* order; the logical prefix
+            // advance would put it at the wrong end of the run (UX6-02).
+            advances
+                .visual_advance_at(self.text.as_str(), font, caret)
+                .unwrap_or_else(|| advances.advance_at(caret).unwrap_or_else(|| advances.total()))
         });
         let caret_room = LINE_EDIT_CARET_ROOM as i32;
         // Reveal the caret with one caret of slack before the trailing edge, which is the same
@@ -225,6 +229,11 @@ impl LineEdit {
         // end" rather than as a negative index.
         let dx = (x - left + self.scroll_x).clamp(0, width);
         self.with_prefix_advances(font, |advances| {
+            // A reordered line maps the pointer through the visual order; the nearest
+            // *logical* boundary search below is correct only while the two orders agree.
+            if let Some(byte) = advances.visual_byte_at(self.text.as_str(), font, dx) {
+                return byte;
+            }
             // The pointer's offset is turned into the nearest **measured** boundary. The table
             // holds a real advance per character, so a proportional face cannot put the caret on
             // the wrong glyph (I-004).
@@ -384,7 +393,9 @@ impl LineEdit {
         // The caret's prefix advance comes from the same table the pointer hit test and the scroll
         // bounds read, so the IME window, the pointer and the paint agree (I-P13).
         let prefix_advance = self.with_prefix_advances(font, |advances| {
-            advances.advance_at(caret_byte).unwrap_or_else(|| advances.total())
+            advances.visual_advance_at(self.text.as_str(), font, caret_byte).unwrap_or_else(|| {
+                advances.advance_at(caret_byte).unwrap_or_else(|| advances.total())
+            })
         });
         let caret_x = (value_origin.x + prefix_advance - self.scroll_x)
             .min(value_left + value_width as i32)
@@ -578,10 +589,28 @@ impl Draw for LineEdit {
                     0,
                     end,
                 );
+                // A reordered (RTL) value paints its clusters in visual order, so the band's two
+                // edges are the *visual* positions of the two logical offsets — and they swap
+                // sides, which the clamp below cannot express on its own (UX6-02).
+                let (start_advance, end_advance) = if display_is_value {
+                    let mapped = self.with_prefix_advances(font, |advances| {
+                        (
+                            advances.visual_advance_at(self.text.as_str(), font, start),
+                            advances.visual_advance_at(self.text.as_str(), font, end),
+                        )
+                    });
+                    match mapped {
+                        (Some(from), Some(to)) => (from, to),
+                        _ => (start_advance, end_advance),
+                    }
+                } else {
+                    (start_advance, end_advance)
+                };
                 let x0 =
                     (value_origin.x + start_advance - self.scroll_x).clamp(left_edge, right_edge);
                 let x1 =
                     (value_origin.x + end_advance - self.scroll_x).clamp(left_edge, right_edge);
+                let (x0, x1) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
                 if x1 > x0 {
                     context.draw_rect(
                         Rect::new(x0, value_line.y, (x1 - x0) as u32, value_line.height.max(1)),
@@ -750,6 +779,14 @@ impl Draw for LineEdit {
                     caret_byte,
                 )
             };
+            // A reordered (RTL) value paints its clusters in visual order, so the caret's x is
+            // the *visual* position of the logical offset rather than the logical prefix width
+            // (UX6-02). The mapping only runs for a line that actually reorders.
+            let prefix_advance = self
+                .with_prefix_advances(font, |advances| {
+                    advances.visual_advance_at(self.text.as_str(), font, caret_byte)
+                })
+                .unwrap_or(prefix_advance);
             let caret_x = value_origin.x + prefix_advance - self.scroll_x;
             // The marker is clipped to the **value's** box. A caret beyond the visible text (a value
             // wider than the room it has) belongs at the last pixel a user can see, not outside the

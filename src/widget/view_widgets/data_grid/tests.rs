@@ -9,6 +9,22 @@ use crate::signal::GenericSignal;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+/// UX-03: an empty grid paints the caption the collection family publishes.
+///
+/// # What this pins
+///
+/// The paint pass returned as soon as the visible window was empty, so a grid with no rows was a
+/// bare panel — indistinguishable from one that had failed to load. The caption now comes from the
+/// shared `CollectionPlaceholder`.
+#[test]
+fn an_empty_grid_paints_its_empty_caption() {
+    let mut grid = DataGrid::new(Rect::new(0, 0, 200, 120));
+    let bare = crate::widget::svg::render_to_svg(&mut grid);
+    crate::widget::view_widgets::CollectionState::set_empty_text(&mut grid, "No rows");
+    let captioned = crate::widget::svg::render_to_svg(&mut grid);
+    assert_ne!(bare, captioned, "the empty caption must reach the painted picture");
+}
+
 struct StaticSource {
     rows: usize,
     cols: usize,
@@ -1382,6 +1398,24 @@ fn row_and_column_selection_are_one_unit_lookups() {
     assert!(grid.selection_contains(0, 1));
     assert!(grid.selection_contains(3, 1));
     assert!(!grid.selection_contains(0, 2));
+}
+
+/// U2-06: an RTL page mirrors the column run, and the hit test mirrors with it.
+#[test]
+fn rtl_mirrors_the_column_run_and_its_hit_test() {
+    let grid = static_grid(3, 3);
+    let width = grid.cells_box().width as i32;
+    crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+        // Column 0 sits at the right edge; the last column ends at the left edge of the run.
+        assert_eq!(grid.column_view_x(0), width - grid.column_width_at(0) as i32);
+        // A probe in the middle of column 0's mirrored span names column 0.
+        let probe = width - grid.column_width_at(0) as i32 / 2;
+        assert_eq!(grid.column_at_dx(probe), Some(0));
+        // The last column's mirrored span answers with the last index.
+        let last = grid.column_count() - 1;
+        let last_span_x = grid.column_view_x(last);
+        assert_eq!(grid.column_at_dx(last_span_x + 2), Some(last));
+    });
 }
 
 /// V-014: a hidden column occupies no width, closes the gap, and is skipped by the hit test.

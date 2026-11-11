@@ -55,7 +55,7 @@ edition = "2021"
 rust_widgets = "4.2.0"
 ```
 
-預設的功能集 (`desktop`) 會載入完整的桌面設定檔：透過 wgpu 的 GPU 渲染、作業系統原生平台後端、觸控支援、i18n、圖表、PDF/列印、無障礙存取以及進階 widgets。
+預設的功能集 (`desktop`) 會載入完整的桌面設定檔：透過 wgpu 的 GPU 渲染、作業系統原生平台後端、觸控支援、i18n、圖表、無障礙存取以及進階 widgets。列印與 PDF 是獨立的可選特性（`print`、`pdf`），不包含在設定檔中。
 
 ---
 
@@ -68,7 +68,7 @@ rust-widgets 使用**四軸功能系統**，讓你可以組合出你真正需要
 
 | 設定檔 | 功能標記 | 說明 |
 |---|---|---|
-| **Desktop** | `desktop`（預設） | 完整原生平台、GPU、觸控、i18n、圖表、列印、PDF、無障礙 |
+| **Desktop** | `desktop`（預設） | 完整原生平台、GPU、觸控、i18n、圖表、無障礙（列印/PDF 為可選特性） |
 | **Tablet** | `tablet` | 觸控優先、GPU、無桌面額外功能 |
 | **Mobile** | `mobile` | 觸控、GPU、行動 API 介面 |
 | **Embedded** | `embedded` | 軟體光柵化、無 GPU、低記憶體、精簡的 widget 集合 |
@@ -272,8 +272,8 @@ use rust_widgets::{
 };
 
 let window_id = create_window("我的視窗", 100, 100, 800, 600);
-let button_id = create_button("提交", 10, 10, 120, 32);
-let label_id = create_label("狀態", 10, 60, 300, 24);
+let button_id = create_button(window_id, "提交", 10, 10, 120, 32);
+let label_id = create_label(window_id, "狀態", 10, 60, 300, 24);
 ```
 
 可用的 `create_*` 函式：
@@ -281,23 +281,23 @@ let label_id = create_label("狀態", 10, 60, 300, 24);
 | 函式 | 建立內容 |
 |---|---|
 | `create_window(name, x, y, w, h)` | 頂層視窗 |
-| `create_button(text, x, y, w, h)` | 按鈕 |
-| `create_checkbox(text, x, y, w, h)` | 核取方塊 |
-| `create_radio_button(text, x, y, w, h)` | 選項按鈕 |
-| `create_label(text, x, y, w, h)` | 文字標籤 |
-| `create_line_edit(text, x, y, w, h)` | 單行文字輸入 |
-| `create_slider(min, max, val, x, y, w, h)` | 水平滑桿 |
-| `create_progress_bar(min, max, val, x, y, w, h)` | 進度指示器 |
-| `create_combo_box(x, y, w, h)` | 下拉式選單 |
-| `create_list_box(x, y, w, h)` | 滾動列表 |
-| `create_spin_box(min, max, step, val, x, y, w, h)` | 數字旋轉盒 |
-| `create_list_view(x, y, w, h)` | 多欄列表 |
-| `create_scroll_area(x, y, w, h)` | 可滾動容器 |
-| `create_panel(x, y, w, h)` | 面板/群組方塊 |
-| `create_message_box(title, msg)` | 模態訊息對話框 |
-| `create_file_dialog(title, dir, filter)` | 檔案選擇器 |
-| `create_color_dialog(title)` | 色彩選取器對話框 |
-| `create_font_dialog(title)` | 字型選擇對話框 |
+| `create_button(parent, text, x, y, w, h)` | 按鈕 |
+| `create_checkbox(parent, text, x, y, w, h)` | 核取方塊 |
+| `create_radio_button(parent, text, x, y, w, h)` | 選項按鈕 |
+| `create_label(parent, text, x, y, w, h)` | 文字標籤 |
+| `create_line_edit(parent, text, x, y, w, h)` | 單行文字輸入 |
+| `create_slider(parent, x, y, w, h)` | 水平滑桿 |
+| `create_progress_bar(parent, x, y, w, h)` | 進度指示器 |
+| `create_combo_box(parent, x, y, w, h)` | 下拉式選單 |
+| `create_list_box(parent, x, y, w, h)` | 滾動列表 |
+| `create_spin_box(parent, x, y, w, h)` | 數字旋轉盒 |
+| `create_list_view(parent, x, y, w, h)` | 多欄列表 |
+| `create_scroll_area(parent, x, y, w, h)` | 可滾動容器 |
+| `create_panel(parent, x, y, w, h)` | 面板/群組方塊 |
+| `create_message_box(parent, title, text, x, y, w, h)` | 模態訊息對話框 |
+| `create_file_dialog(parent, x, y, w, h)` | 檔案選擇器 |
+| `create_color_dialog(parent, x, y, w, h)` | 色彩選取器對話框 |
+| `create_font_dialog(parent, x, y, w, h)` | 字型選擇對話框 |
 
 ### 2. App API 搭配型別化 Handle（建議）
 

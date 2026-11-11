@@ -14,8 +14,7 @@ pub use font::Font;
 pub use geometry::{Orientation, Point, Rect, Size};
 pub use mutex_ext::MutexExt;
 pub use types::{
-    CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass,
-    ObjectId, PlatformCapabilities, PlatformFamily, RuntimeProfile, Version,
+    CoreConfig, CoreError, CoreObject, CoreResult, ObjectId, PlatformCapabilities, PlatformFamily, RuntimeProfile, Version,
 };
 pub mod coords;
 pub mod rect_merge;
@@ -23,7 +22,7 @@ pub mod rect_merge;
 
 | 檔案 | 內容 |
 |---|---|
-| `types.rs` | `ObjectId`、`RuntimeProfile`、`DeviceClass`、`PlatformFamily`、`Version`、`PlatformCapabilities`、`CoreConfig`、`CoreError`、`CoreObject`、`CoreResult` |
+| `types.rs` | `ObjectId`、`RuntimeProfile`、`PlatformFamily`、`Version`、`PlatformCapabilities`、`CoreConfig`、`CoreError`、`CoreObject`、`CoreResult` |
 | `geometry.rs` | `Point`、`Size`、`Rect`、`Orientation` |
 | `color.rs` | `Color` — RGBA，含 55+ 個預定義常數 |
 | `alignment.rs` | `Alignment`、`HorizontalAlignment`、`VerticalAlignment` |
@@ -852,33 +851,20 @@ assert_ne!(profile, RuntimeProfile::Embedded);
 
 ---
 
-## DeviceClass
+## Device Class
 
-針對觸控目標尺寸和佈局適應的裝置外型分類。
-
-```rust
-pub enum DeviceClass {
-    Desktop,    // 大螢幕、滑鼠+鍵盤、可選觸控
-    Tablet,     // 中螢幕、觸控優先
-    Mobile,     // 小螢幕、觸控優先
-    Embedded,   // 受限顯示器、有限輸入
-    Projector,  // 大型唯讀顯示器、遙控器輸入
-}
-```
+核心 crate 沒有 `DeviceClass` 列舉。平台家族分類是下文的 `PlatformFamily`；各裝置類別的觸控目標策略是 `TouchTargetSize`：
 
 ```rust
-use rust_widgets::core::DeviceClass;
+use rust_widgets::platform::profile::recommended_touch_target;
+use rust_widgets::style::TouchTargetSize;
 
-let class = DeviceClass::Desktop;
-
-match class {
-    DeviceClass::Desktop   => { /* 1920x1080、滑鼠+鍵盤 */ }
-    DeviceClass::Tablet    => { /* 觸控優先、中螢幕 */ }
-    DeviceClass::Mobile    => { /* 緊湊、僅觸控 */ }
-    DeviceClass::Embedded  => { /* 受限 */ }
-    DeviceClass::Projector => { /* 大型、唯讀 */ }
-}
+let class: TouchTargetSize = recommended_touch_target();
+let target = class.dimensions(); // 32 / 44 / 48 / 40 px
+let spacing = class.spacing();   // 8 / 12 / 16 / 10 px
 ```
+
+完整表格與命中區助手見 [platform-support.md § 5](platform-support.md#5-裝置類別與觸控目標)。
 
 ---
 

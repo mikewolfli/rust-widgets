@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+check_embedded_demo_schema.sh -- the embedded demo must publish the schema keys it documents.
+#
+# Reads the demo sources and asserts each declared key is present, so a demo that stops reporting
+# its profile cannot keep claiming to in the docs.
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

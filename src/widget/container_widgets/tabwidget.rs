@@ -1429,6 +1429,22 @@ impl TabWidget {
         Some(Rect::new(close_x, close_y, CLOSE_SIZE as u32, CLOSE_SIZE as u32))
     }
 
+    /// The region a press must land in to close the tab at `index`.
+    ///
+    /// The painted ✕ is only `CLOSE_SIZE` square, below the platform's minimum hit size, so
+    /// [`expand_to_hit_area`](crate::widget::metrics::expand_to_hit_area) widens it. The widened
+    /// region is clipped to the tab that owns the glyph, or reaching for the next tab's leading
+    /// edge would close this one. This mirrors `TabBar::close_hit_area` (UX6-03).
+    fn close_hit_area(&self, index: usize) -> Option<Rect> {
+        let tab_rect = self.tab_rect(index)?;
+        let close = self.close_button_rect(index, tab_rect, effective_font(self.style()))?;
+        Some(
+            crate::widget::metrics::expand_to_hit_area(close)
+                .intersection(&tab_rect)
+                .unwrap_or(close),
+        )
+    }
+
     fn tab_rect(&self, index: usize) -> Option<Rect> {
         self.tab_rects().get(index).copied()
     }
@@ -1972,6 +1988,10 @@ impl Widget for TabWidget {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// Reachable by keyboard: without an override the key arms can never run (U3-01).
+    fn is_focusable(&self) -> bool {
+        true
+    }
     /// The tab strip scrolls under the wheel when the pointer is over it (C2-D0).
     fn accepts_wheel(&self) -> bool {
         true
@@ -2386,16 +2406,11 @@ impl EventHandler for TabWidget {
                         // moved what was painted and left what was clickable behind — and the two
                         // origins differed by half a line, which put the glyph's outer rows outside
                         // its own hit area.
-                        if let Some(tab_rect) = self.tab_rect(index) {
-                            let close_rect = self.close_button_rect(
-                                index,
-                                tab_rect,
-                                effective_font(self.style()),
-                            );
-                            if close_rect.is_some_and(|close_rect| close_rect.contains(*pos)) {
-                                self.tab_close_requested.emit(index);
-                                return;
-                            }
+                        if self.tab_rect(index).is_some()
+                            && self.close_hit_area(index).is_some_and(|area| area.contains(*pos))
+                        {
+                            self.tab_close_requested.emit(index);
+                            return;
                         }
                         self.set_current_index(index);
                         // The press is reported even when it selected the tab that was already

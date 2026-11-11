@@ -136,7 +136,15 @@ pub struct ChartReferenceLine {
     /// Reused run list for dashed lines, so the dashed path allocates nothing in steady state.
     dash_spans_scratch: RefCell<Vec<(i32, i32)>>,
     /// Emitted with `(line index, value)` when the pointer enters a line's hit target.
-    pub on_line_crossed: Signal1<(usize, f64)>,
+    ///
+    /// # Why the field is `line_crossed` and not `on_line_crossed`
+    ///
+    /// A published event name is what a document, a designer or a language binding writes, and
+    /// `on_` is a listener-method prefix in other toolkits rather than an event name — it was the
+    /// only such spelling in the whole vocabulary (DX-10). The old **event** spelling still
+    /// resolves: `event_signal_dyn` answers it and `EVENT_ALIASES` records the pair, so a document
+    /// written against `on_line_crossed` keeps working. Only the Rust field name moved.
+    pub line_crossed: Signal1<(usize, f64)>,
 }
 
 impl ChartReferenceLine {
@@ -161,7 +169,7 @@ impl ChartReferenceLine {
             label_cache: RefCell::new(None),
             lines_revision: 0,
             dash_spans_scratch: RefCell::new(Vec::new()),
-            on_line_crossed: Signal1::new(),
+            line_crossed: Signal1::new(),
         }
     }
 
@@ -479,7 +487,7 @@ impl ChartReferenceLine {
         if next != self.hovered {
             self.hovered = next;
             if let Some((index, _, value)) = nearest {
-                self.on_line_crossed.emit((index, value));
+                self.line_crossed.emit((index, value));
             }
         }
     }
@@ -548,7 +556,7 @@ impl Widget for ChartReferenceLine {
         use crate::signal::EventSignalRef;
         match name {
             "line_crossed" | "on_line_crossed" => {
-                Some(EventSignalRef::mapped("line_crossed", &self.on_line_crossed, |value| {
+                Some(EventSignalRef::mapped("line_crossed", &self.line_crossed, |value| {
                     CapabilityValue::Tuple(crate::compat::Vec::from([
                         CapabilityValue::UInt(value.0 as u64),
                         CapabilityValue::Float(value.1),
@@ -739,7 +747,7 @@ mod tests {
         line.set_lines(vec![ReferenceLineSpec::new(5.0)]);
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = std::sync::Arc::clone(&seen);
-        line.on_line_crossed.connect(move |value| {
+        line.line_crossed.connect(move |value| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push(*value);
             }

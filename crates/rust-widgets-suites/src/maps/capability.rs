@@ -138,11 +138,11 @@ const MAP_VIEW_EVENTS: &[EventSchema] = &[
 
 /// `map_overview`'s published events.
 const MAP_OVERVIEW_EVENTS: &[EventSchema] =
-    &[EventSchema { name: "on_overview_drag", payload: Some(K::Float), shape: Some(S::Tuple2) }];
+    &[EventSchema { name: "overview_drag", payload: Some(K::Float), shape: Some(S::Tuple2) }];
 
 /// `map_attribution`'s published events.
 const MAP_ATTRIBUTION_EVENTS: &[EventSchema] =
-    &[EventSchema { name: "on_entry_activated", payload: Some(K::String), shape: Some(S::Scalar) }];
+    &[EventSchema { name: "entry_activated", payload: Some(K::String), shape: Some(S::Scalar) }];
 
 /// `tile_loader`'s published events.
 const TILE_LOADER_EVENTS: &[EventSchema] = &[

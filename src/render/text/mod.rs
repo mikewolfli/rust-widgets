@@ -63,7 +63,10 @@ pub use runtime_fonts::{clear_faces, register_face, registered_face_count, MAX_R
 pub use crate::platform::fonts::{register_system_cjk_font, SYSTEM_CJK_FAMILIES};
 
 // The one derivation of a line's clusters, shared by both renderers.
-mod line;
+//
+// `pub(crate)` so the bidi caret mapping in the text-entry model can reuse `line_bidi_levels`
+// instead of running a second, uncached paragraph analysis per frame (UX6-02).
+pub(crate) mod line;
 
 // Vector outline rasterisation (G-5): the coverage-producing implementation of `GlyphSource`.
 //

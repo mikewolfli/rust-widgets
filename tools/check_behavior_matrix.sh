@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+check_behavior_matrix.sh -- the documented behaviour matrix, run case by case.
+#
+# Each case is bounded by its own timeout so a wedge is reported as "this case hung" rather
+# than as a silent gate, and the results go to `target/qa/behavior_matrix_report.md`.
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

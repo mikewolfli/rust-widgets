@@ -12,7 +12,7 @@
 
 ```toml
 [dependencies]
-rust_widgets = "3.2.1"
+rust_widgets = "4.2.0"
 ```
 
 ## Step 2: Create a Window
@@ -62,6 +62,10 @@ fn main() {
 ```
 
 ## Step 5: Mobile Widgets
+
+> **Feature note.** These controls are gated on `full_widgets`, which the `desktop` and
+> `tablet` profiles carry and the `mini` / `embedded` profiles do not. On a reduced profile
+> the `use` below does not resolve — build with the default features, or skip this step.
 
 Mobile-first widgets are available in the default build:
 
@@ -141,4 +145,4 @@ one sitting and are what CI builds and runs:
 
 - Read `docs/ARCHITECTURE.md` for the system design
 - Check `CHANGELOG.md` for version history
-- Browse the widget gallery in `docs/reports/`
+- Browse the widget gallery in `docs/WIDGET_GALLERY.md`

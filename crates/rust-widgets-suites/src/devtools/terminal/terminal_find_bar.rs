@@ -135,7 +135,7 @@ pub struct TerminalFindBar {
     ///
     /// `current` is zero-based and is `0` when there is no current match (including when the
     /// total is `0`).
-    pub on_matches_changed: Signal1<(usize, usize)>,
+    pub matches_changed: Signal1<(usize, usize)>,
 }
 
 impl TerminalFindBar {
@@ -158,7 +158,7 @@ impl TerminalFindBar {
             rows: Vec::new(),
             rescan_key: None,
             counter_cache: CounterCache::default(),
-            on_matches_changed: Signal1::new(),
+            matches_changed: Signal1::new(),
         }
     }
 
@@ -319,7 +319,7 @@ impl TerminalFindBar {
 
     /// Scans `terminal` for the current query and snapshot its matches and rows.
     ///
-    /// The result is reported through [`Self::on_matches_changed`] even when it is empty, so a
+    /// The result is reported through [`Self::matches_changed`] even when it is empty, so a
     /// host that attaches a pre-filled bar always receives a count. The terminal's content is
     /// not read into a document that can be modified: only the text is copied.
     pub fn attach(&mut self, terminal: &mut TerminalView) {
@@ -476,13 +476,13 @@ impl TerminalFindBar {
         self.rescan_key = None;
         self.base.request_redraw();
         // The published count is part of the control's state, not just a paint detail: a host that
-        // mirrors `on_matches_changed` would otherwise keep showing the old total.
+        // mirrors `matches_changed` would otherwise keep showing the old total.
         self.report_if_changed(before);
     }
 
     /// Emits the current report.
     fn emit_matches(&self) {
-        self.on_matches_changed.emit((self.match_count, self.current_match.unwrap_or(0)));
+        self.matches_changed.emit((self.match_count, self.current_match.unwrap_or(0)));
     }
 
     /// Emits only when the counts or the cursor moved.
@@ -522,21 +522,25 @@ impl Widget for TerminalFindBar {
 
     fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
         match name {
-            "matches_changed" | "on_matches_changed" => {
-                // DEV-1: the reference must declare the **published** name. The bridge refuses a
-                // reference whose declared name differs from the one requested, so declaring the
-                // alias here made the only published event unreachable through every standard
-                // wiring path. Both spellings still resolve for `event_signal_dyn` callers.
-                Some(EventSignalRef::mapped(
-                    "on_matches_changed",
-                    &self.on_matches_changed,
-                    |value| {
-                        CapabilityValue::Tuple(vec![
-                            CapabilityValue::UInt(value.0 as u64),
-                            CapabilityValue::UInt(value.1 as u64),
-                        ])
-                    },
-                ))
+            "matches_changed" => {
+                // DEV-1: the reference must declare the name it was requested under. The bridge
+                // refuses a reference whose declared name differs from the one requested, so each
+                // spelling gets its own arm and both point at the same signal.
+                Some(EventSignalRef::mapped("matches_changed", &self.matches_changed, |value| {
+                    CapabilityValue::Tuple(vec![
+                        CapabilityValue::UInt(value.0 as u64),
+                        CapabilityValue::UInt(value.1 as u64),
+                    ])
+                }))
+            }
+            // Legacy spelling (DX-10): the name published before the `on_` prefix was removed.
+            "on_matches_changed" => {
+                Some(EventSignalRef::mapped("on_matches_changed", &self.matches_changed, |value| {
+                    CapabilityValue::Tuple(vec![
+                        CapabilityValue::UInt(value.0 as u64),
+                        CapabilityValue::UInt(value.1 as u64),
+                    ])
+                }))
             }
             _ => None,
         }

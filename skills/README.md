@@ -52,4 +52,4 @@ From the repository root, start `dsh`; its first `agent/pre-step` should list
 demand through the model-facing `skill` tool, not injected into every prompt.
 
 The skill can also be read directly by a human or any agent:
-[`.dsh/skills/rust-widgets-maintainer/SKILL.md`](../../.dsh/skills/rust-widgets-maintainer/SKILL.md).
+[`.dsh/skills/rust-widgets-maintainer/SKILL.md`](../.dsh/skills/rust-widgets-maintainer/SKILL.md).

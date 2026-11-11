@@ -1000,8 +1000,21 @@ impl VirtualTable {
         let x = self.column_offset(absolute) - self.column_offset(self.scroll_column);
         let width = self.column_width_at(absolute);
         let stride_y = self.row_height as i32;
+        // Mirror the whole column band inside the inset content area (U2-06). `origin` is the
+        // control's geometry, so the reflection band is what `column_at` measures against.
+        let band = Rect::new(
+            origin.x + INSET,
+            origin.y,
+            origin.width.saturating_sub(INSET as u32 * 2),
+            origin.height,
+        );
+        let x = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            crate::widget::view_widgets::rtl_columns::mirror_span(origin.x + INSET + x, width, band)
+        } else {
+            origin.x + INSET + x
+        };
         Rect::new(
-            origin.x + INSET + x,
+            x,
             origin.y + INSET + self.header_offset() + row as i32 * stride_y,
             // The cell is 2 px smaller than its stride on each axis, so the grid lines are the
             // surface showing through rather than strokes that would double up where cells meet.
@@ -1315,7 +1328,10 @@ impl VirtualTable {
 
     /// The alignment `column` paints its cells with (V-001).
     pub fn column_alignment(&self, column: usize) -> HorizontalAlignment {
-        self.column_alignments.get(&column).copied().unwrap_or(HorizontalAlignment::Left)
+        self.column_alignments
+            .get(&column)
+            .copied()
+            .unwrap_or_else(crate::widget::view_widgets::rtl_columns::leading_alignment)
     }
 
     /// Sets one column's cell alignment, returning whether the column exists (V-001).
@@ -1376,6 +1392,9 @@ impl VirtualTable {
     }
 
     /// Whether the vertical scroll-bar thumb is painted.
+    ///
+    /// Since UX-04 the thumb is *derived*: it appears whenever rows are off-screen, whether or
+    /// not a caller asked. This flag is a **force-on** override, never a way to hide an overflow.
     pub fn show_scrollbar(&self) -> bool {
         self.show_scrollbar
     }
@@ -1398,7 +1417,9 @@ impl VirtualTable {
         self.delegate.is_some()
     }
 
-    /// Enables or disables the vertical scroll-bar thumb.
+    /// Forces the vertical scroll-bar thumb on even when the rows fit.
+    ///
+    /// An overflowing table paints the thumb regardless; this only makes it permanent.
     pub fn set_show_scrollbar(&mut self, show: bool) {
         if self.show_scrollbar == show {
             return;
@@ -1485,7 +1506,17 @@ impl VirtualTable {
         if x < left {
             return None;
         }
-        let offset = x - left;
+        // Mirror the probe inside the inset content area; the walk below stays the LTR one, so
+        // the painted column and the hit-tested column keep one derivation (U2-06).
+        let offset = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            let content_width = rect.width as i32 - INSET * 2;
+            crate::widget::view_widgets::rtl_columns::mirror_offset(x - left, content_width)
+        } else {
+            x - left
+        };
+        if offset < 0 {
+            return None;
+        }
         let scroll_offset = self.column_offset(self.scroll_column);
         self.with_column_layout(|layout| {
             if layout.widths.is_empty() {

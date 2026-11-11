@@ -115,7 +115,7 @@ need to implement `base()` and `base_mut()` — everything else is inherited.
 use rust_widgets::widget::{Widget, BaseWidget, WidgetKind, Draw};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::render::RenderContext;
-use rust_widgets::core::{Color, Font, Point, Rect};
+use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 
 struct MinimalWidget {
     base: BaseWidget,
@@ -150,6 +150,7 @@ impl Draw for MinimalWidget {
             "Minimal Widget",
             &Font::simple("Arial", 12.0),
             Color::BLACK,
+            HorizontalAlignment::Left,
         );
     }
 }
@@ -311,10 +312,17 @@ impl RenderContext {
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color);
 
     // Text
-    pub fn draw_text(&mut self, pos: Point, text: &str, font: &Font, color: Color);
+    pub fn draw_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    );
 
     // Images
-    pub fn draw_image(&mut self, rect: Rect, image: &Image);
+    pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]);
 }
 ```
 
@@ -323,7 +331,7 @@ impl RenderContext {
 ```rust
 use rust_widgets::widget::Draw;
 use rust_widgets::render::RenderContext;
-use rust_widgets::core::{Color, Font, Point, Rect};
+use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 
 impl Draw for MyWidget {
     fn draw(&mut self, context: &mut RenderContext) {
@@ -348,7 +356,13 @@ impl Draw for MyWidget {
         // Center text within the widget rect
         let text_x = rect.x + (rect.width as i32 / 2) - 30;
         let text_y = rect.y + (rect.height as i32 / 2);
-        context.draw_text(Point::new(text_x, text_y), text, font, text_color);
+        context.draw_text(
+            Point::new(text_x, text_y),
+            text,
+            font,
+            text_color,
+            HorizontalAlignment::Left,
+        );
 
         // 4. Draw an accent line at the bottom
         let accent_y = rect.y + rect.height as i32 - 2;
@@ -656,7 +670,7 @@ The `Window` is the root widget — every application has at least one:
 
 ```rust
 use rust_widgets::widget::{Window, Widget, BaseWidget, Draw, WidgetKind};
-use rust_widgets::core::{Color, Font, Point, Rect};
+use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use rust_widgets::signal::GenericSignal;
 
 pub struct Window {
@@ -884,7 +898,7 @@ use rust_widgets::widget::{Widget, BaseWidget, WidgetKind, Draw};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{GenericSignal, ConnectionScope};
-use rust_widgets::core::{Color, Font, Point, Rect, Size, ObjectId};
+use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect, Size, ObjectId};
 
 /// A clickable counter widget that increments on each click.
 pub struct CounterWidget {
@@ -964,7 +978,13 @@ impl Draw for CounterWidget {
         let text_w = (text.len() as u32 * 8); // rough estimate
         let text_x = rect.x + (rect.width as i32 / 2) - (text_w as i32 / 2);
         let text_y = rect.y + (rect.height as i32 / 2) + 5;
-        context.draw_text(Point::new(text_x, text_y), &text, &font, text_color);
+        context.draw_text(
+            Point::new(text_x, text_y),
+            &text,
+            &font,
+            text_color,
+            HorizontalAlignment::Left,
+        );
 
         // Draw a subtle inner highlight at the top
         let highlight_rect = Rect::new(rect.x, rect.y, rect.width, rect.height / 2);

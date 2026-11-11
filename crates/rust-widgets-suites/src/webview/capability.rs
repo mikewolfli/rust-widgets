@@ -91,7 +91,7 @@ const WEB_ENGINE_VIEW_EVENTS: &[EventSchema] = &[
         payload: Some(K::Bool),
         shape: Some(S::Tuple2),
     },
-    EventSchema { name: "on_window_requested", payload: Some(K::String), shape: Some(S::Scalar) },
+    EventSchema { name: "window_requested", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "page_created", payload: Some(K::UInt), shape: Some(S::Scalar) },
     EventSchema { name: "page_destroyed", payload: Some(K::UInt), shape: Some(S::Scalar) },
     EventSchema {
@@ -113,7 +113,7 @@ const WEB_FIND_BAR_EVENTS: &[EventSchema] = &[
 
 /// The history panel's published events.
 const WEB_HISTORY_PANEL_EVENTS: &[EventSchema] =
-    &[EventSchema { name: "on_entry_activated", payload: Some(K::String), shape: Some(S::Scalar) }];
+    &[EventSchema { name: "entry_activated", payload: Some(K::String), shape: Some(S::Scalar) }];
 
 /// Sets a control's label through the property API, the way the parent crate's factory
 /// constructors do.

@@ -467,6 +467,12 @@ pub(crate) fn set_popup_grab(menu: ObjectId) {
     let _ = POPUP_GRAB.try_with(|slot| slot.set(Some(menu)));
 }
 
+/// The popup grab; the frugal profiles have no popup layer, so there is never one.
+#[cfg(alloc_frugal)]
+pub fn popup_grab() -> Option<ObjectId> {
+    None
+}
+
 /// Forgets the popup grab, if there is one.
 #[cfg(not(alloc_frugal))]
 pub(crate) fn clear_popup_grab() {
@@ -492,8 +498,11 @@ pub(crate) fn clear_popup_grab_for(popup: ObjectId) {
 }
 
 /// The current popup grab, if any.
+///
+/// Public because Tab traversal consults it (UX6-01): pointer delivery already refuses targets
+/// outside a grabbed popup, and the keyboard has to be scoped the same way.
 #[cfg(not(alloc_frugal))]
-pub(crate) fn popup_grab() -> Option<ObjectId> {
+pub fn popup_grab() -> Option<ObjectId> {
     POPUP_GRAB.try_with(|slot| slot.get()).ok().flatten()
 }
 

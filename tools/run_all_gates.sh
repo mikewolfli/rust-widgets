@@ -89,9 +89,9 @@ done
 
 # ── Toolchain guard ─────────────────────────────────────────────
 #
-# 21 of the 59 gates shell out to `cargo`. If the resolved `cargo` is a *different
+# 33 of the 131 gates shell out to `cargo`. If the resolved `cargo` is a *different
 # toolchain* than the one this workspace's `target/` was built with, every one of
-# those 21 pays a **full rebuild of the crate** — which took a real run from 432 s
+# those 33 pays a **full rebuild of the crate** — which took a real run from 432 s
 # to over 45 minutes and made it report `NOT-RUN` for the gates it never reached.
 #
 # That is a property of the *invocation*, not of the gates: it happens by putting
@@ -147,7 +147,7 @@ fi
 # # Why this is 900 rather than 1800
 #
 # The budget bounds a *hang*, and 30 minutes is long enough that a wedged gate
-# still makes the aggregate run feel stuck: 58 gates each allowed 30 minutes is
+# still makes the aggregate run feel stuck: 131 gates each allowed 15 minutes is
 # a 29-hour worst case, which is indistinguishable from a hang from the outside.
 # The slowest gate measured on a warm cache is ~35 s and the slowest cold one is
 # ~4 minutes, so 900 s is still generous for a real gate while capping the
@@ -175,7 +175,7 @@ GATE_BUDGET="${RW_GATE_TIMEOUT:-900}"
 # previous 2700 s the worst case — every gate cold — started reporting
 # `NOT-RUN` for gates it never reached, and a `NOT-RUN` gate is a piece of the
 # verification that did not happen. 3600 s keeps that list empty for a fully
-# cold run while still capping the pathological case (58 gates × the 900 s
+# cold run while still capping the pathological case (131 gates × the 900 s
 # per-gate bound would otherwise be a 14-hour worst case).
 RUN_BUDGET="${RW_RUN_TIMEOUT:-3600}"
 

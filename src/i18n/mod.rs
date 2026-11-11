@@ -34,9 +34,9 @@ mod tests;
 mod types;
 mod watcher;
 pub use global::{
-    check_and_reload_all, get_manager, init, init_with_options, language_generation,
-    on_language_changed, register_retranslator, retranslate, set_language, translate,
-    translate_into, translate_into_with_args, translate_into_with_context,
+    check_and_reload_all, current_language, get_manager, init, init_with_options,
+    language_generation, on_language_changed, register_retranslator, retranslate, set_language,
+    translate, translate_into, translate_into_with_args, translate_into_with_context,
     translate_into_with_typed_args, translate_with_args, translate_with_context,
     translate_with_typed_args, RetranslatorHandle,
 };

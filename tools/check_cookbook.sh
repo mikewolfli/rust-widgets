@@ -34,8 +34,7 @@
 #
 #   * It does not compile the cookbook's Rust code blocks. `mdbook test` would, but it
 #     needs every snippet to be a complete program, and the chapters are deliberately
-#     fragments. The C snippets are compiled separately by
-#     `tools/check_c_code_examples.sh`.
+#     fragments. No gate compiles them today; step [1] only proves every name exists.
 #   * It does not judge whether an existing name is *documented well*, only that it
 #     exists. Prose quality is a review question.
 #

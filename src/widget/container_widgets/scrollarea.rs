@@ -987,9 +987,12 @@ impl ScrollArea {
         let view_h = view_h as i32;
         let content_w = self.content_size.width as i32;
         let content_h = self.content_size.height as i32;
-        let max_x = (content_w - view_w).max(0);
-        let max_y = (content_h - view_h).max(0);
-        let clamped = (x.clamp(0, max_x), y.clamp(0, max_y));
+        // The no-feedback policy, stated in the shared overscroll module so every surface that
+        // chooses it chooses the same rule (UX6-08).
+        let clamped = (
+            crate::widget::overscroll::clamp_to_range(x, content_w, view_w),
+            crate::widget::overscroll::clamp_to_range(y, content_h, view_h),
+        );
         if self.scroll_position == clamped {
             // A mounted bar can be waiting on a value that matches the position; drain it so a
             // stale mailbox cannot re-apply an old offset on the next event.

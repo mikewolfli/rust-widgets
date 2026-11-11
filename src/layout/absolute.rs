@@ -774,7 +774,7 @@ impl AbsoluteLayout {
     ///
     /// # Why an id-addressed read exists next to the index-addressed one
     ///
-    /// [`Self::get_position`] takes an insertion index, which is the order the layout happens to
+    /// [`Self::position_at`] takes an insertion index, which is the order the layout happens to
     /// hold its children in. A host dragging one node knows the **control** it is dragging, not
     /// where that control sits in this layout's vector, and converting between the two is both
     /// error-prone and O(n).
@@ -891,7 +891,7 @@ impl AbsoluteLayout {
     }
     /// Borrows the position of the child at insertion index `index`, or `None` if
     /// `index` is out of range.
-    pub fn get_position(&self, index: usize) -> Option<&AbsolutePosition> {
+    pub fn position_at(&self, index: usize) -> Option<&AbsolutePosition> {
         self.children.get(index).map(|entry| &entry.position)
     }
     /// Borrows the constraint of the child at insertion index `index`.
@@ -899,8 +899,23 @@ impl AbsoluteLayout {
     /// Returns `None` both when `index` is out of range and when that child has no
     /// constraint, so callers cannot distinguish the two cases from the return
     /// value alone.
-    pub fn get_constraint(&self, index: usize) -> Option<&Constraint> {
+    pub fn constraint_at(&self, index: usize) -> Option<&Constraint> {
         self.children.get(index).and_then(|entry| entry.constraint.as_ref())
+    }
+
+    /// The pre-rename spelling of [`Self::position_at`] (DX-12).
+    #[deprecated(
+        since = "4.2.0",
+        note = "renamed to `position_at`; the id-addressed read is `position_of`"
+    )]
+    pub fn get_position(&self, index: usize) -> Option<&AbsolutePosition> {
+        self.position_at(index)
+    }
+
+    /// The pre-rename spelling of [`Self::constraint_at`] (DX-12).
+    #[deprecated(since = "4.2.0", note = "renamed to `constraint_at`")]
+    pub fn get_constraint(&self, index: usize) -> Option<&Constraint> {
+        self.constraint_at(index)
     }
 }
 crate::impl_default_via_new!(AbsoluteLayout);
@@ -1286,6 +1301,28 @@ mod tests {
         layout.set_position(0, AbsolutePosition::new(10, 20));
         let rects = layout.layout(Rect::new(0, 0, 200, 100));
         assert_eq!(rects[0], Rect::new(10, 20, 0, 0));
+    }
+
+    /// DX-12: the index-addressed getters read `*_at`, and the old spelling still answers.
+    ///
+    /// `position_of` is addressed by control id, so the index-addressed pair was the odd one out
+    /// (`get_position` / `get_constraint` next to a bare-noun `position_of`). The rename follows
+    /// the crate's no-`get_` getter convention; the old names stay as delegating shims so a 4.1
+    /// caller keeps compiling.
+    #[test]
+    fn the_index_addressed_getters_use_the_at_spelling() {
+        let mut layout = AbsoluteLayout::new();
+        layout.add_widget(7, 0);
+        layout.set_position(0, AbsolutePosition::new(10, 20));
+        assert_eq!(layout.position_at(0), layout.position_of(7));
+        assert!(layout.constraint_at(0).is_none(), "no constraint was set");
+        assert_eq!(layout.position_at(9), None, "an out-of-range index has no position");
+
+        #[allow(deprecated)]
+        {
+            assert_eq!(layout.get_position(0), layout.position_at(0));
+            assert_eq!(layout.get_constraint(0).is_none(), layout.constraint_at(0).is_none());
+        }
     }
 
     /// A transition owns the clock, advances over frames, and reports when it is at rest.

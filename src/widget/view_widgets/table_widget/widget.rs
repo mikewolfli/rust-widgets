@@ -3,7 +3,6 @@
 
 //! Table widget.
 use crate::core::Color;
-use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::event::WheelScroll;
 use crate::render::RenderContext;
@@ -843,6 +842,13 @@ impl TableWidget {
         if x < content.x || x >= content.x + content.width as i32 {
             return None;
         }
+        // Mirror the probe, not the layout: the walk below stays the LTR one, so the painted
+        // column and the hit-tested column keep one derivation (U2-06).
+        let x = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            crate::widget::view_widgets::rtl_columns::mirror_point_x(x, content)
+        } else {
+            x
+        };
         let mut left = content.x - self.horizontal_offset() as i32;
         for column in 0..self.column_count() {
             let width = self.resolved_column_width(column, content.width) as i32;

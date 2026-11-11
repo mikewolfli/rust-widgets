@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+check_control_route_matrix.sh -- every registered kind must have a real implementation route.
+#
+# Generates the control-route matrix into `target/qa/control_route_matrix.md` and fails on a
+# placeholder or a contract miss, so a kind that is registered but unrouted cannot ship.
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 # SPDX-License-Identifier: MIT
-"""Check that every documented icon count matches `tools/icon_tokens.txt`.
+"""Check that every documented icon count matches `crates/rust-widgets-icons/tools/icon_tokens.txt`.
 
 # Why this exists
 
-The token set has one declaration — `tools/icon_tokens.txt` — and several prose copies. Those copies
+The token set has one declaration — `crates/rust-widgets-icons/tools/icon_tokens.txt` — and several prose copies. Those copies
 drifted: the two READMEs and the cookbook all said **68** while the file held **69**, and nothing
 noticed, because no gate looked at the number. The widget-kind count has exactly this gate
 (`tools/check_widget_kind_count.sh`), which records the rule in its own header: *a documented number
@@ -72,6 +72,14 @@ def main(argv: list[str]) -> int:
     for name in DOCS:
         path = Path(name)
         if not path.is_file():
+            # A missing document must fail the gate: silently skipping it shrinks coverage while
+            # still printing a pass, which is the failure mode this script exists to prevent.
+            print(
+                f"❌ {name}: listed in DOCS but missing; "
+                "deleting a chapter, or moving it, must fail this gate instead of shrinking coverage",
+                file=sys.stderr,
+            )
+            errors += 1
             continue
         checked += 1
         text = path.read_text(encoding="utf-8")
@@ -84,7 +92,7 @@ def main(argv: list[str]) -> int:
                 snippet = lines[lineno - 1].strip() if lineno <= len(lines) else ""
                 print(
                     f"❌ {name}:{lineno} states '{match.group(1)}' icons but "
-                    f"tools/icon_tokens.txt declares {actual}: {snippet}",
+                    f"crates/rust-widgets-icons/tools/icon_tokens.txt declares {actual}: {snippet}",
                     file=sys.stderr,
                 )
                 errors += 1

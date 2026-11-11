@@ -3,8 +3,8 @@
 > 版本: v0.14.0
 > 基线: 继承 BLUE13 全部核心规则 + Rust 原生设计原则
 > 编制日期: 2026-09-11
-> 文档性质: `docs/log/log-20260909-1.md` 平台相关部分的**未完成项单一事实清单**
-> 关联记录: `docs/log/log-20260909-1.md`（已完成证据）、`docs/log/log-20260911-1.md`（第 7/8 轮）、`docs/log/log-20260911-2.md`（第 9 轮 Apple）、`docs/plans/FUTURE.md`（长期受限项）
+> 文档性质: `docs/log/archive/log-20260909-1.md` 平台相关部分的**未完成项单一事实清单**
+> 关联记录: `docs/log/archive/log-20260909-1.md`（已完成证据）、`docs/log/archive/log-20260911-1.md`（第 7/8 轮）、`docs/log/archive/log-20260911-2.md`（第 9 轮 Apple）、`docs/plans/FUTURE.md`（长期受限项）
 > 原则依据: `docs/plans/principle.md`（规则 #1/#12/#16/#18/#25/#26）
 
 ---
@@ -58,7 +58,7 @@
 
 ## 一、统计口径
 
-**`docs/log/log-20260909-1.md` 本轮平台部分 todo 完成率：26/26。**
+**`docs/log/archive/log-20260909-1.md` 本轮平台部分 todo 完成率：26/26。**
 
 其中：
 - **26 项已完成**（Linux / Android / Harmony / WASM / Wayland / 跨平台门禁）。
@@ -106,8 +106,8 @@
 | 1 | **Harmony ArkUI 原生桥** | 本机无 OpenHarmony SDK（N-API/ArkUI 头文件） | 只有 state 后端 + `aarch64-unknown-linux-ohos` 编译验证（0 warning，12 host tests pass）；能力契约已诚实化（`native_menu: false`） | `FUTURE.md` ITEM 2、`src/platform/harmony/status.md` |
 | 2 | **Windows OLE 拖放 + IME TSF** | 需真实 Win32/COM 运行验证 | 按用户要求留待 Windows 机器。Windows 原生对话框（`MessageBoxW`/`GetOpenFileNameW`/`ChooseColorW`/`ChooseFontW`）已完成；**新增 CI 交叉检查作业 `windows-cross-check`**（`x86_64-pc-windows-msvc` 全 desktop feature `cargo check` + clippy `-D warnings`，本机已复现通过） | `FUTURE.md` P2-2（未勾选） |
 | 3 | ✅ **Windows SpinBox/ListView/ScrollArea 原生化**（2026-09-11 代码完成，编译已验） | 原为 state-backed；现已实现真实 Win32 对象：`msctls_updown32` / `SysListView32`（report + 列 + `LVS_EX_FULLROWSELECT`）/ `WS_HSCROLL\|WS_VSCROLL` 子窗口 + 初始滚动范围 | **编译验证完成**：`x86_64-pc-windows-msvc` 与 `x86_64-pc-windows-gnullvm` 全 feature 0 warning，clippy `-D warnings` 通过，Windows-only 测试模块对目标类型检查通过；**运行验证待 Windows 机器**（本机无 Windows、无 Wine、无 MSVC/mingw C 工具链） | `src/platform/windows/helpers.rs`、`FUTURE.md` ITEM 2b |
-| 4 | ✅ **iOS 模拟器视图行为**（2026-09-11 真机模拟器闭环） | 原判「无 Apple 运行环境」，**实测本机即 macOS 主机**（macOS 15.7.3 / arm64 / Xcode 26.2） | 新增 `tools/build_ios_testapp.sh`（Rust staticlib + ObjC host → 无 Xcode 工程的真实 `.app`）与 `tools/run_ios_testapp.sh`（boot iOS 26.2 模拟器 → install → launch → 断言 `RESULT: PASS`）。实测 8/8 项通过：真实 `UIApplication` / 真实 `UIWindow`（rootVC 已装）/ 真实 `UIButton`+`UILabel`+`UITextField` 子视图 / 文本往返 / 可见性往返 / 几何变更落到实时 `UIButton.frame`。证据见 `docs/log/log-20260911-2.md`，状态见 `src/platform/ios/status.md` | `FUTURE.md` ITEM 4（已勾选） |
-| 5 | ✅ **macOS AppKit 交互**（2026-09-11 真机闭环，含 2 个真实缺陷修复） | 原判「无 macOS 运行环境」，**实测本机即 macOS 主机** | 新增 `examples/apple_appkit_probe.rs`（AppKit 主线程探针），对 cocoa-legacy 与 objc2 **两个后端** 均实测 `RESULT: PASS`：真实 `NSWindow` 进入 `NSApplication.windows`、真实 `NSMenu` 装上 `mainMenu`、`NSPasteboard` 往返、`NSAlert`/`NSOpenPanel`/`NSColorPanel`/`NSFontPanel` 构造、几何/可见性落到实时 `NSButton.frame`。**过程中修复 2 个此前不可见的真实缺陷**：① `MacOSPlatform` 全部 AppKit 调用无主线程守卫 ⇒ 在 macOS 上 `cargo test --lib --features desktop` **整个进程 SIGABRT**（`c_abi_widget_lifecycle_roundtrip`），现加 `is_main_thread()` 守卫 + 状态回退；② objc2 原生 FFI 误用别名 feature `objc2-macos` 门控，致 `--features macos` **静默退化为 state-only**（43 处改为规范 feature `macos`）。另修 `set_native_text` 的 `performSelector:` 返回类型错误。证据见 `docs/log/log-20260911-2.md`，状态见 `src/platform/macos/status.md` | `FUTURE.md` ITEM 5 / ITEM 5b |
+| 4 | ✅ **iOS 模拟器视图行为**（2026-09-11 真机模拟器闭环） | 原判「无 Apple 运行环境」，**实测本机即 macOS 主机**（macOS 15.7.3 / arm64 / Xcode 26.2） | 新增 `tools/build_ios_testapp.sh`（Rust staticlib + ObjC host → 无 Xcode 工程的真实 `.app`）与 `tools/run_ios_testapp.sh`（boot iOS 26.2 模拟器 → install → launch → 断言 `RESULT: PASS`）。实测 8/8 项通过：真实 `UIApplication` / 真实 `UIWindow`（rootVC 已装）/ 真实 `UIButton`+`UILabel`+`UITextField` 子视图 / 文本往返 / 可见性往返 / 几何变更落到实时 `UIButton.frame`。证据见 `docs/log/archive/log-20260911-2.md`，状态见 `src/platform/ios/status.md` | `FUTURE.md` ITEM 4（已勾选） |
+| 5 | ✅ **macOS AppKit 交互**（2026-09-11 真机闭环，含 2 个真实缺陷修复） | 原判「无 macOS 运行环境」，**实测本机即 macOS 主机** | 新增 `examples/apple_appkit_probe.rs`（AppKit 主线程探针），对 cocoa-legacy 与 objc2 **两个后端** 均实测 `RESULT: PASS`：真实 `NSWindow` 进入 `NSApplication.windows`、真实 `NSMenu` 装上 `mainMenu`、`NSPasteboard` 往返、`NSAlert`/`NSOpenPanel`/`NSColorPanel`/`NSFontPanel` 构造、几何/可见性落到实时 `NSButton.frame`。**过程中修复 2 个此前不可见的真实缺陷**：① `MacOSPlatform` 全部 AppKit 调用无主线程守卫 ⇒ 在 macOS 上 `cargo test --lib --features desktop` **整个进程 SIGABRT**（`c_abi_widget_lifecycle_roundtrip`），现加 `is_main_thread()` 守卫 + 状态回退；② objc2 原生 FFI 误用别名 feature `objc2-macos` 门控，致 `--features macos` **静默退化为 state-only**（43 处改为规范 feature `macos`）。另修 `set_native_text` 的 `performSelector:` 返回类型错误。证据见 `docs/log/archive/log-20260911-2.md`，状态见 `src/platform/macos/status.md` | `FUTURE.md` ITEM 5 / ITEM 5b |
 
 > 备注：**A 类合计 4 个条目、对应 3 个平台/领域类别**（Windows #2 与 Windows 运行验证归一类）。
 >
@@ -115,7 +115,7 @@
 >
 > 已于 2026-09-11 移出本表并闭环/定性：
 > - **原 A 类 #7 Wayland 合成器交互** → 免 root headless weston 可闭环（§六）。
-> - **原 A 类 #4 Android 真机 arm64 运行** → 用户提供实体机，真机 `RESULT: PASS`（证据见 `docs/log/log-20260911-1.md` 附录）。
+> - **原 A 类 #4 Android 真机 arm64 运行** → 用户提供实体机，真机 `RESULT: PASS`（证据见 `docs/log/archive/log-20260911-1.md` 附录）。
 > - **原 A 类 #5 Android FileDialog** → 已真实启动 `ACTION_OPEN_DOCUMENT`；ColorDialog/FontDialog 为平台事实，不算缺口。
 > - **原 A 类 #6 AndroidX Toolbar** → 由「推测」升级为真机实测的确定性约束（`R$attr` 等资源需 AAR 资源合并），有意不捆绑。
 
@@ -125,7 +125,7 @@
 
 | # | 项目 | 说明 | 优先级 |
 |---|---|---|---|
-| 10 | ✅ **Android CI 作业**（2026-09-11 完成） | 已交付 `.github/workflows/android.yml`：`jni-bindings`（双 ABI 构建+签名+JNI 签名/导出符号门禁+产物上传）与 `emulator-e2e`（API 34 x86_64 + KVM + `RESULT: PASS`）。CI 复用本机已验证脚本，并已按 CI 相同命令在本机逐条实跑取证（见 `docs/log/log-20260911-1.md`） | P1 |
+| 10 | ✅ **Android CI 作业**（2026-09-11 完成） | 已交付 `.github/workflows/android.yml`：`jni-bindings`（双 ABI 构建+签名+JNI 签名/导出符号门禁+产物上传）与 `emulator-e2e`（API 34 x86_64 + KVM + `RESULT: PASS`）。CI 复用本机已验证脚本，并已按 CI 相同命令在本机逐条实跑取证（见 `docs/log/archive/log-20260911-1.md`） | P1 |
 | 11 | ✅ **主机不可见测试覆盖（`FUTURE.md` ITEM 7 的主体）**（2026-09-11 第 8 轮完成） | 见 §三之三 E 类：`ime_macos`(19)、`android`(8)、`ios`(6)、`macos_objc2`(17) 共 **50 个纯逻辑测试**由「不在构建中」变为**主机真实执行** | P1 |
 
 > B 类已归零。剔除外部环境依赖后的本机可做项完成率：2/2 = 100%。
@@ -135,7 +135,7 @@
 ## 三之二、D 类 — 第 7 轮审计新发现的真实缺口（全部**已闭环**，2026-09-11）
 
 > 本节是 §一 「本机可做项已全部归零」的**事实更正**。以下 5 项均为**本机可做、且无环境阻断**，
-> 但在此前各轮中被遗漏。每项均已修复并附可观测证据；证据全文见 `docs/log/log-20260911-1.md` 第 7 轮。
+> 但在此前各轮中被遗漏。每项均已修复并附可观测证据；证据全文见 `docs/log/archive/log-20260911-1.md` 第 7 轮。
 
 | # | 项目 | 卡点类型 | 修复前的事实（可验证） | 闭环证据 |
 |---|---|---|---|---|
@@ -203,7 +203,7 @@
 > 本轮的前提修正：**验证主机本身就是 macOS 主机**（macOS 15.7.3 / arm64 / rustc 1.98.0 / Xcode 26.2）。
 > 此前各轮将 Apple 记为「无运行环境」（§二 A 类 #4/#5），该判定在本机不成立。
 > 一旦在 macOS 上真实执行既有测试与 AppKit 路径，暴露出 **4 个此前完全不可见的真实缺陷**；
-> 每项均已修复并附可观测证据（全文见 `docs/log/log-20260911-2.md`）。
+> 每项均已修复并附可观测证据（全文见 `docs/log/archive/log-20260911-2.md`）。
 
 | # | 项目 | 卡点类型 | 修复前的事实（可验证） | 闭环证据 |
 |---|---|---|---|---|
@@ -853,7 +853,7 @@ Linux、Android、Wayland **与 Apple** 在本机能力范围内**已全部闭�
 
 ## 八、结论
 
-- **Linux、Android、Wayland 在本机能力范围内已全部闭环**，证据见 `docs/log/log-20260909-1.md` 与 `docs/log/log-20260911-1.md`。
+- **Linux、Android、Wayland 在本机能力范围内已全部闭环**，证据见 `docs/log/archive/log-20260909-1.md` 与 `docs/log/archive/log-20260911-1.md`。
 - **B 类（#10 Android CI 作业）已于 2026-09-11 闭环**。
 - **原 A 类 #7（Wayland 合成器交互运行）已于 2026-09-11 闭环**：证实「无合成器」并非不可解除的环境阻断。
 - **原 A 类 #4/#5/#6（Android）已于 2026-09-11 闭环/定性**：用户提供实体 arm64 真机后，#4 真机 `RESULT: PASS`；#5 FileDialog 真实启动系统选择器；#6 Toolbar 由推测升级为真机实测的确定性约束。

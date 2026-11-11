@@ -169,6 +169,9 @@ impl VirtualList {
     }
 
     /// Whether a vertical scroll-bar thumb is painted.
+    ///
+    /// Since UX-04 the thumb is *derived*: it appears whenever rows are off-screen, whether or
+    /// not a caller asked. This flag is a **force-on** override, never a way to hide an overflow.
     pub fn show_scrollbar(&self) -> bool {
         self.show_scrollbar
     }
@@ -191,7 +194,9 @@ impl VirtualList {
         self.row_delegate.is_some()
     }
 
-    /// Enables or disables the vertical scroll-bar thumb.
+    /// Forces the vertical scroll-bar thumb on even when the rows fit.
+    ///
+    /// An overflowing list paints the thumb regardless; this only makes it permanent.
     pub fn set_show_scrollbar(&mut self, show: bool) {
         if self.show_scrollbar == show {
             return;
@@ -1171,23 +1176,22 @@ impl Draw for VirtualList {
             }
         }
 
-        if self.show_scrollbar {
-            let total = self.row_count().max(1);
-            let visible = self.visible_row_capacity().max(1).min(total);
-            let track = rect.height.max(1);
-            let thumb =
-                ((track as u64 * visible as u64) / total as u64).max(24).min(track as u64) as u32;
-            let max_scroll = total.saturating_sub(visible);
-            let travel = track.saturating_sub(thumb);
-            let offset = if max_scroll == 0 {
-                0
-            } else {
-                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
-            };
-            context.fill_rect(
-                Rect::new(rect.x + rect.width as i32 - 6, rect.y + offset as i32, 4, thumb),
-                accent.with_alpha(120),
-            );
+        // The thumb is derived (UX-04): a virtualized list whose rows run past the viewport
+        // paints it whether or not a caller asked, because a scrolling list with no indication
+        // is chrome that lies. The flag stays as a force-on override.
+        let total = self.row_count().max(1);
+        let visible = self.visible_row_capacity().max(1).min(total);
+        // A 2 px inset keeps the thumb off the frame's own stroke.
+        let track = Rect::new(rect.x, rect.y, rect.width.saturating_sub(2), rect.height);
+        if let Some(band) = crate::widget::overscroll::scroll_thumb_rect(
+            track,
+            total,
+            visible,
+            self.scroll_row,
+            4,
+            self.show_scrollbar,
+        ) {
+            context.fill_rect(band, accent.with_alpha(120));
         }
     }
 }
@@ -1886,5 +1890,42 @@ mod tests {
         assert_eq!(list.placeholder().text(), Some("No rows"));
         list.set_empty_text("");
         assert!(list.placeholder().is_empty());
+    }
+
+    /// UX-04: the scroll thumb is derived from the overflow, so a list whose rows run past its
+    /// viewport reports that fact even though the opt-in flag is off by default.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn an_overflowing_list_derives_its_scroll_thumb() {
+        use crate::core::Color;
+
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+
+        let palette = crate::style::palette_shared();
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
+        let thumb = format!("rgba({},{},{},", accent.r, accent.g, accent.b);
+
+        let mut overflow = VirtualList::new(Rect::new(0, 0, 200, 120));
+        overflow.set_row_height(20);
+        overflow.set_data_source(Arc::new(StaticSource { rows: 100 }));
+        crate::theme::apply_theme_to_widget(&mut overflow);
+        let painted = crate::widget::svg::render_to_svg(&mut overflow);
+        assert!(
+            painted.contains(&thumb),
+            "an overflowing list must paint a thumb in the accent colour, so a reader can see that \
+             rows are off-screen"
+        );
+
+        let mut fits = VirtualList::new(Rect::new(0, 0, 200, 120));
+        fits.set_row_height(20);
+        fits.set_data_source(Arc::new(StaticSource { rows: 3 }));
+        crate::theme::apply_theme_to_widget(&mut fits);
+        let bare = crate::widget::svg::render_to_svg(&mut fits);
+        assert!(
+            !bare.contains(&thumb),
+            "a list whose rows all fit has nothing to report, so it must not paint a thumb"
+        );
     }
 }

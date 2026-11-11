@@ -982,6 +982,12 @@ impl Draw for Breadcrumb {
         let selected_background = background.blend(&text_color, 0.12);
         let separator_color = text_color.blend(&background, 0.45);
 
+        // U3-03: a disabled trail's labels, separators and rim recede by the shared ink rule,
+        // instead of holding full contrast while only the handler is gated.
+        let text_color = self.base.disabled_ink_on(text_color, background);
+        let border = self.base.disabled_ink_on(border, background);
+        let separator_color = self.base.disabled_ink_on(separator_color, background);
+
         // ── The trail actually painted ──
         //
         // `rect` is the area the control was *given*; a breadcrumb trail is one compact row of
@@ -1189,6 +1195,11 @@ impl Draw for Breadcrumb {
                 );
             }
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

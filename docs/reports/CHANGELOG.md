@@ -1302,7 +1302,7 @@ their window exactly as before. Evidence: `docs/plans/blue29.md` §7 (B29.07–B
 **Patch**: additive only — no existing public item changed or was removed. Closes the four gaps a host
 reported against 3.1.0 (`docs/issues/feedback-20261029.md` §6/§7) and finishes the multi-view work so
 one document can be shown twice without the host owning a second copy of the text or of the undo
-stack. Evidence: `docs/log/log-20261029-9.md` (seams) and `docs/log/log-20261029-10.md` (multi-view).
+stack. Evidence: `docs/log/archive/log-20261029-9.md` (seams) and `docs/log/archive/log-20261029-10.md` (multi-view).
 
 ### Host seams on `CodeEditor`
 
@@ -1350,7 +1350,7 @@ stack. Evidence: `docs/log/log-20261029-9.md` (seams) and `docs/log/log-20261029
 
 **Minor**: no public signature changed. One new package and one new factory capability, plus the
 fixes from the form-suite audit (`docs/issues/issue-20261029.md` chapter 4, items FM-01..FM-19).
-Per-item evidence is in `docs/log/log-20261029-3.md` (audit) and `log-20261029-4/5/6.md`
+Per-item evidence is in `docs/log/archive/log-20261029-3.md` (audit) and `log-20261029-4/5/6.md`
 (implementation).
 
 ### New package: `rust-widgets-suites`
@@ -1425,7 +1425,7 @@ Full re-scan of the crate (`docs/issues/issue-20261028-1.md`, 41 items), impleme
 `Fn(&mut Vec<ObjectId>)` so the host fills a reused buffer instead of returning a fresh `Vec` for
 every key press (see *API changes*). Everything else keeps its signatures and its rendered output;
 the performance work replaces per-frame allocations with caches, scratch buffers and revision keys.
-Per-item evidence (file:line and the command that proved it) is in `docs/log/log-20261028-3.md`.
+Per-item evidence (file:line and the command that proved it) is in `docs/log/archive/log-20261028-3.md`.
 
 ### Correctness (hidden global defects)
 
@@ -1549,7 +1549,7 @@ Per-item evidence (file:line and the command that proved it) is in `docs/log/log
 Second round over `docs/issues/issue-20261026.md`. 2.9.3 fixed hot paths; this round made the
 matrix that proves them: every device profile now compiles *and* runs its tests, the second macOS
 backend builds, and `clippy` is clean under `--all-targets -- -D warnings`. Per-item evidence is
-in `docs/log/log-20261027-1.md` (§15–§18).
+in `docs/log/archive/log-20261027-1.md` (§15–§18).
 
 ### Build matrix
 
@@ -1604,7 +1604,7 @@ in `docs/log/log-20261027-1.md` (§15–§18).
 
 First implementation round over `docs/issues/issue-20261026.md`, in the report's own order
 (chapter 1 → 2 → 3). Full per-item evidence, boundaries and the remaining worklist are in
-`docs/log/log-20261026-2.md`.
+`docs/log/archive/log-20261026-2.md`.
 
 ### Render and text
 
@@ -1797,7 +1797,7 @@ per-frame work that made still controls expensive.
 This release closes every item in `docs/issues/issue-20261021.md` — 114 of 114, across the core
 layer, widget infrastructure, widget families, rendering/layout/style, platform, media/IO and the
 binding/JSON/export surface — and adds a review pass over the resulting code. The item-by-item
-record with its verification evidence is in `docs/log/log-20261021-2.md`.
+record with its verification evidence is in `docs/log/archive/log-20261021-2.md`.
 
 ### Media: decoding no longer runs on the frame loop
 
@@ -2548,7 +2548,7 @@ three paths that previously answered quietly —
 Most of this release is the upstream-contract work planned in `docs/plans/blue26.md` for the Rustage
 designer, so several of the sections below describe new *describable* surface rather than fixed
 defects. The per-item evidence — including the reverse-injection proofs that each new gate can
-actually fail — is in `docs/log/log-20261011-1.md`.
+actually fail — is in `docs/log/archive/log-20261011-1.md`.
 
 ### 1. One validator behind the three paths that write a property
 
@@ -4308,7 +4308,7 @@ target was counted as a defect in the code under test. All four now report accur
 - Semantic tokens: all four have consumers; none is an empty declaration.
 - WebEngine: zero residue from the removed wrapper; `supports_web_engine()` is `false` everywhere.
 
-See [`docs/log/log-20260921-3.md`](docs/log/log-20260921-3.md) for the per-change evidence, the
+See [`docs/log/archive/log-20260921-3.md`](docs/log/archive/log-20260921-3.md) for the per-change evidence, the
 reverse-injection records, and the layer-by-layer counts.
 
 ## 2.5.0 (2026-09-21) — Events Became a Typed Contract, a Project Document Becomes Rust Source, and the Designer Is Gated and Committed
@@ -4326,8 +4326,8 @@ release is one coherent piece of work in three parts, all of it additive:
    on for `desktop` (the profile that hosts a designer) and off elsewhere; the generated sources are
    checked in, with a regenerate-and-compare gate that makes committing them safe.
 
-See [`docs/log/log-20260921-1.md`](docs/log/log-20260921-1.md) and
-[`docs/log/log-20260921-2.md`](docs/log/log-20260921-2.md) for per-change evidence.
+See [`docs/log/archive/log-20260921-1.md`](docs/log/archive/log-20260921-1.md) and
+[`docs/log/archive/log-20260921-2.md`](docs/log/archive/log-20260921-2.md) for per-change evidence.
 
 ### Measured facts
 

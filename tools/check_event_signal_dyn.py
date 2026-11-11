@@ -545,6 +545,30 @@ def read_census() -> dict[str, list[str]]:
     return published
 
 
+def read_event_aliases() -> dict[str, str]:
+    """alias -> canonical, from the crate's own `EVENT_ALIASES` table in `capability.rs`.
+
+    # Why the gate needs this
+
+    A legacy spelling is *supposed* to stay resolvable: `connect_event` validates a document's
+    name through `event_schema_for`, which walks `EVENT_ALIASES` to the published row, and then
+    asks `event_signal_dyn` for that name. Treating the alias as "resolved but unpublished"
+    would force every rename to break either the document or the gate, which is why the two
+    tables are read together here. It is deliberately narrow: the alias only excuses a name
+    whose **canonical** form the same control publishes.
+    """
+    source = ALIAS_SOURCE.read_text()
+    start = source.find("EVENT_ALIASES: &[EventAlias]")
+    if start == -1:
+        return {}
+    end = source.find("];", start)
+    if end == -1:
+        return {}
+    block = source[start:end]
+    pairs = re.findall(r'alias:\s*"([^"]+)"\s*,\s*canonical:\s*"([^"]+)"', block, re.S)
+    return {alias: canonical for alias, canonical in pairs}
+
+
 def read_alias_registry() -> dict[str, dict[str, str]]:
     """alias -> {alias_of, implementation, file}, from `ALIAS_OF` in `capability.rs`.
 
@@ -675,7 +699,13 @@ def resolved_names(source: str, struct_name: str | None = None) -> set[str]:
         return set()
     names: set[str] = set()
     for body in _dynamic_bodies(region):
-        names |= set(re.findall(r'"([a-z0-9_]+)"\s*=>', body))
+        # Every arm's **first** alternative counts too: an arm may spell a legacy name
+        # alongside the canonical one (`"line_crossed" | "on_line_crossed" =>`). Matching only
+        # the literal immediately before `=>` saw the second spelling and missed the first,
+        # which is exactly the direction this gate exists to catch — a published name whose
+        # arm is invisible to it reads as "does not resolve".
+        for arm in _ARM_NAMES.finditer(body):
+            names.update(re.findall(r'"([a-z0-9_]+)"', arm.group(1)))
     return names
 
 
@@ -723,6 +753,7 @@ def main() -> int:
 
     try:
         aliases = read_alias_registry()
+        event_aliases = read_event_aliases()
     except ValueError as error:
         print(f"❌ {error}")
         return 1
@@ -854,7 +885,13 @@ def main() -> int:
             failures.append(
                 f"{control}: `{name}` is published but `event_signal_dyn` does not resolve it"
             )
-        for name in sorted(resolved - published_by_impl[(relative, STRUCT_IMPL.get(control))]):
+        impl_published = published_by_impl[(relative, STRUCT_IMPL.get(control))]
+        legacy = {
+            name
+            for name in resolved - impl_published
+            if event_aliases.get(name) in impl_published
+        }
+        for name in sorted(resolved - impl_published - legacy):
             failures.append(
                 f"{control}: `event_signal_dyn` resolves `{name}`, which neither this control nor "
                 "any control sharing its struct publishes — nothing can subscribe to it"
@@ -888,7 +925,12 @@ def main() -> int:
             failures.append(
                 f"{control}: `{name}` is published but `event_signal_dyn` does not resolve it"
             )
-        for name in sorted(external_resolved - external_declared):
+        external_legacy = {
+            name
+            for name in external_resolved - external_declared
+            if event_aliases.get(name) in external_declared
+        }
+        for name in sorted(external_resolved - external_declared - external_legacy):
             failures.append(
                 f"{control}: `event_signal_dyn` resolves `{name}`, which `{const_name}` does not "
                 "publish — nothing can subscribe to it"

@@ -1324,6 +1324,17 @@ pub trait Widget: EventHandler + Any {
     fn is_focusable(&self) -> bool {
         self.kind().wants_keyboard_focus()
     }
+
+    /// Whether this control's own event handler consumes IME preedit/commit events.
+    ///
+    /// The platform asks this before routing composition text to the focus owner. The
+    /// default derives the answer from the kind
+    /// ([`WidgetKind::accepts_ime_input`](crate::widget::WidgetKind::accepts_ime_input)); a
+    /// control whose kind is shared with non-text controls (a companion that edits text while
+    /// its kind says `Panel`) overrides it rather than being left out of the whitelist.
+    fn accepts_ime_input(&self) -> bool {
+        self.kind().accepts_ime_input()
+    }
 }
 
 #[cfg(all(test, full_widgets))]

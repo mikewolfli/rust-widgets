@@ -277,27 +277,28 @@ fn pixel_from_color(c: Color) -> u32 {
 
 ## Control Backend Customization
 
-The control backend manages widget dispatch policies and routing:
+The control backend chooses who paints a widget and exposes the backend contract:
 
 ```rust
-use rust_widgets::control_backend::Dispatcher;
-use rust_widgets::core::ObjectId;
+use rust_widgets::control_backend::{
+    get_control_backend, route_preference_for_widget_kind, ControlBackend,
+    ControlBackendKind, ControlRoutePreference,
+};
+use rust_widgets::widget::WidgetKind;
 
-// Configure dispatch policy
-struct CustomDispatchPolicy;
+// The process-wide backend (the library's own painter in every current profile).
+let backend: &'static dyn ControlBackend = get_control_backend();
+let kind: ControlBackendKind = backend.kind();
+let name: &str = backend.backend_name();
 
-impl Dispatcher for CustomDispatchPolicy {
-    fn should_dispatch_to_widget(&self, widget_id: ObjectId, action: &str) -> bool {
-        // Custom routing logic
-        !action.contains("internal")
-    }
-
-    fn route_action(&self, widget_id: ObjectId, action: &str) -> Option<ObjectId> {
-        // Route actions to specific handlers
-        None  // Default routing
-    }
-}
+// Per-kind routing preference: which mechanism must paint this widget.
+let preference: ControlRoutePreference =
+    route_preference_for_widget_kind(WidgetKind::Button);
+assert_eq!(preference, ControlRoutePreference::CustomRequired);
 ```
+
+There is no `Dispatcher` trait: routing is a per-kind preference table plus the
+process-wide backend, so callers do not install a policy object.
 
 ## Signal/Slot Advanced Patterns
 
@@ -424,7 +425,7 @@ assert_eq!(greeting.get(), "Hello, Jane Doe!");
 Implement the chart trait to create custom visualizations:
 
 ```rust
-use rust_widgets::chart::{
+use rust_widgets::widget::chart_widgets::{
     ChartContext, Chart, ChartData,
 };
 
@@ -945,7 +946,7 @@ Every public module must include:
 | Custom widgets | `Widget` + `EventHandler` + `Draw` traits |
 | Custom layouts | `Layout` trait with `update()`, `add_widget()` |
 | Custom backends | `PaintBackend` trait (fill_rect, draw_rect, etc.) |
-| Control backends | `Dispatcher` trait for dispatch policy |
+| Control backends | `ControlBackend` trait plus the per-kind routing table |
 | Signal/slot | `ConnectionScope`, `connect_once()`, re-entrant safety |
 | Data binding | `Binding<T>`, `Computed<T>`, `FnListener` |
 | Custom charts | `Chart` trait + `ChartContext` |

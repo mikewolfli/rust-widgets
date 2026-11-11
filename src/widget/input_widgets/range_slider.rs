@@ -821,6 +821,13 @@ impl Draw for RangeSlider {
         // from, so the disc, the track's ends and a click's answer are one derivation.
         let handle_radius = RANGE_SLIDER_HANDLE_RADIUS;
 
+        // A rectangle no larger than the two handle insets has no track to draw: the `u32`
+        // subtraction below would underflow (panic in debug, a ~4-billion-pixel rect in
+        // release). Degenerate geometry draws nothing, so leave before the arithmetic (RB-01).
+        if rect.width <= handle_radius * 2 || rect.height <= handle_radius * 2 {
+            return;
+        }
+
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. Every colour below used to be a
         // literal, so a light/dark switch left the track, the selected run and both handles
@@ -1286,6 +1293,18 @@ impl EventHandler for RangeSlider {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+
+    #[test]
+    fn degenerate_geometry_draws_without_underflow() {
+        // The track subtracts two handle insets from `rect.width`/`height`; anything at or
+        // below that floor used to underflow `u32` (RB-01). Drawing must simply produce an
+        // empty picture instead.
+        for rect in [Rect::new(0, 0, 16, 40), Rect::new(0, 0, 40, 16), Rect::new(0, 0, 0, 0)] {
+            let mut rs = RangeSlider::new(rect);
+            let svg = render_to_svg(&mut rs);
+            assert!(svg.contains("<svg"), "the degenerate rect still produces a document");
+        }
+    }
 
     #[test]
     fn range_slider_default_creation() {

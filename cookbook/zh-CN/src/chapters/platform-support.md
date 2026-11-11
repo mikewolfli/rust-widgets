@@ -368,54 +368,64 @@ match platform::runtime_gui_mode() {
 
 ---
 
-## 5. 设备环境检测
+## 5. 设备类别与触控目标
 
-`DeviceEnvironment` 提供设备类别、触摸能力、屏幕尺寸、DPI、方向和辅助功能偏好的运行时检测。
+可用的设备类别定义在 `TouchTargetSize` 中，当前构建属于哪一类由 platform 层回答（调用方不做 OS 嗅探）。
 
 ```rust
-use rust_widgets::platform::detector::DeviceEnvironment;
-use rust_widgets::core::{DeviceClass, Size};
+use rust_widgets::core::Size;
+use rust_widgets::platform::profile::recommended_touch_target;
 
-// 根据屏幕尺寸和 DPI 自动检测
-let env = DeviceEnvironment::detect(Size::new(1920, 1080), 1.0);
+// 当前构建属于哪一类：Phone (mobile)、Tablet、Desktop 或 Embedded。
+let class = recommended_touch_target();
 
-println!("设备类别:  {:?}", env.device_class);  // Desktop
-println!("支持触摸: {}", env.touch_capable);
-println!("方向:   {:?}", env.orientation);
-println!("DPI 缩放:     {:.1}", env.dpi_scale);
+// 推荐的最小目标尺寸与间距（逻辑像素）。
+let target = class.dimensions();
+let spacing = class.spacing();
+println!("目标 {}x{}，间距 {}", target.width, target.height, spacing);
 
-// 触摸目标建议（逻辑像素）
-let target = env.min_touch_target();  // Desktop: 32×32, Tablet: 44×44, Mobile: 48×48
-println!("最小触摸目标: {}×{}", target.width, target.height);
-println!("触摸间距:    {}", env.touch_spacing());
+// 只扩大命中测试区域，视觉几何不变。
+let hit = rect.expand_to_touch_target(target);
 
-// 布局缩放（投影模式增加 20%）
-println!("布局缩放: {:.1}", env.layout_scale());
+// 布局也可以扩大子项（由调用方钳制到父矩形）。
+let child = rust_widgets::layout::grow_to_min_touch_size(child_rect, target);
 
-// 通过屏幕尺寸启发式检测设备类别（无需特性标志）：
-//   width < 480     → Mobile
-//   width < 1024    → Tablet
-//   DPI ≥ 2.0, <1440 → Tablet
-//   否则       → Desktop
+// 同一事实在主题/控件侧的入口。
+let minimum_hit = rust_widgets::widget::metrics::minimum_hit_size();
 ```
 
-### 设备类别枚举
+### 触控目标尺寸
 
-| 类别 | 触摸目标 | 触摸间距 | 典型用途 |
-|-------|:---:|:---:|----------|
-| `Desktop` | 32×32 | 8px | 鼠标 + 键盘 |
-| `Tablet` | 44×44 | 12px | 触摸优先的大屏幕 |
-| `Mobile` | 48×48 | 16px | 单手触摸 |
-| `Embedded` | 40×40 | 10px | 专用硬件 |
-| `Projector` | 24×24 | 6px | 遥控导航 |
+| 类别 | 目标 | 间距 | 典型设备 |
+|-------|:---:|:---:|-------------|
+| `TouchTargetSize::Desktop` | 32×32 | 8px | 鼠标 + 键盘，可选触摸 |
+| `TouchTargetSize::Tablet` | 44×44 | 12px | 触摸优先的大屏幕 |
+| `TouchTargetSize::Phone` | 48×48 | 16px | 单手触摸 |
+| `TouchTargetSize::Embedded` | 40×40 | 10px | 专用硬件 |
+| `TouchTargetSize::Projection` | 24×24 | 6px | 遥控导航（`projection` 特性） |
 
-### 辅助功能偏好
+`LayoutContext::min_touch_size` 默认取同一个值，因此布局与控件自身的命中区域不会互相矛盾。
+
+### 环境偏好
+
+缩放与动效偏好来自已安装的环境快照：
 
 ```rust
-let mut env = DeviceEnvironment::default();
-env.set_high_contrast(true);
-env.set_reduced_motion(true);
-env.set_font_scale(1.5);  // 限制在 [0.5, 3.0] 范围内
+use rust_widgets::style::environment::environment;
+
+let env = environment();
+let text_scale = env.effective_text_scale();    // 钳制在 0.25..=8.0
+let layout_scale = env.effective_layout_scale();
+let reduced_motion = env.prefers_reduced_motion();
+```
+
+高对比度是主题设置，不是环境字段：
+
+```rust
+use rust_widgets::style::HighContrastMode;
+use rust_widgets::theme::global_theme_manager;
+
+global_theme_manager().set_high_contrast(HighContrastMode::WhiteOnBlack);
 ```
 
 ---
@@ -947,22 +957,22 @@ wire_focus_manager_to_a11y(&mut fm);
 
 ```rust
 use rust_widgets::platform;
-use rust_widgets::platform::detector::DeviceEnvironment;
-use rust_widgets::core::{Size, RuntimeProfile};
+use rust_widgets::platform::profile::recommended_touch_target;
+use rust_widgets::core::RuntimeProfile;
 
 fn main() {
-    let env = DeviceEnvironment::detect(Size::new(1920, 1080), 1.0);
-    println!("正在 {:?} 设备上运行", env.device_class);
+    let class = recommended_touch_target();
+    println!("运行在 {:?} 设备类别", class);
 
     platform::init();
 
     let caps = platform::capabilities();
     if caps.ime {
-        println!("IME 支持：已启用");
+        println!("IME support: enabled");
     }
 
     if let Some(bridge) = platform::get_platform().accessibility_bridge() {
-        println!("无障碍桥接：可用");
+        println!("Accessibility bridge: available");
     }
 
     let contract = negotiate_capability_contract(RuntimeProfile::Full);

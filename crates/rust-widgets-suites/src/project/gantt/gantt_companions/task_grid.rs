@@ -87,9 +87,9 @@ pub struct GanttTaskGrid {
     selected: Option<usize>,
     binding: Option<GridBinding>,
     /// Emitted with the task id a press selected.
-    pub on_task_selected: Signal1<String>,
+    pub task_selected: Signal1<String>,
     /// Emitted with the column index a header press hit.
-    pub on_header_clicked: Signal1<usize>,
+    pub header_clicked: Signal1<usize>,
     /// Column bands reused by the paint path.
     column_bounds_scratch: Vec<(usize, i32, u32)>,
     /// Visible task indices reused by the paint path.
@@ -111,8 +111,8 @@ impl GanttTaskGrid {
             scroll_offset: 0,
             selected: None,
             binding: None,
-            on_task_selected: Signal1::new(),
-            on_header_clicked: Signal1::new(),
+            task_selected: Signal1::new(),
+            header_clicked: Signal1::new(),
             column_bounds_scratch: Vec::new(),
             visible_indices_scratch: Vec::new(),
         }
@@ -549,16 +549,28 @@ impl Widget for GanttTaskGrid {
     fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
         use rust_widgets::signal::EventSignalRef;
         match name {
-            "task_selected" | "on_task_selected" => {
-                Some(EventSignalRef::mapped("on_task_selected", &self.on_task_selected, |id| {
+            "task_selected" => {
+                Some(EventSignalRef::mapped("task_selected", &self.task_selected, |id| {
                     CapabilityValue::String(id.clone())
                 }))
             }
-            "header_clicked" | "on_header_clicked" => Some(EventSignalRef::mapped(
-                "on_header_clicked",
-                &self.on_header_clicked,
-                |column| CapabilityValue::UInt(*column as u64),
-            )),
+            // Legacy spelling (DX-10): the name published before the `on_` prefix was removed.
+            "on_task_selected" => {
+                Some(EventSignalRef::mapped("on_task_selected", &self.task_selected, |id| {
+                    CapabilityValue::String(id.clone())
+                }))
+            }
+            "header_clicked" => {
+                Some(EventSignalRef::mapped("header_clicked", &self.header_clicked, |column| {
+                    CapabilityValue::UInt(*column as u64)
+                }))
+            }
+            // Legacy spelling (DX-10).
+            "on_header_clicked" => {
+                Some(EventSignalRef::mapped("on_header_clicked", &self.header_clicked, |column| {
+                    CapabilityValue::UInt(*column as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -616,13 +628,13 @@ impl EventHandler for GanttTaskGrid {
         match event {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(column) = self.hit_header(*pos) {
-                    self.on_header_clicked.emit(column);
+                    self.header_clicked.emit(column);
                     return;
                 }
                 if let Some(index) = self.hit_task(*pos) {
                     self.selected = Some(index);
                     if let Some(task) = self.tasks.get(index) {
-                        self.on_task_selected.emit(task.id.clone());
+                        self.task_selected.emit(task.id.clone());
                     }
                     self.base.request_redraw();
                 }
@@ -826,7 +838,7 @@ mod tests {
         ]);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
-        grid.on_task_selected.connect(move |id| {
+        grid.task_selected.connect(move |id| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push(id.as_ref().clone());
             }
@@ -854,7 +866,7 @@ mod tests {
         ]);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
-        grid.on_header_clicked.connect(move |column| {
+        grid.header_clicked.connect(move |column| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push(*column);
             }

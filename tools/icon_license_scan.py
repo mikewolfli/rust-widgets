@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # The rule this implements is stated in full — what it proves, what it does not, and the reverse
-# injection that keeps it honest — in tools/check_icon_licences.sh, which is the only caller. That
+# injection that keeps it honest — in tools/check_icon_licenses.sh, which is the only caller. That
 # file is the documentation of record.
 #
 # Icon data is the second dependency in this crate whose licence is not the crate's own (the first

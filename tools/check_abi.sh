@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+# check_abi.sh -- the committed C headers must equal a fresh generation.
+#
+# Regenerates `include/rw_generated.h` and `examples/rust_widgets.generated.h` with
+# `tools/generate_c_header.py`, diffs them against the committed copies, and restores the
+# originals on exit. A hand-edited header drifts from the Rust signatures the generator reads,
+# so the two are compared rather than trusted.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

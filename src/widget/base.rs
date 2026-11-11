@@ -1125,6 +1125,58 @@ impl BaseWidget {
         }
     }
 
+    /// Paints the focus ring with a surface derived from this control's own style.
+    ///
+    /// The two-argument form for controls whose draw has no ready-made surface colour: the
+    /// resolved background, else the palette's window fill. A control that already holds a more
+    /// precise surface (a derived panel tone) uses
+    /// [`draw_focus_ring_if_needed`](Self::draw_focus_ring_if_needed) directly.
+    pub fn draw_focus_ring(
+        &self,
+        context: &mut crate::render::RenderContext,
+        rect: crate::core::Rect,
+        radius: u32,
+    ) {
+        let surface = self.style().background_color.unwrap_or_else(|| {
+            crate::style::palette_shared()
+                .map(|colors| colors.background)
+                .unwrap_or(crate::core::Color::WHITE)
+        });
+        self.draw_focus_ring_if_needed(context, rect, radius, surface);
+    }
+
+    /// Paints this control's focus ring, when it should show one.
+    ///
+    /// # Why this is one call per draw rather than two lines per control
+    ///
+    /// The ring geometry, the "is the control too small to ring" guard, the ink rule and the
+    /// reason gate (`draws_focus_ring`) are the same for every control. A control that keeps
+    /// its own copy has to remember all four; thirty-two of them had **none** of it, so Tab
+    /// moved focus with nothing visible (U3-04).
+    ///
+    /// `surface` is the fill the ring is drawn against, used to derive a contrasting ink.
+    pub fn draw_focus_ring_if_needed(
+        &self,
+        context: &mut crate::render::RenderContext,
+        rect: crate::core::Rect,
+        radius: u32,
+        surface: crate::core::Color,
+    ) {
+        if !self.draws_focus_ring() {
+            return;
+        }
+        let ring = crate::widget::metrics::FocusRing::for_control(rect, radius);
+        if !ring.is_drawable() {
+            return;
+        }
+        context.draw_rounded_rect_stroke(
+            ring.rect,
+            ring.radius,
+            crate::widget::metrics::focus_ring_color(surface.contrast_color()),
+            crate::widget::metrics::FOCUS_RING_WIDTH,
+        );
+    }
+
     /// A surface colour that honours the enabled flag by **receding toward the page**.
     ///
     /// # Why this is not `disabled_ink_on`

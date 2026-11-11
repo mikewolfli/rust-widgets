@@ -157,7 +157,7 @@ pub struct ChapterListPanel {
     binding: Option<ChapterBinding>,
     seek_sink: Option<ChapterSeekSink>,
     /// Emitted with the chapter index a press selected.
-    pub on_chapter_selected: Signal1<usize>,
+    pub chapter_selected: Signal1<usize>,
 }
 
 impl ChapterListPanel {
@@ -175,7 +175,7 @@ impl ChapterListPanel {
             scroll_offset: 0,
             binding: None,
             seek_sink: None,
-            on_chapter_selected: Signal1::new(),
+            chapter_selected: Signal1::new(),
         }
     }
 
@@ -540,7 +540,7 @@ impl ChapterListPanel {
         // The pressed row is the selection even when two chapters share a start time, where
         // "the chapter containing this instant" would pick the later one.
         self.set_active(Some(index));
-        self.on_chapter_selected.emit(index);
+        self.chapter_selected.emit(index);
         if let Some(sink) = &self.seek_sink {
             lock(&sink.seeks).push(start);
             // Wake the player, so its paint drains the queue and moves the clock.
@@ -581,9 +581,15 @@ impl Widget for ChapterListPanel {
     fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
         use rust_widgets::signal::EventSignalRef;
         match name {
-            "chapter_selected" | "on_chapter_selected" => Some(EventSignalRef::mapped(
+            "chapter_selected" => {
+                Some(EventSignalRef::mapped("chapter_selected", &self.chapter_selected, |index| {
+                    CapabilityValue::UInt(*index as u64)
+                }))
+            }
+            // Legacy spelling (DX-10): the name published before the `on_` prefix was removed.
+            "on_chapter_selected" => Some(EventSignalRef::mapped(
                 "on_chapter_selected",
-                &self.on_chapter_selected,
+                &self.chapter_selected,
                 |index| CapabilityValue::UInt(*index as u64),
             )),
             _ => None,
@@ -758,7 +764,7 @@ mod tests {
         panel.set_chapters(chapters());
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
-        panel.on_chapter_selected.connect(move |index| {
+        panel.chapter_selected.connect(move |index| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push(*index);
             }
@@ -782,7 +788,7 @@ mod tests {
         panel.set_chapters(chapters());
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
-        panel.on_chapter_selected.connect(move |index| {
+        panel.chapter_selected.connect(move |index| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push(*index);
             }

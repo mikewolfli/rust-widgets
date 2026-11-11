@@ -189,6 +189,8 @@ pub struct DataGrid {
     /// Explicit detail-band heights (V-009); a row without one uses
     /// [`DEFAULT_ROW_DETAIL_HEIGHT`].
     detail_heights: HashMap<usize, u32>,
+    /// The empty/error caption this grid paints when it has no rows (UX-03).
+    pub(crate) placeholder: crate::widget::view_widgets::CollectionPlaceholder,
 }
 
 impl DataGrid {
@@ -275,6 +277,7 @@ impl DataGrid {
             row_detail_provider: None,
             expanded_detail_rows: BTreeSet::new(),
             detail_heights: HashMap::new(),
+            placeholder: crate::widget::view_widgets::CollectionPlaceholder::new(),
         }
     }
 
@@ -974,11 +977,16 @@ impl DataGrid {
     }
 
     /// Whether scroll-bar thumbs are painted.
+    ///
+    /// Since UX-04 the thumb is *derived*: it appears whenever rows are off-screen, whether or
+    /// not a caller asked. This flag is a **force-on** override, never a way to hide an overflow.
     pub fn show_scrollbars(&self) -> bool {
         self.show_scrollbars
     }
 
-    /// Enables or disables the scroll-bar thumbs.
+    /// Forces the scroll-bar thumbs on even when the rows fit.
+    ///
+    /// An overflowing grid paints the thumbs regardless; this only makes them permanent.
     pub fn set_show_scrollbars(&mut self, show: bool) {
         if self.show_scrollbars == show {
             return;

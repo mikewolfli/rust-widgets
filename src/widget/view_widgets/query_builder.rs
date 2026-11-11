@@ -1539,6 +1539,11 @@ impl Draw for QueryBuilder {
             .unwrap_or(Color::BLACK);
         let background = resolved.blend(&text_color, 0.08);
 
+        // U3-03: a disabled builder's inks and rim recede by the shared rule; the panel keeps
+        // its geometry so a disabled builder is still a readable block.
+        let text_color = self.base.disabled_ink_on(text_color, background);
+        let border = self.base.disabled_ink_on(border, background);
+
         context.face_with_gradient_corners(
             rect,
             background,
@@ -1579,6 +1584,11 @@ impl Draw for QueryBuilder {
                 HorizontalAlignment::Left,
             );
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

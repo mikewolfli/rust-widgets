@@ -273,27 +273,27 @@ fn pixel_from_color(c: Color) -> u32 {
 
 ## 控制後端自訂
 
-控制後端負責管理控制項的分派策略與路由：
+控制後端決定由誰繪製控件，並提供後端契約：
 
 ```rust
-use rust_widgets::control_backend::Dispatcher;
-use rust_widgets::core::ObjectId;
+use rust_widgets::control_backend::{
+    get_control_backend, route_preference_for_widget_kind, ControlBackend,
+    ControlBackendKind, ControlRoutePreference,
+};
+use rust_widgets::widget::WidgetKind;
 
-// 設定分派策略
-struct CustomDispatchPolicy;
+// 行程級後端（目前所有 profile 中都是庫自己的繪製器）。
+let backend: &'static dyn ControlBackend = get_control_backend();
+let kind: ControlBackendKind = backend.kind();
+let name: &str = backend.backend_name();
 
-impl Dispatcher for CustomDispatchPolicy {
-    fn should_dispatch_to_widget(&self, widget_id: ObjectId, action: &str) -> bool {
-        // 自訂路由邏輯
-        !action.contains("internal")
-    }
-
-    fn route_action(&self, widget_id: ObjectId, action: &str) -> Option<ObjectId> {
-        // 將動作路由至特定處理器
-        None  // 預設路由
-    }
-}
+// 依控件的路由偏好：必須由哪種機制繪製。
+let preference: ControlRoutePreference =
+    route_preference_for_widget_kind(WidgetKind::Button);
+assert_eq!(preference, ControlRoutePreference::CustomRequired);
 ```
+
+不存在 `Dispatcher` trait：路由是一張依 kind 的偏好表，加上行程級後端，因此呼叫方不需要安裝策略物件。
 
 ## 信號/槽進階模式
 
@@ -419,7 +419,7 @@ assert_eq!(greeting.get(), "Hello, Jane Doe!");
 實作圖表特徵來建立自訂視覺化元件：
 
 ```rust
-use rust_widgets::chart::{
+use rust_widgets::widget::chart_widgets::{
     ChartContext, Chart, ChartData,
 };
 
@@ -933,7 +933,7 @@ mod tests {
 | 自訂控制項 | `Widget` + `EventHandler` + `Draw` 特徵 |
 | 自訂佈局 | `Layout` 特徵，包含 `update()`、`add_widget()` |
 | 自訂後端 | `PaintBackend` 特徵（fill_rect、draw_rect 等） |
-| 控制後端 | `Dispatcher` 特徵用於分派策略 |
+| 控制後端 | `ControlBackend` trait 加依 kind 的路由表 |
 | 信號/槽 | `ConnectionScope`、`connect_once()`、可重入安全性 |
 | 資料繫結 | `Binding<T>`、`Computed<T>`、`FnListener` |
 | 自訂圖表 | `Chart` 特徵 + `ChartContext` |

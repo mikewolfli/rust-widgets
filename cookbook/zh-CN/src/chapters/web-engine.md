@@ -4,6 +4,16 @@ rust-widgets 包含一个完整的嵌入式网页浏览子系统——网页视�
 Web引擎、JavaScript引擎、Cookie管理、隐私控制、跟踪
 保护、插件系统和浏览器历史持久化——全部用纯 Rust 实现。
 
+> **这些内容在哪里。** Web 控件组已从核心 crate 迁到可选的 `rust-widgets-suites` crate，
+> 由它的 `webview` 特性启用：
+>
+> ```toml
+> [dependencies]
+> rust-widgets-suites = { version = "4.2", features = ["webview"] }
+> ```
+>
+> 因此下文所有路径都是 `rust_widgets_suites::webview::…`，而不是 `rust_widgets::…`。
+
 ## 架构概览
 
 ```
@@ -37,7 +47,7 @@ Web引擎、JavaScript引擎、Cookie管理、隐私控制、跟踪
 ## 网页视图(WebView) — 嵌入式网页内容 Widget
 
 ```rust
-use rust_widgets::web::WebViewEnhanced;
+use rust_widgets_suites::webview::WebViewEnhanced;
 use rust_widgets::core::Rect;
 
 // 创建一个网页视图 widget
@@ -98,7 +108,7 @@ assert!(!new_view.is_loading());
 和设置：
 
 ```rust
-use rust_widgets::web::WebEngineViewEnhanced;
+use rust_widgets_suites::webview::WebEngineViewEnhanced;
 use rust_widgets::core::Rect;
 
 let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 1024, 768));
@@ -146,7 +156,7 @@ assert!(engine.settings().private_browsing);
 ### SessionHistory（会话历史）
 
 ```rust
-use rust_widgets::web::SessionHistory;
+use rust_widgets_suites::webview::SessionHistory;
 
 let mut history = SessionHistory::new(50);  // 最多 50 条记录
 
@@ -189,7 +199,7 @@ history.clear();
 另一种带时间戳的会话历史实现：
 
 ```rust
-use rust_widgets::web::{NavigationHistory, NavigationEntry};
+use rust_widgets_suites::webview::{NavigationHistory, NavigationEntry};
 
 let mut history = NavigationHistory::new(100);
 
@@ -240,7 +250,7 @@ assert!(!history.can_go_forward());  // 前进记录已被截断
 ## 浏览器历史持久化
 
 ```rust
-use rust_widgets::web::{BrowserHistory, HistoryEntry};
+use rust_widgets_suites::webview::{BrowserHistory, HistoryEntry};
 
 let mut history = BrowserHistory::new();  // 默认：100 条记录
 // 或者：BrowserHistory::with_capacity(500)
@@ -296,7 +306,7 @@ assert!(history.is_empty());
 语句、循环、数组和控制台日志：
 
 ```rust
-use rust_widgets::web::{SimpleJsEngine, JsValue, JsResult, JsContext, JsEngine};
+use rust_widgets_suites::webview::{SimpleJsEngine, JsValue, JsResult, JsContext, JsEngine};
 
 let mut engine = SimpleJsEngine::new();
 let mut ctx = JsContext::new();
@@ -339,7 +349,7 @@ for msg in ctx.console_messages() {
 JavaScript 值类型支持多种变体：
 
 ```rust
-use rust_widgets::web::JsValue;
+use rust_widgets_suites::webview::JsValue;
 
 let vals = [
     JsValue::Undefined,
@@ -389,7 +399,7 @@ view.set_javascript_enabled(true);
 ## Cookie — CookieJar（Cookie 容器）
 
 ```rust
-use rust_widgets::web::{CookieJar, Cookie, SameSite};
+use rust_widgets_suites::webview::{CookieJar, Cookie, SameSite};
 
 let mut jar = CookieJar::new();
 
@@ -447,7 +457,7 @@ assert!(jar.is_empty());
 ### TrackingType — 10 种跟踪机制
 
 ```rust
-use rust_widgets::web::{TrackingType, TrackingProtection, PrivacySettings};
+use rust_widgets_suites::webview::{TrackingType, TrackingProtection, PrivacySettings};
 
 let tracking_types = [
     TrackingType::Cookies,
@@ -506,7 +516,7 @@ assert_eq!(protection.blocked_count(), 0);
 ## 隐私 — 域名允许/阻止列表
 
 ```rust
-use rust_widgets::web::PrivacySettings;
+use rust_widgets_suites::webview::PrivacySettings;
 
 // 三种预设级别：
 
@@ -541,7 +551,7 @@ assert!(settings.should_block_tracking_type(TrackingType::Fingerprinting));
 ## 安全设置
 
 ```rust
-use rust_widgets::web::SecuritySettings;
+use rust_widgets_suites::webview::SecuritySettings;
 
 // 默认：安全优先
 let security = SecuritySettings::default();
@@ -574,7 +584,7 @@ engine.security_mut().block_malware = false;
 ## WebSettings（Web 设置）
 
 ```rust
-use rust_widgets::web::WebSettings;
+use rust_widgets_suites::webview::WebSettings;
 
 let settings = WebSettings {
     javascript_enabled: true,
@@ -599,7 +609,7 @@ view.settings_mut().images_enabled = false;
 ### Plugin Trait（插件特质）
 
 ```rust
-use rust_widgets::web::{
+use rust_widgets_suites::webview::{
     Plugin, PluginInfo, PluginState, PluginPermission, PluginError,
     PluginManager, ContentPlugin,
 };
@@ -628,7 +638,7 @@ impl Plugin for MyPlugin {
 ### PluginManager（插件管理器）
 
 ```rust
-use rust_widgets::web::PluginManager;
+use rust_widgets_suites::webview::PluginManager;
 
 let mut manager = PluginManager::new();
 
@@ -688,7 +698,7 @@ manager.clear();
 ### ContentPlugin — 内置内容处理器
 
 ```rust
-use rust_widgets::web::ContentPlugin;
+use rust_widgets_suites::webview::ContentPlugin;
 
 let mut plugin = ContentPlugin::new("PDF Viewer", "2.0.0");
 
@@ -713,7 +723,7 @@ plugin.on_enable();
 ## 浏览数据清理
 
 ```rust
-use rust_widgets::web::{BrowsingData, WebViewEnhanced};
+use rust_widgets_suites::webview::{BrowsingData, WebViewEnhanced};
 use rust_widgets::core::Rect;
 
 let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -744,7 +754,7 @@ let none = BrowsingData::none();
 `WebViewEnhanced` 和 `WebEngineViewEnhanced` 都暴露在 `WebViewCore` 上定义的信号：
 
 ```rust
-use rust_widgets::web::WebViewEnhanced;
+use rust_widgets_suites::webview::WebViewEnhanced;
 use rust_widgets::core::Rect;
 
 let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
@@ -826,7 +836,7 @@ engine.download_requested.connect(|url: Arc<String>| {
 ## 完整浏览器集成
 
 ```rust
-use rust_widgets::web::{
+use rust_widgets_suites::webview::{
     WebEngineViewEnhanced, SessionHistory, BrowserHistory,
     CookieJar, PrivacySettings, TrackingProtection,
     SecuritySettings, WebSettings, PluginManager,
@@ -897,7 +907,7 @@ impl Browser {
     }
 
     fn clear_data(&mut self) {
-        use rust_widgets::web::BrowsingData;
+        use rust_widgets_suites::webview::BrowsingData;
         // 退出时清理所有数据（隐私浏览）
         self.view.clear_browsing_data(BrowsingData::all());
     }

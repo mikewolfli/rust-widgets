@@ -26,7 +26,7 @@ cargo run --no-default-features --features mini     --example embedded_host
 
 | Profile | Feature | 你得到什麼 | 代價 |
 |---|---|---|---|
-| `mini` | `--features mini` | 軟體光柵、約 28 個核心控制項、`heapless`/`bumpalo`/`spin` 分配器、完全不連結 OS 執行期。 | crate 變為 `no_std`；平台執行期不會被連結。 |
+| `mini` | `--features mini` | 軟體光柵、約 28 個核心控制項、`heapless`/`hashbrown`/`spin` 分配器、完全不連結 OS 執行期。 | crate 變為 `no_std`；平台執行期不會被連結。 |
 | `embedded` | `--features embedded` | 軟體光柵、無 GPU、無觸控、控制項集被裁剪。 | 無 GPU 後端、無觸控。 |
 
 ```toml

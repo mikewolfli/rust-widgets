@@ -118,6 +118,64 @@ pub fn byte_index_of_char(text: &str, count: usize) -> usize {
     }
 }
 
+/// The class a character belongs to for word selection.
+///
+/// `0` is whitespace, `1` is a word character (alphanumeric or `_`) and `2` is everything else,
+/// so punctuation is its own run and a double-click on a separator selects that separator rather
+/// than the adjacent word. Shared so every text control's double-click agrees on what a word is
+/// (UX6-09); `LineEdit` had the only copy.
+pub fn char_class(ch: char) -> u8 {
+    if ch.is_whitespace() {
+        0
+    } else if ch.is_alphanumeric() || ch == '_' {
+        1
+    } else {
+        2
+    }
+}
+
+/// The byte range of the word around `index`, for a double-click selection.
+///
+/// A word is a run of characters of one class (see [`char_class`]); a press on whitespace or
+/// punctuation selects that run itself, which is what keeps a double-click on a gap or a
+/// separator from silently doing nothing.
+///
+/// # Why this is shared
+///
+/// `LineEdit` implemented double-click-to-select on its own while five sibling text controls
+/// (`SearchBox`, `SearchBar`, `AutoCompleteEdit`, `Mention`, `ChipInput`) had no double-click arm
+/// at all, so the same gesture did nothing in half the family (UX6-09). One rule, one copy.
+pub fn word_range_at(text: &str, index: usize) -> (usize, usize) {
+    let index = floor_char_boundary(text, index.min(text.len()));
+    // The character the press landed on; at the end of the value the class is taken from the
+    // character before it, so a double-click on the trailing edge selects the last word.
+    let sampled =
+        text[index..].chars().next().or_else(|| text[..index].chars().next_back()).unwrap_or(' ');
+    let class = char_class(sampled);
+    let same_class = |ch: char| char_class(ch) == class;
+    let mut start = index;
+    for (i, ch) in text[..index].char_indices().rev() {
+        if !same_class(ch) {
+            break;
+        }
+        start = i;
+    }
+    let mut end = index;
+    for (i, ch) in text[index..].char_indices() {
+        if !same_class(ch) {
+            break;
+        }
+        end = index + i + ch.len_utf8();
+    }
+    // A press on the boundary between two words selects the word, not the empty run.
+    if start == end {
+        if let Some((i, ch)) = text[..index].char_indices().next_back() {
+            return (i, i + ch.len_utf8());
+        }
+    }
+    (start, end)
+}
+
 /// The byte offset of the character boundary **before** `offset`.
 ///
 /// # Why this is shared

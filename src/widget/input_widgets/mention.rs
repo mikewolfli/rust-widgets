@@ -1599,6 +1599,19 @@ impl EventHandler for Mention {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.press_with_pointer(*pos);
             }
+            // UX6-09: a double-click selects the word under the pointer, the same rule the
+            // `LineEdit` family applies. The suggestion popup keeps its own press arm; a
+            // double-click on a row must not select text behind it.
+            Event::MouseDoubleClick { pos, button }
+                if *button == 1 && self.geometry().contains_point(*pos) =>
+            {
+                let index = self.byte_index_at_x(pos.x);
+                let (start, end) = crate::widget::text_utils::word_range_at(&self.text, index);
+                self.selection_anchor = Some(start);
+                self.caret = end;
+                self.dragging_selection = false;
+                self.base.request_redraw();
+            }
             // A drag extends the press's selection; a bare hover still does nothing because
             // `dragging_selection` is only raised by a press.
             Event::MouseMove { pos } => {
@@ -2361,6 +2374,16 @@ mod tests {
     }
 
     /// A press followed by a drag selects the swept range.
+    /// UX6-09: a double-click selects the word under the pointer, as `LineEdit` does.
+    #[test]
+    fn a_double_click_selects_the_word_under_the_pointer() {
+        let mut m = mention();
+        m.set_text("alpha beta");
+        m.handle_event(&Event::MouseDoubleClick { pos: Point::new(2, 8), button: 1 });
+        let (start, end) = m.selection_range().expect("a double-click must select a word");
+        assert_eq!(&m.text()[start..end], "alpha");
+    }
+
     #[test]
     fn a_drag_selects_a_range() {
         let mut m = mention();

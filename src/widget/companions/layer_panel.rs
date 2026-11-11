@@ -490,6 +490,10 @@ impl Draw for LayerPanel {
         let (surface, ink) = surface_ink(style);
         let font = effective_font(style);
         let accent = accent_color();
+        // U3-03: a disabled panel's ink and accent recede by the shared rule. The row fills and
+        // the rim below are derived from `ink`, so they follow it without a second derivation.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let accent = self.base.disabled_ink_on(accent, surface);
         let selected_fill = ink.blend(&surface, 0.85);
         let hover_fill = ink.blend(&surface, 0.93);
         let rect = self.geometry();
@@ -568,6 +572,11 @@ impl Draw for LayerPanel {
                 1,
             );
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

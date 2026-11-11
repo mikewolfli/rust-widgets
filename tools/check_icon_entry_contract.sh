@@ -170,7 +170,7 @@ if [ -f "$tokens_file" ] && [ -f "$catalog_file" ]; then
   fi
 
   # The count is documented in prose, and prose drifts: the two READMEs and the cookbook all said 68
-  # while `tools/icon_tokens.txt` held 69, and nothing noticed until the READMEs were rewritten. The
+  # while `crates/rust-widgets-icons/tools/icon_tokens.txt` held 69, and nothing noticed until the READMEs were rewritten. The
   # sibling gate for the widget-kind count states the rule — a documented number needs a check tied to
   # the single source of truth — so the same assertion is made here against the two declaration files.
   #

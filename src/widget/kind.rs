@@ -1841,6 +1841,11 @@ impl WidgetKind {
         match self {
             Self::LineEdit => true,
             Self::TextArea => true,
+            // A combo box's editor and a spin box's hosted field both implement the
+            // IME preedit/commit path (`combobox.rs`, `spinbox.rs`); leaving them out
+            // of this table made those arms unreachable on a platform that gates
+            // preedit/commit on this answer (UX-01).
+            Self::ComboBox | Self::SpinBox => true,
             #[cfg(widgets_unstripped)]
             Self::TextEdit
             | Self::RichEdit
@@ -1852,6 +1857,8 @@ impl WidgetKind {
             | Self::AutoCompleteEdit
             | Self::Mention
             | Self::EditableComboBox
+            | Self::FontComboBox
+            | Self::Cascader
             | Self::OtpInput
             | Self::InplaceEditor
             // Companions with an editable text field: the find bar's query/replace, the filter
@@ -1875,6 +1882,24 @@ mod tests {
     // warning on `--features embedded`/`mini`, which those profiles compile with `-D warnings`.
     #[cfg(widgets_unstripped)]
     use super::WidgetKind;
+
+    /// Controls whose own event handler has an IME preedit/commit arm must answer `true` here.
+    ///
+    /// A platform gates preedit/commit on [`WidgetKind::accepts_ime_input`], so a missing entry
+    /// turns the control's arms into dead code: that was UX-01 for `ComboBox`/`SpinBox` and
+    /// U3-02 for `Cascader`/`FontComboBox`/the two find bars.
+    #[cfg(widgets_unstripped)]
+    #[test]
+    fn every_control_with_an_ime_arm_accepts_ime_input() {
+        assert!(WidgetKind::ComboBox.accepts_ime_input());
+        assert!(WidgetKind::SpinBox.accepts_ime_input());
+        assert!(WidgetKind::Cascader.accepts_ime_input());
+        assert!(WidgetKind::FontComboBox.accepts_ime_input());
+        // The editor's own find bar is a `FindBar` kind.
+        assert!(WidgetKind::FindBar.accepts_ime_input());
+        // A plain panel is not a text field; the whitelist must stay narrow.
+        assert!(!WidgetKind::Panel.accepts_ime_input());
+    }
 
     /// Every registered kind must name itself exactly as `Debug` does.
     ///

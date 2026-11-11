@@ -101,7 +101,7 @@ pub fn create_window(title: &str, x: i32, y: i32, width: u32, height: u32) -> Ob
 pub fn show_widget(id: ObjectId);
 pub fn hide_widget(id: ObjectId);
 pub fn set_widget_geometry(id: ObjectId, x: i32, y: i32, w: u32, h: u32);
-pub fn set_widget_text(id: ObjectId, text: &str) -> String;
+pub fn set_widget_text(id: ObjectId, text: &str);
 pub fn get_widget_text(id: ObjectId) -> String;
 pub fn set_widget_enabled(id: ObjectId, enabled: bool);
 pub fn is_widget_enabled(id: ObjectId) -> bool;
@@ -191,8 +191,10 @@ pub fn get_widget_accessibility_name(id: ObjectId) -> String;
 pub struct App { /* ... */ }
 pub struct AppConfig {
     pub app_name: String,
+    pub organization: String,
+    pub version: String,
     pub enable_i18n: bool,
-    // ...
+    pub enable_accessibility: bool,
 }
 ```
 
@@ -200,10 +202,15 @@ pub struct AppConfig {
 
 | 方法 | 簽名 | 說明 |
 |---|---|---|
-| `new` | `fn(config: AppConfig) -> Self` | 使用設定建立應用程式 |
-| `run` | `fn(self)` | 執行事件迴圈 |
-| `window` | `fn(&self) -> &WindowHandle` | 取得主視窗控制代碼 |
-| `quit` | `fn(&self)` | 結束應用程式 |
+| `new` | `fn() -> Self` | 使用預設設定建立應用程式 |
+| `with_config` | `fn(config: AppConfig) -> Self` | 使用給定設定建立應用程式 |
+| `config` / `config_mut` | `fn(&self) -> &AppConfig` / `fn(&mut self) -> &mut AppConfig` | 讀取或調整目前設定 |
+| `lifecycle` / `lifecycle_mut` | `fn(&self) -> &AppLifecycle` | 讀取啟動/結束鉤子與生命週期狀態 |
+| `on_startup` | `fn(self, f: impl FnOnce() + Send + 'static) -> Self` | 事件迴圈啟動時執行 `f` |
+| `new_window` | `fn(&self, title: &str, x: i32, y: i32, w: u32, h: u32) -> WindowHandle` | 建立一個頂層視窗 |
+| `windows` | `fn(&self) -> Vec<WindowHandle>` | 所有已開啟的頂層視窗 |
+| `run` | `fn(&self)` | 執行事件迴圈 |
+| `quit` | `fn(&mut self)` | 要求事件迴圈結束 |
 
 ### 控制項控制代碼型別
 
@@ -212,7 +219,7 @@ pub struct AppConfig {
 | 控制代碼 | 控制項型別 | 主要操作（除 WidgetHandle 外） |
 |---|---|---|
 | `WidgetHandle` | (基礎特徵) | `raw_id()`, `from_raw()`, `show()`, `hide()`, `set_geometry()`, `set_text()`, `text()`, `enable()`, `disable()`, `is_enabled()`, `set_visible()`, `is_visible()`, `on_click()`, `on_value_changed()` |
-| `WindowHandle` | Window | `set_title()`, `title()`, `resize()`, `minimize()`, `maximize()`, `restore()`, `close()` |
+| `WindowHandle` | Window | `set_title()`, `title()`, `set_icon()`, `set_min_size()`, `min_size()`, `set_frame_presentation()`, `close()` |
 | `ButtonHandle` | Button | `set_text()`, `text()` — 繼承 `WidgetHandle` |
 | `LabelHandle` | Label | `set_text()`, `text()` |
 | `LineEditHandle` | LineEdit | `set_text()`, `text()`, `set_echo_mode()`, `echo_mode()` |
@@ -220,16 +227,16 @@ pub struct AppConfig {
 | `RadioButtonHandle` | RadioButton | `set_checked()`, `is_checked()` |
 | `SliderHandle` | Slider | `set_value()`, `value()`, `set_range()`, `range()` |
 | `ProgressBarHandle` | ProgressBar | `set_value()`, `value()`, `set_range()`, `range()` |
-| `ComboBoxHandle` | ComboBox | `add_item()`, `clear()`, `set_current_index()`, `current_index()`, `item_count()`, `item_text()` |
-| `ListBoxHandle` | ListBox | `add_item()`, `remove_item()`, `clear()`, `set_current_index()`, `current_index()`, `item_count()` |
+| `ComboBoxHandle` | ComboBox | `add_item()`, `clear_items()`, `set_current_index()`, `current_index()`, `item_count()`, `item_text()` |
+| `ListBoxHandle` | ListBox | `add_item()`, `remove_item()`, `clear_items()`, `set_current_index()`, `current_index()`, `item_count()` |
 | `SpinBoxHandle` | SpinBox | `set_value()`, `value()`, `set_range()`, `set_step()` |
-| `ScrollAreaHandle` | ScrollArea | `set_widget()`, `ensure_visible()`, `scroll_to()` |
+| `ScrollAreaHandle` | ScrollArea | `set_content_widget()`, `content_widget()`, `set_scroll_position()`, `scroll_position()`, `set_content_size()`, `content_size()`, `scroll_to_top()`, `scroll_to_bottom()` |
 | `ScrollBarHandle` | ScrollBar | `set_value()`, `value()`, `set_range()` |
 | `PanelHandle` | Panel | `set_layout()` |
 | `ListViewHandle` | ListView | `set_model()`, `model()` |
 | `TabWidgetHandle` | TabWidget | `add_tab()`, `remove_tab()`, `set_current_index()`, `current_index()` |
-| `TextEditHandle` | TextEdit | `set_text()`, `text()`, `append()`, `clear()` |
-| `WebViewHandle` | WebView | `load_url()`, `url()`, `reload()`, `go_back()`, `go_forward()` |
+| `TextEditHandle` | TextEdit | 僅通用 `WidgetHandle` 操作 |
+| `WebViewHandle` | WebView | 僅通用 `WidgetHandle` 操作 |
 | `MessageBoxHandle` | MessageBox | `set_title()`, `set_text()`, `add_button()` |
 | `DialogHandle` | Dialog | `open()`, `close()`, `result()` |
 | `FrameHandle` | Frame | 通用框架容器 |
@@ -814,8 +821,9 @@ pub enum CapabilityAccessError {
 }
 ```
 
-可選套件把各自的 kind 註冊進同一個工廠：`rust-widgets-suites` (webview group) 承載 Web 控件，`rust-widgets-suites`
-承載控件組（目前是表單組 `Form` / `FormSet`）。它們的 `install` 呼叫 `try_register`（工廠已佔用的
+可選套件把各自的 kind 註冊進同一個工廠。`rust-widgets-suites` 以各自的特徵門承載七個組：
+`form_widgets`（永遠編譯）、`webview`、`finance`、`maps`、`project`、`devtools`、`media_playback`
+（`crates/rust-widgets-suites/src/lib.rs:66-84`）。它們的 `install` 呼叫 `try_register`（工廠已佔用的
 名稱會被拒絕）與 `register_property_defaults`（`default_property_value` 從這裡讀取它們宣告的預設值）。
 
 ### 控制項狀態持久化 *(2.9.1)*
@@ -901,12 +909,13 @@ pub trait WidgetProperties {
 }
 ```
 
-### 四個共用屬性
+### 五個共用屬性
 
 每個控件都能透過 `base_property_get` / `base_property_set` 回答這些屬性：
 
 ```rust
-pub const BASE_PROPERTY_NAMES: &[&str] = &["enabled", "visible", "tooltip", "geometry"];
+pub const BASE_PROPERTY_NAMES: &[&str] =
+    &["enabled", "visible", "tooltip", "geometry", "a11y_role"];
 ```
 
 `geometry` 在這個合約中刻意設計為**唯讀**：控件的矩形由擺放它的佈局所擁有，因此在這裡寫入會在下一輪佈局時默默與佈局互相拉扯。若要移動控件，請使用 `widget::runtime::set_geometry`。
@@ -1290,28 +1299,67 @@ impl AnimationFrameRequest {
 ### 核心渲染型別
 
 ```rust
-pub enum BlendMode { Normal, Multiply, Screen, Overlay, Additive }
+/// 每次像素寫入都使用的混合模式，直到模式改變。
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+```
 
+`RenderCommand` 約有 45 個變體（含 `3d` 門控的四邊形/網格變體）。以下是核心 2D 變體；完整清單與每個欄位以 `src/render/core/command.rs` 為準：
+
+```rust
 pub enum RenderCommand {
-    Noop,
-    Clear(Color),
-    DrawRect { rect: Rect, color: Color, width: u32 },
     FillRect { rect: Rect, color: Color },
-    DrawRoundedRect { rect: Rect, radius: u32, color: Color, width: u32 },
-    FillRoundedRect { rect: Rect, radius: u32, color: Color },
-    DrawCircle { cx: i32, cy: i32, radius: u32, color: Color, width: u32 },
-    FillCircle { cx: i32, cy: i32, radius: u32, color: Color },
-    DrawText { text: String, x: i32, y: i32, color: Color, font_size: f32 },
-    DrawLine { x1: i32, y1: i32, x2: i32, y2: i32, color: Color, width: u32 },
-    DrawImage { data: Vec<u8>, rect: Rect },
+    DrawRect { rect: Rect, color: Color },
+    DrawRectStroke { rect: Rect, color: Color, width: u32 },
+    FillRoundedRect { rect: Rect, radii: [u32; 4], color: Color },
+    DrawRoundedRectStroke { rect: Rect, radii: [u32; 4], color: Color, width: u32 },
+    DrawLine { from: Point, to: Point, color: Color },
+    FillCircle { center: Point, radius: u32, color: Color },
+    DrawCircleStroke { center: Point, radius: u32, color: Color, width: u32 },
+    DrawText {
+        origin: Point,
+        text: Arc<str>,
+        font: Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    },
+    DrawImage { x: i32, y: i32, width: u32, height: u32, data: Arc<[u8]> },
+    DrawImageScaled {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        source_width: u32,
+        source_height: u32,
+        data: Arc<[u8]>,
+    },
     PushClip { x: i32, y: i32, width: u32, height: u32 },
     PopClip,
-    DrawGradient { rect: Rect, gradient: Gradient },
-    DrawShadow { rect: Rect, shadow: Shadow },
-    DrawPath { commands: Vec<PathCommand>, color: Color, width: u32 },
-    FillPath { commands: Vec<PathCommand>, color: Color },
-    DrawArc { rect: Rect, start_angle: f32, span_angle: f32, color: Color, width: u32 },
-    FillArc { rect: Rect, start_angle: f32, span_angle: f32, color: Color },
+    PushLayer { bounds: Rect, effect: Option<LayerEffect> },
+    PopLayer,
+    PushLayerGroup {
+        bounds: Rect,
+        effect: Option<LayerEffect>,
+        opacity: f32,
+        cache_key: Option<u64>,
+    },
+    SetBlendMode { mode: BlendMode },
 }
 ```
 
@@ -1319,11 +1367,23 @@ pub enum RenderCommand {
 
 ```rust
 pub trait PaintBackend {
-    fn begin_frame(&mut self, clear_color: Color);
+    fn begin_frame(&mut self, clear: Color);
     fn end_frame(&mut self);
-    fn draw_pixels(&mut self, x: i32, y: i32, width: u32, height: u32, pixels: &[u8]);
+    fn execute_command(&mut self, command: &RenderCommand);
+    fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]);
     fn size(&self) -> Size;
+    fn set_size(&mut self, size: Size);
     fn dpi_scale(&self) -> f32;
+    fn set_dpi_scale(&mut self, dpi_scale: f32);
+    fn measure_text(&self, text: &str, font: &Font) -> TextMetrics;
+    fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText>;
+    fn frame_rgba(&self) -> &[u8];
+
+    // 損傷跟蹤、圖層快取與按引用的變體都有預設實作；見
+    // `src/render/backend/paint.rs`。
+    fn mark_damage(&mut self, rect: Rect) {}
+    fn damage_regions(&self) -> &[(i32, i32, u32, u32)] { &[] }
+    fn present_damage(&mut self) -> bool { false }
 }
 ```
 
@@ -1331,23 +1391,31 @@ pub trait PaintBackend {
 
 ```rust
 pub struct RenderContext<'a> {
-    // 包裝一個 &mut dyn PaintBackend
+    // 封裝 &mut dyn PaintBackend，並跟蹤當前平移量。
 }
 
-impl RenderContext<'_> {
-    pub fn new(backend: &mut dyn PaintBackend) -> Self;
-    pub fn begin_frame(&mut self, clear_color: Color);
-    pub fn end_frame(&mut self);
-    pub fn draw_text(&mut self, text: &str, x: i32, y: i32, font_size: f32, color: Color);
-    pub fn draw_line(&mut self, x1: i32, y1: i32, x2: i32, y2: i32, color: Color, width: u32);
-    pub fn draw_rect(&mut self, rect: Rect, color: Color, width: u32);
+impl<'a> RenderContext<'a> {
+    pub fn new(backend: &'a mut dyn PaintBackend) -> Self;
+    pub fn size(&self) -> Size;
+    pub fn dpi_scale(&self) -> f32;
     pub fn fill_rect(&mut self, rect: Rect, color: Color);
-    pub fn draw_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color, width: u32);
+    pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32);
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color);
-    pub fn draw_image(&mut self, data: &[u8], rect: Rect);
-    pub fn push_clip(&mut self, x: i32, y: i32, w: u32, h: u32);
+    pub fn draw_line(&mut self, from: Point, to: Point, color: Color);
+    pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color);
+    pub fn draw_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    );
+    pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]);
+    pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32);
     pub fn pop_clip(&mut self);
-    pub fn execute(&mut self, cmd: &RenderCommand);
+    pub fn execute_command(&mut self, command: RenderCommand);
+    pub fn execute_command_ref(&mut self, command: &RenderCommand);
 }
 ```
 
@@ -1356,14 +1424,18 @@ impl RenderContext<'_> {
 ```rust
 pub struct BackBuffer { /* ... */ }
 impl BackBuffer {
-    pub fn new(size: Size) -> Self;
-    pub fn clear(&mut self, color: Color);
-    pub fn pixel(&self, x: u32, y: u32) -> Option<Color>;
-    pub fn set_pixel(&mut self, x: u32, y: u32, color: Color);
-    pub fn pixels(&self) -> &[u8];
+    pub fn new(size: Size, dpi_scale: f32) -> Self;
+    pub fn resize(&mut self, size: Size);
     pub fn size(&self) -> Size;
-    pub fn present(&self, target: &mut dyn PaintBackend, x: i32, y: i32);
-    pub fn resize(&mut self, new_size: Size);
+    pub fn dpi_scale(&self) -> f32;
+    pub fn set_dpi_scale(&mut self, dpi_scale: f32);
+    pub fn back_mut(&mut self) -> &mut [u8];
+    pub fn front(&self) -> &[u8];
+    pub fn present(&mut self);
+    pub fn mark_damage(&mut self, rect: Rect);
+    pub fn damage_regions(&self) -> &[(i32, i32, u32, u32)];
+    pub fn clear_damage(&mut self);
+    pub fn present_damage(&mut self) -> bool;
 }
 ```
 
@@ -1372,43 +1444,61 @@ impl BackBuffer {
 ```rust
 pub struct SoftwareSurface { /* ... */ }
 impl SoftwareSurface {
-    pub fn new(size: Size) -> Self;
-    pub fn context(&mut self) -> RenderContext;
-    pub fn present(&mut self) -> &[u8];
-    pub fn resize(&mut self, new_size: Size);
+    pub fn new(size: Size, dpi_scale: f32) -> Self;
+    pub fn begin_frame(&mut self, clear: Color);
+    pub fn end_frame(&mut self);
+    pub fn resize(&mut self, size: Size);
     pub fn size(&self) -> Size;
-    pub fn set_size(&mut self, size: Size);
+    pub fn set_dpi_scale(&mut self, dpi_scale: f32);
+    pub fn frame_rgba(&self) -> &[u8];
+    pub fn frame_number(&self) -> u64;
+    pub fn set_blend_mode(&mut self, mode: BlendMode);
+    pub fn mark_damage(&mut self, rect: Rect);
+    pub fn present_damage(&mut self) -> bool;
 }
 ```
 
 ### 場景與批次
 
 ```rust
-pub enum SceneLayer { Background, Content, Foreground, Overlay, Tooltip }
+pub struct SceneLayer { /* ... */ }
+impl SceneLayer {
+    pub fn new(z_index: i32) -> Self;
+    pub fn z_index(&self) -> i32;
+    pub fn push(&mut self, command: RenderCommand);
+    pub fn commands(&self) -> &[RenderCommand];
+}
+
 pub struct RenderScene { /* ... */ }
-pub struct BatchId(u32);
-pub struct BatchCommand { /* ... */ }
-pub struct BatchRenderer { /* ... */ }
+impl RenderScene {
+    pub fn new() -> Self;
+    pub fn clear(&mut self);
+    pub fn add_layer(&mut self, layer: SceneLayer);
+    pub fn layers(&self) -> &[SceneLayer];
+    pub fn compose_with_backend<B: PaintBackend>(&self, backend: &mut B, clear: Color);
+    pub fn compose_to(&self, surface: &mut SoftwareSurface, clear: Color);
+}
 ```
 
 ### 自動渲染後端
 
 ```rust
-pub struct AutoRenderBackend(SoftwarePaintBackend);
-impl AutoRenderBackend {
-    pub fn new(size: Size, dpi: f32) -> Self;
-}
+pub enum AutoRenderBackend { GpuWgpu, CpuSoftware }
 
+pub fn last_auto_render_backend() -> AutoRenderBackend;
 pub fn default_software_render_config() -> SoftwareRenderConfig;
 pub fn set_default_software_render_config(config: SoftwareRenderConfig);
-pub fn last_auto_render_backend() -> Option<AutoRenderBackend>;
 ```
 
 ### 文字塑形
 
 ```rust
-pub trait TextShaper {
-    fn shape(&self, text: &str, font: &Font, dpi_scale: f32) -> ShapedText;
+pub trait TextShaper: Send + Sync {
+    fn shape(&self, text: &str, font_size: f32) -> Vec<ShapedGlyphRun>;
+    fn measure_width(&self, text: &str, font_size: f32) -> f32;
+    fn measure_height(&self, text: &str, font_size: f32) -> f32;
+    fn char_advance(&self, c: char, font_size: f32) -> f32;
+    fn cache_identity(&self) -> u64 { 0 }
 }
 
 pub struct SimpleTextShaper;
@@ -1578,14 +1668,18 @@ pub struct WidgetStyle {
     pub text_color: Option<Color>,
     pub font: Option<Font>,
     pub border_color: Option<Color>,
-    pub border_width: u32,
-    pub border_radius: u32,
+    pub border_width: Option<u32>,
+    pub border_radius: Option<u32>,
     pub corner_radii: Option<CornerRadii>,
+    pub border_style: Option<BorderStyle>,
     pub padding: Padding,
     pub margin: Margin,
+    pub spacing: Option<u32>,
     pub shadow: Option<Shadow>,
+    pub surface: Option<SurfaceStyle>,
     pub touch_target: Option<Size>,
     pub opacity: Option<f32>,
+    pub theme_derived: bool,
 }
 ```
 
@@ -1800,7 +1894,7 @@ pub struct ThemeStyleToken {
 ```
 1. 全域主題預設值 (ThemeManager → Theme)
 2. 每個控制項類別的主題覆蓋（例如 "Button", "Label"）
-3. 控制項實例狀態（StatefulTheme → WidgetState）
+3. 控制項實例狀態（WidgetState → `resolve_style_for_state`）
 4. 內聯樣式覆蓋
 ```
 
@@ -2103,8 +2197,10 @@ impl ShortcutManager {
     pub fn new() -> Self;
     pub fn register(&mut self, action_id: impl Into<String>, shortcut: Shortcut, description: impl Into<String>) -> bool;
     pub fn register_in(&mut self, scope: impl Into<String>, action_id: impl Into<String>, shortcut: Shortcut, description: impl Into<String>) -> bool;
-    pub fn unregister(&mut self, id: &str) -> bool;
-    pub fn trigger(&self, shortcut: &Shortcut) -> bool;
+    pub fn unregister(&mut self, action_id: &str) -> bool;
+    pub fn dispatch_shortcut(&mut self, key: Key, modifiers: Modifiers) -> Option<String>;
+    pub fn handle_key_event(&mut self, key: Key, modifiers: Modifiers) -> bool;
+    pub fn action_for_key(&self, key: Key, modifiers: Modifiers) -> Option<String>;
     pub fn all_shortcuts(&self) -> &HashMap<Shortcut, String>;
     pub fn push_scope(&mut self, scope: impl Into<String>);
     pub fn push_modal_scope(&mut self, scope: impl Into<String>);
@@ -2328,53 +2424,62 @@ pub struct I18nManager { /* ... */ }
 
 impl I18nManager {
     pub fn new() -> Self;
-    pub fn load_translations(&mut self, path: &str) -> Result<(), RwError>;
-    pub fn set_language(&mut self, lang: &str);
-    pub fn language(&self) -> &str;
+    pub fn load_translations(&mut self, path: &str) -> Result<(), std::io::Error>;
+    pub fn set_language(&mut self, language: &str);
+    pub fn current_language(&self) -> &String;
     pub fn translate(&self, key: &str) -> String;
-    pub fn translate_with_context(&self, key: &str, context: &[(&str, &str)]) -> String;
-    pub fn reload(&mut self) -> Result<(), RwError>;
+    pub fn reload_translation(&mut self, language: &str) -> Result<(), String>;
+    pub fn check_and_reload(&mut self) -> Vec<ReloadEvent>;
 }
 ```
 
 ### 全域函式
 
 ```rust
-pub fn init(locales_dir: &str) -> Result<(), RwError>;
-pub fn init_with_options(options: InitOptions) -> Result<InitReport, RwError>;
+pub fn init();
+pub fn init_with_options(options: InitOptions) -> InitReport;
+pub fn set_language(language: &str) -> bool;
 pub fn translate(key: &str) -> String;
-pub fn translate_with_context(key: &str, context: &[(&str, &str)]) -> String;
-pub fn get_manager() -> &'static I18nManager;
-pub fn check_and_reload_all() -> Result<(), RwError>;
+pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> String;
+pub fn get_manager() -> MutexGuard<'static, Option<I18nManager>>;
+pub fn check_and_reload_all() -> Vec<ReloadEvent>;
 
 pub use crate::tr;  // 巨集：tr!("hello") → 翻譯後字串
 ```
+
+`get_manager()` 已經回傳加鎖後的 guard，因此直接使用（`if let Some(ref mut mgr) = *get_manager() { … }`）。對其再呼叫 `.lock()` 無法編譯。
 
 ### 選項與型別
 
 ```rust
 pub struct InitOptions {
-    pub fallback_language: String,
-    pub auto_load: bool,
-    pub hot_reload: bool,
-    // ...
+    pub language: String,
+    pub preload_dir: Option<String>,
+    pub diagnostics: bool,
 }
 
 pub struct InitReport {
-    pub loaded_files: Vec<String>,
+    pub files_loaded: usize,
+    pub translations_count: usize,
     pub errors: Vec<String>,
 }
 
 pub struct Translation { /* ... */ }
 pub struct TranslationFile { /* ... */ }
-pub enum ReloadEvent { FileChanged(String), Reloaded, Failed(String) }
+pub enum ReloadEvent {
+    TranslationReloaded { language: String, timestamp: std::time::SystemTime },
+    // ...
+}
 ```
 
 ### 熱重載
 
 ```rust
-pub fn init_with_hot_reload(locales_dir: &str) -> Result<I18nFileWatcher, RwError>;
-pub fn process_reload_events(watcher: &mut I18nFileWatcher) -> Vec<ReloadEvent>;
+pub fn init_with_hot_reload(
+    options: InitOptions,
+    watch_dir: Option<&Path>,
+) -> (InitReport, I18nFileWatcher);
+pub fn process_reload_events(receiver: &Receiver<ReloadEvent>) -> Vec<ReloadEvent>;
 
 pub struct I18nFileWatcher { /* ... */ }
 ```
@@ -2994,25 +3099,40 @@ pub struct WebEngineWebChannel { /* ... */ }
 ## 復原/重做 (`undo`)
 
 ```rust
-pub trait UndoCommand: Send + Sync {
-    fn id(&self) -> &str;
-    fn execute(&mut self) -> Result<(), RwError>;
-    fn undo(&mut self) -> Result<(), RwError>;
-    fn merge_with(&mut self, other: &dyn UndoCommand) -> bool;
+use rust_widgets::undo::{CommandDescription, CommandId, MergePolicy, UndoCommand, UndoStack};
+
+pub const DEFAULT_UNDO_CAPACITY: usize = 1000;
+
+pub trait UndoCommand {
+    fn id(&self) -> CommandId;
+    fn description(&self) -> CommandDescription;
+    fn execute(&mut self) -> Result<(), String>;
+    fn undo(&mut self) -> Result<(), String>;
+    fn redo(&mut self) -> Result<(), String> { self.execute() }
+    fn merge_policy(&self) -> MergePolicy { MergePolicy::Never }
+    fn try_merge(&mut self, previous: &dyn UndoCommand) -> bool { false }
+    fn splice_record(&self) -> Option<TextSpliceRecord> { None }
 }
 
 pub struct UndoStack { /* ... */ }
 impl UndoStack {
-    pub fn new(max_undo: usize) -> Self;
+    pub fn new() -> Self;
+    pub fn with_capacity(max: usize) -> Self;
     pub fn push(&mut self, command: Box<dyn UndoCommand>);
-    pub fn undo(&mut self) -> bool;
-    pub fn redo(&mut self) -> bool;
+    pub fn undo(&mut self) -> Result<(), String>;
+    pub fn redo(&mut self) -> Result<(), String>;
     pub fn can_undo(&self) -> bool;
     pub fn can_redo(&self) -> bool;
-    pub fn clear(&mut self);
-    pub fn undo_text(&self) -> Option<&str>;
-    pub fn redo_text(&self) -> Option<&str>;
+    pub fn undo_count(&self) -> usize;
+    pub fn redo_count(&self) -> usize;
+    pub fn undo_text(&self) -> Option<String>;
+    pub fn redo_text(&self) -> Option<String>;
+    pub fn mark_clean(&mut self);
     pub fn is_clean(&self) -> bool;
+    pub fn clear(&mut self);
+    pub fn truncate_undo(&mut self, len: usize);
+    pub fn set_max_capacity(&mut self, max: usize);
+    pub fn seal_merge_run(&mut self);
 }
 ```
 
@@ -3187,7 +3307,7 @@ let image = job.wait()?;           // 或每幀一次 job.try_take()
 | `tablet` | 觸控優先平板 | GPU, touch, i18n, quality |
 | `mobile` | 行動裝置最佳化 | GPU, touch, i18n, quality, mobile API |
 | `embedded` | 無 GPU，軟體光柵化 | Software, custom controls |
-| `mini` | LVGL 風格最小化（約 28 個控制項） | Software, custom controls, `heapless`, `hashbrown`, `spin`, `bumpalo` |
+| `mini` | LVGL 風格最小化（約 28 個控制項） | Software, custom controls, `heapless`, `hashbrown`, `spin` |
 
 ### 軸 2：作業系統後端
 

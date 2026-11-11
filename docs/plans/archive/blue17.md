@@ -2,8 +2,8 @@
 
 > 状态：**已完成**；现状取证（§二）**已完成并逐条实跑**
 > 完成率：**取证 100% · Phase A 100% · Phase B 100% · Phase C 100% · Phase D 100% · Phase E 100% · Phase F 100%**
-> 执行日志：[`docs/log/log-20260917-3.md`](../log/log-20260917-3.md)（第 28 轮主体执行）
-> 复核日志：[`docs/log/log-20260917-4.md`](../log/log-20260917-4.md)（第 29 轮独立复核 + B1-2/B1-4 补完 + `PagerPageView`/`TileView` 删除，含 6 次反向注入）
+> 执行日志：[`docs/log/archive/log-20260917-3.md`](../log/log-20260917-3.md)（第 28 轮主体执行）
+> 复核日志：[`docs/log/archive/log-20260917-4.md`](../log/log-20260917-4.md)（第 29 轮独立复核 + B1-2/B1-4 补完 + `PagerPageView`/`TileView` 删除，含 6 次反向注入）
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE16 全部规则，含 #1–#77）
 > 上轮计划：[`docs/plans/blue16.md`](blue16.md)（Phase F 已 100%）
 > 目标基线：`rust_widgets v2.2.0`（`WidgetKind` **171** 个、门禁脚本 **28** 个）
@@ -466,7 +466,7 @@ pub struct ColumnFilter { pub column: usize, pub query: String }
 
 > ⭐ **第 29 轮补充**：B1-2 的「**速度**」判据与 B1-4 的「**`Numeric`**」样式
 > 在第 28 轮被记为完成但实现缺失，已于第 29 轮补齐并用反向注入证明可失败。
-> 证据：`docs/log/log-20260917-4.md` §3（`Numeric`）、§4（速度判据）。
+> 证据：`docs/log/archive/log-20260917-4.md` §3（`Numeric`）、§4（速度判据）。
 
 ### Phase C — 既有可视化控件的扩展
 

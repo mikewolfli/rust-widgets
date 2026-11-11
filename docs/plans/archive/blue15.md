@@ -896,7 +896,7 @@ pub fn create_widget_of_kind(
 
 - `android`：删除 `AndroidPlatform` 的 `create_*` 与 `android_jni.rs` 里的 View 构造；保留 JNI attach、输入事件、IME。
 - `ios`：❌ 删除 `native.rs` 的 UIKit 控件构造（`560` 行 → **`73`** 行）；保留窗口 + 输入 + IME。
- **已完成**（见 `docs/log/log-20260914-1.md` §9）：14/15 个 `create_ui_*` 删除（仅留
+ **已完成**（见 `docs/log/archive/log-20260914-1.md` §9）：14/15 个 `create_ui_*` 删除（仅留
  `create_ui_window`），视图注册表 / `ButtonTarget` / 事件队列一并删除；
  `platform_impl.rs` 1220 → **1025**，`types.rs` 250 → **237**。
  ⚠️ **编译未验证**：本机无 iOS SDK，`ios-uikit-ffi` 未跑。
@@ -1140,7 +1140,7 @@ Step 10 Phase F 上层与文档同步（含视觉基线重生）
 
 ## 八、完成率回写（执行时逐轮填写）
 
-> **本轮（2026-09-14）实跑回写。** 详细证据见 `docs/log/log-20260914-1.md`。
+> **本轮（2026-09-14）实跑回写。** 详细证据见 `docs/log/archive/log-20260914-1.md`。
 > 状态口径：✅ 完成（有实跑证据）/ 🔶 部分 / ⬜ 未开始。
 
 | Phase | 状态 | 完成率 | 证据 |
@@ -1163,7 +1163,7 @@ Step 10 Phase F 上层与文档同步（含视觉基线重生）
 ### 第 18 轮补充：HarmonyOS 交叉目标从「不可验证」到「真实验证」
 
 > 依据：`docs/plans/principle.md`、`src/platform/harmony/status.md`。
-> 详细证据见 `docs/log/log-20260916-1.md` §16。
+> 详细证据见 `docs/log/archive/log-20260916-1.md` §16。
 
 在 OpenHarmony SDK 装好后首跑 `aarch64-unknown-linux-ohos`，**第一条命令就暴露出
 该 target 从未被真正验证过**：

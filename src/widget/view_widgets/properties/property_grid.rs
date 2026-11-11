@@ -298,7 +298,11 @@ pub struct PropertyGrid {
     /// Collapsed category headers (V-007).
     collapsed_categories: HashSet<String>,
     /// Emitted with `(category, collapsed)` when a category is toggled (V-007).
-    pub on_category_toggled: Signal1<(String, bool)>,
+    ///
+    /// Published as `category_toggled`: `on_` is a listener-method prefix in other toolkits, not
+    /// an event name (DX-10). The old **event** spelling still resolves through
+    /// `event_signal_dyn` and `EVENT_ALIASES`; only the Rust field moved.
+    pub category_toggled: Signal1<(String, bool)>,
     /// Per-entry custom editors (V-008).
     entry_delegates: HashMap<usize, Arc<dyn PropertyEditorDelegate>>,
     /// An editor a delegate built and the grid is holding for the host (V-008).
@@ -461,7 +465,7 @@ impl PropertyGrid {
             grouped_cache: std::cell::RefCell::new(None),
             group_revision: 0,
             collapsed_categories: HashSet::new(),
-            on_category_toggled: Signal1::new(),
+            category_toggled: Signal1::new(),
             entry_delegates: HashMap::new(),
             delegate_editor: None,
             row_errors: HashMap::new(),
@@ -1013,7 +1017,7 @@ impl PropertyGrid {
         }
         self.group_revision = self.group_revision.wrapping_add(1);
         self.scroll_offset = self.scroll_offset.min(self.max_scroll());
-        self.on_category_toggled.emit((category, collapsed));
+        self.category_toggled.emit((category, collapsed));
         self.base.request_layout();
         self.base.request_redraw();
         collapsed
@@ -1120,16 +1124,14 @@ impl Widget for PropertyGrid {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "category_toggled" | "on_category_toggled" => Some(EventSignalRef::mapped(
-                "category_toggled",
-                &self.on_category_toggled,
-                |value| {
+            "category_toggled" | "on_category_toggled" => {
+                Some(EventSignalRef::mapped("category_toggled", &self.category_toggled, |value| {
                     CapabilityValue::Tuple(crate::compat::Vec::from([
                         CapabilityValue::String(value.0.clone()),
                         CapabilityValue::Bool(value.1),
                     ]))
-                },
-            )),
+                }))
+            }
 
             "selected" => Some(EventSignalRef::mapped("selected", &self.selected, |v| {
                 CapabilityValue::UInt(*v as u64)
@@ -1576,6 +1578,11 @@ impl Draw for PropertyGrid {
                 );
             }
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

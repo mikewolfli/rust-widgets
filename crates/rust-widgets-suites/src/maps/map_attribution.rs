@@ -169,7 +169,7 @@ pub struct MapAttributionOverlay {
     /// The visible rows, shared by the paint, the hit test and `entry_rect`.
     layout_cache: RefCell<Option<AttributionLayoutCache>>,
     /// Emitted with the entry's URL, or its text when the entry has no URL.
-    pub on_entry_activated: Signal1<String>,
+    pub entry_activated: Signal1<String>,
 }
 
 /// The inputs an attribution layout depends on.
@@ -204,7 +204,7 @@ impl MapAttributionOverlay {
             next_id: 1,
             layout_revision: 1,
             layout_cache: RefCell::new(None),
-            on_entry_activated: Signal1::new(),
+            entry_activated: Signal1::new(),
         }
     }
 
@@ -528,11 +528,17 @@ impl Widget for MapAttributionOverlay {
 
     fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {
         match name {
-            "entry_activated" | "on_entry_activated" => Some(EventSignalRef::mapped(
-                "on_entry_activated",
-                &self.on_entry_activated,
-                |url| CapabilityValue::String(url.clone()),
-            )),
+            "entry_activated" => {
+                Some(EventSignalRef::mapped("entry_activated", &self.entry_activated, |url| {
+                    CapabilityValue::String(url.clone())
+                }))
+            }
+            // Legacy spelling (DX-10): the name published before the `on_` prefix was removed.
+            "on_entry_activated" => {
+                Some(EventSignalRef::mapped("on_entry_activated", &self.entry_activated, |url| {
+                    CapabilityValue::String(url.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -598,7 +604,7 @@ impl EventHandler for MapAttributionOverlay {
         };
         let payload = entry.url.clone().unwrap_or_else(|| entry.text.clone());
         if !payload.is_empty() {
-            self.on_entry_activated.emit(payload);
+            self.entry_activated.emit(payload);
         }
     }
 }
@@ -653,7 +659,7 @@ mod tests {
     fn click(overlay: &mut MapAttributionOverlay, at: Point) -> Vec<String> {
         let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = emitted.clone();
-        overlay.on_entry_activated.connect(move |payload| {
+        overlay.entry_activated.connect(move |payload| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push(payload.as_ref().clone());
             }

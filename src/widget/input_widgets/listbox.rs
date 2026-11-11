@@ -17,6 +17,10 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{focus_ring_color, FocusRing, FOCUS_RING_WIDTH};
+#[cfg(full_widgets)]
+use crate::widget::view_widgets::collection_state::{
+    paint_collection_placeholder, CollectionPlaceholder,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -153,6 +157,18 @@ pub struct ListBox {
     /// `list_box` frame (2.0 allocations/frame, measured). A style font still wins and is
     /// returned directly, so the cache is only the fallback's.
     row_font_cache: RefCell<Option<(u32, Font)>>,
+    /// The caption an empty list paints in its content box (RW-17 / UX6-05).
+    #[cfg(full_widgets)]
+    ///
+    /// Shared with the other collection views so an empty list cannot look like a failed one
+    /// or like a control that simply stopped painting.
+    placeholder: CollectionPlaceholder,
+    /// Offset from the scroll thumb's top to the pointer while the thumb is dragged.
+    ///
+    /// The thumb used to be painted with no pointer path at all, so the only way to scroll was
+    /// the wheel (UX6-10). Keeping the grab offset stops the thumb jumping under the pointer on
+    /// the first move.
+    scroll_thumb_grab: Option<i32>,
 }
 
 /// Memoised per-row icon advances, parallel to `item_meta`.
@@ -373,6 +389,9 @@ impl ListBox {
             type_ahead_started: None,
             rename_requested: Signal1::new(),
             item_changed: Signal1::new(),
+            #[cfg(full_widgets)]
+            placeholder: CollectionPlaceholder::new(),
+            scroll_thumb_grab: None,
             context_menu_requested: Signal1::new(),
             item_revision: 0,
             icon_advance_cache: RefCell::new(None),
@@ -1102,6 +1121,32 @@ impl ListBox {
         self.hovered_row
     }
 
+    /// The caption this list paints when it has no items.
+    #[cfg(full_widgets)]
+    pub fn placeholder(&self) -> &CollectionPlaceholder {
+        &self.placeholder
+    }
+
+    /// The caption this list paints when it has no items, mutably.
+    #[cfg(full_widgets)]
+    pub fn placeholder_mut(&mut self) -> &mut CollectionPlaceholder {
+        self.base.request_redraw();
+        &mut self.placeholder
+    }
+
+    /// Sets the empty-state caption; an empty string clears it.
+    ///
+    /// The same one-string hook every collection view exposes (RW-17), so a host does not
+    /// special-case a list box.
+    #[cfg(full_widgets)]
+    pub fn set_empty_text(&mut self, text: impl Into<String>) -> bool {
+        let changed = self.placeholder.set_empty_text(text);
+        if changed {
+            self.base.request_redraw();
+        }
+        changed
+    }
+
     /// How each row's label is aligned within its row.
     pub fn alignment(&self) -> crate::core::Alignment {
         self.alignment
@@ -1299,6 +1344,43 @@ impl ListBox {
     /// scroll to the bottom has no reason to leave the band empty below the last row.
     fn bottom_scroll_offset(&self) -> usize {
         self.items.len().saturating_sub(self.viewport_rows())
+    }
+
+    /// The rail and thumb rectangles for the scroll indicator, or `None` when nothing scrolls.
+    ///
+    /// One derivation shared by the paint and the pointer path, so the 4 px mark a user sees is
+    /// the mark a press can grab (UX6-10).
+    fn scroll_indicator(&self) -> Option<(Rect, Rect)> {
+        let content = self.content_rect();
+        let bottom = self.bottom_scroll_offset();
+        if bottom == 0 {
+            return None;
+        }
+        let page = self.viewport_rows().max(1);
+        let total = self.items.len().max(1);
+        let track_height = content.height as i32;
+        let thumb_height = ((track_height as usize * page) / total)
+            .max(8)
+            .min(track_height.max(8) as usize) as i32;
+        let max_offset = bottom.max(1) as i32;
+        let thumb_top = content.y
+            + ((track_height - thumb_height) * self.scroll_offset.min(bottom) as i32 / max_offset);
+        let rail = Rect::new(content.x + content.width as i32 - 4, content.y, 4, content.height);
+        let thumb = Rect::new(rail.x, thumb_top, 4, thumb_height.max(1) as u32);
+        Some((rail, thumb))
+    }
+
+    /// Maps a pointer y to the first-row offset the thumb `grab` offset implies.
+    fn scroll_offset_for_thumb_y(&self, pointer_y: i32, grab: i32) -> Option<usize> {
+        let (_, thumb) = self.scroll_indicator()?;
+        let content = self.content_rect();
+        let travel = content.height as i32 - thumb.height as i32;
+        if travel <= 0 {
+            return Some(0);
+        }
+        let top = (pointer_y - grab - content.y).clamp(0, travel);
+        let bottom = self.bottom_scroll_offset() as i32;
+        Some(((top * bottom) / travel) as usize)
     }
 
     /// Sets the first painted row, clamped so the band stays as full as it can.
@@ -1705,9 +1787,25 @@ impl EventHandler for ListBox {
         }
         match event {
             Event::MousePress { pos, button, modifiers } if *button == 1 => {
+                // A press on the scroll indicator drags it instead of selecting the row under
+                // the pointer (UX6-10). The hit area is the 4 px rail widened to 8 px, because
+                // a 4 px target is below what a pointer can reliably address.
+                if let Some((rail, thumb)) = self.scroll_indicator() {
+                    let grab_area = Rect::new(rail.x - 4, rail.y, 8, rail.height);
+                    if grab_area.contains_point(*pos) {
+                        self.scroll_thumb_grab = Some(pos.y - thumb.y);
+                        return;
+                    }
+                }
                 self.select_at_pos(*pos, *modifiers);
             }
             Event::MouseMove { pos } => {
+                if let Some(grab) = self.scroll_thumb_grab {
+                    if let Some(offset) = self.scroll_offset_for_thumb_y(pos.y, grab) {
+                        self.set_scroll_offset(offset);
+                    }
+                    return;
+                }
                 // Hover is the row the pointer is over, from the same `row_rect` the paint and the
                 // press use, so a highlight cannot land on a different row than a click would.
                 // `MouseMove` fires far more often than the highlight changes, so the redraw is
@@ -1720,7 +1818,11 @@ impl EventHandler for ListBox {
                     self.request_rows_repaint(&[previous, hovered]);
                 }
             }
+            Event::MouseRelease { .. } | Event::PointerRelease { .. } => {
+                self.scroll_thumb_grab = None;
+            }
             Event::MouseLeave { .. } => {
+                self.scroll_thumb_grab = None;
                 let previous = self.hovered_row.take();
                 if previous.is_some() {
                     self.sync_hover_tooltip();
@@ -1968,6 +2070,14 @@ impl Draw for ListBox {
         context.push_clip(content.x, content.y, content.width, content.height);
 
         let font = self.row_font();
+        // An empty list explains its own blank face inside its content box (RW-17 / UX6-05);
+        // a host no longer has to paint a caption on top of the control.
+        #[cfg(full_widgets)]
+        if self.items.is_empty() {
+            paint_collection_placeholder(context, content, &self.placeholder, ink, &font);
+            context.pop_clip();
+            return;
+        }
         let text_inset = 6;
         // Read once so the loop body only compares integers.
         let current_row = self.current_row;
@@ -2102,23 +2212,12 @@ impl Draw for ListBox {
         // separator tone. It appears only when there is something to scroll.
         let bottom = self.bottom_scroll_offset();
         if bottom > 0 {
-            let page = self.viewport_rows().max(1);
-            let total = self.items.len().max(1);
-            let track_height = content.height as i32;
-            let thumb_height = ((track_height as usize * page) / total)
-                .max(8)
-                .min(track_height.max(8) as usize) as i32;
-            let max_offset = bottom.max(1) as i32;
-            let thumb_top = content.y
-                + ((track_height - thumb_height) * self.scroll_offset.min(bottom) as i32
-                    / max_offset);
-            let rail_x = content.x + content.width as i32 - 4;
-            context.fill_rect(
-                Rect::new(rail_x, content.y, 4, content.height),
-                surface.blend(&border, 0.35),
-            );
-            context
-                .fill_rect(Rect::new(rail_x, thumb_top, 4, thumb_height.max(1) as u32), separator);
+            // The geometry comes from `scroll_indicator`, the same derivation the pointer path
+            // grabs, so the painted thumb and the draggable one cannot differ (UX6-10).
+            if let Some((rail, thumb)) = self.scroll_indicator() {
+                context.fill_rect(rail, surface.blend(&border, 0.35));
+                context.fill_rect(thumb, separator);
+            }
         }
 
         // ── Keyboard focus ring ──
@@ -2147,6 +2246,44 @@ impl Draw for ListBox {
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn dragging_the_scroll_thumb_scrolls_without_selecting() {
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 100));
+        for index in 0..50 {
+            list.add_item(format!("item {index}"));
+        }
+        let (rail, thumb) = list.scroll_indicator().expect("50 rows do not fit in 100 px");
+        let content = list.content_rect();
+        // The thumb is a real target: pressing it starts a drag, not a row selection.
+        list.handle_event(&Event::MousePress {
+            pos: Point::new(rail.x, thumb.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(list.selected_indices.is_empty(), "the rail is not a row");
+        list.handle_event(&Event::MouseMove {
+            pos: Point::new(rail.x, content.y + content.height as i32 - 2),
+        });
+        assert!(list.scroll_offset() > 0, "dragging the thumb scrolls the list");
+        list.handle_event(&Event::MouseRelease { pos: Point::new(rail.x, 90), button: 1 });
+    }
+
+    #[test]
+    fn an_empty_list_keeps_an_empty_state_caption() {
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 120));
+        assert!(list.placeholder().is_empty());
+        assert!(list.set_empty_text("No items"));
+        assert_eq!(list.placeholder().empty_text(), Some("No items"));
+        // The same caption is painted by the shared collection path.
+        let svg = crate::widget::svg::render_to_svg(&mut list);
+        assert!(svg.contains("<svg"));
+        // A non-empty list ignores the caption.
+        list.add_item("first".to_string());
+        let svg = crate::widget::svg::render_to_svg(&mut list);
+        assert!(svg.contains("<svg"));
+    }
 
     /// A list box holding `count` items named `A`, `B`, …
     fn listbox_with(count: usize) -> ListBox {

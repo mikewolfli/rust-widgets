@@ -946,6 +946,10 @@ impl Widget for Carousel {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// Reachable by keyboard: without an override the key arms can never run (U3-01).
+    fn is_focusable(&self) -> bool {
+        true
+    }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
@@ -977,12 +981,10 @@ impl Widget for Carousel {
             self.base.request_frame_repaint();
         }
         let mut settling = sliding;
-        if self.settle_offset.abs() > 0.5 {
-            let decay = (delta_ms as f32 / 200.0).clamp(0.0, 1.0);
-            self.settle_offset *= 1.0 - decay;
-            if self.settle_offset.abs() <= 0.5 {
-                self.settle_offset = 0.0;
-            } else {
+        if crate::widget::overscroll::is_settling(self.settle_offset) {
+            self.settle_offset =
+                crate::widget::overscroll::settle_step(self.settle_offset, delta_ms);
+            if self.settle_offset != 0.0 {
                 settling = true;
             }
             self.base.request_frame_repaint();
@@ -1789,9 +1791,13 @@ impl EventHandler for Carousel {
                     let coordinate = self.primary_coordinate(*pos);
                     let raw = coordinate - start;
                     // Edge rubber-band: a drag that reveals no neighbour is damped, so the
-                    // content moves a third of the pointer travel and visibly resists.
+                    // content moves a fraction of the pointer travel and visibly resists. The
+                    // rule lives in `widget::overscroll` with the spring-back below, so the two
+                    // halves of one gesture cannot drift (UX6-08).
                     let offset = if self.rubber_band && self.step_for_offset(raw).is_none() {
-                        raw / 3
+                        // `as i32` truncates toward zero, the same rounding the integer `raw / 3`
+                        // this replaced used.
+                        crate::widget::overscroll::damp(raw as f32) as i32
                     } else {
                         raw
                     };

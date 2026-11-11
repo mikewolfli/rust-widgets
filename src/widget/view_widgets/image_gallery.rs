@@ -1240,8 +1240,20 @@ impl Draw for ImageGallery {
                     let dim_metrics = context.measure_text(&meta_text, font);
                     let dim_x =
                         preview_rect.x + (preview_rect.width as i32 - dim_metrics.width as i32) / 2;
+                    // The second caption's top edge, from the renderer's own line box rather than
+                    // the band's midpoint: a glyph origin is the box's top edge, so the raw
+                    // midpoint would put the text half a line low.
+                    let dim_line = context.text_line(
+                        Rect::new(
+                            preview_rect.x,
+                            band_center,
+                            preview_rect.width,
+                            name_metrics.height,
+                        ),
+                        font,
+                    );
                     context.draw_text(
-                        Point::new(dim_x, band_center),
+                        Point::new(dim_x, dim_line.y),
                         &meta_text,
                         font,
                         dim_ink,

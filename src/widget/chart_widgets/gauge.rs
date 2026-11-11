@@ -902,11 +902,14 @@ impl Draw for Gauge {
 /// resolve anyway.
 fn format_number(value: f32) -> String {
     let rounded = (value * 10.0).round() / 10.0;
-    if (rounded - rounded.round()).abs() < f32::EPSILON {
+    let mut text = if (rounded - rounded.round()).abs() < f32::EPSILON {
         format!("{}", rounded.round() as i64)
     } else {
         format!("{rounded:.1}")
-    }
+    };
+    // The readout is user-visible text; its decimal point follows the active locale (U2-07).
+    crate::widget::locale_number::localize_decimal_point(&mut text);
+    text
 }
 
 impl EventHandler for Gauge {

@@ -564,6 +564,41 @@ impl EventHandler for ChipInput {
     }
 }
 
+/// The visual advance of a caret boundary in the text line, honouring bidi reordering.
+///
+/// # Why the caller cannot use the logical prefix width
+///
+/// The line is painted by the renderer in **visual** order, which for an Arabic or Hebrew tag is
+/// the reverse of the storage order. Measuring the logical prefix put the caret at the opposite
+/// end of the written tag (UX6-02).
+fn visual_caret_advance(text: &str, font: &crate::core::Font, byte: usize) -> i32 {
+    // The all-LTR line is the steady state: no ranges, no levels, no ordering, no allocation.
+    // The worst case here would otherwise be four allocations per frame for a field that never
+    // reorders anything (the paint path is expected to be allocation-free when nothing changes).
+    if !crate::render::text::bidi::has_rtl_char(text) {
+        return estimate_text_width(&text[..byte], font, 1.0) as i32;
+    }
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut advances: Vec<f32> = Vec::new();
+    for (start, ch) in text.char_indices() {
+        let end = start + ch.len_utf8();
+        ranges.push((start, end));
+        advances.push(estimate_text_width(&text[start..end], font, 1.0) as f32);
+    }
+    if ranges.is_empty() {
+        return 0;
+    }
+    let levels = crate::render::text::line::line_bidi_levels(text, &ranges, font, 1.0);
+    crate::render::text::bidi::caret_visual_advance_from_levels(
+        levels.as_ref(),
+        &ranges,
+        &advances,
+        byte,
+    )
+    .map(|x| x.round() as i32)
+    .unwrap_or_else(|| estimate_text_width(&text[..byte], font, 1.0) as i32)
+}
+
 impl Draw for ChipInput {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -590,6 +625,11 @@ impl Draw for ChipInput {
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
+        // U3-03: a disabled chip field's ink and rim recede by the shared rule. The caret and the
+        // IME preedit are already gated on `is_enabled`, so nothing below draws them while out of
+        // play; the committed tags stay legible but the field stops reading as active.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let border = self.base.disabled_ink_on(border, surface);
         let font = effective_font(style);
 
         context.face_with_gradient(
@@ -630,7 +670,9 @@ impl Draw for ChipInput {
         // always sitting at the end of the string. The prefix is a **slice**, not a collected
         // `String`: an idle caret must not allocate a copy of the whole text every frame (SP2-02).
         let caret_byte = crate::widget::text_utils::byte_index_of_char(&self.text, self.cursor);
-        let caret_x = input.x + 6 + estimate_text_width(&self.text[..caret_byte], font, 1.0) as i32;
+        // U3-03/UX6-02: the caret is placed by the line's **visual** order, so an RTL tag reads
+        // right to left like the glyphs above it. An LTR line keeps the logical prefix width.
+        let caret_x = input.x + 6 + visual_caret_advance(&self.text, font, caret_byte);
         if self.base.is_enabled() {
             // The uncommitted IME composition is drawn at the caret with an underline marking it
             // as preedit, so a CJK composition is visible before it is confirmed.

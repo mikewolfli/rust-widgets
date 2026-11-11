@@ -26,16 +26,16 @@
 
 | OS / 后端 | 真实运行时 | 结论 | 关键日期 / 修订 | 证据（命令 / 结果） |
 |---|---|---|---|---|
-| **Linux / X11 + GTK3** | 真 X11 桌面会话（本机 `DISPLAY=:0`，GTK 3.24.41） | ✅ **已确认** | 2026-10-14/15，`bc51a9e1` | `probe_window_on_screen`（X 服务器报 `IsViewable`、480x320、62 色）；`probe_file_picker`（真对话框 + XTEST 真实键入 → `Ok(Some("/tmp/rw_picked_by_probe.txt"))`）；`probe_cross_thread_quit`（`run()` 415.75ms 返回）；`GDK_SCALE=2` → 库报 2。见 `docs/log/log-20261014-1.md` 第 4 轮 §4/§7 |
+| **Linux / X11 + GTK3** | 真 X11 桌面会话（本机 `DISPLAY=:0`，GTK 3.24.41） | ✅ **已确认** | 2026-10-14/15，`bc51a9e1` | `probe_window_on_screen`（X 服务器报 `IsViewable`、480x320、62 色）；`probe_file_picker`（真对话框 + XTEST 真实键入 → `Ok(Some("/tmp/rw_picked_by_probe.txt"))`）；`probe_cross_thread_quit`（`run()` 415.75ms 返回）；`GDK_SCALE=2` → 库报 2。见 `docs/log/archive/log-20261014-1.md` 第 4 轮 §4/§7 |
 | **Windows（Win32）** | 真 Windows 10.0.22621（MINGW64/MSVC，rustc 1.95.0） | ✅ **已确认（旧修订，需复跑）** | 2026-09-15 | `cargo test --no-default-features --features desktop --lib -q` → `4026 passed; 0 failed`；example + integration test 同机跑过。见 `docs/log/archive/log-20260915-1.md` |
 | **macOS / `cocoa`** | 真 Mac（macOS 15.7.3，Apple M4 / arm64） | ✅ **已确认** | 2026-09-11 与 2026-10-14（`c957fdec`，2.8.6） | AppKit 探针 12 项 PASS（2026-09-11）；契约探针 `backend_name()=cocoa`、`NativeInteractive`、真的进 `[NSApplication run]`（2026-10-14）。见 `docs/log/archive/log-20260911-2.md`、`docs/issues/feedback-20261013.md` |
-| **macOS / `macos-objc2-preview`** | 真 Mac | ⚠️ **部分（原生探针已删；post-BLUE15 仅剪贴板测试）** | 2026-09-11（原生，已过期）/ 2026-10-14 | `NSPasteboard` 往返：`cargo test … platform::macos_objc2` → 10 passed（`docs/log/log-20261014-1.md` 第 3 轮 §5）；`run()` 仍是轮询 loop（`src/platform/macos/status.md:127-129`） |
+| **macOS / `macos-objc2-preview`** | 真 Mac | ⚠️ **部分（原生探针已删；post-BLUE15 仅剪贴板测试）** | 2026-09-11（原生，已过期）/ 2026-10-14 | `NSPasteboard` 往返：`cargo test … platform::macos_objc2` → 10 passed（`docs/log/archive/log-20261014-1.md` 第 3 轮 §5）；`run()` 仍是轮询 loop（`src/platform/macos/status.md:145`） |
 | **iOS** | **iOS Simulator**（iPhone 17 Pro，iOS 26.2 / 23C54）——**非真机** | ✅ **已确认（模拟器；真机 ❌ 从未验证）** | 2026-10-15，`1f3a6fa8` | `bash tools/run_ios_testapp.sh` → 12 项全 `[PASS]`，`RESULT: PASS`（原始输出见本节 §4，宿主 macOS 15.7.3 / Apple M4 / Xcode 26.2） |
 | **Android** | **真机 Xiaomi M2102J2SC**（Android 13/API 33，arm64-v8a）**+ 模拟器**（API 34 x86_64 KVM） | ✅ **已确认（旧修订，需复跑）** | 2026-09-11 | `ANDROID_ABI=arm64-v8a ANDROID_SERIAL=65441025 bash tools/run_android_testapp.sh` → JNI 双向 `RESULT: PASS`，真 `ACTION_OPEN_DOCUMENT` 选择器弹出。见 `docs/log/archive/log-20260911-1.md`、`src/platform/android/status.md` |
 | **HarmonyOS / OpenHarmony** | **DevEco 模拟器** `Pura X View`（HarmonyOS 6.0.0(20)；guest `OpenHarmony-6.0.0.47` / API 20 / kernel 5.10.210 aarch64） | ✅ **库 core 已在真运行时验证（模拟器）；ArkUI/NAPI 面 ❌ 未验证** | 2026-10-15 | `bash tools/run_harmony_testapp.sh` → `examples/embedded_host` 在 guest 上跑完（rc=0）并打印 `DONE`。见 §6、`src/platform/harmony/status.md`；交叉编译 + 链接证据另由 `tools/check_harmony_cross.sh` 提供 |
 | **Wayland** | 真 **headless weston** 合成器（`wl_compositor`/`xdg_wm_base` 真绑定） | ✅ **已确认（协议绑定；非屏幕合成/输入）** | 2026-09-11 | `tools/run_wayland_compositor_tests.sh` → `bound live compositor … 14 passed`。见 `docs/log/archive/log-20260911-1.md` |
 | **WASM / Web** | **WASI 运行时（wasmtime）** 跑库代码；**浏览器 ❌ 未验证** | ✅ **已确认（仅库代码）** | 2026-09-02 | `cargo test --target wasm32-wasip1 --no-default-features --features wasm` → 2155 passed；浏览器 `wasm32-unknown-unknown` 只 `check`/`build`。见 `docs/log/archive/log-20260902-1.md` |
-| **Embedded / mini** | **宿主模拟**（内存 framebuffer / 内嵌引擎）——**无真实硬件** | ⚠️ **宿主模拟** | 2026-10-15 | `cargo test --lib --no-default-features --features mini -- render_engine::embedded` → 4 passed；生成器产物真编译（`tools/check_generator_output_compiles.sh`）。见 `docs/log/log-20261014-1.md` 第 4 轮 |
+| **Embedded / mini** | **宿主模拟**（内存 framebuffer / 内嵌引擎）——**无真实硬件** | ⚠️ **宿主模拟** | 2026-10-15 | `cargo test --lib --no-default-features --features mini -- render_engine::embedded` → 4 passed；生成器产物真编译（`tools/check_generator_output_compiles.sh`）。见 `docs/log/archive/log-20261014-1.md` 第 4 轮 |
 
 ---
 
@@ -45,7 +45,7 @@
 
 | 验证项 | 命令 | 结果 | 证据 |
 |---|---|---|---|
-| 窗口**真的在屏幕上**（问 X 服务器，不是问库） | `./target/debug/examples/probe_window_on_screen` | `server map state = Some("IsViewable")`；`server geometry = 480x320`；`xwd capture = 480x320 at 32 bpp, 62 distinct colours` | `docs/log/log-20261014-1.md` 第 4 轮 §7.2 |
+| 窗口**真的在屏幕上**（问 X 服务器，不是问库） | `./target/debug/examples/probe_window_on_screen` | `server map state = Some("IsViewable")`；`server geometry = 480x320`；`xwd capture = 480x320 at 32 bpp, 62 distinct colours` | `docs/log/archive/log-20261014-1.md` 第 4 轮 §7.2 |
 | 真系统选择器打开并被应答 | `./target/debug/examples/probe_file_picker` | `choose_path answered Ok(None) after 406.195251ms`；worker 线程 `Err(Unavailable)` | 同上 §2.4 |
 | **真实键入**进真对话框（XTEST X 键事件） | `RW_GUI_PROBE_OK=1 ./target/debug/examples/probe_file_picker` | `choose_path answered Ok(Some("/tmp/rw_picked_by_probe.txt"))` | 同上 §7.1 |
 | 跨线程 `quit()` 干净结束 `run()` | `./target/debug/examples/probe_cross_thread_quit` | `run() returned after 415.753571ms`；窗口 `mapped=true visible=true realized=true` | 同上 §1.6 |
@@ -70,7 +70,7 @@ integration `--test widget_accessor_routing_test`（24 passed）、profile 门�
 
 **边界**：
 - 上述是**旧修订**（2026-09-15）上的真机结果；**当前 `HEAD` 未在 Windows 上复跑**（本机是 Linux，无 Windows 宿主）。
-- **Windows 文件选择器（`GetOpenFileNameW` / `SHBrowseForFolderW`）仅编译**：逐字 `include!` + `cargo check --target x86_64-pc-windows-msvc` → Finished（`docs/log/log-20261014-1.md` 第 4 轮 §2.3/§6.3）。
+- **Windows 文件选择器（`GetOpenFileNameW` / `SHBrowseForFolderW`）仅编译**：逐字 `include!` + `cargo check --target x86_64-pc-windows-msvc` → Finished（`docs/log/archive/log-20261014-1.md` 第 4 轮 §2.3/§6.3）。
 - **整机 Windows 交叉检查在本 Linux 宿主上不可跑**：build script 需要 `lib.exe`（本机无 MSVC/mingw）。解除条件：`sudo apt install mingw-w64`，或 `cargo install xwin` + `xwin … splat`（`tools/check_profiles.sh`）。
 - **Wine 下的 Windows PE 运行**被 `docs/issues/feedback-20261015.md:81-83` 引用过，但它引的证据日志 `docs/log/log-20261015-1.md` **不在本仓库**（属下游）——**本仓库内不可引用**。
 
@@ -90,13 +90,13 @@ integration `--test widget_accessor_routing_test`（24 passed）、profile 门�
 ### 3.2 `macos-objc2-preview` 后端 — ⚠️ 部分
 
 - 2026-09-11：AppKit 探针 `12 checks PASS`（**但该探针面向 BLUE15 之前的原生控件架构，现已删除**）。
-- post-BLUE15 的真机客观证据只有 `NSPasteboard` 剪贴板：`cargo test --no-default-features --features "macos,desktop" --lib platform::macos_objc2` → **10 passed / 0 failed**（`docs/log/log-20261014-1.md` 第 3 轮 §5）。
+- post-BLUE15 的真机客观证据只有 `NSPasteboard` 剪贴板：`cargo test --no-default-features --features "macos,desktop" --lib platform::macos_objc2` → **10 passed / 0 failed**（`docs/log/archive/log-20261014-1.md` 第 3 轮 §5）。
 - `run()` 仍是轮询 loop（`src/platform/macos/status.md:127-129`）。
 
 ### 3.3 边界
 
 - `tools/check_apple_native.sh` 在非 macOS 宿主上**按设计** `exit 2`（`unsupported host`），故 Apple 运行时**不在** Linux 宿主覆盖范围内。
-- `docs/log/log-20261005-1.md:214` 有一行「真实 macOS 原生控件 ✅ 真实创建按钮 + 标签」，与 BLUE15 后「无 per-kind 原生控件」的现状**不符**，标为**可疑/需复核**。
+- `docs/log/archive/log-20261005-1.md:214` 有一行「真实 macOS 原生控件 ✅ 真实创建按钮 + 标签」，与 BLUE15 后「无 per-kind 原生控件」的现状**不符**，标为**可疑/需复核**。
 
 ## 4. iOS — ✅ 模拟器已确认 / 真机 ❌ 未验证
 
@@ -123,7 +123,7 @@ $ bash tools/run_ios_testapp.sh          # 2026-10-15, HEAD 1f3a6fa8
 **边界与冲突**：
 - **真机（物理 iPhone）从未验证**——本行是 `aarch64-apple-ios-sim`（模拟器），`docs/plans/FUTURE.md` 亦记「physical-device run not yet performed」。
 - ✅ **原记录冲突已消解**：本节此前记「当前 `bindings/ios/main.m` 的完整检查集自 2026-09-30 起未复跑」，`src/platform/ios/status.md` 亦称 BLUE15 后的模拟器探针「未复跑、对本修订未验证」。本次（2026-10-15）在**真机宿主**的模拟器上复跑，当前探针全集 **12 项全 PASS**，含 `destroy_unmounts` / `dpi_claim_matches_the_measurement` / `quit_is_clean`。
-- iOS `UIPasteboard` 剪贴板：**仅交叉编译**（`cargo check --target aarch64-apple-ios …`），无会话运行（`docs/log/log-20261014-1.md` 第 3 轮 §2/§10）。
+- iOS `UIPasteboard` 剪贴板：**仅交叉编译**（`cargo check --target aarch64-apple-ios …`），无会话运行（`docs/log/archive/log-20261014-1.md` 第 3 轮 §2/§10）。
 
 ## 5. Android — ✅ 已确认（旧修订，需复跑）
 
@@ -242,7 +242,7 @@ test result: ok. 14 passed; 0 failed; 0 ignored
 |---|---|---|
 | iOS Simulator 是否复跑 | `src/platform/ios/status.md:120-126` 说"未复跑" | ✅ **已消解**：2026-10-15 在真机宿主的 iOS 26.2 模拟器上复跑，当前探针 12 项全 PASS（见 §4） |
 | macOS「两个后端都已原生验证」 | `src/platform/macos/status.md:6,22` 的"Last verified 2026-09-11"面向**已删除的原生控件架构**；而 2026-10-05 日志又出现一条与 BLUE15 后现状不符的"原生控件 ✅" | 标 ⚠️/❓；以 2026-10-14 `cocoa` 契约探针为当前修订的真机证据 |
-| 引用路径 | `src/platform/macos/status.md` 引用 `docs/log/log-20260911-2.md`，实际在 `docs/log/archive/` 下 | 待修正引用（文档漂移） |
+| 引用路径 | `src/platform/macos/status.md` 引用 `docs/log/archive/log-20260911-2.md`，实际在 `docs/log/archive/` 下 | 待修正引用（文档漂移） |
 | Apple 宿主存在性 | `docs/reports/CHANGELOG.md`（2.8.3，2026-09-30）称"开发机上没有 Apple 宿主"；同日的 iOS Simulator 日志却在跑 | 标 ❓；可能是**两台不同开发机**，未采信任一方 |
 | Wine / Windows PE | `docs/issues/feedback-20261015.md` 引用本仓库不存在的 `docs/log/log-20261015-1.md` | 本仓库**不可引用**；不在本台账 |
 

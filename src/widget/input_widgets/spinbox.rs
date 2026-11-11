@@ -285,14 +285,22 @@ struct SpinBoxNumberFormatter {
 
 impl Formatter<f64> for SpinBoxNumberFormatter {
     fn format(&self, value: &f64) -> String {
-        match self.decimals {
+        // No grouping here: grouping is the display-only `thousands_grouping` setting applied
+        // by `display_number`. This output is also the parse authority, so it stays the strict
+        // grammar with only the decimal point localized (U2-07).
+        let mut text = match self.decimals {
             0 => format!("{}", round_to_i32(*value)),
             n => format!("{:.*}", n as usize, value),
-        }
+        };
+        crate::widget::locale_number::localize_decimal_point(&mut text);
+        text
     }
 
     fn parse(&self, text: &str) -> Result<f64, ValidationError> {
-        text.trim().parse::<f64>().ok().filter(|value| value.is_finite()).ok_or_else(|| {
+        // Accept the locale's own spelling: a German field prints `3,14`, so the parser must
+        // read it back rather than rejecting what the control just drew (U2-07).
+        let normalized = crate::widget::locale_number::normalize_decimal_input(text);
+        normalized.trim().parse::<f64>().ok().filter(|value| value.is_finite()).ok_or_else(|| {
             ValidationError::new(format!("`{}` is not a finite number", text.trim()))
         })
     }
@@ -1564,11 +1572,13 @@ pub(crate) fn round_to_decimals(value: f64, decimals: u32) -> f64 {
 /// has to decide what a grouping separator means. A text with three digits or fewer is
 /// returned unchanged.
 fn group_thousands(text: &str) -> String {
+    let decimal = crate::widget::locale_number::decimal_separator();
+    let grouping = crate::widget::locale_number::grouping_separator();
     let (sign, rest) = match text.strip_prefix('-') {
         Some(stripped) => ("-", stripped),
         None => ("", text),
     };
-    let split = rest.find('.').unwrap_or(rest.len());
+    let split = rest.find(decimal).unwrap_or(rest.len());
     let (integer, fraction) = rest.split_at(split);
     let digits = integer.chars().count();
     if digits <= 3 {
@@ -1578,7 +1588,7 @@ fn group_thousands(text: &str) -> String {
     out.push_str(sign);
     for (index, ch) in integer.chars().enumerate() {
         if index != 0 && (digits - index) % 3 == 0 {
-            out.push(',');
+            out.push(grouping);
         }
         out.push(ch);
     }

@@ -847,6 +847,13 @@ pub(crate) fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
     candidates.clear();
     ANIMATING.with(|set| candidates.extend(set.borrow().iter().copied()));
     for id in candidates.iter().copied() {
+        // An off-screen or hidden control must not keep the global frame loop awake
+        // (UX6-06): its animation cannot be observed, and ticking it only burns CPU. The
+        // registry entry is kept, so becoming visible again resumes from the same state on
+        // the next frame the visibility change requests.
+        if !crate::widget::runtime::is_effectively_visible(id) {
+            continue;
+        }
         // `with_widget_mut` detaches the control for its tick, which is the same contract the old
         // `for_each_mounted_widget` sweep relied on, and records the resulting animation bit on
         // the way out. A control that is no longer mounted (destroyed by a callback) is dropped

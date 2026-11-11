@@ -12,7 +12,9 @@ use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, effective_font, estimate_text_width, expand_to_hit_area, ControlMetrics,
+};
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
@@ -979,7 +981,11 @@ impl Chip {
                 CHIP_CLOSE_SLOT as u32,
                 chip.height,
             );
-            (close.contains_point(pos) && chip.contains_point(pos)).then_some(*index)
+            // The ✕ sits in a 14 px slot, below the platform's minimum hit size; widen the
+            // hit area and clip it to the chip so a neighbouring chip's edge cannot close
+            // this one (UX6-04, the same rule `TabBar::close_hit_area` follows).
+            let area = expand_to_hit_area(close).intersection(chip).unwrap_or(close);
+            area.contains_point(pos).then_some(*index)
         })
     }
 

@@ -75,6 +75,13 @@ impl Draw for DataGrid {
         let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let selected_bg = surface.blend(&accent, 0.22);
 
+        // U3-03: a disabled grid's ink and rims recede by the shared rule rather than holding
+        // full contrast while only its handlers are gated. The selection tint is a *data* state,
+        // so it is left as resolved.
+        let ink = self.base.disabled_ink_on(ink, surface);
+        let border = self.base.disabled_ink_on(border, surface);
+        let cell_border = self.base.disabled_ink_on(cell_border, surface);
+
         context.face_with_gradient_corners(
             rect,
             surface,
@@ -95,6 +102,15 @@ impl Draw for DataGrid {
         // clone happens on a scroll, because the view addresses the cached matrix by offset.
         let window_view = self.fetch_visible_window_view();
         if window_view.is_empty() {
+            // UX-03: an empty grid says so, in the language the rest of the collection family
+            // uses, instead of leaving a bare panel under the header strip.
+            crate::widget::view_widgets::paint_collection_placeholder(
+                context,
+                self.cells_box(),
+                &self.placeholder,
+                ink,
+                effective_font(self.base.style()),
+            );
             return;
         }
 
@@ -132,7 +148,7 @@ impl Draw for DataGrid {
                             label,
                             header_font,
                             ink,
-                            HorizontalAlignment::Left,
+                            crate::widget::view_widgets::rtl_columns::leading_alignment(),
                         );
                     }
                 }
@@ -198,7 +214,7 @@ impl Draw for DataGrid {
                         name.as_str(),
                         header_font,
                         ink,
-                        HorizontalAlignment::Left,
+                        crate::widget::view_widgets::rtl_columns::leading_alignment(),
                     );
                 }
                 if self.sort_indicator_visible {
@@ -397,7 +413,7 @@ impl Draw for DataGrid {
                     &text,
                     font,
                     ink.blend(&surface, 0.2),
-                    HorizontalAlignment::Left,
+                    crate::widget::view_widgets::rtl_columns::leading_alignment(),
                 );
             }
         }
@@ -442,7 +458,7 @@ impl Draw for DataGrid {
                         &text,
                         font,
                         ink,
-                        HorizontalAlignment::Left,
+                        crate::widget::view_widgets::rtl_columns::leading_alignment(),
                     );
                 }
             }
@@ -474,24 +490,24 @@ impl Draw for DataGrid {
         // Scroll-bar thumbs are opt-in. The grid is virtualized, so a grid without them can
         // still be scrolled by wheel/keyboard; the thumbs are the visible affordance that
         // says how much of the model is off-screen.
-        if self.show_scrollbars {
-            // The thumb measures what is painted: the projection's rows, not the source's.
-            let total_rows = self.projected_row_count().max(1);
-            let visible_rows = self.visible_row_capacity().max(1).min(total_rows);
-            let track = cells.height.max(1);
-            let thumb = ((track as u64 * visible_rows as u64) / total_rows as u64)
-                .max(24)
-                .min(track as u64) as u32;
-            let travel = track.saturating_sub(thumb);
-            let max_scroll = total_rows.saturating_sub(visible_rows);
-            let offset = if max_scroll == 0 {
-                0
-            } else {
-                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
-            };
-            let band = Rect::new(rect.x + rect.width as i32 - 6, cells.y + offset as i32, 6, thumb);
+        // The thumb measures what is painted: the projection's rows, not the source's.
+        let total_rows = self.projected_row_count();
+        let visible_rows = self.visible_row_capacity().min(total_rows).max(1);
+        // UX-04: shown whenever something is off-screen; the flag only forces it on.
+        if let Some(band) = crate::widget::overscroll::scroll_thumb_rect(
+            cells,
+            total_rows.max(1),
+            visible_rows,
+            self.scroll_row,
+            6,
+            self.show_scrollbars,
+        ) {
             context.fill_rect(band, accent.with_alpha(120));
         }
+
+        // Tab and Shortcut focus must be visible on the data grid as on every other control (U3-04).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring_if_needed(context, rect, radius, surface);
     }
 }
 

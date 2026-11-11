@@ -532,7 +532,7 @@ D 组（结构/纪律）   ：D-1…D-11                       11/11 ✅（D-10/
 `path:行号` 为键——226 条中 **156 条已失效**。已改为 `path:所属类型` 键，并在改变的文件
 （`keyboard.rs`/`search_bar.rs`）上验证了旧键法的不可用。详见日志 §17.3。
 
-**计划外修出的真缺陷 6 项**（均由新门禁/普查自己抓出，见 `docs/log/log-20260927-1.md` §15.4、§16）：
+**计划外修出的真缺陷 6 项**（均由新门禁/普查自己抓出，见 `docs/log/archive/log-20260927-1.md` §15.4、§16）：
 
 1. SVG **裸数字续命令**未实现 ⇒ `cross` 缩成一个点、画不出来；
 2. `T`/`t` 平滑二次曲线未支持 ⇒ `cross` 解析失败；
@@ -729,7 +729,7 @@ impl IconName {
 | **ICON-5** | `Icon::draw` 走新数据；**删掉 28 个 `draw_*` 中已被数据取代的**（保留过程式兜底） | 同上 | 既有 3 个图标快照**逐字节不变**（证明迁移无回归） |
 | **ICON-6** | census + 互异性门禁 | `tools/icon_census.txt`、`tests/icon_census_test.rs` | 注入：给两个名字同一轮廓 ⇒ 门禁红 |
 | **ICON-7** | 图标**雪碧图**快照（**不**新增 400 个文件） | `examples/export_icon_sheet.rs`、`snapshots/svg/icon_sheet{,.light}.svg` | `check_svg_snapshots.sh` 新增一步，**不动**它既有的 `EXPECTED` 算式 |
-| **ICON-8** | opt-in 门禁 + 许可证门禁 + **生成物生产者门禁** | `tools/check_icon_data_is_opt_in.sh`、`tools/check_icon_licences.sh`、`tools/check_generated_files_have_a_runnable_producer.sh` | 注入：在 `Cargo.toml` 的 `default` 里加 `icons` ⇒ 门禁红；删掉 `NOTICE` 里的 Apache 条目 ⇒ 门禁红；改一个 fallback 坐标字节 ⇒ 生成物门禁红 |
+| **ICON-8** | opt-in 门禁 + 许可证门禁 + **生成物生产者门禁** | `tools/check_icon_data_is_opt_in.sh`、`tools/check_icon_licenses.sh`、`tools/check_generated_files_have_a_runnable_producer.sh` | 注入：在 `Cargo.toml` 的 `default` 里加 `icons` ⇒ 门禁红；删掉 `NOTICE` 里的 Apache 条目 ⇒ 门禁红；改一个 fallback 坐标字节 ⇒ 生成物门禁红 |
 
 > **上表已于 2026-09-29 按实际文件系统校正**（第 102 轮，用户第 3/5 条）。原表有三处不可复现：
 > ① ICON-3 写的是 `src/widget/icons/{mod.rs,icon_data.rs}` —— **该目录从未存在**，
@@ -760,7 +760,7 @@ impl IconName {
 |---|---|---|---|
 | §4(a) | 提供 LICENSE 副本 | `tools/material_symbols/LICENSE`（上游 LICENSE 的**逐字**副本）| `sha256sum` 与上游 digest 比对 |
 | §4(b) | 修改过的文件要显著标注改动 | 每个 vendored `.svg` 头部保留上游原样；**生成物** `src/widget/icons/icon_data.rs` 顶部写 `GENERATED` 头 + “derived from Material Symbols” + SHA | 生成器头 + `--check` |
-| §4(c) | 保留源码形式的版权/归属声明 | `NOTICE` 新增 Material Symbols 段 | `tools/check_icon_licences.sh` |
+| §4(c) | 保留源码形式的版权/归属声明 | `NOTICE` 新增 Material Symbols 段 | `tools/check_icon_licenses.sh` |
 | §4(d) | 若上游有 `NOTICE` 则随附 | **上游无 `NOTICE`** ⇒ 义务**不触发**；但本仓仍主动在 `NOTICE` 记录，理由见 6.7.3 | 同上一行 |
 | §6 | 不得用其商标 | 不在促销语境使用 “Material Symbols” 名称；仅在 NOTICE / 生成头用于归属 | 人工审阅 |
 
@@ -772,7 +772,7 @@ impl IconName {
    - 固定 commit SHA（ICON-2 实施时填入）；
    - 生成物路径与 `--check` 命令；
    - 仅改**轴**：`d` 逐字保留，不做简化/重绘（如需裁剪视图框则写明）。
-3. **上游 `NOTICE` 的处置**：`check_icon_licences.sh` **主动断言上游无 `NOTICE`**；若将来上游新增，门禁**报警**要求随附它的副本，而不是静默漏掉（§4d 从“不触发”变为“触发”）。
+3. **上游 `NOTICE` 的处置**：`check_icon_licenses.sh` **主动断言上游无 `NOTICE`**；若将来上游新增，门禁**报警**要求随附它的副本，而不是静默漏掉（§4d 从“不触发”变为“触发”）。
 4. **opt-in**：`icons` feature（非 `default`），`check_icon_data_is_opt_in.sh` 保证默认构建不携带图标数据。
 
 #### 6.7.4 不做的事（避免欠账）
@@ -898,7 +898,7 @@ src/render/gpu/mod.rs:37
 ## 8. §6 未取证 / 需复核 —— **已逐条取证并闭环**
 
 以下条目在扫描中被提及，但证据不足或判定标准未定，按原则 #1 **不进入待办**——
-但它们不应悬空。本轮逐条取证，结果如下（实施细节见 `docs/log/log-20260927-1.md` §17）：
+但它们不应悬空。本轮逐条取证，结果如下（实施细节见 `docs/log/archive/log-20260927-1.md` §17）：
 
 1. `WidgetKind` 变体计数：**已闭环** —— `check_widget_kind_count.sh` 现解析为 180，
    与枚举实际变体数一致，22 份文档同步。

@@ -1270,6 +1270,13 @@ impl Draw for Dropdown {
         let list_border = separator.unwrap_or(Color::rgb(150, 150, 150));
         let list_row = popup_surface.unwrap_or(Color::rgb(248, 248, 248));
 
+        // U3-03: a disabled dropdown's field ink and rim recede by the shared rule rather than
+        // holding full contrast while only its handler is gated. The popup cannot be open while
+        // disabled, so the rows it would paint are left as resolved.
+        let text_color = self.base.disabled_ink_on(text_color, bg);
+        let placeholder_color = self.base.disabled_ink_on(placeholder_color, bg);
+        let border = self.base.disabled_ink_on(border, bg);
+
         // ── Collapsed / button area ─────────────────────────────────────
         // Background
         context.fill_rect(geo, bg);

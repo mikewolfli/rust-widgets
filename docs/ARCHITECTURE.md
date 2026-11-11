@@ -1,9 +1,9 @@
 # Rust Widgets — Architecture Overview
 
-> Last updated: 2026-10-22
+> Last updated: 2026-11-11
 >
-> This is a snapshot of the current tree, not a roadmap. Every status below is checked by a CI
-> job (named in parentheses), so a sentence that drifts from the code is a defect in this file.
+> This is a snapshot of the current tree, not a roadmap. Counts and layout claims carry the gate
+> that checks them; prose that no gate reads is written as prose, not as a CI guarantee.
 
 ## High-Level Architecture
 
@@ -13,18 +13,22 @@
 │  (app, json_engine, c_abi)                              │
 ├─────────────────────────────────────────────────────────┤
 │                    Widget Layer                          │
-│  ~188 registered controls                                 │
+│  231 registered widget kinds                              │
 │  Each: Widget + Draw + EventHandler + Signals           │
-│  Sub-modules: base, input, container, display,          │
-│               special, view, advanced, web, menu,       │
-│               dialog, new_widgets (BLUE11)               │
+│  Sub-modules: base_widgets, input_widgets,               │
+│               container_widgets, display_widgets,        │
+│               special_widgets, view_widgets,             │
+│               advanced_widgets, misc_widgets,            │
+│               menu_toolbar, dialog, media_widgets,       │
+│               nav_widgets, overlay_widgets, cupertino,   │
+│               macos, chart_widgets, companions           │
 ├─────────────────────────────────────────────────────────┤
 │   Layout        │  Event       │  Style / Theme / Anims │
 │   Absolute/Box  │  Mouse/Touch │  ThemeManager          │
 │   Flow/Form     │  Keyboard    │  ThemeOverrides        │
 │   Grid/Splitter │  Focus       │  Easing Functions      │
-│   Stack/Uniform │  IME         │  - Keyframes (WIP)     │
-│                  │  Timer       │  - Transitions (WIP)   │
+│   Stack/Uniform │  IME         │  - Keyframes           │
+│                  │  Timer       │  - Transitions         │
 ├─────────────────────────────────────────────────────────┤
 │                  Rendering Pipeline                      │
 │  RenderCommand → PaintBackend (Software/SVG/WGPU)       │
@@ -32,8 +36,8 @@
 │  GpuRenderer trait → WgpuRenderer (w/ WgpuDrawCommand)  │
 ├─────────────────────────────────────────────────────────┤
 │                  Control Backend                        │
-│  Creates native platform widgets OR custom-painted      │
-│  ControlRoutePreference: NativePreferred / CustomRequired│
+│  Routes every kind to its painting mechanism             │
+│  ControlRoutePreference: CustomRequired for every kind   │
 ├─────────────────────────────────────────────────────────┤
 │                  Platform Layer                          │
 │  Windows (Win32) │ macOS (Cocoa / objc2) │ Linux (GTK) │

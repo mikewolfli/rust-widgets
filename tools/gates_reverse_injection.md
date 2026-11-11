@@ -203,7 +203,7 @@
 | gate | injected | reported |
 |---|---|---|
 | `check_icon_data_is_opt_in.sh` | added `"icons"` to the `default` feature list | `FAIL  \`icons\` is in the \`default\` feature list` |
-| `check_icon_licences.sh` | (a) removed the Material Symbols section from a copy of `NOTICE`; (b) ran `tools/gen_icon_data.py` with no `--license` and with `--license=not-a-real-licence`; (c) hand-edited one `d` in `src/widget/icon_data.rs` | (a) `finding: NOTICE: no section headed 'Material Symbols — SVG path subsets for \`icons\`'` / `checked=31 failed=1` (b) both exit 2 (c) `FAIL: src/widget/icon_data.rs is stale; regenerate with` |
+| `check_icon_licenses.sh` | (a) removed the Material Symbols section from a copy of `NOTICE`; (b) ran `tools/gen_icon_data.py` with no `--license` and with `--license=not-a-real-licence`; (c) hand-edited one `d` in `src/widget/icon_data.rs` | (a) `finding: NOTICE: no section headed 'Material Symbols — SVG path subsets for \`icons\`'` / `checked=31 failed=1` (b) both exit 2 (c) `FAIL: src/widget/icon_data.rs is stale; regenerate with` |
 | `check_implicit_size_uses_metrics.sh` | dropped the `src/widget/advanced_widgets/dial.rs Dial` row from `tools/implicit_size_exemptions.txt` | `src/widget/advanced_widgets/dial.rs:268: \`size_hint\` derives its answer without ControlMetrics, estimate_text_width/estimate_line_height or dimensions::` / `checked=188 failed=1` |
 
 ## BLUE24 — gates added or verified this round (2026-09-24)
@@ -547,3 +547,56 @@ anchored before the successful injection).
 > `✅ Linux/GTK type-check passed (compile only; no link)` (28.1 s, zero warnings). The gate is
 > host-gated: without the Linux target, pkg-config or gtk+3 it prints `unsupported host (…)` and
 > exits 2 (recorded as SKIP by the runner), which is the honest host limit rather than a timeout.
+
+## Work-log index round (2026-11-12)
+
+AG6-13 / A3-01: `docs/log/` had 21 live and 118 archived logs with no index and no gate, which
+is how 21 of 27 log references in the instruction surface came to point at files that had moved.
+`docs/log/README.md` is now the index and `check_log_archive_has_index.sh` compares it with the
+directory in both directions.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_log_archive_has_index.sh` | created `docs/log/archive/log-29991231-1.md` with no index row | `[3/4] every archived log is named in the index` / `  FAIL  these archived logs are not linked from docs/log/README.md:` / `          log-29991231-1.md` / exit 1 |
+| `check_log_archive_has_index.sh` (dangling branch) | appended a row linking `archive/log-29991231-9.md`, which does not exist | `[4/4] the index names no log that is not on disk` / `  FAIL  docs/log/README.md links logs that do not exist:` / `          archive/log-29991231-9.md` / exit 1 |
+
+## Event-name vocabulary round (2026-11-12)
+
+DX-10: `on_` is a listener-method prefix in other toolkits, not an event name. The root crate
+published three such names (`on_line_crossed`, `on_category_toggled`, `on_header_clicked`); all
+three are now published without the prefix, with the old spelling recorded in `EVENT_ALIASES` and
+still answered by `event_signal_dyn`. The new gate also freezes the suites crate's remaining
+prefixed names as an explicit backlog.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_event_names_follow_the_convention.sh` | added `on_bogus` to the `chart_reference_line` row of `tools/event_published_census.txt` | `published event names checked: 773 (across 221 controls)` / `FAIL  these published event names carry the listener prefix:` / `  chart_reference_line: on_bogus` / exit 1 |
+
+Two findings from building it, recorded because neither was visible before:
+
+* the gate's first version also scanned the **suites** crate and found eight more prefixed names
+  there (`on_matches_changed`, `on_overview_drag`, `on_entry_activated`, `on_chapter_entered`,
+  `on_chapter_selected`, `on_header_clicked`, `on_task_selected`, `on_window_requested`). They went
+  into `SUITES_BACKLOG` so a new one could not ship while the backlog was measured; all eight have
+  since been migrated (field + arm + `EventSchema` + alias), so the backlog is now the **empty
+  set** and the gate fails if a name is ever added back without a decision.
+* `tools/check_event_signal_dyn.py::resolved_names` matched only the literal immediately before
+  `=>`, so an arm spelled `"canonical" | "legacy" =>` was seen as resolving **only** the legacy
+  name. That is the direction the gate exists to catch, so the reader now reads every alternative
+  (and accepts a legacy spelling that `EVENT_ALIASES` maps to a published name).
+
+## Machine-readable capability document (2026-11-12)
+
+AG-13: "what properties and events does this control have?" required reading two ~1500-line source
+files. `docs/capability_schema.json` now commits the answer the factory already holds, produced by
+`examples/export_capability_schema.rs`. The exporter pins `profile`/`triple` to `"any"` so the
+document does not depend on the machine that regenerated it.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_capability_schema_is_current.sh` | appended one byte to the committed `docs/capability_schema.json` | `❌ docs/capability_schema.json does not match a fresh export (1077699 committed bytes, 1077698 regenerated).` / `Run ... and commit the result.` / exit 1 |
+
+The sentinel steps ([3/4], [4/4]) are not separately injected: they exist for the case where the
+**exporter** stops carrying a fact (a control losing the shared `a11y_role` row, a renamed event
+reverting), which a byte comparison cannot see because the exporter is internally consistent in
+both states.

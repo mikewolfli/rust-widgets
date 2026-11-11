@@ -2,6 +2,8 @@
 
 rust-widgets 包含一個內建的圖表系統，提供五種圖表類型、可插拔的繪圖後端、SVG 匯出以及 widget 整合——全部透過同一個渲染管線，無需外部圖表相依套件。
 
+> **特性門控。** `rust_widgets::widget::chart_widgets` 需要開啟 `chart` 特性；`desktop`/`tablet`/`mobile` 三個 profile 預設已開啟。若以 `--no-default-features` 建置，請明確加入 `chart`。
+
 ---
 
 ## 1. 資料型別
@@ -9,7 +11,7 @@ rust-widgets 包含一個內建的圖表系統，提供五種圖表類型、可�
 ### `DataPoint`
 
 ```rust
-use rust_widgets::chart::DataPoint;
+use rust_widgets::widget::chart_widgets::DataPoint;
 
 let point = DataPoint {
     x: 1.0,
@@ -34,7 +36,7 @@ let simple = DataPoint {
 ### `ChartSeries`
 
 ```rust
-use rust_widgets::chart::{ChartSeries, DataPoint};
+use rust_widgets::widget::chart_widgets::{ChartSeries, DataPoint};
 use rust_widgets::core::Color;
 
 let series = ChartSeries {
@@ -75,7 +77,7 @@ pub enum ChartType {
 ### 工廠方法
 
 ```rust
-use rust_widgets::chart::ChartType;
+use rust_widgets::widget::chart_widgets::ChartType;
 
 // 從型別變體建立 boxed chart
 let chart: Box<dyn Chart> = ChartType::Line.create_chart();
@@ -104,7 +106,7 @@ pub trait Chart {
 每種圖表型別都實作了此特徵，使它們可以互換使用：
 
 ```rust
-use rust_widgets::chart::{Chart, ChartType, ChartSeries};
+use rust_widgets::widget::chart_widgets::{Chart, ChartType, ChartSeries};
 use rust_widgets::core::Rect;
 
 let mut chart = ChartType::Line.create_chart();
@@ -119,7 +121,7 @@ chart.draw(Rect::new(0, 0, 800, 400), &mut context);
 
 ---
 
-## 4. `ChartContext` 特徵 (14 個繪圖基本單元)
+## 4. `ChartContext` 特徵 (13 個繪圖基本單元)
 
 `ChartContext` 是可插拔的繪圖後端。提供了兩種實作：`SvgChartContext` 用於向量輸出，以及 `MemoryChartContext` 用於測試。
 
@@ -128,6 +130,8 @@ pub trait ChartContext {
     fn draw_line(&mut self, from: Point, to: Point, width: f32, color: Color);
     fn draw_rect(&mut self, rect: Rect, color: Color);
     fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, color: Color);
+    fn measure_text(&self, text: &str, font_size: f32) -> f32;
+    fn text_line(&self, band: Rect, font_size: f32) -> Rect;
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color);
     fn draw_polygon(&mut self, points: &[Point], color: Color);
     fn draw_path_segment(&mut self, start: Point, end: Point, width: f32, color: Color);
@@ -144,14 +148,16 @@ pub trait ChartContext {
 | 1 | `draw_line` | 從起點到終點的線段，含寬度 |
 | 2 | `draw_rect` | 在指定矩形內填滿顏色 |
 | 3 | `draw_text` | 在指定位置繪製文字，含字型大小與顏色 |
-| 4 | `draw_circle` | 以中心點與半徑繪製填滿圓形 |
-| 5 | `draw_polygon` | 從點清單繪製填滿多邊形 |
-| 6 | `draw_path_segment` | 單一路徑段 (線條) |
-| 7 | `draw_arc` | 透過多邊形段逼近的弧形 |
-| 8 | `draw_path` | 多段 SVG 路徑 |
-| 9 | `draw_ellipse` | 填滿橢圓形 |
-| 10 | `set_fill_color` | 設定後續繪圖的填滿顏色 |
-| 11 | `set_stroke_color` | 設定後續繪圖的筆畫顏色 |
+| 4 | `measure_text` | 測量單行寬度（含預設實作） |
+| 5 | `text_line` | 字形原點所在的單行行框 |
+| 6 | `draw_circle` | 以中心點與半徑繪製填滿圓形 |
+| 7 | `draw_polygon` | 從點清單繪製填滿多邊形 |
+| 8 | `draw_path_segment` | 單一路徑段 (線條) |
+| 9 | `draw_arc` | 透過多邊形段逼近的弧形 |
+| 10 | `draw_path` | 多段 SVG 路徑 |
+| 11 | `draw_ellipse` | 填滿橢圓形 |
+| 12 | `set_fill_color` | 設定後續繪圖的填滿顏色 |
+| 13 | `set_stroke_color` | 設定後續繪圖的筆畫顏色 |
 
 ---
 
@@ -160,9 +166,9 @@ pub trait ChartContext {
 ### 折線圖 (LineChart)
 
 ```rust
-use rust_widgets::chart::{LineChart, Chart, ChartSeries, DataPoint};
+use rust_widgets::widget::chart_widgets::{LineChart, Chart, ChartSeries, DataPoint};
 use rust_widgets::core::{Color, Rect};
-use rust_widgets::chart::svg::MemoryChartContext;
+use rust_widgets::widget::chart_widgets::svg::MemoryChartContext;
 
 let mut chart = LineChart::new();
 chart.set_title("Temperature Trend".into());
@@ -194,7 +200,7 @@ println!("Commands: {:?}", ctx.commands);
 ### 長條圖 (BarChart)
 
 ```rust
-use rust_widgets::chart::BarChart;
+use rust_widgets::widget::chart_widgets::BarChart;
 
 let mut chart = BarChart::new();
 chart.set_title("Monthly Sales".into());
@@ -231,7 +237,7 @@ chart.add_series(ChartSeries {
 ### 圓餅圖 (PieChart)
 
 ```rust
-use rust_widgets::chart::PieChart;
+use rust_widgets::widget::chart_widgets::PieChart;
 
 let mut chart = PieChart::new();
 chart.set_title("Market Share".into());
@@ -261,7 +267,8 @@ chart.add_series(ChartSeries {
 ### 散佈圖與區域圖 (ScatterChart & AreaChart)
 
 ```rust
-use rust_widgets::chart::{ScatterChart, AreaChart};
+use rust_widgets::widget::chart_widgets::charts::{ScatterChart, AreaChart};
+use rust_widgets::widget::chart_widgets::Chart;
 
 // 散佈圖 — 個別點
 let mut scatter = ScatterChart::new();
@@ -334,8 +341,8 @@ const PALETTE: [Color; 6] = [
 ### 渲染為 SVG 檔案
 
 ```rust
-use rust_widgets::chart::{Chart, ChartType};
-use rust_widgets::chart::svg::render_chart_to_svg_file;
+use rust_widgets::widget::chart_widgets::{Chart, ChartType};
+use rust_widgets::widget::chart_widgets::svg::render_chart_to_svg_file;
 use rust_widgets::core::Rect;
 
 let mut chart = ChartType::Line.create_chart();
@@ -353,7 +360,7 @@ render_chart_to_svg_file(
 ### 渲染為 SVG 字串
 
 ```rust
-use rust_widgets::chart::svg::SvgChartContext;
+use rust_widgets::widget::chart_widgets::svg::SvgChartContext;
 use rust_widgets::core::Rect;
 
 let mut ctx = SvgChartContext::new(800, 400);
@@ -386,8 +393,8 @@ ctx.save("chart.svg").unwrap();
 `MemoryChartContext` 將繪圖指令記錄為字串，無需實際渲染即可進行測試斷言：
 
 ```rust
-use rust_widgets::chart::svg::MemoryChartContext;
-use rust_widgets::chart::{Chart, ChartType, ChartSeries, DataPoint};
+use rust_widgets::widget::chart_widgets::svg::MemoryChartContext;
+use rust_widgets::widget::chart_widgets::{Chart, ChartType, ChartSeries, DataPoint};
 use rust_widgets::core::{Color, Rect};
 
 let mut chart = ChartType::Line.create_chart();
@@ -433,7 +440,7 @@ assert!(ctx.commands.iter().any(|cmd| cmd.starts_with("line:")));
 `compute_cartesian_layout()` 從給定的邊界矩形計算繪圖區域、邊距和圖例位置：
 
 ```rust
-use rust_widgets::chart::charts::compute_cartesian_layout;
+use rust_widgets::widget::chart_widgets::charts::compute_cartesian_layout;
 use rust_widgets::core::Rect;
 
 let rect = Rect::new(0, 0, 800, 400);
@@ -453,7 +460,7 @@ println!("Legend at: ({}, {})", layout.legend_x, layout.legend_y);
 ### 軸與刻度繪製函式
 
 ```rust
-use rust_widgets::chart::charts::{
+use rust_widgets::widget::chart_widgets::charts::{
     draw_cartesian_axes,
     draw_x_ticks,
     draw_y_ticks,
@@ -478,7 +485,7 @@ draw_legend(&mut ctx, &layout, &visible_series);
 `ChartLayout` 將圖表 widget 定位以填滿容器中的可用空間：
 
 ```rust
-use rust_widgets::chart::layout::ChartLayout;
+use rust_widgets::widget::chart_widgets::layout::ChartLayout;
 use rust_widgets::layout::Layout;
 use rust_widgets::core::Rect;
 
@@ -518,10 +525,10 @@ layout.clear();
 ## 11. 完整的圖表範例與真實資料
 
 ```rust
-use rust_widgets::chart::{
+use rust_widgets::widget::chart_widgets::{
     Chart, ChartType, ChartSeries, DataPoint,
 };
-use rust_widgets::chart::svg::{SvgChartContext, MemoryChartContext};
+use rust_widgets::widget::chart_widgets::svg::{SvgChartContext, MemoryChartContext};
 use rust_widgets::core::{Color, Rect};
 
 fn main() {
@@ -622,7 +629,7 @@ fn main() {
                  │ draw(rect, context)
      ┌───────────▼───────────┐
      │   ChartContext Trait   │
-     │  14 drawing primitives │
+     │  13 drawing primitives │
      └───────────┬───────────┘
                  │
      ┌───────────┼───────────┐
@@ -639,7 +646,7 @@ fn main() {
 | `ChartSeries` | 具名資料點集合，含顏色與可見性 |
 | `ChartType` | 列舉，含用於圖表實例化的工廠方法 |
 | `Chart` 特徵 | 通用圖表介面：數列管理、軸標籤、繪圖 |
-| `ChartContext` 特徵 | 可插拔繪圖後端，含 14 個基本單元 |
+| `ChartContext` 特徵 | 可插拔繪圖後端，含 13 個基本單元 |
 | `LineChart` | 含刻度、格線、圖例的折線圖 |
 | `BarChart` | 含分組數列的垂直長條圖 |
 | `PieChart` | 含弧形渲染的圓餅圖/環圈圖 |

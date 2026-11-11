@@ -2038,6 +2038,9 @@ fn write_axis_value(value: f64, out: &mut String) {
     } else {
         let _ = write!(out, "{value:.1}");
     }
+    // The value axis is user-visible text, so its decimal point follows the active locale
+    // (U2-07). The rewrite is in place, so the no-allocation property above is preserved.
+    crate::widget::locale_number::localize_decimal_point(out);
 }
 
 /// The most ticks [`write_nice_ticks`] may produce (the historical 64-step cap plus the first

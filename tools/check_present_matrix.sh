@@ -66,7 +66,7 @@ ADB="$HOME/Library/Android/sdk/platform-tools/adb"
 if [[ -x "$ADB" ]]; then
     DEVICES="$("$ADB" devices 2>/dev/null | awk 'NR>1 && $2=="device" {count++} END {print count+0}')"
     if [[ "$DEVICES" -gt 0 ]]; then
-        report "Android" "RUN  available device(s): $DEVICES (probe script: tools/run_present_android.sh)"
+        report "Android" "RUN  available device(s): $DEVICES"
     else
         report "Android" "SKIP(host-limited) adb is installed but no device/emulator is attached"
     fi

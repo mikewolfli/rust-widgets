@@ -363,7 +363,7 @@ pub struct VideoPlayer {
     /// [`Self::video_frame`].
     pub frame_presented: Signal1<f64>,
     /// Emitted with the chapter index when playback crosses into a new chapter (MW-002).
-    pub on_chapter_entered: Signal1<usize>,
+    pub chapter_entered: Signal1<usize>,
     /// Emitted when the host replaces the container metadata.
     pub metadata_changed: GenericSignal,
     /// Whether playback loops at the end instead of stopping.
@@ -488,7 +488,7 @@ impl VideoPlayer {
             duration_changed: Signal1::new(),
             frame_available: Signal1::new(),
             frame_presented: Signal1::new(),
-            on_chapter_entered: Signal1::new(),
+            chapter_entered: Signal1::new(),
             metadata_changed: GenericSignal::new(),
             looping: false,
             back: None,
@@ -1083,7 +1083,7 @@ impl VideoPlayer {
         self.scrubber.as_ref()
     }
 
-    /// Emits `on_chapter_entered` when the clock crosses a marker.
+    /// Emits `chapter_entered` when the clock crosses a marker.
     fn sync_chapter(&mut self) {
         let next = self.chapter_at(self.current_time);
         if next == self.current_chapter {
@@ -1091,7 +1091,7 @@ impl VideoPlayer {
         }
         self.current_chapter = next;
         if let Some(index) = next {
-            self.on_chapter_entered.emit(index);
+            self.chapter_entered.emit(index);
         }
     }
 
@@ -1836,11 +1836,17 @@ impl Widget for VideoPlayer {
         #[allow(unused_imports)]
         use rust_widgets::widget::capability::CapabilityValue;
         match name {
-            "on_chapter_entered" => Some(EventSignalRef::mapped(
-                "on_chapter_entered",
-                &self.on_chapter_entered,
-                |index| CapabilityValue::UInt(*index as u64),
-            )),
+            "chapter_entered" => {
+                Some(EventSignalRef::mapped("chapter_entered", &self.chapter_entered, |index| {
+                    CapabilityValue::UInt(*index as u64)
+                }))
+            }
+            // Legacy spelling (DX-10): the name published before the `on_` prefix was removed.
+            "on_chapter_entered" => {
+                Some(EventSignalRef::mapped("on_chapter_entered", &self.chapter_entered, |index| {
+                    CapabilityValue::UInt(*index as u64)
+                }))
+            }
             "playback_started" => {
                 Some(EventSignalRef::unit("playback_started", &self.playback_started))
             }
@@ -3373,7 +3379,7 @@ mod tests {
         vp.time_updated.connect(move |time: Arc<f64>| sink.lock().unwrap().push(*time));
         let chapters = Arc::new(Mutex::new(Vec::<usize>::new()));
         let sink = Arc::clone(&chapters);
-        vp.on_chapter_entered.connect(move |index: Arc<usize>| sink.lock().unwrap().push(*index));
+        vp.chapter_entered.connect(move |index: Arc<usize>| sink.lock().unwrap().push(*index));
 
         vp.load("second.mp4");
         assert_eq!(vp.current_time(), 0.0);

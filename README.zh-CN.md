@@ -49,7 +49,7 @@ rust_widgets = { version = "4.2.0", default-features = false, features = ["mini"
 
 | 配置 | 适用场景 |
 |---|---|
-| `desktop` | Windows、macOS、Linux/BSD——原生表面、wgpu、打印/PDF、图表、无障碍、内置文本数据 |
+| `desktop` | Windows、macOS、Linux/BSD——原生表面、wgpu、图表、无障碍、内置文本数据（打印/PDF 为可选特性） |
 | `tablet` | 触屏优先设备——wgpu、原生控件、内置文本数据，不含桌面附加项 |
 | `mobile` | iOS、Android、HarmonyOS——触摸、wgpu、移动平台服务 |
 | `embedded` | 只有软件光栅，不依赖操作系统服务 |
@@ -118,13 +118,14 @@ fn main() {
 地图、项目、开发工具、媒体播放）。每个组都安装到同一个 `WidgetFactory`，并拥有自己的名字、schema
 与构造器。
 
-## `crates/` 下的四个包
+## `crates/` 下的五个包
 
-库旁边有四个包。它们都不会被编译进核心 `rust_widgets` 包；宿主按需显式接入。
+库旁边有五个包。它们都不会被编译进核心 `rust_widgets` 包；宿主按需显式接入。
 
 | 包 | 是什么 | 宿主如何使用 |
 |---|---|---|
 | `rust-widgets-font` | `fonts-*` 特性背后的 OFL 字体数据，单独拆出以让核心包低于 crates.io 的 10 MiB 上限。 | 间接使用：开启某个 `fonts-*` 特性即可；不要直接依赖它。 |
+| `rust-widgets-icons` | `icons-*` 特性背后的 Material Symbols 图标数据与 `IconName` 名称表，拆出原因同上。`IconName` 与 `register_icon` 家族仍由核心包重导出，现有调用点不变。 | 间接使用：开启某个 `icons-*` 特性；运行时图标走 `register_icon` / `register_icon_on_grid`。 |
 | `rust-widgets-suites` | 七个可选控件组——`form`、`webview`、`finance`、`maps`、`project`、`devtools`、`media-playback`——共 **39 个控件**，具备与核心控件相同的属性、事件、布局、接线与无障碍面。原先独立的 `rust-widgets-webview` 包现在是 `webview` 组。 | `rust_widgets_suites::install(&mut factory)`，或单个组的 `install_*_group`。 |
 | `mobile-services` | 面向 Android、iOS、HarmonyOS 的移动应用外壳服务：常亮、触感反馈、权限、通知、分享、深链、安全区与方向锁定。不属于 GUI 核心。 | 在移动目标上使用 `rust_widgets_mobile_services::*`；桌面构建不会链接它。 |
 | `rust-widgets-cli` | 设计器命令行工具，二进制名 `rwui`：校验项目 bundle（`check`）、由它生成并校验已提交的 Rust（`json2rust`，`--check` 查漂移）、规范化文档（`fmt`）、为单个设备 profile 生成可运行工程（`create`）。它直接调用库自身的生成器，因此不会与库产生分歧。CSS 级联与反向解析属于 BLUE31 后续阶段，尚不在这个二进制里。 | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`。 |

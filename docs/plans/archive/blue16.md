@@ -2,11 +2,11 @@
 
 > 状态：**Phase A / B / C-1 / D 已完成；Phase E-1、E-3、E-4 已完成；Phase E-2 / C-2 未执行；Phase F（B-5a/B-5b/B-5c/B-5d）已完成**
 > 完成率：**Phase A 100% · Phase B 100% · Phase C-1 100% · Phase D 100% · Phase E 80%（E-1/E-3/E-4 完成，E-2 未做）· Phase F 100%（B-5a–d 全部完成）**
-> 执行日志：[`docs/log/log-20260917-2.md`](log-20260917-2.md)
+> 执行日志：[`docs/log/archive/log-20260917-2.md`](log-20260917-2.md)
 > 目标基线：`rust_widgets v2.1.0`（`f451a15` + 第 19–21 轮未提交改动）；执行后版本 **2.2.0**
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE15 全部规则，含 #1–#69）
 > 上轮计划：[`docs/plans/blue15.md`](blue15.md)（全自绘重构，§G/§H 已 100%）
-> 上轮日志：[`docs/log/log-20260917-1.md`](log/log-20260917-1.md)（第 19–21 轮）
+> 上轮日志：[`docs/log/archive/log-20260917-1.md`](log/log-20260917-1.md)（第 19–21 轮）
 >
 > 本文件是执行计划，不是完成报告。每条结论必须回填「构建/测试/代码」证据。
 > **取证纪律**：本文件所有数字均在 `v2.1.0` 工作树上实跑取得，附带回执命令（原则 #64）。
