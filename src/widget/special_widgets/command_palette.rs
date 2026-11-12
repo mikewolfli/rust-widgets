@@ -1588,6 +1588,10 @@ impl Draw for CommandPalette {
                 HorizontalAlignment::Left,
             );
         }
+
+        // The palette paints a query header, rows and a footer but no interaction state of its
+        // own, so the shared hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

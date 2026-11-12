@@ -2135,6 +2135,7 @@ impl Draw for ScrollArea {
         if let Some(corner_rect) = chrome.corner {
             context.fill_rect(corner_rect, track_color);
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

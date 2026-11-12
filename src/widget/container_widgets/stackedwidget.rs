@@ -528,6 +528,9 @@ impl Draw for StackedWidget {
             self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
+        // Selection is gated on `is_enabled`, and the container paints no disabled colour of its
+        // own, so the veil is what makes a refused page change visible (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

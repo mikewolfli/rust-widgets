@@ -94,6 +94,10 @@ impl Draw for KanbanBoard {
         // every column rather than being clipped to the one it started in. It is clamped to the
         // board inside `draw_drag_overlay`, so it stays inside the control without a clip.
         self.draw_drag_overlay(context, &chrome);
+        // Tab focus must be visible on the board as on every other control (W5-38).
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, ring_radius);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

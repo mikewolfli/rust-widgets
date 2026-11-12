@@ -25,6 +25,7 @@ use super::js_engine::{JsContext, JsEngine, JsResult, JsValue, SimpleJsEngine};
 use super::plugins::PluginManager;
 use super::privacy::{CookieJar, PrivacySettings, TrackingProtection};
 use rust_widgets::core::Rect;
+use rust_widgets::event::key_codes;
 use rust_widgets::signal::Signal1;
 use rust_widgets::widget::{BaseWidget, WidgetKind};
 
@@ -811,13 +812,15 @@ impl WebViewCore {
     /// Handle common key events for navigation.
     pub fn handle_key_event(&mut self, key: u32, modifiers: u32) {
         match key {
-            37 if modifiers == 0 => {
+            key_codes::LEFT if modifiers == 0 => {
                 self.go_back();
             }
-            39 if modifiers == 0 => {
+            key_codes::RIGHT if modifiers == 0 => {
                 self.go_forward();
             }
-            116 => {
+            // F5 reloads. Function keys are 1120..=1131 in this framework, not the Win32
+            // 112..=123 range: 116 is lowercase `t` there, so the old literal was dead.
+            key_codes::F5 => {
                 self.reload();
             }
             // Ctrl+R reloads. The event bitmask's Control bit (2) is the semantic one; bit 1 is
@@ -1674,8 +1677,9 @@ mod tests {
             "about:blank",
         );
         core.load_url("https://example.com");
-        // F5 key (116) should trigger reload
-        core.handle_key_event(116, 0);
+        // The framework's F5 (1124), not the Win32 virtual-key 116: that value is `t` under
+        // `key_codes`, so the old spelling never reached the reload arm.
+        core.handle_key_event(key_codes::F5, 0);
         assert!(!core.is_loading());
         assert_eq!(core.load_progress(), 100);
     }

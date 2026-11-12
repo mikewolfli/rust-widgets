@@ -633,6 +633,7 @@ impl Draw for BottomSheet {
                 self.placed_content = None;
             }
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

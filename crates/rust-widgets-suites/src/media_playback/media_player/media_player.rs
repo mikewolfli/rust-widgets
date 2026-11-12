@@ -9,7 +9,7 @@ use core::fmt::Write as _;
 use alloc::sync::Arc;
 use rust_widgets::core::Point;
 use rust_widgets::core::{Color, HorizontalAlignment, MediaClock, Rect};
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{GenericSignal, Signal1};
@@ -985,6 +985,12 @@ impl Widget for MediaPlayer {
         &mut self.base
     }
 
+    /// The player has keyboard handling (space, arrows, mute and fullscreen), so the router must be
+    /// able to focus it. Its kind is not in `wants_keyboard_focus`, hence the direct statement.
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
     fn size_hint(&self) -> rust_widgets::core::Size {
         rust_widgets::core::Size::new(320, 240)
     }
@@ -1221,22 +1227,24 @@ impl EventHandler for MediaPlayer {
         }
 
         match event {
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                32 => {
-                    let _ = self.toggle_playback();
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
+                match *key {
+                    key_codes::SPACE => {
+                        let _ = self.toggle_playback();
+                    }
+                    key_codes::LEFT => self.seek_by(-5000),
+                    key_codes::RIGHT => self.seek_by(5000),
+                    key_codes::UP => self.set_volume(self.volume.saturating_add(5).min(100)),
+                    key_codes::DOWN => self.set_volume(self.volume.saturating_sub(5)),
+                    77 | 109 => self.toggle_mute(),
+                    70 | 102 => self.toggle_fullscreen(),
+                    // Brackets step the rate by a quarter, the convention a media player uses.
+                    91 | 219 => self.set_playback_rate(self.playback_rate() - 0.25),
+                    93 | 221 => self.set_playback_rate(self.playback_rate() + 0.25),
+                    // Unknown key; ignore
+                    _ => {}
                 }
-                37 => self.seek_by(-5000),
-                39 => self.seek_by(5000),
-                38 => self.set_volume(self.volume.saturating_add(5).min(100)),
-                40 => self.set_volume(self.volume.saturating_sub(5)),
-                77 | 109 => self.toggle_mute(),
-                70 | 102 => self.toggle_fullscreen(),
-                // Brackets step the rate by a quarter, the convention a media player uses.
-                91 | 219 => self.set_playback_rate(self.playback_rate() - 0.25),
-                93 | 221 => self.set_playback_rate(self.playback_rate() + 0.25),
-                // Unknown key; ignore
-                _ => {}
-            },
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 if self.play_rect().contains_point(*pos) {
                     let _ = self.toggle_playback();
@@ -1625,6 +1633,11 @@ impl Draw for MediaPlayer {
                 icon,
             );
         }
+        self.base.paint_hover_wash(context, rect);
+        // Tab focus must be visible on the player as on every other control (W5-38).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, radius);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

@@ -1595,6 +1595,10 @@ impl Draw for DateTimeEdit {
             }
         }
 
+        // The field paints a value and its steppers but no interaction state of its own, so the
+        // shared hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
+
         // Tab and Shortcut focus must be visible here as on every other control (U3-04).
         let ring_rect = self.base.geometry();
         let ring_radius = self.style().resolved_corner_radii().to_array()[0];

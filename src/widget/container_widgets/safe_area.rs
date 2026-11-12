@@ -350,6 +350,7 @@ impl Draw for SafeArea {
         }
         // Draw content area border (subtle)
         ctx.draw_rect(cr, border_color.with_alpha_f32(0.4));
+        self.base.paint_disabled_veil(ctx, g);
     }
 }
 

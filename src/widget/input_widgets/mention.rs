@@ -1428,6 +1428,7 @@ impl Draw for Mention {
                 );
             }
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

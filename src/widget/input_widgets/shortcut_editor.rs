@@ -1182,6 +1182,11 @@ impl Draw for ShortcutEditor {
                 );
             }
         }
+
+        // The panel paints rows and a filter bar but no interaction state of its own, so the
+        // shared layers answer the pointer and a disabled panel (W5-04, W5-03).
+        self.base.paint_hover_wash(context, rect);
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

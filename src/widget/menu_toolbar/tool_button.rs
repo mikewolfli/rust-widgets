@@ -1187,9 +1187,12 @@ impl Draw for ToolButton {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        // The style is cloned rather than borrowed because the icon decode below (`resolved_icon`)
-        // needs `&mut self`; a borrow of the base would keep the whole widget borrowed through it.
-        let style = self.base.style().clone();
+        // The style is **borrowed**, not cloned: the old clone existed only because the icon decode
+        // below needs `&mut self` while the chrome still reads the style. The chrome reads end
+        // before that call, so the borrow naturally stops there and the popup panel takes a fresh
+        // one -- the same borrow split `Button::draw` uses, and a per-frame `WidgetStyle` clone no
+        // longer rides on every frame of a toolbar.
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("tool_button");
         let themed_bg = theme.as_ref().and_then(|resolved| resolved.background_color);
         let themed_text = theme.as_ref().and_then(|resolved| resolved.text_color);
@@ -1362,7 +1365,11 @@ impl Draw for ToolButton {
             if clipped {
                 context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
             }
-            draw_menu_panel(context, panel, &self.menu_items, &[], &style, accent);
+            // A fresh borrow of the style: the chrome's borrow ended before the icon decode above
+            // took `&mut self`, and the popup is painted across that boundary. Two short borrows
+            // cost less than one owned copy of the whole record per frame.
+            let style = self.base.style();
+            draw_menu_panel(context, panel, &self.menu_items, &[], style, accent);
             if clipped {
                 context.pop_clip();
             }
@@ -1375,7 +1382,7 @@ impl Draw for ToolButton {
                     submenu.rect,
                     &submenu.items,
                     &[],
-                    &style,
+                    style,
                     accent,
                     branches_open,
                 );

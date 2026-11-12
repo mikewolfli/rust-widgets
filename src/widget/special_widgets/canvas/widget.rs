@@ -103,6 +103,13 @@ pub struct Canvas {
     command_total: usize,
     /// Layer-cache identity of the painted background grid; a fresh key rebuilds it.
     grid_cache_key: u64,
+    /// Reused grid coordinate lists, one per axis (W5-36).
+    ///
+    /// `draw_grid_lines` rebuilt both `(surface, model)` lists on every frame, and each entry is a
+    /// multiple of the grid step, so the lists are derived state: the two buffers keep their
+    /// capacity and `clear()` is the only reuse protocol, the same discipline
+    /// `viewport_lines_scratch` uses in the code editor.
+    grid_scratch: RefCell<(Vec<(i32, i32)>, Vec<(i32, i32)>)>,
     /// Whether the wheel zooms the transform.
     zoom_enabled: bool,
     /// Global anti-aliasing switch applied to every stored command.
@@ -201,6 +208,7 @@ impl Canvas {
             command_limit: 100_000,
             command_total: 0,
             grid_cache_key: next_layer_cache_key(),
+            grid_scratch: RefCell::new((Vec::new(), Vec::new())),
             zoom_enabled: true,
             anti_alias: true,
             show_grid: false,
@@ -1610,6 +1618,9 @@ impl Draw for Canvas {
             border,
             1,
         );
+        // Every gesture over the surface is refused by the input gate while disabled, so the
+        // drawing itself has to recede; the veil covers the layers, grid and frame just painted.
+        self.base.paint_disabled_veil(context, rect);
     }
 
     fn uses_custom_drawing(&self) -> bool {
@@ -2329,6 +2340,37 @@ mod tests {
         canvas.set_show_grid(true);
         let svg = render_to_svg(&mut canvas);
         assert!(svg.starts_with("<svg"), "the grid paints without walking off the i32 range");
+    }
+
+    /// The grid's coordinate lists are reused between frames, and a steady frame repaints the same
+    /// lines (W5-36).
+    ///
+    /// # What this pins
+    ///
+    /// `draw_grid_lines` rebuilt both lists on every frame. They now live in `grid_scratch`; the
+    /// second frame must reuse the same backing allocation (same start pointer) and paint the same
+    /// picture, so a refill cannot append a stale tail after the viewport moves.
+    #[test]
+    fn the_grid_reuses_its_coordinate_buffers_between_frames() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        canvas.set_grid_step(20);
+        canvas.set_show_grid(true);
+
+        let first = render_to_svg(&mut canvas);
+        let (xs_ptr, ys_ptr) = {
+            let scratch = canvas.grid_scratch.borrow();
+            assert!(!scratch.0.is_empty() && !scratch.1.is_empty(), "the grid has lines to paint");
+            (scratch.0.as_ptr(), scratch.1.as_ptr())
+        };
+
+        let second = render_to_svg(&mut canvas);
+        assert_eq!(first, second, "a steady frame paints the same grid");
+        let scratch = canvas.grid_scratch.borrow();
+        assert_eq!(
+            (xs_ptr, ys_ptr),
+            (scratch.0.as_ptr(), scratch.1.as_ptr()),
+            "the second frame must refill the buffers, not allocate new ones"
+        );
     }
 
     /// A line spanning the whole `i32` range has bounds, so it can be hit-tested.

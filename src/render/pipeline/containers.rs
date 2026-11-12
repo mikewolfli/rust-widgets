@@ -231,6 +231,88 @@ fn gradient_stops_fingerprint(stops: &[(f32, Color)]) -> u64 {
     hasher.finish()
 }
 
+/// How many gradient descriptions one thread caches before evicting the oldest.
+///
+/// A control's background gradient is one description, and a frame touches the same handful
+/// every time, so this bound is comfortably above the steady-state set.
+const GRADIENT_DESCRIPTION_CACHE_LIMIT: usize = 32;
+
+thread_local! {
+    /// Shared gradient descriptions, keyed by a fingerprint of every field, in insertion order.
+    ///
+    /// A recorded `DrawGradient` command holds an owning handle, and [`crate::compat::Arc`] is
+    /// the crate's shared-ownership type. Before this cache every bucketed fill copied the
+    /// `Gradient` (including its `Vec<GradientStop>`) and wrapped the copy in a fresh `Arc` — the
+    /// G-12 comment promised refcount sharing that did not exist (W5-07).
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
+    static GRADIENT_DESCRIPTIONS: RefCell<GradientDescriptionCache> =
+        RefCell::new((VecDeque::new(), HashMap::new()));
+}
+
+/// Shared gradient descriptions plus the FIFO order their keys are evicted in.
+type GradientDescriptionCache = (VecDeque<u64>, HashMap<u64, crate::compat::Arc<Gradient>>);
+
+/// Fingerprints every field a painted gradient depends on.
+///
+/// Not the same key as [`gradient_ramp_fingerprint`]: the ramp table is addressed by the stops
+/// alone, while a recorded command carries the geometry too (a linear gradient's endpoints and a
+/// radial gradient's centre/radius paint differently from the same stops).
+fn gradient_value_fingerprint(gradient: &Gradient) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let type_code: u8 = match gradient.gradient_type {
+        GradientType::Linear => 0,
+        GradientType::Radial => 1,
+        GradientType::Conic => 2,
+    };
+    type_code.hash(&mut hasher);
+    gradient.stops.len().hash(&mut hasher);
+    for stop in &gradient.stops {
+        stop.position.to_bits().hash(&mut hasher);
+        stop.color.r.hash(&mut hasher);
+        stop.color.g.hash(&mut hasher);
+        stop.color.b.hash(&mut hasher);
+        stop.color.a.hash(&mut hasher);
+    }
+    gradient.start_point.x.hash(&mut hasher);
+    gradient.start_point.y.hash(&mut hasher);
+    gradient.end_point.x.hash(&mut hasher);
+    gradient.end_point.y.hash(&mut hasher);
+    gradient.angle.to_bits().hash(&mut hasher);
+    gradient.center.x.hash(&mut hasher);
+    gradient.center.y.hash(&mut hasher);
+    gradient.radius.to_bits().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Returns a shared handle to a gradient identical to `gradient`, copying at most once per content.
+///
+/// The returned `Arc` is what a recorded [`RenderCommand::DrawGradient`](crate::render::RenderCommand)
+/// holds, so a steady frame only bumps a refcount instead of deep-copying the stop vector.
+pub(crate) fn cached_gradient_arc(gradient: &Gradient) -> crate::compat::Arc<Gradient> {
+    use crate::compat::Arc;
+    let key = gradient_value_fingerprint(gradient);
+    GRADIENT_DESCRIPTIONS.with(|cache| {
+        let existing = {
+            let cache = cache.borrow();
+            cache.1.get(&key).cloned()
+        };
+        if let Some(shared) = existing {
+            return shared;
+        }
+        let shared = Arc::new(gradient.clone());
+        let mut cache = cache.borrow_mut();
+        if cache.0.len() >= GRADIENT_DESCRIPTION_CACHE_LIMIT {
+            if let Some(oldest) = cache.0.pop_front() {
+                cache.1.remove(&oldest);
+            }
+        }
+        cache.0.push_back(key);
+        cache.1.insert(key, Arc::clone(&shared));
+        shared
+    })
+}
+
 /// Returns the cached ramp for `key`, building it with `build` on a miss.
 ///
 /// The cache is FIFO-bounded by [`GRADIENT_LUT_CACHE_LIMIT`]; a hit costs one refcount bump.

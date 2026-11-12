@@ -1138,7 +1138,11 @@ impl Draw for AlertDialog {
             wrap_cache: &self.card.wrap_cache,
             default_button: Some(self.card.default_button),
         };
-        let _ = paint_card(ctx, &self.base, &content);
+        let (rect, _, _) = paint_card(ctx, &self.base, &content);
+        // `paint_card` resolves no disabled colours, so the shared veil supplies them.
+        if rect.width > 0 && rect.height > 0 {
+            self.base.paint_disabled_veil(ctx, rect);
+        }
     }
 }
 
@@ -1627,7 +1631,11 @@ impl Draw for ConfirmDialog {
             wrap_cache: &self.card.wrap_cache,
             default_button: Some(self.card.default_button),
         };
-        let _ = paint_card(ctx, &self.base, &content);
+        let (rect, _, _) = paint_card(ctx, &self.base, &content);
+        // `paint_card` resolves no disabled colours, so the shared veil supplies them.
+        if rect.width > 0 && rect.height > 0 {
+            self.base.paint_disabled_veil(ctx, rect);
+        }
     }
 }
 
@@ -2109,7 +2117,11 @@ impl Draw for AboutDialog {
             wrap_cache: &self.card.wrap_cache,
             default_button: Some(self.card.default_button),
         };
-        let _ = paint_card(ctx, &self.base, &content);
+        let (rect, _, _) = paint_card(ctx, &self.base, &content);
+        // `paint_card` resolves no disabled colours, so the shared veil supplies them.
+        if rect.width > 0 && rect.height > 0 {
+            self.base.paint_disabled_veil(ctx, rect);
+        }
     }
 }
 

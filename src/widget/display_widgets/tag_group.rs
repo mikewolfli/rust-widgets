@@ -457,6 +457,11 @@ impl Draw for TagGroup {
         for tag in &mut self.tags {
             tag.draw(context);
         }
+        let rect = self.base.geometry();
+
+        // The group paints no chrome of its own, so the shared veil is the only evidence that the
+        // stack of tags is inert (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

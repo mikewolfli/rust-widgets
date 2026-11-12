@@ -1076,6 +1076,9 @@ impl Draw for GroupBox {
                 if self.collapsed { IconName::ArrowRight } else { IconName::ArrowDown },
             );
         }
+        // The box paints a frame, its caption and its checkbox but no interaction state of its own,
+        // so the shared hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

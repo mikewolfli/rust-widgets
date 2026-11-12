@@ -700,6 +700,9 @@ impl Draw for SwipeToDismiss {
                 Color::rgba(0, 0, 0, 40),
             );
         }
+
+        // Last, so the veil covers the action background, the child and the shadow line alike.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

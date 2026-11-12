@@ -453,6 +453,8 @@ impl Draw for TimelineAxis {
                 );
             }
         }
+        self.base.paint_hover_wash(context, rect);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

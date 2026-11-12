@@ -736,12 +736,15 @@ impl WidgetStyle {
     pub fn inherit_from(&self, parent: &WidgetStyle) -> WidgetStyle {
         WidgetStyle {
             background_color: self.background_color.or(parent.background_color),
+            // `or_else` rather than `or`: the parent's value is only cloned when `self`
+            // has none, so inheriting down a deep tree no longer deep-clones a parent
+            // `Gradient`'s stop `Vec` for every child that already overrides it.
             background_gradient: self
                 .background_gradient
                 .clone()
-                .or(parent.background_gradient.clone()),
+                .or_else(|| parent.background_gradient.clone()),
             text_color: self.text_color.or(parent.text_color),
-            font: self.font.clone().or(parent.font.clone()),
+            font: self.font.clone().or_else(|| parent.font.clone()),
             border_color: self.border_color.or(parent.border_color),
             border_width: self.border_width.or(parent.border_width),
             border_radius: self.border_radius.or(parent.border_radius),
@@ -754,7 +757,7 @@ impl WidgetStyle {
             // it, and a child without one takes the metrics default rather than the
             // parent's value.
             spacing: self.spacing,
-            shadow: self.shadow.clone().or(parent.shadow.clone()),
+            shadow: self.shadow.clone().or_else(|| parent.shadow.clone()),
             // A surface is geometry-adjacent like `padding`: a child that declares one keeps
             // it, and one that does not takes the parent's rather than re-deriving it — so a
             // control placed under a raised panel stays visually on that panel.

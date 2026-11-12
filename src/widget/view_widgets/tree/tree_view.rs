@@ -357,6 +357,39 @@ impl TreeModel for VecTreeModel {
         Some(&self.data_changed)
     }
 }
+/// The shared slot and subscription an attached tree find bar reports through.
+///
+/// Dropping the binding drops the subscription, so a detached tree leaves no slot behind — the
+/// same shape `data_grid::FindBarBinding` uses.
+struct TreeFindBarBinding {
+    /// The visible row the bar most recently landed on, if it reported one since the last poll.
+    matches: Arc<std::sync::Mutex<Option<usize>>>,
+    _scope: ConnectionScope,
+}
+
+/// The live link between a [`TreeView`] and a
+/// [`Breadcrumb`](crate::widget::special_widgets::breadcrumb::Breadcrumb) (W5-11c).
+///
+/// A widget cannot hold a borrow of another, so the trail is written through the bar's shared
+/// segment cell and a crumb click arrives on its `segment_activated` stream. `applied` records the
+/// chain last pushed, which is what keeps a steady frame from rewriting the bar.
+struct PathBarBinding {
+    /// The cell the bar adopts on its next paint.
+    segments: Arc<
+        std::sync::Mutex<
+            Option<Vec<crate::widget::special_widgets::breadcrumb::BreadcrumbSegment>>,
+        >,
+    >,
+    /// The bar's paint request, emitted after a write.
+    redraw: GenericSignal,
+    /// The segment id the bar activated since the last poll.
+    activated: Arc<std::sync::Mutex<Option<String>>>,
+    /// The `(id, label)` chain last pushed, so the poll is idempotent.
+    applied: Vec<(String, String)>,
+    /// The subscription, dropped with the binding so a detach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
 /// Tree view widget with optional external model binding.
 ///
 /// # Index spaces
@@ -381,6 +414,8 @@ pub struct TreeView {
     model: Option<Arc<dyn TreeModel>>,
     /// Scoped model-to-view signal subscriptions.
     model_connection_scope: ConnectionScope,
+    /// The attached [`TreeFindBar`] binding, when one was attached (W5-09).
+    tree_find_bar: Option<TreeFindBarBinding>,
     /// Selected node, as a **model** index.
     selected_node: Option<usize>,
     /// Every selected node, in **model** indices (V-10).
@@ -431,6 +466,13 @@ pub struct TreeView {
     pub activated: Signal1<usize>,
     /// Emitted when a node is double-clicked, with its **visible** row.
     pub node_double_clicked: Signal1<usize>,
+    /// Emitted with the pointer position when the host should show a context menu.
+    ///
+    /// The list family publishes this on `list_box`, `list_view`, the table family and
+    /// `data_grid`; the tree was the one family member with no path from a right press to the
+    /// host (W5-10). `context_menu_event` selects the node under the pointer before emitting, so
+    /// a menu handler acts on the row the user pointed at rather than on the previous selection.
+    pub context_menu_requested: Signal1<crate::core::Point>,
     /// First visible row; wheel and keyboard scrolling move it.
     scroll_row: usize,
     /// Whether the source-list (sidebar) presentation is used.
@@ -519,6 +561,8 @@ pub struct TreeView {
     pub fetch_failure: Signal1<(Vec<usize>, String)>,
     /// Empty/error captions painted when the tree has no visible rows (RW-17).
     placeholder: CollectionPlaceholder,
+    /// The attached breadcrumb trail, when one was attached (W5-11c).
+    path_bar: Option<PathBarBinding>,
 }
 impl TreeView {
     /// Creates an empty tree view.
@@ -527,6 +571,8 @@ impl TreeView {
             base: BaseWidget::new(WidgetKind::TreeView, geometry, "TreeView"),
             model: None,
             model_connection_scope: ConnectionScope::new(),
+            tree_find_bar: None,
+            path_bar: None,
             selected_node: None,
             selected_nodes: std::collections::BTreeSet::new(),
             selection_mode: SelectionMode::Single,
@@ -543,6 +589,7 @@ impl TreeView {
             expanded: Signal1::new(),
             collapsed: Signal1::new(),
             activated: Signal1::new(),
+            context_menu_requested: Signal1::new(),
             node_double_clicked: Signal1::new(),
             scroll_row: 0,
             source_list: false,
@@ -2073,6 +2120,232 @@ impl TreeView {
 const TREE_STATE_VERSION: u8 = 1;
 
 impl TreeView {
+    // ── TreeFindBar wiring (W5-09) ──
+
+    /// Follows `bar`'s `match_changed` stream.
+    ///
+    /// The bar searches the flattened row source the host bound to it, so the row it reports is a
+    /// **visible** row (the space the tree's own hit test and published payloads use). Attaching
+    /// parks the report until the next [`Self::poll_tree_find_bar`], which selects that row and
+    /// scrolls it into view. Attaching replaces any previous bar, so calling it twice leaves one
+    /// subscription rather than two.
+    pub fn attach_tree_find_bar(&mut self, bar: &crate::widget::companions::TreeFindBar) {
+        let matches = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&matches);
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+        bar.match_changed.connect_scoped(&scope, move |row| {
+            *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(*row);
+            redraw.emit();
+        });
+        self.tree_find_bar = Some(TreeFindBarBinding { matches, _scope: scope });
+    }
+
+    /// Stops following the attached find bar; the selection stays where it is.
+    pub fn detach_tree_find_bar(&mut self) {
+        if self.tree_find_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::TreeFindBar`] is attached.
+    pub fn is_tree_find_bar_attached(&self) -> bool {
+        self.tree_find_bar.is_some()
+    }
+
+    /// Applies the match the attached find bar reported since the last poll.
+    ///
+    /// Called from `draw` and `handle_event`, so a typed query moves the selection on the next
+    /// frame or interaction without the host forwarding it. Returns whether a match was applied.
+    pub fn poll_tree_find_bar(&mut self) -> bool {
+        let reported = {
+            let Some(binding) = self.tree_find_bar.as_ref() else {
+                return false;
+            };
+            binding.matches.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take()
+        };
+        let Some(row) = reported else {
+            return false;
+        };
+        if row >= self.visible_row_count() || !self.select_node(row) {
+            return false;
+        }
+        // The search reports a visible row, while `ensure_visible` addresses a model index: the
+        // mapping is the tree's own, so a row hidden by a collapsed ancestor (a stale report)
+        // simply does not scroll.
+        if let Some(model_index) = self.visible_index_at(row) {
+            self.ensure_visible(model_index);
+        }
+        true
+    }
+
+    // ── Breadcrumb path bar (W5-11c) ──
+
+    /// Attaches an ancestor trail to this tree (W5-11c).
+    ///
+    /// Two directions are wired:
+    ///
+    /// * the tree writes the selected node's ancestor chain into the bar's shared segment cell
+    ///   whenever the selection moved, and [`Self::poll_path_bar`] does the rebuild from the paint
+    ///   and event paths;
+    /// * the bar's `segment_activated` stream is subscribed, and a crumb click expands to, selects
+    ///   and scrolls to that ancestor.
+    ///
+    /// The crumb id is the ancestor's **model** index, not its visible row: a visible row renumbers
+    /// whenever a branch above it opens or closes, while a model index is the node identity this
+    /// widget keeps its own state by. Attaching replaces any previous bar, so calling it twice
+    /// leaves one subscription rather than two.
+    pub fn attach_path_bar(
+        &mut self,
+        bar: &crate::widget::special_widgets::breadcrumb::Breadcrumb,
+    ) {
+        let (segments, redraw) = bar.segments_handle();
+        let activated = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&activated);
+        let scope = ConnectionScope::new();
+        let tree_redraw = self.base.redraw_requested_signal().clone();
+        bar.segment_activated.connect_scoped(&scope, move |id| {
+            *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(id.to_string());
+            // A crumb click repaints the tree, so the poll that applies it lands next frame.
+            tree_redraw.emit();
+        });
+        self.path_bar = Some(PathBarBinding {
+            segments,
+            redraw,
+            activated,
+            applied: Vec::new(),
+            _scope: scope,
+        });
+        // Adopt the current selection now, so attaching does not wait for a selection change.
+        self.poll_path_bar();
+    }
+
+    /// Stops following the attached trail; the crumbs it last showed stay (W5-11c).
+    pub fn detach_path_bar(&mut self) {
+        if self.path_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`Breadcrumb`](crate::widget::special_widgets::breadcrumb::Breadcrumb) is attached
+    /// (W5-11c).
+    pub fn is_path_bar_attached(&self) -> bool {
+        self.path_bar.is_some()
+    }
+
+    /// Applies a crumb click and republishes the ancestor chain (W5-11c).
+    ///
+    /// Called from `draw` and `handle_event`, so a click on the bar is picked up on the next frame
+    /// or interaction without the host forwarding it. Returns whether the trail or the selection
+    /// changed.
+    pub fn poll_path_bar(&mut self) -> bool {
+        let Some(binding) = self.path_bar.as_ref() else {
+            return false;
+        };
+        let activated = {
+            let mut slot =
+                binding.activated.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            slot.take()
+        };
+        let mut changed = false;
+        if let Some(id) = activated {
+            changed |= self.activate_path(&id);
+        }
+        let chain: Vec<(String, String)> = self
+            .path_chain()
+            .into_iter()
+            .map(|(index, label)| (index.to_string(), label))
+            .collect();
+        let Some(binding) = self.path_bar.as_mut() else {
+            return changed;
+        };
+        if binding.applied == chain {
+            return changed;
+        }
+        binding.applied = chain.clone();
+        let segments: Vec<crate::widget::special_widgets::breadcrumb::BreadcrumbSegment> = chain
+            .into_iter()
+            .map(|(id, label)| {
+                crate::widget::special_widgets::breadcrumb::BreadcrumbSegment::new(id, label)
+            })
+            .collect();
+        {
+            let mut slot = binding.segments.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(segments);
+        }
+        binding.redraw.emit();
+        true
+    }
+
+    /// The selected node's ancestor chain, root first, as `(model index, label)` (W5-11c).
+    ///
+    /// A flat model carries no parent link, so the chain is read from the visible projection: walk
+    /// back from the selected row to the nearest preceding row one level shallower, then from that
+    /// row to the next one shallower, and so on. Every ancestor of a visible node is visible, so the
+    /// walk cannot skip a level.
+    fn path_chain(&self) -> Vec<(usize, String)> {
+        let Some(selected) = self.selected_node else {
+            return Vec::new();
+        };
+        let rows = self.visible_indices();
+        let Some(position) = rows.iter().position(|index| *index == selected) else {
+            return Vec::new();
+        };
+        let depth_of = |index: usize| {
+            self.model.as_ref().and_then(|model| model.node(index)).map_or(0, |node| node.depth)
+        };
+        let mut chain = vec![selected];
+        let mut cursor = position;
+        let mut wanted = depth_of(selected);
+        while wanted > 0 {
+            wanted -= 1;
+            let Some(row) = (0..cursor).rev().find(|row| depth_of(rows[*row]) == wanted) else {
+                break;
+            };
+            cursor = row;
+            chain.push(rows[row]);
+        }
+        chain.reverse();
+        chain
+            .into_iter()
+            .map(|index| {
+                // `node_path` addresses a visible row, so the model index is mapped back through
+                // the projection the walk above just read.
+                let label = self
+                    .visible_position_of(index)
+                    .and_then(|row| self.node_path(row))
+                    .unwrap_or_else(|| index.to_string());
+                (index, label)
+            })
+            .collect()
+    }
+
+    /// Expands to, selects and scrolls to the ancestor a crumb names (W5-11c).
+    ///
+    /// Returns whether anything moved. The chain is rebuilt here rather than taken from the bar, so
+    /// a stale click (the model was replaced after the crumbs were painted) changes nothing.
+    fn activate_path(&mut self, id: &str) -> bool {
+        let Ok(target) = id.parse::<usize>() else {
+            return false;
+        };
+        let chain = self.path_chain();
+        let Some(position) = chain.iter().position(|(index, _)| *index == target) else {
+            return false;
+        };
+        let mut changed = false;
+        // Every ancestor above the target opens, so a crumb inside a collapsed branch still
+        // becomes a row. `set_model_expanded` is the model-index form, which is stable across the
+        // projection rebuilds each expansion causes.
+        for (index, _) in &chain[..position] {
+            changed |= self.set_model_expanded(*index, true);
+        }
+        if let Some(row) = self.visible_position_of(target) {
+            changed |= self.select_node(row);
+            changed |= self.ensure_visible(target);
+        }
+        changed
+    }
+
     /// Serialises the tree's user-visible state (RW-64): scroll row, focus, selection and every
     /// explicit expansion override.
     ///
@@ -2213,6 +2486,20 @@ impl Widget for TreeView {
         &mut self.base
     }
 
+    /// Selects the node under the pointer, then asks the host for a menu about it.
+    ///
+    /// Selecting first makes the request describe the row the user pointed at instead of the
+    /// previous selection. A point outside the rows answers `false`, so the host keeps its own
+    /// fallback policy for empty space (the same contract `list_view` states).
+    fn context_menu_event(&mut self, pos: crate::core::Point) -> bool {
+        let Some(node) = self.node_at(pos) else {
+            return false;
+        };
+        self.select_node(node);
+        self.context_menu_requested.emit(pos);
+        true
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(
             crate::widget::metrics::dimensions::TREE_VIEW_DEFAULT_WIDTH,
@@ -2299,6 +2586,11 @@ impl Widget for TreeView {
                 "node_double_clicked",
                 &self.node_double_clicked,
                 |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
             )),
             "fetch_started" => {
                 Some(EventSignalRef::mapped("fetch_started", &self.fetch_started, |v| {
@@ -2593,6 +2885,11 @@ impl CollectionState for TreeView {
 
 impl Draw for TreeView {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A match the attached find bar reported moves the selection before the frame is painted,
+        // so the highlight and the scroll position land in the same frame (W5-09).
+        self.poll_tree_find_bar();
+        // A crumb click and the trail it republishes apply before the frame too (W5-11c).
+        self.poll_path_bar();
         let rect = self.base.geometry();
         // Rows are laid out from the control's inset content box rather than from its
         // literal top edge. Every node used to start at `rect.y` and draw its label at
@@ -3045,6 +3342,10 @@ impl Draw for TreeView {
 }
 impl crate::event::EventHandler for TreeView {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        self.poll_tree_find_bar();
+        // The same trail poll as `draw`, so a crumb click is applied by the interaction that
+        // produced it rather than by a later frame (W5-11c).
+        self.poll_path_bar();
         // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`) and its
         // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` here. This
         // handler did not forward to it at all, so the theme's `"tree_view:hover"` override could
@@ -4222,5 +4523,30 @@ mod tests {
         assert_eq!(view.placeholder().text(), Some("Load failed"));
         view.clear_error_text();
         assert_eq!(view.placeholder().text(), Some("No nodes"));
+    }
+
+    /// W5-09: the tree can be driven by the shared find bar.
+    ///
+    /// `TreeFindBar` was registered and promised hosts would apply its matches, but no tree in the
+    /// crate consumed it. The binding must move the selection to the reported visible row on the
+    /// next poll, and leave the selection alone once detached.
+    #[test]
+    fn an_attached_tree_find_bar_moves_the_selection() {
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 200));
+        view.set_model(Arc::new(StaticTreeModel));
+        let mut bar = crate::widget::companions::TreeFindBar::new(Rect::new(0, 0, 200, 28));
+        view.attach_tree_find_bar(&bar);
+        assert!(view.is_tree_find_bar_attached());
+
+        bar.match_changed.emit(0);
+        assert!(view.poll_tree_find_bar(), "the reported row must be applied");
+        assert_eq!(view.selected_node(), Some(0));
+        assert!(!view.poll_tree_find_bar(), "a report is applied once");
+
+        view.detach_tree_find_bar();
+        assert!(!view.is_tree_find_bar_attached());
+        bar.match_changed.emit(1);
+        assert!(!view.poll_tree_find_bar(), "a detached bar moves nothing");
+        assert_eq!(view.selected_node(), Some(0));
     }
 }

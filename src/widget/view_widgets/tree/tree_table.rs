@@ -3,7 +3,7 @@
 
 //! TreeTable widget combining hierarchical rows with table columns.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -227,6 +227,32 @@ struct VisibleRow {
     depth: usize,
 }
 
+/// Resolves a companion's column token to this table's column index (W5-11b).
+///
+/// A chooser and a summary row both speak the persisted `ColumnSpec` token, whose first field is
+/// the title. The exact title is tried first, then the token is parsed so a token written with a
+/// different width or capability still finds its column. A token this table does not know answers
+/// `None` rather than being guessed at.
+fn resolve_column_token(token: &str, titles: &HashMap<String, usize>) -> Option<usize> {
+    if let Some(column) = titles.get(token) {
+        return Some(*column);
+    }
+    let spec = crate::widget::view_widgets::data_grid::ColumnSpec::from_token(token)?;
+    titles.get(&spec.title).copied()
+}
+
+/// The stable crumb id a model path is published under (W5-11c).
+///
+/// A visible row index renumbers whenever a branch opens or closes, so the path itself is the id.
+fn path_prefix_id(path: &[usize]) -> String {
+    path.iter().map(usize::to_string).collect::<Vec<_>>().join("/")
+}
+
+/// Parses a crumb id back into the model path it names (W5-11c).
+fn parse_path_id(id: &str) -> Option<Vec<usize>> {
+    id.split('/').map(|part| part.parse::<usize>().ok()).collect()
+}
+
 /// TreeTable control with expand/collapse and flattened visible projection.
 pub struct TreeTable {
     base: BaseWidget,
@@ -256,6 +282,9 @@ pub struct TreeTable {
     pub projection_changed: Signal1<usize>,
     /// Emits selected visible row index changes.
     pub selection_changed: Signal1<Option<usize>>,
+    /// The attached [`crate::widget::companions::TreeFindBar`] binding, when one was attached
+    /// (W5-09).
+    tree_find_bar: Option<TreeFindBarBinding>,
     /// Emitted when a row's expansion changes: `(path, expanded)`.
     pub expansion_changed: Signal1<(Vec<usize>, bool)>,
     /// First visible row.
@@ -336,9 +365,643 @@ pub struct TreeTable {
     cell_text_scratch: std::cell::RefCell<String>,
     /// The empty/error caption this table paints when it has no rows (UX-03).
     placeholder: crate::widget::view_widgets::CollectionPlaceholder,
+    /// Columns excluded from the painted order (W5-11a).
+    ///
+    /// A hidden column keeps its absolute index and paints zero width, which is the contract
+    /// `VirtualTable` publishes: the accessors and the hit test speak absolute indices, and only
+    /// the painted slot collapses.
+    hidden_columns: BTreeSet<usize>,
+    /// The attached column chooser binding, when one was attached (W5-11b).
+    column_chooser: Option<ColumnChooserBinding>,
+    /// The attached count strip, when one was attached (W5-11b).
+    grid_status_bar: Option<GridStatusBarBinding>,
+    /// The attached aggregate row, when one was attached (W5-11b).
+    summary_row: Option<SummaryRowBinding>,
+    /// The attached breadcrumb trail, when one was attached (W5-11c).
+    path_bar: Option<PathBarBinding>,
+}
+
+/// The shared slot and subscription an attached tree find bar reports through.
+struct TreeFindBarBinding {
+    matches: Arc<std::sync::Mutex<Option<usize>>>,
+    _scope: ConnectionScope,
+}
+
+/// The live link between a [`TreeTable`] and a
+/// [`ColumnChooser`](crate::widget::companions::ColumnChooser) (W5-11b).
+///
+/// The chooser's visibility signal carries persisted column tokens rather than source indices, so
+/// the link resolves each token through the column set both controls were configured with and
+/// parks the answer in a shared queue. [`TreeTable::poll_column_chooser`] drains that queue, the
+/// same host-free shape `DataGrid`'s chooser binding uses.
+struct ColumnChooserBinding {
+    /// `(source column, visible)` changes reported since the last poll.
+    visibility: Arc<std::sync::Mutex<Vec<(usize, bool)>>>,
+    /// The subscription, dropped with the binding so a re-attach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// The live link between a [`TreeTable`] and a
+/// [`GridStatusBar`](crate::widget::companions::GridStatusBar) (W5-11b).
+///
+/// The strip consumes no table signal, so the link holds no subscription; it keeps the shared
+/// count cell, the strip's paint request and the pair last written. The last-write record is what
+/// makes the poll idempotent.
+struct GridStatusBarBinding {
+    /// The count cell the strip reads through `GridStatusBar::row_count`.
+    counts: Arc<std::sync::Mutex<(u64, u64)>>,
+    /// The strip's paint request, emitted after a write.
+    redraw: GenericSignal,
+    /// The `(rows, selected)` pair last written.
+    pushed: (u64, u64),
+    /// Kept so the binding has the same shape as every other companion link.
+    _scope: ConnectionScope,
+}
+
+/// The live link between a [`TreeTable`] and a
+/// [`SummaryRow`](crate::widget::companions::SummaryRow) (W5-11b).
+///
+/// The table computes the aggregates from its visible rows and writes the row's shared value cell,
+/// so the row repaints without the host copying numbers. `key` records the projection the values
+/// describe, which is what keeps a steady frame from re-reading the model.
+struct SummaryRowBinding {
+    /// The value cell the row reads through `SummaryRow::value`.
+    values: Arc<std::sync::Mutex<Vec<(String, f64)>>>,
+    /// The row's paint request, emitted after a write.
+    redraw: GenericSignal,
+    /// The aggregates copied from the row at attach time.
+    aggregates: Vec<crate::widget::companions::ColumnAggregate>,
+    /// The projection the stored values were computed from, or `None` before the first push.
+    key: Option<SummaryKey>,
+    /// The subscription scope; a summary row owns no table-facing signal.
+    _scope: ConnectionScope,
+}
+
+/// The inputs that decide an attached summary row's numbers (W5-11b).
+///
+/// A data change, a sort edit or an expand/collapse all move the visible rows, and the aggregate
+/// list itself decides which cells are reported. Comparing this key is how
+/// [`TreeTable::poll_summary_row`] tells "the projection moved" from "the frame is steady".
+#[derive(Clone, PartialEq)]
+struct SummaryKey {
+    /// The model generation the values were read from.
+    generation: u64,
+    /// The sorted column, if the sibling order is sorted.
+    sort_column: Option<usize>,
+    /// Whether the sort is descending.
+    sort_descending: bool,
+    /// How many rows the projection held.
+    rows: usize,
+    /// The aggregate list being reported.
+    aggregates: Vec<crate::widget::companions::ColumnAggregate>,
+}
+
+/// The live link between a tree and a
+/// [`Breadcrumb`](crate::widget::special_widgets::breadcrumb::Breadcrumb) (W5-11c).
+///
+/// A widget cannot hold a borrow of another, so the trail is written through the bar's shared
+/// segment cell and a crumb click arrives on its `segment_activated` stream. `applied` records the
+/// chain last pushed, which is what keeps a steady frame from rewriting the bar.
+struct PathBarBinding {
+    /// The cell the bar adopts on its next paint.
+    segments: Arc<
+        std::sync::Mutex<
+            Option<Vec<crate::widget::special_widgets::breadcrumb::BreadcrumbSegment>>,
+        >,
+    >,
+    /// The bar's paint request, emitted after a write.
+    redraw: GenericSignal,
+    /// The segment id the bar activated since the last poll.
+    activated: Arc<std::sync::Mutex<Option<String>>>,
+    /// The `(id, label)` chain last pushed, so the poll is idempotent.
+    applied: Vec<(String, String)>,
+    /// The subscription, dropped with the binding so a detach leaves no slot behind.
+    _scope: ConnectionScope,
 }
 
 impl TreeTable {
+    // ── TreeFindBar wiring (W5-09) ──
+
+    /// Follows `bar`'s `match_changed` stream.
+    ///
+    /// The bar searches a flattened row source, so the row it reports is a **visible** row — the
+    /// space this table's own selection and hit test use. Attaching parks the report until the
+    /// next [`Self::poll_tree_find_bar`], which selects that row and scrolls it into view.
+    pub fn attach_tree_find_bar(&mut self, bar: &crate::widget::companions::TreeFindBar) {
+        let matches = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&matches);
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+        bar.match_changed.connect_scoped(&scope, move |row| {
+            *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(*row);
+            redraw.emit();
+        });
+        self.tree_find_bar = Some(TreeFindBarBinding { matches, _scope: scope });
+    }
+
+    /// Stops following the attached find bar; the selection stays where it is.
+    pub fn detach_tree_find_bar(&mut self) {
+        if self.tree_find_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::TreeFindBar`] is attached.
+    pub fn is_tree_find_bar_attached(&self) -> bool {
+        self.tree_find_bar.is_some()
+    }
+
+    /// Applies the match the attached find bar reported since the last poll.
+    pub fn poll_tree_find_bar(&mut self) -> bool {
+        let reported = {
+            let Some(binding) = self.tree_find_bar.as_ref() else {
+                return false;
+            };
+            binding.matches.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take()
+        };
+        let Some(row) = reported else {
+            return false;
+        };
+        if !self.select_row(row) {
+            return false;
+        }
+        self.ensure_row_visible(row);
+        true
+    }
+
+    /// Scrolls the smallest amount that makes `row` visible.
+    ///
+    /// The visible-row counterpart of `TreeView::ensure_visible`, derived from the same body
+    /// height the paint uses (geometry minus the optional header).
+    fn ensure_row_visible(&mut self, row: usize) -> bool {
+        if row >= self.visible_rows.len() {
+            return false;
+        }
+        let rect = self.base.geometry();
+        let row_height = self.row_height.max(1) as i32;
+        let body = (rect.height as i32 - self.header_offset()).max(row_height);
+        let page = (body / row_height).max(1) as usize;
+        if row < self.scroll_row {
+            self.set_scroll_row(row);
+        } else if row >= self.scroll_row.saturating_add(page) {
+            self.set_scroll_row(row.saturating_add(1).saturating_sub(page));
+        }
+        true
+    }
+
+    // ── ColumnChooser wiring (W5-11b) ──
+
+    /// Follows `chooser`'s column-visibility signal (W5-11b).
+    ///
+    /// The chooser reports persisted column tokens rather than source indices, so the link
+    /// resolves each token against the column titles both controls were configured with and parks
+    /// the answer in a shared queue. [`Self::poll_column_chooser`] drains that queue from the paint
+    /// and event paths, so a chooser click reaches this table without the host forwarding it.
+    ///
+    /// The chooser's reorder reports are deliberately not adopted: this table paints by absolute
+    /// model index, so a display permutation would claim an order the picture does not have. A
+    /// token this table does not know is ignored rather than guessed at.
+    ///
+    /// Attaching replaces any previous chooser, so calling this twice leaves one subscription.
+    pub fn attach_column_chooser(&mut self, chooser: &crate::widget::companions::ColumnChooser) {
+        let titles = Arc::new(self.column_title_lookup());
+        let visibility = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&visibility);
+        let lookup = Arc::clone(&titles);
+        let redraw = self.base.redraw_requested_signal().clone();
+        chooser.column_visibility_changed.connect_scoped(&scope, move |change| {
+            let (token, visible) = &*change;
+            let Some(column) = resolve_column_token(token, &lookup) else {
+                return;
+            };
+            sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((column, *visible));
+            // A chooser click redraws the table, so the poll that applies it happens next frame.
+            redraw.emit();
+        });
+        self.column_chooser = Some(ColumnChooserBinding { visibility, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached chooser; the visibility it last set stays (W5-11b).
+    pub fn detach_column_chooser(&mut self) {
+        if self.column_chooser.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::ColumnChooser`] is attached (W5-11b).
+    pub fn is_column_chooser_attached(&self) -> bool {
+        self.column_chooser.is_some()
+    }
+
+    /// Applies every chooser visibility report queued since the last poll (W5-11b).
+    ///
+    /// Called from `draw` and `handle_event`, so a chooser click is reflected by the next frame.
+    /// Returns whether the painted columns changed.
+    pub fn poll_column_chooser(&mut self) -> bool {
+        let Some(binding) = self.column_chooser.as_ref() else {
+            return false;
+        };
+        let changes: Vec<(usize, bool)> = {
+            let mut guard =
+                binding.visibility.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            core::mem::take(&mut *guard)
+        };
+        let mut changed = false;
+        for (column, visible) in changes {
+            changed |= self.set_column_hidden(column, !visible);
+        }
+        changed
+    }
+
+    // ── GridStatusBar wiring (W5-11b) ──
+
+    /// Attaches `bar` to this table (W5-11b).
+    ///
+    /// The strip learns the table's current row and selection counts immediately and
+    /// [`Self::poll_grid_status_bar`] rewrites them when they move. Both are facts this table
+    /// already maintains, so there is no signal to subscribe to and no per-frame work for the host.
+    ///
+    /// Attaching replaces any previous strip, so calling this twice leaves one link rather than
+    /// two. The strip's own `status_clicked` signal is a strip-to-host fact; the table neither
+    /// consumes nor forwards it.
+    pub fn attach_grid_status_bar(&mut self, bar: &crate::widget::companions::GridStatusBar) {
+        let (counts, redraw) = bar.counts_handle();
+        let current = self.grid_status_counts();
+        {
+            let mut guard = counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = current;
+        }
+        // The strip is a different control, so it needs its own paint request.
+        redraw.emit();
+        self.grid_status_bar = Some(GridStatusBarBinding {
+            counts,
+            redraw,
+            pushed: current,
+            _scope: ConnectionScope::new(),
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the counts it last showed stay (W5-11b).
+    pub fn detach_grid_status_bar(&mut self) {
+        if self.grid_status_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::GridStatusBar`] is attached (W5-11b).
+    pub fn is_grid_status_bar_attached(&self) -> bool {
+        self.grid_status_bar.is_some()
+    }
+
+    /// Writes the table's current counts into the attached strip when they moved (W5-11b).
+    ///
+    /// Called from `draw` and `handle_event`, so a row-count or selection change reaches the strip
+    /// on the next frame or interaction. Returns whether a write happened.
+    pub fn poll_grid_status_bar(&mut self) -> bool {
+        let current = self.grid_status_counts();
+        let Some(binding) = self.grid_status_bar.as_mut() else {
+            return false;
+        };
+        if binding.pushed == current {
+            return false;
+        }
+        binding.pushed = current;
+        {
+            let mut guard = binding.counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = current;
+        }
+        binding.redraw.emit();
+        true
+    }
+
+    /// The `(row count, selected count)` pair a status strip displays (W5-11b).
+    fn grid_status_counts(&self) -> (u64, u64) {
+        let rows = self.row_count() as u64;
+        let selected = u64::from(self.selected_row().is_some());
+        (rows, selected.min(rows))
+    }
+
+    // ── SummaryRow wiring (W5-11b) ──
+
+    /// Attaches `row` to this table (W5-11b).
+    ///
+    /// The table computes each configured aggregate over its **visible** rows and writes the
+    /// result through the row's shared value cell. The aggregate list is copied from the row at
+    /// attach time: a widget cannot hold a borrow of another, so a later
+    /// [`SummaryRow::set_aggregates`](crate::widget::companions::SummaryRow::set_aggregates) needs a
+    /// re-attach.
+    ///
+    /// `Sum`, `Min`, `Max`, `Count` and `Average` are computed here;
+    /// [`ColumnAggregateKind::Custom`](crate::widget::companions::ColumnAggregateKind::Custom)
+    /// means a host-defined aggregate and is left to the row's own `set_value`. Cells are read as
+    /// display text, so a non-numeric cell contributes to `Count` but not to a numeric aggregate.
+    pub fn attach_summary_row(&mut self, row: &crate::widget::companions::SummaryRow) {
+        let (values, redraw) = row.values_handle();
+        let aggregates = row.aggregates().to_vec();
+        self.summary_row = Some(SummaryRowBinding {
+            values,
+            redraw,
+            aggregates,
+            key: None,
+            _scope: ConnectionScope::new(),
+        });
+        // Adopt the table's current numbers now, so attaching does not wait for a frame.
+        self.apply_summary_row();
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached summary row; the values it last showed stay (W5-11b).
+    pub fn detach_summary_row(&mut self) {
+        if self.summary_row.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::SummaryRow`] is attached (W5-11b).
+    pub fn is_summary_row_attached(&self) -> bool {
+        self.summary_row.is_some()
+    }
+
+    /// Recomputes the attached row's aggregates when the projection moved (W5-11b).
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether the row was written.
+    pub fn poll_summary_row(&mut self) -> bool {
+        let Some(binding) = self.summary_row.as_ref() else {
+            return false;
+        };
+        let key = self.summary_key();
+        if binding.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.apply_summary_row();
+        true
+    }
+
+    /// The projection an attached summary row's numbers depend on (W5-11b).
+    fn summary_key(&self) -> SummaryKey {
+        SummaryKey {
+            generation: self.data_generation.load(Ordering::Relaxed),
+            sort_column: self.sort_column,
+            sort_descending: self.sort_descending,
+            rows: self.visible_rows.len(),
+            aggregates: self
+                .summary_row
+                .as_ref()
+                .map(|binding| binding.aggregates.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Computes the attached row's aggregates and writes them into its shared cell (W5-11b).
+    fn apply_summary_row(&mut self) {
+        let Some(binding) = self.summary_row.as_ref() else {
+            return;
+        };
+        let aggregates = binding.aggregates.clone();
+        let values = Arc::clone(&binding.values);
+        let redraw = binding.redraw.clone();
+        let key = self.summary_key();
+        let computed = self.compute_summary_values(&aggregates);
+        {
+            let mut guard = values.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = computed;
+        }
+        redraw.emit();
+        if let Some(binding) = self.summary_row.as_mut() {
+            binding.key = Some(key);
+        }
+    }
+
+    /// Aggregates `aggregates` over the visible rows (W5-11b).
+    ///
+    /// The tree column is the node's label, so an aggregate may address it; every other column is
+    /// the model cell for the visible row. A token this table cannot resolve is skipped rather
+    /// than reported as zero.
+    fn compute_summary_values(
+        &self,
+        aggregates: &[crate::widget::companions::ColumnAggregate],
+    ) -> Vec<(String, f64)> {
+        use crate::widget::companions::ColumnAggregateKind;
+        let titles = self.column_title_lookup();
+        let mut values = Vec::new();
+        for aggregate in aggregates {
+            if aggregate.kind == ColumnAggregateKind::Custom {
+                continue;
+            }
+            let Some(column) = resolve_column_token(&aggregate.column_token, &titles) else {
+                continue;
+            };
+            let mut populated = 0usize;
+            let mut numeric = 0usize;
+            let mut sum = 0.0f64;
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            for row in 0..self.visible_rows.len() {
+                let Some(cell) = self.item(row, column) else {
+                    continue;
+                };
+                let cell = cell.trim().to_string();
+                if cell.is_empty() {
+                    continue;
+                }
+                populated += 1;
+                let Ok(number) = cell.parse::<f64>() else {
+                    continue;
+                };
+                if !number.is_finite() {
+                    continue;
+                }
+                numeric += 1;
+                sum += number;
+                min = min.min(number);
+                max = max.max(number);
+            }
+            let value = match aggregate.kind {
+                ColumnAggregateKind::Sum => Some(sum),
+                ColumnAggregateKind::Min => (numeric > 0).then_some(min),
+                ColumnAggregateKind::Max => (numeric > 0).then_some(max),
+                ColumnAggregateKind::Count => Some(populated as f64),
+                ColumnAggregateKind::Average => (numeric > 0).then_some(sum / numeric as f64),
+                ColumnAggregateKind::Custom => None,
+            };
+            if let Some(value) = value.filter(|value| value.is_finite()) {
+                values.push((aggregate.column_token.clone(), value));
+            }
+        }
+        values
+    }
+
+    /// The title-to-column map built from this table's header labels and model names (W5-11b).
+    ///
+    /// A chooser and a summary row both address columns by their published token, whose title is
+    /// the part this table can match. An explicit header label wins over the model's name, which
+    /// is the same precedence the header paint uses.
+    fn column_title_lookup(&self) -> HashMap<String, usize> {
+        let mut titles = HashMap::new();
+        for index in 0..self.column_count() {
+            let title =
+                self.header_labels.get(index).filter(|label| !label.is_empty()).cloned().or_else(
+                    || {
+                        self.model.as_ref().and_then(|model| {
+                            model.column_name(index).map(std::string::ToString::to_string)
+                        })
+                    },
+                );
+            if let Some(title) = title {
+                titles.entry(title).or_insert(index);
+            }
+        }
+        titles
+    }
+
+    // ── Breadcrumb path bar (W5-11c) ──
+
+    /// Attaches an ancestor trail to this table (W5-11c).
+    ///
+    /// Two directions are wired:
+    ///
+    /// * the table writes the selected node's ancestor chain into the bar's shared segment cell
+    ///   whenever the selection moved, and [`Self::poll_path_bar`] does the rebuild from the paint
+    ///   and event paths;
+    /// * the bar's `segment_activated` stream is subscribed, and a crumb click expands to, selects
+    ///   and scrolls to that ancestor.
+    ///
+    /// The crumb id is the ancestor's model path (`0/2/1`) rather than its visible row, because a
+    /// row index renumbers when a branch above it opens or closes. Attaching replaces any previous
+    /// bar, so calling this twice leaves one subscription rather than two.
+    pub fn attach_path_bar(
+        &mut self,
+        bar: &crate::widget::special_widgets::breadcrumb::Breadcrumb,
+    ) {
+        let (segments, redraw) = bar.segments_handle();
+        let activated = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&activated);
+        let scope = ConnectionScope::new();
+        let table_redraw = self.base.redraw_requested_signal().clone();
+        bar.segment_activated.connect_scoped(&scope, move |id| {
+            *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(id.to_string());
+            // A crumb click repaints the table, so the poll that applies it lands next frame.
+            table_redraw.emit();
+        });
+        self.path_bar = Some(PathBarBinding {
+            segments,
+            redraw,
+            activated,
+            applied: Vec::new(),
+            _scope: scope,
+        });
+        // Adopt the current selection now, so attaching does not wait for a selection change.
+        self.poll_path_bar();
+    }
+
+    /// Stops following the attached trail; the crumbs it last showed stay (W5-11c).
+    pub fn detach_path_bar(&mut self) {
+        if self.path_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`Breadcrumb`](crate::widget::special_widgets::breadcrumb::Breadcrumb) is attached
+    /// (W5-11c).
+    pub fn is_path_bar_attached(&self) -> bool {
+        self.path_bar.is_some()
+    }
+
+    /// Applies a crumb click and republishes the ancestor chain (W5-11c).
+    ///
+    /// Called from `draw` and `handle_event`, so a click on the bar is picked up on the next frame
+    /// or interaction without the host forwarding it. Returns whether the trail or the selection
+    /// changed.
+    pub fn poll_path_bar(&mut self) -> bool {
+        let Some(binding) = self.path_bar.as_ref() else {
+            return false;
+        };
+        let activated = {
+            let mut slot =
+                binding.activated.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            slot.take()
+        };
+        let mut changed = false;
+        if let Some(id) = activated {
+            changed |= self.activate_path(&id);
+        }
+        let chain = self.path_chain();
+        let Some(binding) = self.path_bar.as_mut() else {
+            return changed;
+        };
+        if binding.applied == chain {
+            return changed;
+        }
+        binding.applied = chain.clone();
+        let segments: Vec<crate::widget::special_widgets::breadcrumb::BreadcrumbSegment> = chain
+            .into_iter()
+            .map(|(id, label)| {
+                crate::widget::special_widgets::breadcrumb::BreadcrumbSegment::new(id, label)
+            })
+            .collect();
+        {
+            let mut slot = binding.segments.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(segments);
+        }
+        binding.redraw.emit();
+        true
+    }
+
+    /// The selected node's ancestor chain, root first, as `(crumb id, label)` (W5-11c).
+    ///
+    /// The chain is read from the visible projection: every ancestor of a visible node is itself
+    /// visible, so each prefix of the selected row's path names a row that is on screen.
+    fn path_chain(&self) -> Vec<(String, String)> {
+        let Some(path) = self.selected_path() else {
+            return Vec::new();
+        };
+        let mut chain = Vec::with_capacity(path.len());
+        for length in 1..=path.len() {
+            let prefix = &path[..length];
+            let Some(row) =
+                self.visible_rows.iter().position(|visible| visible.path.as_slice() == prefix)
+            else {
+                continue;
+            };
+            let id = path_prefix_id(prefix);
+            let label = self.item(row, 0).unwrap_or_else(|| id.clone());
+            chain.push((id, label));
+        }
+        chain
+    }
+
+    /// Expands to, selects and scrolls to the ancestor a crumb names (W5-11c).
+    ///
+    /// Returns whether anything moved. A crumb whose path the current projection cannot address
+    /// (a stale click after the model was replaced) changes nothing.
+    fn activate_path(&mut self, id: &str) -> bool {
+        let Some(path) = parse_path_id(id) else {
+            return false;
+        };
+        let mut expanded = false;
+        for length in 1..path.len() {
+            let prefix = path[..length].to_vec();
+            if self.path_has_children(&prefix) && self.expanded_paths.insert(prefix.clone()) {
+                self.expansion_changed.emit((prefix, true));
+                expanded = true;
+            }
+        }
+        if expanded {
+            self.rebuild_projection();
+        }
+        let Some(row) =
+            self.visible_rows.iter().position(|visible| visible.path.as_slice() == path.as_slice())
+        else {
+            return expanded;
+        };
+        let selected = self.select_row(row);
+        let visible = self.ensure_row_visible(row);
+        expanded || selected || visible
+    }
+
     /// Creates an empty tree table.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -389,6 +1052,12 @@ impl TreeTable {
             editing: None,
             cell_text_scratch: std::cell::RefCell::new(String::new()),
             placeholder: crate::widget::view_widgets::CollectionPlaceholder::new(),
+            tree_find_bar: None,
+            hidden_columns: BTreeSet::new(),
+            column_chooser: None,
+            grid_status_bar: None,
+            summary_row: None,
+            path_bar: None,
         }
     }
 
@@ -507,8 +1176,12 @@ impl TreeTable {
     /// The width painted for `column` (V-13).
     ///
     /// Falls back to [`Self::column_width`], so a table that never sets a per-column width keeps
-    /// the historical uniform geometry.
+    /// the historical uniform geometry. A hidden column answers `0` because it occupies no space,
+    /// which is the contract `VirtualTable::column_width_at` publishes (W5-11a).
     pub fn column_width_at(&self, column: usize) -> u32 {
+        if self.hidden_columns.contains(&column) {
+            return 0;
+        }
         self.column_widths.get(column).copied().unwrap_or(self.column_width).max(1)
     }
 
@@ -535,6 +1208,55 @@ impl TreeTable {
             .get(&column)
             .copied()
             .unwrap_or_else(crate::widget::view_widgets::rtl_columns::leading_alignment)
+    }
+
+    // ── Column visibility (W5-11a) ──
+
+    /// Whether `column` is hidden (W5-11a).
+    pub fn is_column_hidden(&self, column: usize) -> bool {
+        self.hidden_columns.contains(&column)
+    }
+
+    /// The hidden columns, in ascending order (W5-11a).
+    pub fn hidden_columns(&self) -> Vec<usize> {
+        self.hidden_columns.iter().copied().collect()
+    }
+
+    /// Replaces the hidden-column set (W5-11a).
+    ///
+    /// An index past the model's column count is dropped rather than stored, so a set that outlives
+    /// a narrower model cannot hide a column the replacement model does not have.
+    pub fn set_hidden_columns(&mut self, columns: Vec<usize>) {
+        let available = self.column_count();
+        let next: BTreeSet<usize> =
+            columns.into_iter().filter(|column| *column < available).collect();
+        if next == self.hidden_columns {
+            return;
+        }
+        self.hidden_columns = next;
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
+        self.base.request_redraw();
+    }
+
+    /// Hides or shows `column` (W5-11a). Returns `false` for a column the model lacks.
+    ///
+    /// The absolute index is unchanged by hiding: a hidden column keeps its slot in the model and
+    /// the accessors, and only its painted width becomes zero, which is the same contract
+    /// `VirtualTable` publishes.
+    pub fn set_column_hidden(&mut self, column: usize, hidden: bool) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        let changed = if hidden {
+            self.hidden_columns.insert(column)
+        } else {
+            self.hidden_columns.remove(&column)
+        };
+        if changed {
+            self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
+            self.base.request_redraw();
+        }
+        true
     }
 
     /// Sets one column's cell alignment, returning whether the column exists (V-001).
@@ -653,6 +1375,11 @@ impl TreeTable {
     /// nothing of it remains visible.
     fn visible_column_span(&self, column: usize) -> Option<(i32, u32)> {
         let (x, width) = self.column_span_ltr(column);
+        // A hidden column paints nothing at all: its slot is zero width, so no cell border, header
+        // band, title or editor can land on it while its absolute index stays unchanged (W5-11a).
+        if width == 0 {
+            return None;
+        }
         let frozen = self.frozen_columns();
         if column < frozen {
             return self.mirror_span_if_rtl(x, width);
@@ -1935,6 +2662,15 @@ impl WidgetProperties for TreeTable {
 
 impl Draw for TreeTable {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Apply an attached find bar's match before the frame is painted, so the selection
+        // highlight and the scroll position land together (W5-09).
+        self.poll_tree_find_bar();
+        // Companion edits apply before the frame is painted too, so a chooser click, a crumb
+        // click and the count/aggregate pushes all land in the picture being drawn (W5-11b/c).
+        self.poll_column_chooser();
+        self.poll_grid_status_bar();
+        self.poll_summary_row();
+        self.poll_path_bar();
         let rect = self.base.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
@@ -2243,6 +2979,13 @@ impl Draw for TreeTable {
 
 impl crate::event::EventHandler for TreeTable {
     fn handle_event(&mut self, event: &Event) {
+        self.poll_tree_find_bar();
+        // The same companion polls as `draw`, so a click on a bound strip, chooser or crumb is
+        // applied by the interaction that produced it rather than by a later frame (W5-11b/c).
+        self.poll_column_chooser();
+        self.poll_grid_status_bar();
+        self.poll_summary_row();
+        self.poll_path_bar();
         // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`) and its
         // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` here. This
         // handler did not forward to it at all, so the theme's `"tree_table:hover"` override could
@@ -3443,5 +4186,24 @@ mod tests {
 
         drop(editor);
         tree.cancel_edit();
+    }
+
+    /// W5-09: the tree table can be driven by the shared find bar.
+    #[test]
+    fn an_attached_tree_find_bar_moves_the_selection() {
+        let mut table = TreeTable::new(Rect::new(0, 0, 240, 200));
+        table.set_model(std::sync::Arc::new(SampleTreeTableModel));
+        let mut bar = crate::widget::companions::TreeFindBar::new(Rect::new(0, 0, 200, 28));
+        table.attach_tree_find_bar(&bar);
+        assert!(table.is_tree_find_bar_attached());
+
+        bar.match_changed.emit(0);
+        assert!(table.poll_tree_find_bar(), "the reported row must be applied");
+        assert_eq!(table.selected_row(), Some(0));
+
+        table.detach_tree_find_bar();
+        bar.match_changed.emit(1);
+        assert!(!table.poll_tree_find_bar(), "a detached bar moves nothing");
+        assert_eq!(table.selected_row(), Some(0));
     }
 }

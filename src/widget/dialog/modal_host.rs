@@ -271,6 +271,11 @@ impl Draw for ModalHost {
             1.0,
             self.scrim_color,
         );
+        // The host paints only the page plane; a disabled host has to say so, because the scrim
+        // alone is indistinguishable from an enabled one (W5-03). A hover wash is deliberately
+        // **not** painted: the host's rect is the whole page plane, so washing it would tint the
+        // entire window whenever the pointer crossed the backdrop.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -1535,6 +1535,8 @@ impl Draw for Cascader {
         if self.expanded {
             self.draw_overlay(context);
         }
+        // The field, since the open columns are a separate surface this control does not own.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

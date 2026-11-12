@@ -63,7 +63,7 @@ and `log-20261112-3.md`. It is behaviour-only: no public type or import path is 
 - **Bidi and theme-font misses** — textarea/search controls map carets through bidi visual order,
   and listbox/FAB honour the resolved theme face instead of a literal `sans-serif`.
 
-## 4.3.0 (2026-11-12) — editor layering, editor features, and the `rwui` CLI (BLUE31)
+## 4.3.0-pre (2026-11-10) — editor layering, editor features, and the `rwui` CLI (BLUE31)
 
 The round is recorded in `docs/log/log-20261110-1.md`. It gives the two editor controls a shared
 lower layer, makes them (and the lexer they share) independent Cargo features, and adds a host-side

@@ -407,6 +407,12 @@ impl Draw for GridFindBar {
             );
             context.pop_clip();
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04). The bar
+        // opens focused, so without a ring "open and focused" painted the same constant surface as
+        // "open and unfocused". A closed bar returns before this point and is unchanged.
+        let ring_radius = self.base.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, ring_radius);
     }
 }
 
@@ -582,5 +588,24 @@ mod tests {
         assert!(!bar.is_visible());
         assert!(bar.query().is_empty());
         assert_eq!(closed.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    /// A Tab-focused bar paints a different frame from an open but unfocused one (W5-28).
+    ///
+    /// The bar opens focused and painted a constant surface, so the two states were visually
+    /// identical. This compares two renders of the same open bar and fails if the ring is not
+    /// painted for keyboard focus.
+    #[test]
+    fn keyboard_focus_changes_the_painted_bar() {
+        use crate::event::{Event, EventHandler, FocusReason};
+
+        let _guard = crate::style::theme_test_guard();
+        let mut bar = bar();
+        bar.open();
+        let resting = crate::widget::svg::render_to_svg(&mut bar);
+
+        bar.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        let focused = crate::widget::svg::render_to_svg(&mut bar);
+        assert_ne!(resting, focused, "a Tab-focused find bar must paint a distinct frame");
     }
 }

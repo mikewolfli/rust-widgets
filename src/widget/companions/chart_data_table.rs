@@ -414,6 +414,7 @@ impl Draw for ChartDataTable {
                 surface.blend(&ink, 0.55),
                 HorizontalAlignment::Left,
             );
+            self.base.paint_hover_wash(context, rect);
             return;
         }
 
@@ -457,6 +458,9 @@ impl Draw for ChartDataTable {
             draw_table_row(context, row_rect, row, self.headers.len(), font, ink, grid);
             drawn += 1;
         }
+        // The table paints rows and a header but no interaction state of its own, so the shared
+        // hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

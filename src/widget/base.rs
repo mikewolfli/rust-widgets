@@ -1220,6 +1220,73 @@ impl BaseWidget {
     pub fn disabled_ink_weight() -> f32 {
         crate::widget::metrics::dimensions::DISABLED_VEIL_ALPHA as f32 / 255.0
     }
+
+    /// Lays the shared disabled veil over `rect` when this control is disabled.
+    ///
+    /// # Why one call instead of a per-control tint
+    ///
+    /// A disabled control whose input gate closes but whose picture does not change is
+    /// indistinguishable from an enabled one: the click is refused with no visible reason. The
+    /// mechanisms were all in place (`disabled_ink_on`, `disabled_surface_near`, the theme's
+    /// `<kind>:disabled` presets), but a draw path has to name its surface and its ink, so a
+    /// control that simply forgot stayed silent (W5-03). This paints the veil the label, frame and
+    /// color well already use, derived from the same `DISABLED_VEIL_ALPHA`, so every control that
+    /// calls it recedes by one amount.
+    ///
+    /// Call it **after** the control has painted its content so the veil covers it. A control that
+    /// already derives its disabled colours (`disabled_ink_on`/`disabled_surface_near`) must not
+    /// call this as well: the two would compound.
+    pub fn paint_disabled_veil(
+        &self,
+        context: &mut crate::render::RenderContext,
+        rect: crate::core::Rect,
+    ) {
+        if self.enabled {
+            return;
+        }
+        let surface = self
+            .style()
+            .background_color
+            .or_else(|| crate::style::palette_shared().map(|colors| colors.background));
+        let veil = match surface {
+            Some(surface) => {
+                surface.with_alpha(crate::widget::metrics::dimensions::DISABLED_VEIL_ALPHA)
+            }
+            // No surface to fade toward: the historical grey is the honest fallback.
+            None => crate::core::Color::rgba(128, 128, 128, 60),
+        };
+        context.fill_rect(rect, veil);
+    }
+
+    /// Lays the shared hover state layer over `rect` when the pointer is over this control.
+    ///
+    /// # Why a layer instead of a per-control tint
+    ///
+    /// Most controls blend their own fill toward its contrast colour by
+    /// [`HOVER_FILL_BLEND`](crate::style::HOVER_FILL_BLEND). A control whose draw has no single
+    /// fill to blend — a chart's plot, a list's rows, a toolbar band — has nothing to blend, so it
+    /// stayed completely still under the pointer even though its input gate opened (W5-04). This
+    /// paints the same gesture as a layer over the control after its content, derived from the
+    /// same weight, so every control answers a hover by the same amount.
+    ///
+    /// A control that already blends its fill must not call this as well: the two would
+    /// compound.
+    pub fn paint_hover_wash(
+        &self,
+        context: &mut crate::render::RenderContext,
+        rect: crate::core::Rect,
+    ) {
+        if !self.enabled || !self.hovered {
+            return;
+        }
+        let surface = self
+            .style()
+            .background_color
+            .or_else(|| crate::style::palette_shared().map(|colors| colors.background));
+        let ink = surface.unwrap_or(crate::core::Color::WHITE).contrast_color();
+        context
+            .fill_rect(rect, ink.with_alpha(crate::widget::metrics::dimensions::HOVER_VEIL_ALPHA));
+    }
     /// Replaces the tooltip text with an already-localised string.
     pub fn set_tooltip(&mut self, tooltip: crate::compat::MiniString) {
         self.tooltip = tooltip;
@@ -1750,8 +1817,22 @@ impl BaseWidget {
     /// single source for what is *painted*, the latch for what has been *announced*.
     pub(crate) fn record_interaction_state(&mut self, event: &Event) {
         match event {
-            Event::MouseEnter { .. } => self.hovered = true,
-            Event::MouseLeave { .. } => self.hovered = false,
+            Event::MouseEnter { .. } => {
+                if !self.hovered {
+                    self.hovered = true;
+                    // Centralised so a control that paints its hover state does not also have to
+                    // remember an event arm for the repaint. A control that paints nothing pays
+                    // one frame on the transition, which is the cost of never having a hover
+                    // state change without a frame (W5-04).
+                    self.request_frame_repaint();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered {
+                    self.hovered = false;
+                    self.request_frame_repaint();
+                }
+            }
             Event::MousePress { pos, button, .. } | Event::PointerPress { pos, button, .. } => {
                 // Only a press the runtime actually routed here (or that hit-tests
                 // inside) arms the gesture, and never on a disabled control: a disabled

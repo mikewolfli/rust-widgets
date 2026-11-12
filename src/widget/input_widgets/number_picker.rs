@@ -965,6 +965,7 @@ impl Draw for NumberPicker {
                 );
             }
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 
     fn uses_custom_drawing(&self) -> bool {

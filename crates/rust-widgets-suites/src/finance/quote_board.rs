@@ -34,6 +34,7 @@ use rust_widgets::widget::capability::types::{
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::role_font;
 use rust_widgets::widget::view_widgets::filter_expr::{FilterCondition, FilterOperator};
+use rust_widgets::widget::view_widgets::rtl_columns::{is_rtl, leading_alignment, mirror_span};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 
@@ -254,13 +255,26 @@ fn name_key(quote: &Quote) -> &str {
 /// The quote board control.
 pub struct QuoteBoard {
     base: BaseWidget,
+    /// The rows on screen, in display order: the caller's rows with the active filter
+    /// applied and the active sort permuting them.
     quotes: Vec<Quote>,
-    /// The stable order the caller supplied, kept separately from the display order so
-    /// switching the sort back to `None` restores it rather than inventing an order.
+    /// The caller's own order, carried as a rank per row rather than as a second copy of
+    /// the rows: `caller_rank[i]` is the position `quotes[i]` held in the list passed to
+    /// the last `set_quotes`. The two vectors are always the same length.
     ///
-    /// A snapshot of the quotes rather than a list of indices: any sort permutes
-    /// `quotes`, which invalidates every index into it. See `apply_sort`.
-    original_order: Vec<Quote>,
+    /// The first version kept a copy of the quotes here and rebuilt the display list from
+    /// it on every pass, which deep-cloned every row (two `String`s each, plus the row
+    /// itself) twice per streaming snapshot. A rank travels with its row instead, so a sort
+    /// permutes the rows the board already owns, and [`QuoteSort::None`] still restores *the
+    /// caller's* order because the rank is an absolute position rather than an index into
+    /// the permuted vector. See `apply_sort`.
+    caller_rank: Vec<usize>,
+    /// Rows the active filter excludes, each carrying the caller rank it keeps for the
+    /// merge in `apply_sort`.
+    ///
+    /// Parked here rather than dropped so clearing the filter restores them, and moved
+    /// rather than cloned so a filtered board holds no second copy of any row.
+    excluded: Vec<(usize, Quote)>,
     columns: Vec<QuoteColumn>,
     sort: QuoteSort,
     hovered: Option<usize>,
@@ -355,7 +369,8 @@ impl QuoteBoard {
         Self {
             base: BaseWidget::new(WidgetKind::QuoteBoard, geometry, "QuoteBoard"),
             quotes: Vec::new(),
-            original_order: Vec::new(),
+            caller_rank: Vec::new(),
+            excluded: Vec::new(),
             columns: alloc::vec![
                 QuoteColumn::Symbol,
                 QuoteColumn::Last,
@@ -389,11 +404,12 @@ impl QuoteBoard {
 
     /// Replaces the quotes and requests a repaint.
     ///
-    /// The supplied order is remembered so a sort can be undone. Storing the quotes
-    /// themselves — rather than indices into the live vector — is what makes
-    /// [`QuoteSort::None`] meaningful: indices would be invalidated by any intervening
-    /// sort, and "no sort" would then mean "restore the order that happens to be left
-    /// over", which is not the caller's order.
+    /// The supplied order is remembered so a sort can be undone. What is remembered is each
+    /// row's **position** in the supplied list, not an index into the live vector: an index
+    /// would be invalidated by any intervening sort, and [`QuoteSort::None`] would then mean
+    /// "the order that happens to be left over", which is not the caller's order. A rank
+    /// survives every permutation because it travels with the row it names, and it costs no
+    /// copy of the row — the incoming list is moved in once and never duplicated.
     pub fn set_quotes(&mut self, quotes: Vec<Quote>) {
         // The selection names a row of the order being replaced, so its identity has to be
         // read before the new snapshot lands; `apply_sort` is the pass that rebuilds the
@@ -418,7 +434,12 @@ impl QuoteBoard {
             }
         }
         self.quotes = quotes;
-        self.original_order = self.quotes.clone();
+        // The incoming rows become the board's own, and their positions in the caller's
+        // list become their ranks; `apply_sort` below turns that into the display order.
+        self.caller_rank.clear();
+        self.caller_rank.extend(0..self.quotes.len());
+        // The parked rows belonged to the snapshot that has just been replaced.
+        self.excluded.clear();
         self.data_generation = self.data_generation.wrapping_add(1);
         // The incoming snapshot replaces the caller's order, so the active filter and sort are
         // re-applied to it rather than left describing the previous rows.
@@ -575,7 +596,7 @@ impl QuoteBoard {
 
     /// Reorders the quotes according to the active sort.
     ///
-    /// # Why the caller's order is kept as quotes, not as indices
+    /// # Why the caller's order is carried as a rank, not as a copy or a live index
     ///
     /// `QuoteSort::None` promises to restore *the order the caller supplied*, so the
     /// natural implementation is to remember the indices and re-read them. That is what
@@ -584,71 +605,115 @@ impl QuoteBoard {
     /// restore then produced a third order that was neither the caller's nor the sorted
     /// one — silent, because each step looked correct on its own.
     ///
-    /// Keeping a snapshot of the quotes makes the restore independent of whatever any
-    /// earlier sort did to the live vector. It costs one clone per quote per
-    /// `set_quotes`, which happens on a data update rather than per frame.
+    /// Keeping a snapshot of the quotes fixes that but pays for it twice: one deep clone to
+    /// take the snapshot, another to rebuild the display list from it, on every streaming
+    /// `set_quotes`. Each row owns two `String`s, so that is two full copies of the watchlist
+    /// per update for an order that is just a list of positions.
+    ///
+    /// This pass instead merges the rows the board already owns — the visible ones and the
+    /// ones the active filter parked in `excluded` — into their caller order by [`Self::caller_rank`],
+    /// filters and sorts them in place, and hands them back. Rows are moved, never cloned, and
+    /// the rank is an absolute position, so no permutation can invalidate it.
     /// `app::tests::the_watchlist_starts_in_the_supplied_order` is the test that found
-    /// this; it round-trips through two different sorts before checking.
+    /// the index bug; it round-trips through two different sorts before checking.
     fn apply_sort(&mut self) {
         // Every pass rebuilds from the caller's own order, so filter → sort is a pure
         // function of the snapshot: toggling a direction twice cannot leave a third order
         // behind, and a filter change does not have to un-sort what it is looking at.
-        let mut rows = self.original_order.clone();
+        debug_assert_eq!(
+            self.caller_rank.len(),
+            self.quotes.len(),
+            "every display row carries exactly one caller rank"
+        );
+        // `condition_accepts` formats a cell at the board's inferred decimals. The rows are about
+        // to be moved out of `quotes`, and measuring an empty list would answer with the
+        // two-decimal fallback, so the inference is taken now — from exactly the rows the pass
+        // that filtered a copy also saw, since `quotes` still holds the previous display order.
         if !self.filters.is_empty() {
-            rows.retain(|quote| {
-                self.filters.iter().all(|condition| self.condition_accepts(quote, condition))
-            });
+            let _ = self.inferred_decimals();
+        }
+        let mut rows: Vec<(usize, Quote)> =
+            Vec::with_capacity(self.quotes.len() + self.excluded.len());
+        rows.extend(self.caller_rank.iter().copied().zip(self.quotes.drain(..)));
+        rows.append(&mut self.excluded);
+        // Restoring by rank *is* the caller's order, which is the input both the filter and
+        // the stable sort below read — so their result cannot depend on what an earlier
+        // pass left in `quotes`.
+        rows.sort_unstable_by_key(|(rank, _)| *rank);
+
+        let mut excluded: Vec<(usize, Quote)> = Vec::new();
+        if !self.filters.is_empty() {
+            let mut kept = Vec::with_capacity(rows.len());
+            for (rank, quote) in rows {
+                let accepted =
+                    self.filters.iter().all(|condition| self.condition_accepts(&quote, condition));
+                if accepted {
+                    kept.push((rank, quote));
+                } else {
+                    excluded.push((rank, quote));
+                }
+            }
+            rows = kept;
         }
         match self.sort {
             QuoteSort::None => {}
             QuoteSort::SymbolAscending => {
-                rows.sort_by(|left, right| left.symbol.cmp(&right.symbol))
+                rows.sort_by(|(_, left), (_, right)| left.symbol.cmp(&right.symbol))
             }
             QuoteSort::SymbolDescending => {
-                rows.sort_by(|left, right| right.symbol.cmp(&left.symbol))
+                rows.sort_by(|(_, left), (_, right)| right.symbol.cmp(&left.symbol))
             }
             QuoteSort::NameAscending => {
-                rows.sort_by(|left, right| name_key(left).cmp(name_key(right)))
+                rows.sort_by(|(_, left), (_, right)| name_key(left).cmp(name_key(right)))
             }
             QuoteSort::NameDescending => {
-                rows.sort_by(|left, right| name_key(right).cmp(name_key(left)))
+                rows.sort_by(|(_, left), (_, right)| name_key(right).cmp(name_key(left)))
             }
-            QuoteSort::LastAscending => rows.sort_by(|left, right| {
+            QuoteSort::LastAscending => rows.sort_by(|(_, left), (_, right)| {
                 left.last.partial_cmp(&right.last).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::LastDescending => rows.sort_by(|left, right| {
+            QuoteSort::LastDescending => rows.sort_by(|(_, left), (_, right)| {
                 right.last.partial_cmp(&left.last).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::ChangeMagnitudeAscending => rows.sort_by(|left, right| {
+            QuoteSort::ChangeMagnitudeAscending => rows.sort_by(|(_, left), (_, right)| {
                 let left_magnitude = left.change().abs();
                 let right_magnitude = right.change().abs();
                 left_magnitude.partial_cmp(&right_magnitude).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::ChangeMagnitudeDescending => rows.sort_by(|left, right| {
+            QuoteSort::ChangeMagnitudeDescending => rows.sort_by(|(_, left), (_, right)| {
                 let left_magnitude = left.change().abs();
                 let right_magnitude = right.change().abs();
                 right_magnitude.partial_cmp(&left_magnitude).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::HighAscending => rows.sort_by(|left, right| {
+            QuoteSort::HighAscending => rows.sort_by(|(_, left), (_, right)| {
                 left.high.partial_cmp(&right.high).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::HighDescending => rows.sort_by(|left, right| {
+            QuoteSort::HighDescending => rows.sort_by(|(_, left), (_, right)| {
                 right.high.partial_cmp(&left.high).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::LowAscending => rows.sort_by(|left, right| {
+            QuoteSort::LowAscending => rows.sort_by(|(_, left), (_, right)| {
                 left.low.partial_cmp(&right.low).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::LowDescending => rows.sort_by(|left, right| {
+            QuoteSort::LowDescending => rows.sort_by(|(_, left), (_, right)| {
                 right.low.partial_cmp(&left.low).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::VolumeAscending => rows.sort_by(|left, right| {
+            QuoteSort::VolumeAscending => rows.sort_by(|(_, left), (_, right)| {
                 left.volume.partial_cmp(&right.volume).unwrap_or(core::cmp::Ordering::Equal)
             }),
-            QuoteSort::VolumeDescending => rows.sort_by(|left, right| {
+            QuoteSort::VolumeDescending => rows.sort_by(|(_, left), (_, right)| {
                 right.volume.partial_cmp(&left.volume).unwrap_or(core::cmp::Ordering::Equal)
             }),
         }
-        self.quotes = rows;
+        // Hand the rows back: the survivors in display order with their ranks alongside, and
+        // the filtered-out ones parked for the next pass. `drain` kept `quotes`' allocation,
+        // so a pass that keeps every row does not reallocate.
+        self.caller_rank.clear();
+        self.caller_rank.reserve(rows.len());
+        for (rank, quote) in rows {
+            self.caller_rank.push(rank);
+            self.quotes.push(quote);
+        }
+        self.excluded = excluded;
         // The filter and the sort both change the measured sample and the row count, so the
         // cached ranges and the inferred decimals must not survive either.
         self.data_generation = self.data_generation.wrapping_add(1);
@@ -903,6 +968,22 @@ impl QuoteBoard {
     /// proportion to those wishes — so a column that needs more gets more, and the last one
     /// still takes the rounding remainder so no strip at the right edge goes unpainted.
     fn column_ranges(&mut self) -> Vec<(i32, i32)> {
+        let mut ranges = self.unmirrored_column_ranges();
+        if is_rtl() {
+            // The direction is read once per call and the whole band is reflected, so column 0
+            // — the one a right-to-left reader starts at — lands on the right edge. Widths are
+            // preserved, so the bands still tile the pane exactly and neither the width budget
+            // nor the ordering of `self.columns` changes underneath the paint or the hit test.
+            let band = self.base.geometry();
+            for (start, width) in &mut ranges {
+                *start = mirror_span(*start, (*width).max(0) as u32, band);
+            }
+        }
+        ranges
+    }
+
+    /// The left-to-right column bands: what [`Self::column_ranges`] reflects in an RTL page.
+    fn unmirrored_column_ranges(&mut self) -> Vec<(i32, i32)> {
         let geometry = self.base.geometry();
         let width = geometry.width as i32;
         if self.columns.is_empty() || width <= 0 {
@@ -1364,16 +1445,24 @@ impl Draw for QuoteBoard {
         // user's text scale reach the board's headings (D09-STYLE-01). Resolved once outside the
         // column loop: `role_font` rebuilt (and re-cloned its family) once per heading per frame.
         let heading_font = role_font(style, HEADING_FONT_SIZE);
+        // Direction is read once for the frame, not once per heading or per cell: the value is a
+        // thread-local, but a per-cell read would make the cost scale with the visible rows.
+        let rtl = is_rtl();
+        let leading = leading_alignment();
         for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
             let title = column.title();
             let label_x = heading_origin(*start, *width, title, &heading_font);
             if heading_fits(*width, title, &heading_font) {
+                // `heading_origin` measures the label's inset from the column's leading edge. In
+                // RTL that edge is the column's right one, so the same inset is taken from there
+                // and the label is drawn right-aligned at that edge.
+                let origin_x = if rtl { *start + *width - (label_x - *start) } else { label_x };
                 context.draw_text(
-                    Point { x: label_x, y: geometry.y + 5 },
+                    Point { x: origin_x, y: geometry.y + 5 },
                     title,
                     &heading_font,
                     header_text,
-                    HorizontalAlignment::Left,
+                    leading,
                 );
             } else {
                 // The column is narrower than its own heading. Left unwrapped, the glyphs
@@ -1386,13 +1475,9 @@ impl Draw for QuoteBoard {
                     (*width).max(1) as u32,
                     heading_font.size().max(1.0) as u32,
                 );
-                context.draw_text_fitted_ellipsis(
-                    band,
-                    title,
-                    &heading_font,
-                    header_text,
-                    HorizontalAlignment::Left,
-                );
+                // The band spans the whole column, so reflecting it about its own centre is the
+                // identity; only the alignment has to follow the leading edge.
+                context.draw_text_fitted_ellipsis(band, title, &heading_font, header_text, leading);
             }
         }
 
@@ -1517,13 +1602,33 @@ impl Draw for QuoteBoard {
                     // Reserved from the leading inset to the column's edge.
                     Rect::new(start + inset, y, (width - inset * 2).max(1) as u32, 0)
                 };
+                // A cell is reflected **inside its own column band**, so it keeps its width and
+                // stays in the column it belongs to. Column order was mirrored by
+                // `column_ranges`; this is the other half, and together they are the reflection
+                // of the whole row. A symmetric band (the fitted text cells) maps to itself,
+                // which is why the numeric span is the one that visibly moves.
+                let band = if rtl {
+                    Rect::new(
+                        mirror_span(
+                            band.x,
+                            band.width,
+                            Rect::new(start, y, width.max(1) as u32, 0),
+                        ),
+                        band.y,
+                        band.width,
+                        band.height,
+                    )
+                } else {
+                    band
+                };
                 let line = context.text_line(Rect { height: ROW_TEXT_HEIGHT, ..band }, font);
                 if column.is_numeric() && numeric_fits {
                     // A numeric cell is already exactly as wide as its measured text. Fitting
                     // it again subtracts `draw_text_fitted`'s inset at each end from that
                     // measured width, so every value was truncated to `248...` even though
                     // the column had room. Placing the measured line is what keeps the value
-                    // whole and still right-aligned.
+                    // whole and still trailing-aligned — which is the column's left edge in
+                    // RTL, so the alignment stays `Left` on the already-mirrored span.
                     context.draw_text(
                         Point { x: line.x, y: line.y },
                         text,
@@ -1532,13 +1637,9 @@ impl Draw for QuoteBoard {
                         HorizontalAlignment::Left,
                     );
                 } else {
-                    context.draw_text_fitted_ellipsis(
-                        line,
-                        text,
-                        font,
-                        color,
-                        HorizontalAlignment::Left,
-                    );
+                    // The band is symmetric about its column's centre, so the mirrored text cell
+                    // is anchored by the alignment alone: leading-edge aligned in this direction.
+                    context.draw_text_fitted_ellipsis(line, text, font, color, leading);
                 }
             }
         }
@@ -1940,6 +2041,11 @@ mod tests {
     ///
     /// Sorting twice with two different keys applies two different permutations, so an
     /// index-based restore cannot coincide with the correct answer by luck.
+    ///
+    /// The board now carries each row's **caller rank** instead of a second copy of the
+    /// rows, which is still index-free in the sense that matters: the rank is an absolute
+    /// position in the caller's list, attached to its row, so no permutation can point it
+    /// at a different quote.
     #[test]
     fn clearing_the_sort_restores_the_supplied_order() {
         let mut board = QuoteBoard::new(Rect::new(0, 0, 640, 240));
@@ -1964,6 +2070,114 @@ mod tests {
         let restored: alloc::vec::Vec<alloc::string::String> =
             board.quotes().iter().map(|quote| quote.symbol.clone()).collect();
         assert_eq!(restored, original, "the caller's order must come back exactly");
+    }
+
+    /// A sorted snapshot must carry exactly the rows — contents and order — that the
+    /// row-copy implementation produced.
+    ///
+    /// The display list is now the board's only copy of the rows: a pass merges the visible
+    /// rows with the ones a filter parked, restores the caller's order by each row's rank,
+    /// and sorts that list in place. These pinned orders are what guards the change, because
+    /// every one of them is what the old "sort a clone of the snapshot" pass returned.
+    #[test]
+    fn a_sorted_snapshot_keeps_the_row_contents_and_the_caller_order_ties() {
+        let quotes = alloc::vec![
+            Quote { name: "Microsoft".into(), ..Quote::new("MSFT", 420.0, 410.0) },
+            // `AAPL` and `GOOG` tie on `last` deliberately: the required sort is stable, so
+            // their relative order must stay the caller's, not become whatever a rebuild
+            // over an unordered input happens to produce.
+            Quote { name: "Apple".into(), ..Quote::new("AAPL", 190.0, 192.0) },
+            Quote { name: "Alphabet".into(), ..Quote::new("GOOG", 190.0, 188.0) },
+            Quote { name: "Tesla".into(), ..Quote::new("TSLA", 250.0, 240.0) },
+        ];
+        // The expectation's own copy; the board holds none of its own beyond the rows.
+        let supplied = quotes.clone();
+        type Row = (alloc::string::String, alloc::string::String, f64, f64, f64, f64, f64);
+        let describe = |source: &[Quote]| -> alloc::vec::Vec<Row> {
+            source
+                .iter()
+                .map(|quote| {
+                    (
+                        quote.symbol.clone(),
+                        quote.name.clone(),
+                        quote.last,
+                        quote.previous_close,
+                        quote.high,
+                        quote.low,
+                        quote.volume,
+                    )
+                })
+                .collect()
+        };
+        let order = |board: &QuoteBoard| -> alloc::vec::Vec<alloc::string::String> {
+            board.quotes().iter().map(|quote| quote.symbol.clone()).collect()
+        };
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 480, 240));
+        board.set_quotes(quotes);
+        let caller_rows = describe(&supplied);
+        assert_eq!(order(&board), alloc::vec!["MSFT", "AAPL", "GOOG", "TSLA"]);
+        assert_eq!(describe(board.quotes()), caller_rows, "no sort returns the rows as given");
+
+        board.set_sort(QuoteSort::LastAscending);
+        assert_eq!(order(&board), alloc::vec!["AAPL", "GOOG", "TSLA", "MSFT"]);
+        assert_eq!(
+            describe(board.quotes()),
+            alloc::vec![
+                caller_rows[1].clone(),
+                caller_rows[2].clone(),
+                caller_rows[3].clone(),
+                caller_rows[0].clone(),
+            ],
+            "the tie keeps the caller's order and every field travels with its row"
+        );
+
+        board.set_sort(QuoteSort::SymbolAscending);
+        assert_eq!(order(&board), alloc::vec!["AAPL", "GOOG", "MSFT", "TSLA"]);
+        assert_eq!(
+            describe(board.quotes()),
+            alloc::vec![
+                caller_rows[1].clone(),
+                caller_rows[2].clone(),
+                caller_rows[0].clone(),
+                caller_rows[3].clone(),
+            ]
+        );
+
+        // Back to no sort: the caller's order, and every row intact.
+        board.set_sort(QuoteSort::None);
+        assert_eq!(describe(board.quotes()), caller_rows);
+
+        // A filter parks rows out of the way; clearing it brings all of them back, still in
+        // the caller's order, which is what the parked (`excluded`) rows exist for.
+        board.set_filter(&[FilterCondition::new(2, FilterOperator::GreaterOrEqual, "200")]);
+        assert_eq!(order(&board), alloc::vec!["MSFT", "TSLA"]);
+        assert_eq!(
+            describe(board.quotes()),
+            alloc::vec![caller_rows[0].clone(), caller_rows[3].clone()]
+        );
+        board.clear_filter();
+        assert_eq!(describe(board.quotes()), caller_rows);
+    }
+
+    /// A text filter on a price column compares against the cell text the board actually draws.
+    ///
+    /// `condition_accepts` formats the cell at the board's inferred decimals, and the row list is
+    /// moved out of `quotes` while the filter runs — so measuring the decimals from the emptied
+    /// `quotes` would answer with the two-decimal fallback and match text that is not on screen.
+    #[test]
+    fn a_text_filter_on_a_price_column_uses_the_precision_the_board_shows() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 480, 240));
+        board
+            .set_quotes(
+                alloc::vec![Quote::new("AAA", 10.5, 10.0), Quote::new("BBB", 20.25, 20.0),],
+            );
+        // `10.5` is one decimal, so the board draws `10.5`, never `10.50`.
+        board.set_filter(&[FilterCondition::new(2, FilterOperator::Contains, "0.50")]);
+        assert!(board.quotes().is_empty(), "the filter must read the drawn cell, not a padded one");
+        board.clear_filter();
+        board.set_filter(&[FilterCondition::new(2, FilterOperator::Contains, ".5")]);
+        assert_eq!(board.quotes().len(), 1);
+        assert_eq!(board.quotes()[0].symbol, "AAA");
     }
 
     /// Sorting keeps the selected instrument selected; losing it is reported.
@@ -2616,5 +2830,47 @@ mod tests {
         board.set_sort(QuoteSort::SymbolDescending);
         assert_eq!(board.quotes()[0].symbol, "BBB", "the order really changed");
         assert_eq!(board.hovered_index(), Some(1), "the hover follows AAA to its new index");
+    }
+
+    /// An RTL page mirrors the column run, and the header hit test moves with it (W5-15).
+    ///
+    /// Both the paint and `sort_header_at` read `column_ranges`, so the reflection lives there
+    /// and this asserts the one derivation they share rather than each call site.
+    #[test]
+    fn rtl_mirrors_the_column_run_and_its_header_hit_test() {
+        let geometry = Rect::new(0, 0, 320, 120);
+        let mut board = QuoteBoard::new(geometry);
+        board.set_quotes(fixtures::sample_quotes(3));
+        board.set_sortable_headers(true);
+
+        let ltr = board.column_ranges();
+        assert_eq!(ltr.first().map(|(x, _)| *x), Some(geometry.x), "LTR starts at the left edge");
+        let widths: Vec<i32> = ltr.iter().map(|(_, width)| *width).collect();
+
+        let previous = rust_widgets::core::default_text_direction();
+        rust_widgets::core::set_default_text_direction(
+            rust_widgets::core::TextDirection::RightToLeft,
+        );
+        let rtl = board.column_ranges();
+        // Column 0 is where a right-to-left reader starts, so it is anchored to the right edge
+        // and the last column ends at the pane's left edge.
+        assert_eq!(
+            rtl.first().map(|(x, _)| *x),
+            Some(geometry.x + geometry.width as i32 - ltr[0].1),
+            "column 0 must be anchored at the right edge"
+        );
+        assert_eq!(rtl.last().map(|(x, _)| *x), Some(geometry.x));
+        assert_eq!(
+            rtl.iter().map(|(_, width)| *width).collect::<Vec<i32>>(),
+            widths,
+            "a mirror keeps every width, so the run still tiles the pane"
+        );
+
+        // A press on the rightmost heading now sorts column 0, because the hit test reads the
+        // same bands the paint does.
+        assert!(board.sort_header_at(Point::new(geometry.x + geometry.width as i32 - 2, 5)));
+        assert_eq!(board.sort(), QuoteSort::SymbolAscending);
+
+        rust_widgets::core::set_default_text_direction(previous);
     }
 }

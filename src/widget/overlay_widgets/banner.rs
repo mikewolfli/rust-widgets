@@ -1088,6 +1088,10 @@ impl Draw for Banner {
                 );
             }
         }
+
+        // The bar paints severity colours rather than a control fill, so the shared veil is what
+        // makes a disabled banner recede like every other control (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 
     fn uses_custom_drawing(&self) -> bool {

@@ -38,7 +38,11 @@
 #   (a) the site sits inside an `if` on the predicate: `visual_focus()` (which is
 #       `focused && focus_reason.draws_focus_ring()`) or `draws_focus_ring()` directly; or
 #   (b) the file carries both halves of the pair itself — it references `draws_focus_ring`, i.e.
-#       it owns the classification of every reason.
+#       it owns the classification of every reason; or
+#   (c) the site is the default-button emphasis ring — it sits inside an `if` on `is_default()`,
+#       so it marks the button Enter would press and is deliberately independent of focus reason.
+#       This exemption is anchored to that block shape, not to a file: a second construction in the
+#       same file still has to honour (a) or (b).
 #
 # The two arms are the two ways a control can honour the rule. Arm (b) is not a weakening: a file
 # that classifies the reasons has the rule *inside* it, and flagging it would demand a control
@@ -56,10 +60,12 @@
 #   * It does not check *which* reasons are classified, only that a classification is consulted. A
 #     control that got `draws_focus_ring` wrong is a defect this gate cannot see; `FocusReason`'s own
 #     test suite is where that is pinned.
-#   * The guard search looks backwards a bounded window (12 lines) from the construction. A guard
-#     written far above its use would not be recognised, which would report a **false positive**
-#     rather than a false negative. That direction is deliberate: a false red is visible and gets
-#     fixed, a false green is what this project has recorded as the more expensive failure.
+#   * The guard search walks the construction's **lexical block structure** (braces counted
+#     backwards to depth 0), so a guard written far above its use is still recognised as long as
+#     it encloses the construction. It is not a statement parser: braces inside macros or string
+#     literals can end the walk early, which would report a **false positive** rather than a false
+#     negative. That direction is deliberate: a false red is visible and gets fixed, a false green
+#     is what this project has recorded as the more expensive failure.
 #   * It matches the two predicate spellings. A control that inlines
 #     `self.focused && self.focus_reason != FocusReason::Pointer` passes by arm (b) only if it also
 #     names `draws_focus_ring`; inlining the classification instead is a defect the gate names.
@@ -128,7 +134,7 @@ if [[ "$FOUND" -gt 0 ]]; then
     printf '%s\n' "$DETAIL"
     echo ""
     echo "  Ask the shared predicate before constructing the ring -- the way"
-    echo "  base_widgets/button.rs:789 does:"
+    echo "  base_widgets/button/api.rs:144 does:"
     echo "      pub fn visual_focus(&self) -> bool {"
     echo "          self.focused && self.focus_reason.draws_focus_ring()"
     echo "      }"

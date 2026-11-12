@@ -59,6 +59,14 @@ pub struct RangeSlider {
     direction: crate::core::TextDirection,
     /// Emitted when the range (lower, upper) changes.
     pub range_changed: Signal1<(f64, f64)>,
+    /// Emitted with the active handle's value when a pointer gesture starts.
+    ///
+    /// The single-thumb slider pairs `slider_pressed` with `slider_released` so a consumer can
+    /// defer continuous work until the gesture ends. This control had only `range_changed`, so a
+    /// dual-handle drag had no start or end edge to listen for.
+    pub slider_pressed: Signal1<f64>,
+    /// Emitted with the active handle's value when the pointer gesture that pressed it ends.
+    pub slider_released: Signal1<f64>,
     /// Which handle is currently being dragged: None, Some(true) for lower, Some(false) for upper.
     dragging: Option<bool>,
     /// Whether the control owns keyboard focus, which is what a focus ring means.
@@ -114,6 +122,8 @@ impl RangeSlider {
             min_range: 0.0,
             direction: crate::core::TextDirection::default(),
             range_changed: Signal1::new(),
+            slider_pressed: Signal1::new(),
+            slider_released: Signal1::new(),
             dragging: None,
             focused: false,
             active_handle: true,
@@ -675,6 +685,16 @@ impl Widget for RangeSlider {
                     ])
                 }))
             }
+            "slider_pressed" => {
+                Some(EventSignalRef::mapped("slider_pressed", &self.slider_pressed, |v| {
+                    CapabilityValue::Float(*v)
+                }))
+            }
+            "slider_released" => {
+                Some(EventSignalRef::mapped("slider_released", &self.slider_released, |v| {
+                    CapabilityValue::Float(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -1139,11 +1159,30 @@ impl RangeSlider {
             self.dragging = Some(lower);
         }
         self.set_focused(true);
+        // Announced only once the grab (or the trough commit) has settled, so the payload is the
+        // value the gesture actually starts at rather than the pre-press one.
+        self.slider_pressed.emit(self.gesture_value());
+    }
+
+    /// The value of the handle the current gesture acts on.
+    fn gesture_value(&self) -> f64 {
+        if self.dragging == Some(false) {
+            self.upper_value
+        } else {
+            self.lower_value
+        }
     }
 
     /// Ends a gesture: the next pointer move no longer drags a handle.
+    ///
+    /// A release with no press in flight announces nothing, matching the single-thumb slider's
+    /// guard: a button released over this control after a press that began elsewhere is not the
+    /// end of a gesture here.
     fn release_handles(&mut self) {
-        self.dragging = None;
+        let value = self.gesture_value();
+        if self.dragging.take().is_some() {
+            self.slider_released.emit(value);
+        }
     }
 }
 
@@ -1177,7 +1216,7 @@ impl EventHandler for RangeSlider {
             // control, so no `MouseRelease` is delivered. Without this arm `dragging`
             // stayed set and the next hover kept moving a handle with no button held.
             Event::MouseLeave { .. } if self.dragging.is_some() => {
-                self.dragging = None;
+                self.release_handles();
             }
             Event::MouseMove { pos } => {
                 if let Some(is_lower) = self.dragging {
@@ -1519,6 +1558,52 @@ mod tests {
         let svg = render_to_svg(&mut rs);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// A drag announces its start and end with the active handle's value (W5-27).
+    ///
+    /// The control published only `range_changed`, so a consumer could see every intermediate
+    /// value but had no gesture edge to defer expensive work to. This drives the real pointer
+    /// path and pins both payloads: the press reports the value the gesture grabbed, and the
+    /// release reports the value it ended on.
+    #[test]
+    fn a_gesture_announces_the_value_it_pressed_and_released_at() {
+        use std::sync::{Arc, Mutex};
+
+        let _theme = crate::style::theme_test_guard();
+        let mut rs = RangeSlider::new(Rect::new(0, 0, 200, 28));
+        rs.set_range(0.0, 100.0);
+        rs.set_lower_value(20.0);
+        rs.set_upper_value(70.0);
+
+        let pressed = Arc::new(Mutex::new(None::<f64>));
+        let released = Arc::new(Mutex::new(None::<f64>));
+        rs.slider_pressed.connect({
+            let sink = Arc::clone(&pressed);
+            move |value: Arc<f64>| *sink.lock().expect("press sink") = Some(*value)
+        });
+        rs.slider_released.connect({
+            let sink = Arc::clone(&released);
+            move |value: Arc<f64>| *sink.lock().expect("release sink") = Some(*value)
+        });
+
+        let rect = rs.geometry();
+        let lower =
+            Point::new(rs.value_to_pixel(rs.lower_value(), &rect), rect.y + rect.height as i32 / 2);
+        rs.handle_event(&Event::MousePress { pos: lower, button: 1, modifiers: 0 });
+        let grabbed = rs.lower_value();
+        let announced = pressed.lock().expect("press sink").expect("a press is announced");
+        assert!((announced - grabbed).abs() < 1e-9, "press reports {grabbed}, got {announced}");
+        assert!(released.lock().expect("release sink").is_none(), "the gesture has not ended yet");
+
+        let moved = Point::new(lower.x + 20, lower.y);
+        rs.handle_event(&Event::MouseMove { pos: moved });
+        let ended_at = rs.lower_value();
+        assert!(ended_at > grabbed, "the drag moved the lower handle");
+
+        rs.handle_event(&Event::MouseRelease { pos: moved, button: 1, modifiers: 0 });
+        let announced = released.lock().expect("release sink").expect("a release is announced");
+        assert!((announced - ended_at).abs() < 1e-9, "release reports {ended_at}, got {announced}");
     }
 
     /// A right-to-left selector puts the lower value at the **right** edge.

@@ -356,6 +356,8 @@ impl Draw for MediaScrubber {
             ink.with_alpha(180),
             HorizontalAlignment::Left,
         );
+        self.base.paint_hover_wash(context, rect);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 
@@ -444,7 +446,11 @@ mod tests {
             touch_id: 0,
             delta: Point::new(100, 0),
         });
-        scrubber.handle_event(&Event::MouseRelease { pos: Point::new(108, 12), button: 1 , modifiers: 0});
+        scrubber.handle_event(&Event::MouseRelease {
+            pos: Point::new(108, 12),
+            button: 1,
+            modifiers: 0,
+        });
         let seen = values.lock().unwrap();
         assert!(seen.len() >= 2, "a drag reports more than the press");
         assert!(seen.last().expect("a sample").1 > 0.4);

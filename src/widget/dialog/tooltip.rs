@@ -1258,6 +1258,7 @@ impl Draw for Tooltip {
                 );
             }
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

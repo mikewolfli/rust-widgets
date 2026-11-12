@@ -297,6 +297,9 @@ impl Draw for Legend {
                 crate::core::HorizontalAlignment::Left,
             );
         }
+        // The legend paints no interaction state of its own, so the shared hover layer is what
+        // answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, self.geometry());
     }
 }
 

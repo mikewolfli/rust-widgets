@@ -1260,6 +1260,8 @@ impl Draw for AudioVisualizer {
 
         if self.shape == VisualizerShape::Circular {
             self.draw_circular(context, rect, explicit_bar_color);
+            self.base.paint_hover_wash(context, rect);
+            crate::veil_if_disabled(&self.base, context);
             return;
         }
 
@@ -1325,6 +1327,8 @@ impl Draw for AudioVisualizer {
                 }
             }
         }
+        self.base.paint_hover_wash(context, rect);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

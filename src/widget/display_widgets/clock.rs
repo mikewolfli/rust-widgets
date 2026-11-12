@@ -372,7 +372,10 @@ impl Clock {
         self.minute = minute;
         self.second = second;
         self.millis = millis;
-        self.base.request_redraw();
+        // A time change repaints the face; it does not change the tree's layout. Taking the
+        // narrow animation route keeps the process-wide metrics cache valid instead of making
+        // every animated control miss it on every tick (W5-05, RD3-02).
+        self.base.request_frame_repaint();
     }
 
     /// Sets the hour alone, keeping the other components.

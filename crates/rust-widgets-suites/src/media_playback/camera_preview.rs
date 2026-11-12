@@ -1070,6 +1070,7 @@ impl Draw for CameraPreview {
             // Border
             context.draw_rect_stroke(rect, Color::rgba(100, 100, 110, 200), 1);
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

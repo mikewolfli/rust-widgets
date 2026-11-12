@@ -1275,6 +1275,9 @@ impl Draw for ColorPicker {
             self.sync_recent_geometry();
             self.recent.draw(context);
         }
+        // The picker paints a spectrum and its chrome but no interaction state of its own, so the
+        // shared hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

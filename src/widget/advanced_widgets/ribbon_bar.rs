@@ -938,11 +938,8 @@ impl RibbonBar {
 
     /// Indices of the quick-access items the overflow marker hides.
     pub fn quick_access_overflowed_indices(&self) -> Vec<usize> {
-        let mut indices = Vec::new();
-        for index in self.visible_quick_access_items()..self.quick_access_items.len() {
-            indices.push(index);
-        }
-        indices
+        // The hidden items are a contiguous tail of the item list, so the answer is a range.
+        (self.visible_quick_access_items()..self.quick_access_items.len()).collect()
     }
 
     /// Width one quick-access item reserves on the tab row.
@@ -1040,7 +1037,11 @@ impl RibbonBar {
             return None;
         }
         let marker = self.quick_access_overflow_rect()?;
-        let hidden = self.quick_access_overflowed_indices().len() as u32;
+        // The hidden items are a contiguous tail, so the count is arithmetic. Asking
+        // `quick_access_overflowed_indices` for it materialised a `Vec<usize>` on every frame
+        // the panel was open and on every press hit test (W5-35).
+        let hidden =
+            self.quick_access_items.len().saturating_sub(self.visible_quick_access_items()) as u32;
         Some(Rect::new(
             marker.x,
             marker.y + marker.height as i32,
@@ -2574,7 +2575,11 @@ impl Draw for RibbonBar {
             let font = effective_font(self.style());
             context.fill_rect(panel, palette.surface);
             context.draw_rect(panel, palette.border);
-            for (row, index) in self.quick_access_overflowed_indices().into_iter().enumerate() {
+            // The hidden entries are a contiguous tail of the item list, so the rows are an
+            // index range: the panel used to collect a `Vec<usize>` here on every frame it was
+            // open, for indices it can simply count (W5-35).
+            let first_hidden = self.visible_quick_access_items();
+            for (row, index) in (first_hidden..self.quick_access_items.len()).enumerate() {
                 let Some(item) = self.quick_access_items.get(index) else {
                     continue;
                 };

@@ -1033,11 +1033,16 @@ impl TerminalView {
         }
         let needle_chars: Vec<char> = needle.chars().collect();
         let mut matches = Vec::new();
+        // `plain` was already reused across rows; `haystack` now joins it. Re-collecting a
+        // `Vec<char>` per row cost one allocation per scrollback row per keystroke in the
+        // find bar, for a buffer that is overwritten immediately.
         let mut plain = String::new();
+        let mut haystack: Vec<char> = Vec::new();
         for (row, line) in self.lines.iter().enumerate() {
             plain.clear();
             strip_ansi_into(line, &mut plain);
-            let haystack: Vec<char> = plain.chars().collect();
+            haystack.clear();
+            haystack.extend(plain.chars());
             if needle_chars.len() > haystack.len() {
                 continue;
             }
@@ -2146,6 +2151,9 @@ impl Draw for TerminalView {
                 context.fill_rect(caret, fill);
             }
         }
+        // Tab focus must be visible on the terminal as on every other control (W5-38).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, radius);
         crate::veil_if_disabled(&self.base, context);
     }
 }

@@ -939,6 +939,7 @@ impl Draw for Popover {
             body_rect.height.saturating_sub((CONTENT_PADDING as u32) * 2),
         );
         if content_rect.height == 0 {
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
 
@@ -962,6 +963,7 @@ impl Draw for Popover {
         // paint over that content, so it is drawn only when the card is empty — unless the
         // caller explicitly set a placeholder (which is documented as their choice to keep).
         if self.content.is_some() && self.placeholder.is_none() {
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
 
@@ -983,6 +985,7 @@ impl Draw for Popover {
             muted_ink,
             HorizontalAlignment::Center,
         );
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

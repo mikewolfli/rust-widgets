@@ -1739,6 +1739,9 @@ impl Draw for ListView {
                 ink,
                 effective_font(style),
             );
+            // A list with no rows is the state a disabled list is most often seen in, so the
+            // placeholder face needs the same veil as the populated one below.
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
         if self.model.is_some() {
@@ -1948,6 +1951,7 @@ impl Draw for ListView {
                 }
             }
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 impl crate::event::EventHandler for ListView {

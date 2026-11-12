@@ -827,6 +827,9 @@ impl Draw for SuggestionPopup {
                 ink.with_alpha(120),
                 self.alignment,
             );
+            // The empty-state cap still paints a surface and a caption, so it needs the veil
+            // before it leaves the draw.
+            self.base.paint_disabled_veil(context, popup);
             return;
         }
 
@@ -881,6 +884,9 @@ impl Draw for SuggestionPopup {
                 );
             }
         }
+        // Over the popup's own rectangle: a row's `disabled` detail is per-item and does not
+        // stand in for the control-level disabled cue.
+        self.base.paint_disabled_veil(context, popup);
     }
 }
 

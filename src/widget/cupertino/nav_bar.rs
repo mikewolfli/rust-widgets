@@ -846,6 +846,11 @@ impl Draw for CupertinoNavigationBar {
             }
             context.pop_clip();
         }
+
+        // The bar paints a title, a back affordance and its items but no interaction state of its
+        // own, so the shared hover layer answers the pointer (W5-04). It covers the strip that was
+        // drawn rather than the caller's whole rectangle.
+        self.base.paint_hover_wash(context, bar_rect);
     }
 }
 

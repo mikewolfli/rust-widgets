@@ -38,6 +38,12 @@ pub struct MdiArea {
     /// indistinguishable from the tab's own border until it is clicked.
     hovered_tab_close: Option<usize>,
     background: Background,
+    /// The gradient background's ramp and the inputs that produced it (W5-32).
+    ///
+    /// The gradient arm used to rebuild a stop `Vec` and a `Gradient` on every frame. The ramp is
+    /// a pure function of the painted rect and the two resolved colours, so it is cached against
+    /// them and reused while they hold.
+    background_gradient_cache: RefCell<Option<((Rect, Color, Color), crate::style::Gradient)>>,
     activation_order: ActivationOrder,
     /// Emitted with the child `ObjectId` whenever a sub-window becomes active,
     /// including the automatic activation of the first sub-window on add and of
@@ -412,6 +418,7 @@ impl MdiArea {
             tab_strip_position: TabStripPosition::North,
             hovered_tab_close: None,
             background: Background::Plain,
+            background_gradient_cache: RefCell::new(None),
             activation_order: ActivationOrder::StackingOrder,
             subwindow_activated: Signal1::new(),
             subwindow_title_changed: Signal1::new(),
@@ -2240,18 +2247,27 @@ impl Draw for MdiArea {
                 // the same themed pair the row loop used, described once to the renderer.
                 let top = area;
                 let bottom = area.blend(&border, 0.55);
-                let ramp = crate::style::Gradient::linear(
-                    Point::new(rect.x, rect.y),
-                    Point::new(rect.x, rect.y + rect.height as i32),
-                )
-                .with_stops(crate::compat::vec![
-                    crate::style::GradientStop::new(0.0, top),
-                    crate::style::GradientStop::new(1.0, bottom),
-                ]);
+                // The stops and endpoints are a pure function of the painted rect and those two
+                // colours, so a steady frame reads the cached ramp instead of rebuilding it
+                // (W5-32).
+                let key = (rect, top, bottom);
+                let mut cache = self.background_gradient_cache.borrow_mut();
+                if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+                    let ramp = crate::style::Gradient::linear(
+                        Point::new(rect.x, rect.y),
+                        Point::new(rect.x, rect.y + rect.height as i32),
+                    )
+                    .with_stops(crate::compat::vec![
+                        crate::style::GradientStop::new(0.0, top),
+                        crate::style::GradientStop::new(1.0, bottom),
+                    ]);
+                    *cache = Some((key, ramp));
+                }
+                let ramp = cache.as_ref().map(|(_, ramp)| ramp);
                 context.face_with_gradient_corners(
                     rect,
                     top,
-                    Some(&ramp),
+                    ramp,
                     self.style().surface.unwrap_or_default(),
                     self.style().resolved_corner_radii().to_array(),
                     Color::BLACK,
@@ -2431,6 +2447,8 @@ impl Draw for MdiArea {
                 }
             }
         }
+        // Painted last so the veil covers the frame, every sub-window and the tab strip.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 
@@ -2961,6 +2979,45 @@ mod tests {
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("fill="));
         assert!(svg.len() > 200);
+    }
+
+    /// The gradient background's ramp is built once and reused while its inputs hold (W5-32).
+    ///
+    /// # What this pins
+    ///
+    /// The gradient arm rebuilt a stop `Vec` and a `Gradient` every frame. The second frame must
+    /// read the same stop allocation, and moving the work area must invalidate the key.
+    #[test]
+    fn the_gradient_background_reuses_its_ramp() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.set_background(Background::Gradient);
+
+        let _ = render_to_svg(&mut area);
+        let (first_key, first_stops) = {
+            let cache = area.background_gradient_cache.borrow();
+            let (key, ramp) = cache.as_ref().expect("the gradient arm caches its ramp");
+            (*key, ramp.stops.as_ptr())
+        };
+        assert_eq!(first_key.0, Rect::new(0, 0, 400, 300), "the key is the painted rect");
+
+        let _ = render_to_svg(&mut area);
+        let (again_key, again_stops) = {
+            let cache = area.background_gradient_cache.borrow();
+            let (key, ramp) = cache.as_ref().expect("the ramp stays cached");
+            (*key, ramp.stops.as_ptr())
+        };
+        assert_eq!(first_key, again_key, "a steady frame keeps the gradient key");
+        assert_eq!(first_stops, again_stops, "a steady frame reuses the stop list");
+
+        area.set_geometry(Rect::new(10, 10, 200, 150));
+        let _ = render_to_svg(&mut area);
+        let moved_key = area
+            .background_gradient_cache
+            .borrow()
+            .as_ref()
+            .map(|(key, _)| *key)
+            .expect("the moved area caches a fresh ramp");
+        assert_ne!(first_key, moved_key, "a moved work area rebuilds the gradient");
     }
 
     #[test]

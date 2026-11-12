@@ -8,7 +8,7 @@ use core::cell::{Ref, RefCell};
 use core::fmt::Write as _;
 use rust_widgets::compat::HashMap;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
@@ -1516,6 +1516,12 @@ impl Widget for MapView {
         &mut self.base
     }
 
+    /// The map has keyboard handling (arrow-key pan and zoom keys), so the router must be able to
+    /// focus it. Its kind is `Canvas`, which is not in `wants_keyboard_focus`.
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
     fn size_hint(&self) -> rust_widgets::core::Size {
         rust_widgets::core::Size::new(320, 240)
     }
@@ -1765,19 +1771,21 @@ impl EventHandler for MapView {
                     self.zoom_at(*scale, *center);
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                // A key is a 20 px pan, converted through the same projection and painted zoom a
-                // drag uses. Dividing the raw latitude moved `20 / cos(lat)` screen pixels under
-                // Mercator (2x at 60 deg, ~5.8x at 80 deg), and used the animation's destination
-                // zoom rather than the one on screen.
-                37 => self.pan_screen(20.0, 0.0),
-                38 => self.pan_screen(0.0, 20.0),
-                39 => self.pan_screen(-20.0, 0.0),
-                40 => self.pan_screen(0.0, -20.0),
-                187 | 107 => self.zoom_by(1.12),
-                189 | 109 => self.zoom_by(0.9),
-                _ => { /* Other keys are not relevant */ }
-            },
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
+                match *key {
+                    // A key is a 20 px pan, converted through the same projection and painted zoom a
+                    // drag uses. Dividing the raw latitude moved `20 / cos(lat)` screen pixels under
+                    // Mercator (2x at 60 deg, ~5.8x at 80 deg), and used the animation's destination
+                    // zoom rather than the one on screen.
+                    key_codes::LEFT => self.pan_screen(20.0, 0.0),
+                    key_codes::UP => self.pan_screen(0.0, 20.0),
+                    key_codes::RIGHT => self.pan_screen(-20.0, 0.0),
+                    key_codes::DOWN => self.pan_screen(0.0, -20.0),
+                    187 | 107 => self.zoom_by(1.12),
+                    189 | 109 => self.zoom_by(0.9),
+                    _ => { /* Other keys are not relevant */ }
+                }
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 if self.show_map_controls {
                     if self.control_fits(self.zoom_control.base().geometry())
@@ -2025,6 +2033,11 @@ impl Draw for MapView {
                 self.scale_bar.draw(context);
             }
         }
+        self.base.paint_hover_wash(context, rect);
+        // Tab focus must be visible on the map as on every other control (W5-38).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, radius);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 
@@ -2424,7 +2437,8 @@ mod tests {
         map.set_center(0.0, 60.0);
         let (_, before) = map.world_to_screen(0.0, 55.0);
 
-        map.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        map.handle_event(&Event::FocusGained { reason: rust_widgets::event::FocusReason::Tab });
+        map.handle_event(&Event::KeyPress { key: key_codes::DOWN, modifiers: 0 });
 
         let (_, after) = map.world_to_screen(0.0, 55.0);
         let moved = (after - before).abs();

@@ -873,6 +873,11 @@ impl Draw for KeySequenceEdit {
         let ring_rect = self.base.geometry();
         let ring_radius = self.style().resolved_corner_radii().to_array()[0];
         self.base.draw_focus_ring(context, ring_rect, ring_radius);
+
+        // The field paints no interaction state of its own, so the shared layers are what answer
+        // the pointer and a disabled control (W5-04, W5-03).
+        self.base.paint_hover_wash(context, rect);
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

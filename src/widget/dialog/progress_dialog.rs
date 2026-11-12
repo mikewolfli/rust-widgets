@@ -1053,6 +1053,7 @@ impl Draw for ProgressDialog {
                 HorizontalAlignment::Center,
             );
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -147,7 +147,6 @@ pub use widget::ButtonState;
 #[cfg(full_widgets)]
 pub use widget::Calendar;
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
 pub use widget::Canvas;
 pub use widget::CapabilityAccessError;
 pub use widget::CapabilityValue;
@@ -199,7 +198,6 @@ pub use widget::CommandLink;
 #[cfg(full_widgets)]
 pub use widget::CommandPalette;
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
 pub use widget::CompletedMention;
 #[cfg(full_widgets)]
 pub use widget::ContextMenu;
@@ -222,7 +220,6 @@ pub use widget::DataView;
 #[cfg(full_widgets)]
 pub use widget::DateEdit;
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
 pub use widget::DatePicker;
 #[cfg(full_widgets)]
 pub use widget::DateRangePicker;
@@ -231,17 +228,12 @@ pub use widget::DateTimeEdit;
 #[cfg(full_widgets)]
 pub use widget::DateTimePicker;
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
 #[cfg(all(full_widgets, feature = "code-editor"))]
 pub use widget::DiagnosticMarker;
 #[cfg(full_widgets)]
 pub use widget::Dial;
 #[cfg(full_widgets)]
 pub use widget::Dialog;
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
 #[cfg(full_widgets)]
 pub use widget::DirectoryDialog;
 #[cfg(widgets_unstripped)]
@@ -301,8 +293,6 @@ pub use widget::FreeformShapeWidget;
 #[cfg(full_widgets)]
 pub use widget::GalleryImage;
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
 pub use widget::Grid;
 #[cfg(full_widgets)]
 pub use widget::GridTable;
@@ -350,11 +340,6 @@ pub use widget::InplaceEditor;
 #[cfg(full_widgets)]
 pub use widget::InputDialog;
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
 pub use widget::KeySequenceEdit;
 pub use widget::Keyboard;
 #[cfg(widgets_unstripped)]
@@ -370,8 +355,6 @@ pub use widget::ListBox;
 pub use widget::ListModel;
 #[cfg(full_widgets)]
 pub use widget::ListView;
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
 #[cfg(full_widgets)]
 #[cfg(all(full_widgets, feature = "markdown-editor"))]
 pub use widget::MarkdownEditor;
@@ -395,7 +378,6 @@ pub use widget::MdiArea;
 pub use widget::MdiWindowMenuAction;
 #[cfg(widgets_unstripped)]
 pub use widget::MdiWindowMenuEntry;
-#[cfg(full_widgets)]
 #[cfg(full_widgets)]
 pub use widget::Mention;
 #[cfg(full_widgets)]
@@ -504,17 +486,15 @@ pub use widget::RibbonGroup;
 pub use widget::RibbonItem;
 #[cfg(widgets_unstripped)]
 pub use widget::RichEdit;
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
+// Available in every profile: `widget/mod.rs` re-exports it without a gate, so the
+// crate root must not gate the same name out of a stripped build (W5-08).
 pub use widget::Roller;
 #[cfg(widgets_unstripped)]
 pub use widget::SafeArea;
 #[cfg(widgets_unstripped)]
 pub use widget::SafeAreaInsets;
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
+// Available in every profile: `widget/mod.rs` re-exports it without a gate, so the
+// crate root must not gate the same name out of a stripped build (W5-08).
 pub use widget::ScrollArea;
 pub use widget::ScrollBar;
 #[cfg(full_widgets)]
@@ -591,20 +571,15 @@ pub use widget::TableModel;
 pub use widget::TableWidget;
 #[cfg(widgets_unstripped)]
 pub use widget::TagInput;
-#[cfg(full_widgets)]
+// Available in every profile: `widget/mod.rs` re-exports it without a gate, so the
+// crate root must not gate the same name out of a stripped build (W5-08).
 pub use widget::TextArea;
 #[cfg(widgets_unstripped)]
 pub use widget::TextEdit;
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
 pub use widget::TimeEdit;
 #[cfg(full_widgets)]
 pub use widget::TimePicker;
-#[cfg(full_widgets)]
 #[cfg(full_widgets)]
 pub use widget::TimelineItem;
 #[cfg(full_widgets)]
@@ -644,7 +619,6 @@ pub use widget::UndoView;
 #[cfg(full_widgets)]
 pub use widget::VecListModel;
 #[cfg(full_widgets)]
-#[cfg(full_widgets)]
 pub use widget::VirtualList;
 #[cfg(full_widgets)]
 pub use widget::VirtualTable;
@@ -663,8 +637,8 @@ pub use widget::Wizard;
 pub use widget::WizardDialog;
 #[cfg(full_widgets)]
 pub use widget::WizardStep;
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
+// Available in every profile: `widget/mod.rs` re-exports it without a gate, so the
+// crate root must not gate the same name out of a stripped build (W5-08).
 pub use widget::BASE_PROPERTY_NAMES;
 #[cfg(full_widgets)]
 pub use widget::FAB;

@@ -599,6 +599,7 @@ impl Draw for PopupWindow {
         }
 
         if self.title.is_empty() {
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
         // Title bar height is clamped to the popup so a short popup shows the title
@@ -651,6 +652,7 @@ impl Draw for PopupWindow {
         if let Some(button) = close_button {
             crate::widget::draw_icon_centered(context, button, button.height, ink, IconName::Close);
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

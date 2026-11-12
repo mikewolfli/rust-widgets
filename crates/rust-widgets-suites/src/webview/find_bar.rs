@@ -18,7 +18,7 @@
 use crate::webview::web_engine::{WebEngineView, WebFindRequest};
 use rust_widgets::compat::{lock, Arc, Mutex};
 use rust_widgets::core::{Color, HorizontalAlignment, Rect, Size};
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -441,6 +441,7 @@ impl Draw for WebFindBar {
         context.fill_rounded_rect(rect, 6, fill);
         context.draw_rounded_rect_stroke(rect, 6, ink.with_alpha(60), 1);
         if !self.visible {
+            crate::veil_if_disabled(&self.base, context);
             return;
         }
         // The query line, fitted to the box the trailing controls leave. The counter starts at
@@ -482,6 +483,7 @@ impl Draw for WebFindBar {
             if self.case_sensitive { ink } else { ink.with_alpha(90) },
             HorizontalAlignment::Center,
         );
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 
@@ -494,16 +496,16 @@ impl EventHandler for WebFindBar {
         }
         match event {
             // Escape closes the search UI, the standard browser behaviour.
-            Event::KeyPress { key: 27, .. } => self.close(),
+            Event::KeyPress { key: key_codes::ESCAPE, .. } => self.close(),
             // Enter advances; Shift+Enter goes back (the shift bit is bit 0 in this crate).
-            Event::KeyPress { key: 13, modifiers } => {
+            Event::KeyPress { key: key_codes::ENTER, modifiers } => {
                 if *modifiers & 1 != 0 {
                     self.previous_match();
                 } else {
                     self.next_match();
                 }
             }
-            Event::KeyPress { key: 8, .. } => {
+            Event::KeyPress { key: key_codes::BACKSPACE, .. } => {
                 if self.query.pop().is_some() {
                     let query = self.query.clone();
                     self.set_match_progress(0, 0);

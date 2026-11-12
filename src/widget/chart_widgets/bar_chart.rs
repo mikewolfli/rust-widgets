@@ -322,6 +322,14 @@ pub struct BarChart {
     crosshair: Option<crate::widget::chart_widgets::chart_crosshair::ChartCrosshair>,
     /// An attached standard legend; when set it replaces the self-drawn column.
     legend: Option<Legend>,
+    /// The rows the attached legend should show, and the `data_revision` they were built from.
+    ///
+    /// `data_revision` is bumped by every mutator that changes the series, their names or their
+    /// visibility, so it keys every input [`Self::legend_entries`] reads. While it is unchanged a
+    /// draw reuses the rows instead of rebuilding a `Vec` plus one `String` per series every frame
+    /// (W5-06, the same shape as `chart.rs` CH2-04). The cached rows are still compared against
+    /// the attached legend's own, so an edit made through [`Self::legend_mut`] is corrected.
+    legend_entries_cache: Option<(u64, crate::compat::Vec<LegendEntry>)>,
     /// Toggles queued by the attached legend's `series_toggled` signal.
     legend_events: crate::compat::Arc<crate::compat::Mutex<crate::compat::Vec<(usize, bool)>>>,
     /// The attached chart data table binding (COMP-A8).
@@ -468,6 +476,7 @@ impl BarChart {
             y_axis_label: None,
             crosshair: None,
             legend: None,
+            legend_entries_cache: None,
             legend_events: crate::compat::Arc::new(crate::compat::Mutex::new(
                 crate::compat::Vec::new(),
             )),
@@ -775,12 +784,28 @@ impl BarChart {
     /// Brings the attached legend's rows in line with the chart's series and visibility.
     fn sync_legend(&mut self) {
         // A toggle made on the companion programmatically (not through the chart's event path)
-        // is queued by the same slot; apply it before overwriting the companion's rows.
+        // is queued by the same slot; apply it before overwriting the companion's rows. A toggle
+        // bumps `data_revision`, so the rows are rebuilt below when one arrived.
         self.drain_legend_toggles();
-        let desired = self.legend_entries();
+        // No attached legend means there is nothing to keep in line, and no reason to build the
+        // rows at all (the self-drawn column reads the series directly). This early return is why
+        // an unattached chart no longer formats `Series N` labels for a legend it does not have.
+        if self.legend.is_none() {
+            return;
+        }
+        let revision = self.data_revision;
+        let fresh =
+            self.legend_entries_cache.as_ref().is_some_and(|(cached, _)| *cached == revision);
+        if !fresh {
+            let desired = self.legend_entries();
+            self.legend_entries_cache = Some((revision, desired));
+        }
+        let Some((_, desired)) = self.legend_entries_cache.as_ref() else {
+            return;
+        };
         if let Some(legend) = self.legend.as_mut() {
             if legend.entries() != desired.as_slice() {
-                legend.set_entries(desired);
+                legend.set_entries(desired.clone());
             }
         }
     }

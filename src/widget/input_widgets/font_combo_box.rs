@@ -1693,6 +1693,9 @@ impl Draw for FontComboBox {
                 );
             }
         }
+        // The field paints a family name and an indicator but no interaction state of its own, so
+        // the shared hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(ctx, g);
         // ── Keyboard focus ring ──
         //
         // Around the field band — the part the keyboard operates on — rather than around the

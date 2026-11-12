@@ -1541,6 +1541,9 @@ impl Draw for ToolBox {
         let ring_rect = self.base.geometry();
         let ring_radius = self.style().resolved_corner_radii().to_array()[0];
         self.base.draw_focus_ring(context, ring_rect, ring_radius);
+        // Over the whole control. The per-item `enabled` above only dims a tab that cannot be
+        // selected; it is not the control-level disabled cue.
+        self.base.paint_disabled_veil(context, ring_rect);
     }
 }
 

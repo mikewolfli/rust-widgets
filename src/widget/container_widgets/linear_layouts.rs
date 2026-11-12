@@ -579,6 +579,11 @@ impl Draw for Flex {
         // C-11: mounted item controls are placed before they are painted.
         self.place_item_widgets();
         paint_items(ctx, &self.base, "flex", outer, &rects, &self.items);
+
+        // The layout paints its items but no interaction state of its own, so the shared layers
+        // answer the pointer and a disabled control (W5-04, W5-03).
+        self.base.paint_hover_wash(ctx, outer);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -982,6 +987,11 @@ impl Draw for FlowLayout {
         let rects = self.cached_item_rects();
         self.place_item_widgets();
         paint_items(ctx, &self.base, "flow_layout", outer, &rects, &self.items);
+
+        // The layout paints its items but no interaction state of its own, so the shared layers
+        // answer the pointer and a disabled control (W5-04, W5-03).
+        self.base.paint_hover_wash(ctx, outer);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -1385,6 +1395,11 @@ impl Draw for WrapLayout {
         let rects = self.cached_item_rects();
         self.place_item_widgets();
         paint_items(ctx, &self.base, "wrap_layout", outer, &rects, &self.items);
+
+        // The layout paints its items but no interaction state of its own, so the shared layers
+        // answer the pointer and a disabled control (W5-04, W5-03).
+        self.base.paint_hover_wash(ctx, outer);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 

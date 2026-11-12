@@ -1610,6 +1610,9 @@ impl Draw for ScrollBar {
                 );
             }
         }
+        // The painted band, not `geometry()`: the trough is a centred strip and the veil must
+        // not reach past it. The idle `opacity` fade above is a separate gesture.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

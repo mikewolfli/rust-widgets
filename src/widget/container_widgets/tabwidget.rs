@@ -2870,6 +2870,9 @@ impl Draw for TabWidget {
                 }
             }
         }
+        // Over the content page and the tab strip. A disabled tab's own muting above is a
+        // per-tab fact and does not stand in for the control-level disabled cue.
+        self.base.paint_disabled_veil(context, _rect);
     }
 }
 

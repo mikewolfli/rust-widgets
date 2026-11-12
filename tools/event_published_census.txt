@@ -180,11 +180,11 @@ query_builder: query_changed, rows_changed, query_committed, row_field_clicked, 
 radar_chart: series_clicked, axis_hovered, vertex_clicked, vertex_hovered, series_visibility_changed
 radio_button: selected, checked_changed
 range_preset_bar: preset_selected
-range_slider: range_changed
+range_slider: range_changed, slider_pressed, slider_released
 rating: rating_changed, hover_preview_changed
 refresh_control: refresh_triggered
 ribbon_bar: current_tab_changed, item_triggered, application_clicked, group_overflow_clicked, quick_access_clicked, quick_access_overflow_clicked
-rich_edit: text_changed, selection_changed, cursor_position_changed, read_only_changed
+rich_edit: text_changed, selection_changed, cursor_position_changed, read_only_changed, undo_available, redo_available
 roller: changed
 safe_area: 
 scroll_area: scroll_position_changed
@@ -225,7 +225,7 @@ table_widget: selection_changed, focused_row_changed, context_menu_requested, ed
 tag: closed, selected_changed
 tag_group: tag_closed, selection_changed
 tag_input: tags_changed, tag_overflow, tag_rejected
-text_area: changed, context_menu_requested, selection_changed, cursor_position_changed, undo_available, redo_available
+text_area: changed, context_menu_requested, selection_changed, cursor_position_changed, undo_available, redo_available, editing_finished
 text_edit: context_menu_requested, cursor_position_changed, redo_available, selection_changed, text_changed, undo_available
 time_edit: popup_visibility_changed, time_changed, editing_finished
 time_picker: popup_visibility_changed, time_changed, editing_finished  [alias_of=time_edit]
@@ -241,8 +241,8 @@ tooltip:
 tooltip_manager: tooltip_shown, tooltip_hidden
 tree_table: projection_changed, selection_changed, context_menu_requested, expansion_changed, sort_changed, fetch_started, fetch_finished
 tree_find_bar: match_changed
-tree_view: activated, collapsed, drag_finished, expanded, fetch_finished, fetch_started, focused_node_changed, node_double_clicked, header_clicked, row_move_requested, selection_changed, selection_set_changed, fetch_failure
-virtual_list: selection_changed, visible_window_changed, drag_finished, selected_rows_changed
+tree_view: activated, collapsed, context_menu_requested, drag_finished, expanded, fetch_finished, fetch_started, focused_node_changed, node_double_clicked, header_clicked, row_move_requested, selection_changed, selection_set_changed, fetch_failure
+virtual_list: selection_changed, visible_window_changed, drag_finished, selected_rows_changed, context_menu_requested
 virtual_table: visible_window_changed, selection_changed, selection_set_changed, context_menu_requested, sort_changed
 window: closed, focus_gained, focus_lost, moved
 wizard_dialog: finished, canceled, step_changed, help_requested, custom_button_clicked, sidebar_page_activated

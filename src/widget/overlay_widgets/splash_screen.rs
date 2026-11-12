@@ -775,6 +775,11 @@ impl Draw for SplashScreen {
                 HorizontalAlignment::Center,
             );
         }
+
+        // The screen paints no interaction state of its own, so the shared layers are what answer
+        // the pointer and a disabled control (W5-04, W5-03).
+        self.base.paint_hover_wash(context, rect);
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

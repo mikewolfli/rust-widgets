@@ -172,6 +172,29 @@ thread_local! {
     /// cost this buffer removes.
     static EXPANSION: core::cell::RefCell<ExpansionScratch> =
         const { core::cell::RefCell::new(ExpansionScratch::new()) };
+    /// Vertex staging buffer for one path command, reused across paths and frames (W5-18).
+    ///
+    /// A path command owns its vertices (`Arc<[(i32, i32)]>`), so the shared slice has to be
+    /// allocated either way; what this removes is the *intermediate* `Vec` — a scene with one
+    /// filled path per shape allocated, filled, copied and freed one per path per frame. A
+    /// thread-local of its own rather than a field of `ExpansionScratch`: conversion already runs
+    /// inside `EXPANSION`'s borrow whenever the stream is compound, so borrowing it again here
+    /// would panic.
+    static PATH_POINTS: core::cell::RefCell<Vec<(i32, i32)>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Stages `points` in the reusable buffer and returns the shared slice the command carries.
+///
+/// The mapping from [`Point`] to the backend's `(i32, i32)` vertex is the whole conversion, so it
+/// lives here once instead of in each path arm.
+fn shared_points(points: &[Point]) -> crate::compat::Arc<[(i32, i32)]> {
+    PATH_POINTS.with(|staging| {
+        let mut staging = staging.borrow_mut();
+        staging.clear();
+        staging.extend(points.iter().map(|point| (point.x, point.y)));
+        crate::compat::Arc::from(&staging[..])
+    })
 }
 
 /// Converts an already-expanded stream, one command per arm.
@@ -354,11 +377,7 @@ fn convert_commands(
                     // A filled path is one implicitly closed even-odd contour, which is
                     // precisely what the backend's filled-path form draws.
                     Ok(WgpuDrawCommand::DrawPath {
-                        points: points
-                            .iter()
-                            .map(|point| (point.x, point.y))
-                            .collect::<Vec<_>>()
-                            .into(),
+                        points: shared_points(points),
                         closed: *closed,
                         color: rgba8(color),
                         filled: true,
@@ -390,12 +409,9 @@ fn convert_commands(
             }
             RenderCommand::FillPathNonZero { path, color } => {
                 Ok(WgpuDrawCommand::FillPathNonZero {
-                    points: path
-                        .points()
-                        .iter()
-                        .map(|point| (point.x, point.y))
-                        .collect::<Vec<_>>()
-                        .into(),
+                    points: shared_points(path.points()),
+                    // The contour list is a borrowed slice, not a buffer this conversion builds,
+                    // so turning it into the shared slice is already a single allocation.
                     contours: path.contours().into(),
                     color: rgba8(color),
                     clip: None,
@@ -1026,6 +1042,41 @@ fn line_coverage_command(
     Some(WgpuDrawCommand::DrawTextCoverage { rect, coverage, color: rgba8(&color), clip: None })
 }
 
+/// How many bytes of cached coverage masks may be retained, in total.
+///
+/// One mask may be as large as [`LINE_COVERAGE_LIMIT`], so the cache is bounded by **bytes**
+/// rather than by entry count: a count-only bound of a few entries could pin tens of megabytes.
+const MASK_CACHE_BYTES: usize = LINE_COVERAGE_LIMIT as usize;
+
+/// One cached coverage mask, with every input it depends on.
+///
+/// The mask is a pure function of the segment's endpoints, its width and the antialiasing grid;
+/// the colour is applied by the carrier, not baked into the bytes. The grid is part of the key
+/// because a host can change it at runtime (`set_default_software_render_config`), and a mask
+/// computed under the old grid would draw the wrong coverage.
+struct CachedCoverageMask {
+    from: crate::core::Point,
+    to: crate::core::Point,
+    width: u32,
+    grid: u8,
+    rect: PixelRect,
+    bytes: crate::compat::Arc<[u8]>,
+}
+
+thread_local! {
+    /// Recent coverage masks, oldest first (W5-18).
+    ///
+    /// A still scene redraws the same antialiased segments every presented frame, so the per-pixel
+    /// coverage sweep used to be repeated for identical input; this is the same memoisation
+    /// `ramp_bytes_of` applies to a gradient's ramp. Keys are compared exactly, so a hit cannot
+    /// return another segment's mask.
+    static MASK_CACHE: core::cell::RefCell<VecDeque<CachedCoverageMask>> =
+        const { core::cell::RefCell::new(VecDeque::new()) };
+    /// Coverage bytes for one segment, refilled rather than reallocated per line.
+    static COVERAGE: core::cell::RefCell<Vec<u8>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
 fn line_coverage_mask(
     from: crate::core::Point,
     to: crate::core::Point,
@@ -1049,27 +1100,57 @@ fn line_coverage_mask(
     if box_width <= 0 || box_height <= 0 || box_width * box_height > LINE_COVERAGE_LIMIT {
         return None;
     }
-    let mut bytes = vec![0u8; (box_width * box_height) as usize];
-    let (ax, ay) = (from.x as f32, from.y as f32);
-    let (bx, by) = (to.x as f32, to.y as f32);
-    for row in 0..box_height {
-        let py = min_y + row as i32;
-        for column in 0..box_width {
-            let px = min_x + column as i32;
-            let coverage =
-                crate::render::line_stroke_coverage_grid(px, py, ax, ay, bx, by, half, grid);
-            if coverage > 0.0 {
-                // The carrier multiplies the colour by `byte / 255`, so this is the closest byte
-                // to the reference's fractional coverage.
-                bytes[(row * box_width + column) as usize] =
-                    (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
-            }
+    let rect = PixelRect { x: min_x, y: min_y, width: box_width as u32, height: box_height as u32 };
+    MASK_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let hit = cache.iter().find(|mask| {
+            mask.from == from && mask.to == to && mask.width == width && mask.grid == grid
+        });
+        if let Some(mask) = hit {
+            return Some((mask.rect, crate::compat::Arc::clone(&mask.bytes)));
         }
-    }
-    Some((
-        PixelRect { x: min_x, y: min_y, width: box_width as u32, height: box_height as u32 },
-        crate::compat::Arc::from(bytes),
-    ))
+        let (ax, ay) = (from.x as f32, from.y as f32);
+        let (bx, by) = (to.x as f32, to.y as f32);
+        let shared: crate::compat::Arc<[u8]> = COVERAGE.with(|staging| {
+            let mut staging = staging.borrow_mut();
+            let bytes = &mut *staging;
+            bytes.clear();
+            bytes.resize((box_width * box_height) as usize, 0);
+            for row in 0..box_height {
+                let py = min_y + row as i32;
+                for column in 0..box_width {
+                    let px = min_x + column as i32;
+                    let coverage = crate::render::line_stroke_coverage_grid(
+                        px, py, ax, ay, bx, by, half, grid,
+                    );
+                    if coverage > 0.0 {
+                        // The carrier multiplies the colour by `byte / 255`, so this is the
+                        // closest byte to the reference's fractional coverage.
+                        bytes[(row * box_width + column) as usize] =
+                            (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    }
+                }
+            }
+            crate::compat::Arc::from(&bytes[..])
+        });
+        let mut retained: usize = cache.iter().map(|mask| mask.bytes.len()).sum();
+        while let Some(front) = cache.front() {
+            if retained + shared.len() <= MASK_CACHE_BYTES {
+                break;
+            }
+            retained -= front.bytes.len();
+            cache.pop_front();
+        }
+        cache.push_back(CachedCoverageMask {
+            from,
+            to,
+            width,
+            grid,
+            rect,
+            bytes: crate::compat::Arc::clone(&shared),
+        });
+        Some((rect, shared))
+    })
 }
 
 /// The geometry a `RenderCommand::DrawGradient` maps onto, as `(kind, start, end)` in the

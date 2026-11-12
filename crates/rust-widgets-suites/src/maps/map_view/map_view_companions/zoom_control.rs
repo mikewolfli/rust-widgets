@@ -507,6 +507,7 @@ impl Draw for ZoomControl {
                 HorizontalAlignment::Left,
             );
         }
+        self.base.paint_hover_wash(context, rect);
         crate::veil_if_disabled(&self.base, context);
     }
 }

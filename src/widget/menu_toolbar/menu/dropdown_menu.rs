@@ -249,6 +249,12 @@ struct ListPaint<'a> {
     /// the painter now consumes it, so a key movement is visible instead of silent
     /// (M-010). Selection still takes precedence in the same fill branch.
     active: Option<usize>,
+    /// The row the pointer is over, if any.
+    ///
+    /// Hover is a separate fact from the keyboard-active row: both paint the same highlight,
+    /// but only one of them decides what Enter chooses. Folding hover into `active` would make
+    /// a pass-over silently move the keyboard target.
+    hovered: Option<usize>,
     /// Whether a row with children paints its disclosure arrow.
     ///
     /// Only the level that is allowed to open a deeper panel says `true`; the deepest
@@ -293,7 +299,8 @@ fn draw_item_list(
         let is_selected = paint.highlight_selection
             && paint.selected_value.is_some_and(|value| item.value.as_str() == value);
         let is_active = paint.active == Some(index);
-        if is_selected || is_active {
+        let is_hovered = paint.hovered == Some(index);
+        if is_selected || is_active || is_hovered {
             context.fill_rounded_rect(row, 2, palette.highlight);
         }
 
@@ -427,6 +434,13 @@ pub struct DropdownMenu {
     submenus: Vec<SubmenuPanel>,
     /// The top-level row the pointer last addressed, so Right can open its submenu.
     active_index: Option<usize>,
+    /// The row the pointer is hovering, as `(level, index)` — level 0 is the field's list.
+    ///
+    /// The menu popup highlights the row under the pointer on `MouseMove` and clears it on
+    /// `MouseLeave`; this control had no hover state at all, so a row only lit up after a click.
+    /// The level is stored because a child panel has its own row space: index 1 of the list and
+    /// index 1 of the open panel are different rows.
+    hovered_row: Option<(usize, usize)>,
     /// How the field's value and each item's label are aligned within their own row.
     ///
     /// Both runs take the same value because they are the same column of text seen twice -- what the
@@ -477,6 +491,7 @@ impl DropdownMenu {
             scroll_offset: 0,
             submenus: Vec::new(),
             active_index: None,
+            hovered_row: None,
             alignment: crate::core::Alignment::Left,
             item_selected: Signal1::new(),
             item_toggled: Signal1::new(),
@@ -1063,6 +1078,7 @@ impl DropdownMenu {
         self.scroll_offset = 0;
         self.submenus.clear();
         self.active_index = None;
+        self.hovered_row = None;
         self.clamp_scroll();
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.id());
@@ -1078,6 +1094,7 @@ impl DropdownMenu {
         self.reveal.set_open(false);
         self.submenus.clear();
         self.active_index = None;
+        self.hovered_row = None;
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_popup_grab_for(self.id());
         self.base.request_redraw();
@@ -1395,6 +1412,24 @@ impl DropdownMenu {
             }
         }
         None
+    }
+
+    /// The row a hover should highlight at `pos`, as `(level, index)`.
+    ///
+    /// A separator or a disabled row is not a choice, so passing over one leaves the previous
+    /// highlight cleared rather than painting a row the pointer cannot activate.
+    fn hover_row_at(&self, pos: Point) -> Option<(usize, usize)> {
+        if !self.expanded {
+            return None;
+        }
+        if let Some((level, index)) = self.hit_test_submenu(pos) {
+            let selectable = self
+                .items_at(level)
+                .and_then(|items| items.get(index))
+                .is_some_and(|item| item.enabled && !item.separator);
+            return selectable.then_some((level, index));
+        }
+        self.hit_test_item(pos).map(|index| (0, index))
     }
 }
 
@@ -1749,6 +1784,9 @@ impl Draw for DropdownMenu {
                     selected_value: self.selected_value.as_deref(),
                     highlight_selection: true,
                     active: self.active_index,
+                    hovered: self
+                        .hovered_row
+                        .and_then(|(level, index)| (level == 0).then_some(index)),
                     branches_open: true,
                 },
                 style,
@@ -1808,6 +1846,9 @@ impl Draw for DropdownMenu {
                     selected_value: None,
                     highlight_selection: false,
                     active: panel.active,
+                    hovered: self
+                        .hovered_row
+                        .and_then(|(level, index)| (level == offset + 1).then_some(index)),
                     // `offset + 1` is the level these rows sit on; the deepest panel
                     // cannot open another, so it paints no arrow.
                     branches_open: offset + 1 < MAX_SUBMENU_DEPTH,
@@ -1816,6 +1857,11 @@ impl Draw for DropdownMenu {
                 palette,
             );
         }
+
+        // The field paints a value and an arrow but no interaction state of its own, so the shared
+        // hover layer answers the pointer (W5-04). It covers the field only: the list and the child
+        // panels are separate popup surfaces drawn beneath it.
+        self.base.paint_hover_wash(context, geom);
     }
 }
 
@@ -1851,6 +1897,22 @@ impl EventHandler for DropdownMenu {
                         self.collapse();
                     }
                 }
+            }
+            Event::MouseMove { pos } => {
+                let hovered = self.hover_row_at(*pos);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
+            }
+            // The pointer leaving the control clears the row highlight, exactly as the menu popup
+            // does; without it the last hovered row stayed lit after the pointer had gone.
+            Event::MouseLeave { .. } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
             }
             Event::KeyPress { key, modifiers } => match *key {
                 key_codes::ESCAPE if !self.submenus.is_empty() => self.collapse_submenu(),
@@ -2515,6 +2577,30 @@ mod tests {
         assert_eq!(dm.active_index, Some(0));
         let after = render_to_svg(&mut dm);
         assert_ne!(before, after, "moving the highlight must change the frame");
+    }
+
+    /// W5-29: the row under the pointer is painted while hovered and cleared on leave.
+    ///
+    /// The menu popup highlights the row under the pointer from `MouseMove`; this control only
+    /// ever highlighted a row after a click. This drives the pointer path and compares renders,
+    /// so a hover state that is tracked but never painted fails.
+    #[test]
+    fn the_hovered_row_is_painted_and_cleared_on_leave() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("a", "Alpha"));
+        dm.add_item(DropdownItem::new("b", "Beta"));
+        dm.expand();
+        dm.reveal.jump_to(true);
+        let resting = render_to_svg(&mut dm);
+
+        let row = dm.item_rect(1);
+        dm.handle_event(&Event::MouseMove { pos: Point::new(row.x + 5, row.y + 5) });
+        let hovered = render_to_svg(&mut dm);
+        assert_ne!(resting, hovered, "the row under the pointer must be highlighted");
+
+        dm.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
+        let after_leave = render_to_svg(&mut dm);
+        assert_eq!(resting, after_leave, "leaving the control clears the row highlight");
     }
 
     /// M-011: selection and its label address rows at any nesting depth.

@@ -970,6 +970,8 @@ impl Draw for MediaTransportBar {
         if filled > 0 {
             context.fill_rounded_rect(Rect::new(track.x, track.y, filled, track.height), 2, accent);
         }
+        self.base.paint_hover_wash(context, strip);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

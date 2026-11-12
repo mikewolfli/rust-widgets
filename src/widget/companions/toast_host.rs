@@ -579,6 +579,9 @@ impl Draw for ToastHost {
             let rect = self.geometry();
             context.fill_rect(rect, surface.with_alpha(32));
             context.draw_rect(rect, surface.blend(&ink, 0.18));
+            // The resting slot is the control's whole visible surface, so it answers the pointer
+            // through the shared hover layer like the queue below (W5-04).
+            self.base.paint_hover_wash(context, rect);
             return;
         }
         for index in 0..self.visible.len() {
@@ -604,6 +607,9 @@ impl Draw for ToastHost {
                 crate::core::HorizontalAlignment::Left,
             );
         }
+        // The host paints no interaction state of its own, so the shared hover layer is what
+        // answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, self.geometry());
     }
 }
 

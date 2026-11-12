@@ -688,6 +688,7 @@ impl Draw for TerminalFindBar {
             accent,
             HorizontalAlignment::Right,
         );
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

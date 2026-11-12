@@ -95,7 +95,31 @@ mod wiring_tests;
 /// instead of laying down a mid-grey with no direction (T3-11).
 ///
 /// Call this **after** the control has painted its content, so the veil covers it.
-#[cfg(any(feature = "finance", feature = "maps", feature = "devtools"))]
+///
+/// The gate covers every content group with a `Draw` impl: the earlier three-feature list made
+/// the helper unreachable from half the crate, so those controls could not call it at all
+/// (W5-03). A `form`-only build compiles the helper with no caller today, so the dead-code lint
+/// is allowed in exactly that configuration rather than everywhere.
+#[cfg_attr(
+    not(any(
+        feature = "finance",
+        feature = "maps",
+        feature = "devtools",
+        feature = "media-playback",
+        feature = "webview",
+        feature = "project"
+    )),
+    allow(dead_code)
+)]
+#[cfg(any(
+    feature = "finance",
+    feature = "maps",
+    feature = "devtools",
+    feature = "media-playback",
+    feature = "webview",
+    feature = "project",
+    feature = "form"
+))]
 pub(crate) fn veil_if_disabled(
     base: &rust_widgets::widget::BaseWidget,
     context: &mut rust_widgets::render::RenderContext,

@@ -418,6 +418,10 @@ impl Draw for SpeedDial {
             );
         }
 
+        // The dial paints no interaction state of its own, so the shared hover layer is what
+        // answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, self.base.geometry());
+
         // Tab and Shortcut focus must be visible here as on every other control (U3-04).
         let ring_rect = self.base.geometry();
         let ring_radius = self.style().resolved_corner_radii().to_array()[0];

@@ -1096,6 +1096,7 @@ impl Draw for FindReplaceDialog {
             muted_ink,
             HorizontalAlignment::Center,
         );
+        self.base.paint_disabled_veil(context, geom);
     }
 }
 

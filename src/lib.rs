@@ -320,9 +320,10 @@ pub use api::{
     WidgetTriggerEvent, WidgetTriggerKind, Window, WindowStateFlag,
 };
 
-// These four are part of the full widget registry only; `mini` and `embedded` compile the
-// capability table (and those controls) out, so the crate root must not name them there.
-#[cfg(full_widgets)]
+// These four are value types and the property contract, not registry-built controls: `mini` and
+// `embedded` still compile them, and `widget/mod.rs` re-exports them without a gate. Gating them
+// here made `rust_widgets::ScrollArea` unreachable in a stripped build while
+// `rust_widgets::widget::ScrollArea` was reachable -- one name, two answers (W5-08).
 pub use api::{Roller, ScrollArea, TextArea, BASE_PROPERTY_NAMES};
 
 #[cfg(alloc_frugal)]

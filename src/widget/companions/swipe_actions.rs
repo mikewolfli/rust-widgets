@@ -383,6 +383,10 @@ impl Draw for SwipeActions {
         } else if self.offset < 0.0 {
             self.draw_side(context, SwipeSide::Trailing);
         }
+        // The layer paints action bands but no interaction state of its own, so the shared hover
+        // layer answers the pointer (W5-04). It goes over the whole rect because an unswiped row
+        // leaves that rect to the row's own content, which this layer sits behind.
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

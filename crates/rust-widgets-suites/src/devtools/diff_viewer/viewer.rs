@@ -13,7 +13,7 @@ const ROW_BOTTOM_INSET: i32 = 14;
 use core::cell::RefCell;
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::wheel::WheelScroll;
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
@@ -1507,7 +1507,7 @@ impl EventHandler for DiffViewer {
                 return;
             }
             match *key {
-                38 => {
+                key_codes::UP => {
                     if let Some(index) = self.selected_index {
                         if index > 0 && self.select_index(index - 1) {
                             // A row selected by the keyboard must be scrolled into view; without
@@ -1517,20 +1517,20 @@ impl EventHandler for DiffViewer {
                         }
                     }
                 }
-                40 => {
+                key_codes::DOWN => {
                     if let Some(index) = self.selected_index {
                         if index + 1 < self.lines.len() && self.select_index(index + 1) {
                             self.reveal_line(index + 1);
                         }
                     }
                 }
-                33 => {
+                key_codes::PAGE_UP => {
                     self.previous_change();
                 }
-                34 => {
+                key_codes::PAGE_DOWN => {
                     self.next_change();
                 }
-                13 => {
+                key_codes::ENTER => {
                     self.next_change();
                 }
                 _ if rust_widgets::shortcut::event_carries_primary(*modifiers)
@@ -1915,5 +1915,9 @@ impl Draw for DiffViewer {
                 row_rule,
             );
         }
+        // Tab focus must be visible on the viewer as on every other control (W5-38).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, radius);
+        crate::veil_if_disabled(&self.base, context);
     }
 }

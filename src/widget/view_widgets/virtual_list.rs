@@ -124,6 +124,12 @@ pub struct VirtualList {
     pub selection_changed: Signal1<Option<usize>>,
     /// Emitted when visible row window changes `(start, len)`.
     pub visible_window_changed: Signal1<(usize, usize)>,
+    /// Emitted with the pointer position when the host should show a context menu.
+    ///
+    /// The rest of the list/table family publishes this; the virtual list had no path from a
+    /// right press to the host (W5-10). `context_menu_event` selects the row under the pointer
+    /// before emitting, so a menu handler acts on the row the user pointed at.
+    pub context_menu_requested: Signal1<Point>,
     /// Emitted with the effect of a drag that began in this list.
     ///
     /// The coordinator reports the same effect through `DragSource::on_drag_finished`; this
@@ -161,6 +167,7 @@ impl VirtualList {
             data_is_observable: false,
             selection_changed: Signal1::new(),
             visible_window_changed: Signal1::new(),
+            context_menu_requested: Signal1::new(),
             drag_finished: Signal1::new(),
             show_scrollbar: false,
             row_delegate: None,
@@ -811,6 +818,19 @@ impl Widget for VirtualList {
         &mut self.base
     }
 
+    /// Selects the row under the pointer, then asks the host for a menu about it.
+    ///
+    /// Selecting first keeps the request describing the row the user pointed at; a point outside
+    /// the rows answers `false` so the host keeps its fallback policy for empty space.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        let Some(row) = self.row_at(pos) else {
+            return false;
+        };
+        self.select_row(row);
+        self.context_menu_requested.emit(pos);
+        true
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(
             crate::widget::metrics::dimensions::VIRTUAL_LIST_DEFAULT_WIDTH,
@@ -843,6 +863,11 @@ impl Widget for VirtualList {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
                     match v {

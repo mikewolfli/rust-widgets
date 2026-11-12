@@ -1156,6 +1156,8 @@ impl Draw for Keyboard {
 
         let row_count = self.keys.len();
         if row_count == 0 {
+            // The board itself is painted above, so a disabled keyboard still recedes (W5-03).
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
 
@@ -1353,6 +1355,11 @@ impl Draw for Keyboard {
                 );
             }
         }
+
+        // The keys answer a press but not a hover, and the board itself paints no disabled
+        // colour, so the shared layers carry both states (W5-04, W5-03).
+        self.base.paint_hover_wash(context, rect);
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -1651,3 +1651,28 @@ fn a_disabled_text_area_recedes_without_losing_its_geometry() {
         "both rows must still be painted while disabled, not disappear"
     );
 }
+
+/// Losing focus ends the editing session (W5-26b).
+///
+/// The area handled `FocusLost` only to stop the caret blink, so a host that wants to commit the
+/// value on blur (a form field, a search surface) had no event to bind. The single-line field has
+/// always published `editing_finished`; this pins the same edge on the multi-line control and
+/// checks that merely gaining focus is not already reported as the end of editing.
+#[test]
+fn losing_focus_emits_editing_finished() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let mut area = TextArea::new(String::new(), Rect::new(0, 0, 240, 120));
+    let seen = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::clone(&seen);
+    area.editing_finished.connect(move || {
+        sink.fetch_add(1, Ordering::SeqCst);
+    });
+
+    area.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+    assert_eq!(seen.load(Ordering::SeqCst), 0, "focus arrival is not the end of editing");
+
+    area.handle_event(&Event::FocusLost);
+    assert_eq!(seen.load(Ordering::SeqCst), 1, "losing focus finishes the edit exactly once");
+}

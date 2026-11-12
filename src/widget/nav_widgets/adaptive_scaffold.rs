@@ -2040,6 +2040,8 @@ impl Draw for AdaptiveScaffold {
                 }
             }
         }
+        // Over the whole scaffold, so the app bar, body, bars and overlay slots recede together.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -23,27 +23,32 @@ use crate::core::{Rect, TextDirection};
 /// Read through [`crate::core::default_text_direction`] rather than a per-control field: the i18n
 /// language switch is the producer, and it writes that value. A table in an RTL page therefore
 /// mirrors without every host having to call a setter.
-pub(crate) fn is_rtl() -> bool {
+pub fn is_rtl() -> bool {
     crate::core::default_text_direction() == TextDirection::RightToLeft
 }
 
 /// Mirrors a span's left edge inside `band`.
-pub(crate) fn mirror_span(x: i32, width: u32, band: Rect) -> i32 {
+///
+/// A span that starts at `x` and is `width` pixels wide keeps its width and becomes
+/// `band.x + band.width - (x - band.x) - width`. The transform is an involution, so a caller may
+/// apply it to an already-mirrored span to recover the original — which is also why a band that
+/// tiles its parent keeps tiling it after every span is mirrored.
+pub fn mirror_span(x: i32, width: u32, band: Rect) -> i32 {
     band.x + band.width as i32 - (x - band.x) - width as i32
 }
 
 /// Mirrors a point's x inside `band` (half-open pixel coordinates).
-pub(crate) fn mirror_point_x(x: i32, band: Rect) -> i32 {
+pub fn mirror_point_x(x: i32, band: Rect) -> i32 {
     band.x + band.width as i32 - 1 - (x - band.x)
 }
 
 /// Mirrors a width-relative offset inside a band of `band_width` pixels.
-pub(crate) fn mirror_offset(x: i32, band_width: i32) -> i32 {
+pub fn mirror_offset(x: i32, band_width: i32) -> i32 {
     band_width - 1 - x
 }
 
 /// The alignment a leading-edge column label uses in the current direction.
-pub(crate) fn leading_alignment() -> crate::core::HorizontalAlignment {
+pub fn leading_alignment() -> crate::core::HorizontalAlignment {
     if is_rtl() {
         crate::core::HorizontalAlignment::Right
     } else {

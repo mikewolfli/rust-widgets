@@ -1124,6 +1124,10 @@ impl Draw for Meter {
                 );
             }
         }
+
+        // Disabled is a state of the whole control, not of one mark: with the input gate closed
+        // and the picture unchanged the refusal would be invisible (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 
@@ -1795,5 +1799,21 @@ mod tests {
         let ptr = meter.value_text_cache.as_ref().unwrap().text.as_ptr();
         meter.ensure_value_text(&context, &value_font);
         assert_eq!(meter.value_text_cache.as_ref().unwrap().text.as_ptr(), ptr);
+    }
+
+    /// A disabled meter paints a veil the enabled one does not (W5-03).
+    ///
+    /// The control's input gate already refused edits; without the veil the picture gave no
+    /// hint that it would. The two frames must differ, which is the only evidence a lexical
+    /// "draw reads enabled" check cannot provide.
+    #[test]
+    fn a_disabled_meter_paints_a_different_frame() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut meter = Meter::new(Rect::new(0, 0, 200, 200));
+        meter.set_value(60);
+        let enabled = crate::widget::svg::render_to_svg(&mut meter);
+        meter.set_enabled(false);
+        let disabled = crate::widget::svg::render_to_svg(&mut meter);
+        assert_ne!(enabled, disabled, "a disabled meter must not paint the enabled frame");
     }
 }

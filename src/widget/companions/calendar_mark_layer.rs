@@ -450,6 +450,9 @@ impl Draw for CalendarMarkLayer {
                 }
             }
         });
+        // The layer paints a month grid but no interaction state of its own, so the shared hover
+        // layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

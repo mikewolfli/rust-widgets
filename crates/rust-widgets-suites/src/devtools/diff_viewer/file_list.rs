@@ -5,7 +5,7 @@
 
 use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use rust_widgets::event::wheel::WheelScroll;
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
@@ -14,6 +14,7 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::effective_font;
+use rust_widgets::widget::view_widgets::rtl_columns::{is_rtl, leading_alignment, mirror_span};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 use std::fmt::Write as _;
@@ -703,14 +704,17 @@ impl EventHandler for DiffFileList {
                         == rust_widgets::widget::view_widgets::list_view::SelectionMode::Extended;
                 // A Shift-arrow with no anchor starts the extension at the first row instead of
                 // jumping two rows (the arrow step would otherwise apply to a row just selected).
-                if extend && matches!(*key, 38 | 40) && self.selection_head().is_none() {
+                if extend
+                    && matches!(*key, key_codes::UP | key_codes::DOWN)
+                    && self.selection_head().is_none()
+                {
                     if !self.files.is_empty() {
                         self.select_index(0);
                     }
                     return;
                 }
                 match *key {
-                    38 => {
+                    key_codes::UP => {
                         if extend {
                             if let Some(head) = self.selection_head() {
                                 if head > 0 {
@@ -725,7 +729,7 @@ impl EventHandler for DiffFileList {
                             }
                         }
                     }
-                    40 => {
+                    key_codes::DOWN => {
                         if extend {
                             if let Some(head) = self.selection_head() {
                                 let last = self.files.len().saturating_sub(1);
@@ -741,7 +745,7 @@ impl EventHandler for DiffFileList {
                             self.select_index(next);
                         }
                     }
-                    36 => {
+                    key_codes::HOME => {
                         if extend && !self.files.is_empty() {
                             if self.selection_head().is_none() {
                                 self.select_index(0);
@@ -754,7 +758,7 @@ impl EventHandler for DiffFileList {
                             self.select_index(0);
                         }
                     }
-                    35 => {
+                    key_codes::END => {
                         if extend && !self.files.is_empty() {
                             if self.selection_head().is_none() {
                                 self.select_index(0);
@@ -764,7 +768,7 @@ impl EventHandler for DiffFileList {
                             self.select_index(self.files.len() - 1);
                         }
                     }
-                    13 => {
+                    key_codes::ENTER => {
                         if let Some(index) = self.selected.first().copied() {
                             self.activate_index(index);
                         }
@@ -803,6 +807,10 @@ impl Draw for DiffFileList {
                 .map(|token| token.blend(&background, 0.75))
                 .unwrap_or_else(|| background.blend(&text_color, 0.25));
         let font = effective_font(style);
+        // Direction is read once for the frame; the row band is the reference every column in the
+        // row is reflected in, so one read is enough for all three of them.
+        let rtl = is_rtl();
+        let leading = leading_alignment();
 
         // A translucent accent wash so a selected row keeps its text readable.
         context.face_with_gradient_corners(
@@ -878,27 +886,32 @@ impl Draw for DiffFileList {
                 }
             }
             .unwrap_or(text_color);
+            // The status marker is the row's leading item: 6 px from the left edge in LTR, 6 px
+            // from the right edge in RTL, so the same inset is taken from the edge a reader
+            // starts at.
+            let marker_x = if rtl { row.x + row.width as i32 - 6 } else { row.x + 6 };
             context.draw_text(
-                Point::new(row.x + 6, row.y + 5),
+                Point::new(marker_x, row.y + 5),
                 file.status.marker(),
                 font,
                 status_color,
-                HorizontalAlignment::Left,
+                leading,
             );
             let path_band = (row.width as i32 - 12 - entry.width - 8).max(24);
             let path = rust_widgets::widget::text_utils::elide_end(
                 &file.path,
                 (path_band / char_advance).max(1) as usize,
             );
+            // The path follows the marker, so it keeps the same 22 px leading inset.
+            let path_x = if rtl { row.x + row.width as i32 - 22 } else { row.x + 22 };
+            context.draw_text(Point::new(path_x, row.y + 5), &path, font, text_color, leading);
+            // The counts are the row's trailing item, so they are the leading item once the row
+            // is reflected: the span moves without changing its measured width.
+            let counts_x = row.x + row.width as i32 - entry.width - 6;
+            let counts_x =
+                if rtl { mirror_span(counts_x, entry.width.max(0) as u32, row) } else { counts_x };
             context.draw_text(
-                Point::new(row.x + 22, row.y + 5),
-                &path,
-                font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
-            context.draw_text(
-                Point::new(row.x + row.width as i32 - entry.width - 6, row.y + 5),
+                Point::new(counts_x, row.y + 5),
                 &entry.text,
                 font,
                 text_color.blend(&background, 0.45),
@@ -908,6 +921,69 @@ impl Draw for DiffFileList {
                 Point::new(row.x, row.y + row.height as i32 - 1),
                 Point::new(row.x + row.width as i32, row.y + row.height as i32 - 1),
                 background.blend(&text_color, 0.10),
+            );
+        }
+        self.base.paint_hover_wash(context, rect);
+        // Tab focus must be visible on the file list as on every other control (W5-38).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, radius);
+        crate::veil_if_disabled(&self.base, context);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ink boxes one draw leaves, sorted so two draws can be compared position by position.
+    fn ink_boxes(widget: &mut impl Draw, geometry: Rect) -> Vec<(i32, i32, i32, i32)> {
+        let svg = rust_widgets::widget::svg::render_widget_to_svg(widget, geometry);
+        let mut boxes = rust_widgets::widget::svg::text_ink_boxes(&svg);
+        boxes.sort_unstable();
+        boxes
+    }
+
+    /// An RTL page reflects the status, path and counts columns about the row band (W5-15).
+    ///
+    /// Every column in a row is placed inside the row itself, so the reflection is asserted as a
+    /// whole: the three runs come back at the horizontal mirror of where they were drawn, which
+    /// is what "the status marker moves to the right and the counts to the left" means.
+    #[test]
+    fn rtl_mirrors_the_status_path_and_count_columns() {
+        let geometry = Rect::new(0, 0, 320, 60);
+        let files = || {
+            vec![FileDiffEntry::new("src/finance/order_book.rs", FileDiffStatus::Modified)
+                .with_counts(12, 3)]
+        };
+
+        let mut ltr_widget = DiffFileList::new(geometry);
+        ltr_widget.set_files(files());
+        let ltr = ink_boxes(&mut ltr_widget, geometry);
+        assert_eq!(ltr.len(), 3, "one status marker, one path and one counts label");
+
+        let previous = rust_widgets::core::default_text_direction();
+        rust_widgets::core::set_default_text_direction(
+            rust_widgets::core::TextDirection::RightToLeft,
+        );
+        let mut rtl_widget = DiffFileList::new(geometry);
+        rtl_widget.set_files(files());
+        let rtl = ink_boxes(&mut rtl_widget, geometry);
+        rust_widgets::core::set_default_text_direction(previous);
+
+        assert_eq!(rtl.len(), ltr.len(), "the same runs are drawn in both directions");
+        let edge = geometry.x + geometry.width as i32;
+        let mut mirrored: Vec<(i32, i32, i32, i32)> = ltr
+            .iter()
+            .map(|&(left, top, right, bottom)| (edge - right, top, edge - left, bottom))
+            .collect();
+        mirrored.sort_unstable();
+        for (expected, actual) in mirrored.iter().zip(rtl.iter()) {
+            // The run's *placement* is an exact mirror, but its ink starts at the first glyph's
+            // left bearing and ends at the last glyph's right bearing, so the two edges of one
+            // run can differ by a few pixels once the run is placed on the other side.
+            assert!(
+                (expected.0 - actual.0).abs() <= 4 && (expected.2 - actual.2).abs() <= 4,
+                "run {actual:?} is not the mirror of {expected:?}"
             );
         }
     }

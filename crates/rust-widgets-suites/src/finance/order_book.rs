@@ -36,6 +36,7 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::role_font;
+use rust_widgets::widget::view_widgets::rtl_columns::{is_rtl, leading_alignment, mirror_span};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 
@@ -964,6 +965,12 @@ impl Draw for OrderBookWidget {
         const COLUMN_GAP: i32 = 6;
         let bar_span =
             (geometry.width as i32 / 2 - PRICE_COLUMN - QUANTITY_COLUMN - COLUMN_GAP * 2).max(8);
+        // Direction is read once for the frame. The ladder's two sides are already mirror images
+        // of each other, so the whole control is reflected about its vertical centre: the bid
+        // price, bars and quantities move to the right edge and the ask's to the left, keeping the
+        // spread rule in the middle where the two blocks meet.
+        let rtl = is_rtl();
+        let leading = leading_alignment();
 
         // The upper block is drawn first, stacked above the middle; the lower block follows.
         // The upper block is drawn from its deepest level up to its best one, so the best
@@ -1033,6 +1040,9 @@ impl Draw for OrderBookWidget {
                         BookSide::Bid => (spine - length, length as u32),
                         BookSide::Ask => (spine, length as u32),
                     };
+                    // A bar is a span of known width, so the reflection keeps its length and moves
+                    // it to the matching half of the panel.
+                    let bar_x = if rtl { mirror_span(bar_x, bar_width, geometry) } else { bar_x };
                     context.fill_rect(
                         Rect::new(bar_x, y + 1, bar_width, (row_height - 2).max(1) as u32),
                         color,
@@ -1088,24 +1098,33 @@ impl Draw for OrderBookWidget {
                     BookSide::Ask => geometry.x + geometry.width as i32 - 2,
                 };
                 let price_width = ((price_right - price_x).max(0)) as u32;
+                // Each text column is a span of known width, so it is reflected with the rest of
+                // the row and the guard above keeps measuring the layout it was written against.
+                let price_x =
+                    if rtl { mirror_span(price_x, price_width.max(1), geometry) } else { price_x };
                 context.draw_text_fitted_ellipsis(
                     Rect::new(price_x, text_y, price_width.max(1), 12),
                     &price_text,
                     &level_font,
                     color,
-                    HorizontalAlignment::Left,
+                    leading,
                 );
                 if quantity_drawn {
                     // The quantity is neutral body text. It used to read a light-on-dark
                     // literal stored at construction, so on a light theme the ladder's
                     // sizes were painted in a colour barely distinguishable from the panel.
                     let quantity_width = (quantity_right - quantity_x) as u32;
+                    let quantity_x = if rtl {
+                        mirror_span(quantity_x, quantity_width.max(1), geometry)
+                    } else {
+                        quantity_x
+                    };
                     context.draw_text_fitted_ellipsis(
                         Rect::new(quantity_x, text_y, quantity_width.max(1), 12),
                         &quantity_text,
                         &level_font,
                         secondary,
-                        HorizontalAlignment::Left,
+                        leading,
                     );
                 }
                 row += 1;
@@ -1718,5 +1737,51 @@ mod tests {
 
         assert!(Widget::tick(&mut ladder, 1));
         assert_eq!(ladder.flash_bid, vec![254, 254], "a sub-4 ms tick still decays");
+    }
+
+    /// The ink boxes one draw leaves.
+    fn ink_boxes(widget: &mut impl Draw, geometry: Rect) -> Vec<(i32, i32, i32, i32)> {
+        let svg = rust_widgets::widget::svg::render_widget_to_svg(widget, geometry);
+        rust_widgets::widget::svg::text_ink_boxes(&svg)
+    }
+
+    /// An RTL page reflects the ladder about its spine (W5-15).
+    ///
+    /// A bids-only book has no spread label, so every text run in the pane belongs to a ladder
+    /// column and the whole draw is expected to mirror: the price and the quantity move from the
+    /// panel's left edge to its right one, keeping their measured widths.
+    #[test]
+    fn rtl_mirrors_the_ladder_columns() {
+        let geometry = Rect::new(0, 0, 320, 120);
+        let build = || {
+            let mut ladder = OrderBookWidget::new(geometry);
+            let mut book = OrderBook::new();
+            book.set_bids(vec![BookLevel::new(99.0, 12.0)]);
+            ladder.set_book(book);
+            ladder
+        };
+        let spine = geometry.x + geometry.width as i32 / 2;
+
+        let mut ltr_ladder = build();
+        let ltr = ink_boxes(&mut ltr_ladder, geometry);
+        assert!(!ltr.is_empty(), "the ladder draws its price and quantity");
+        assert!(
+            ltr.iter().all(|&(_, _, right, _)| right <= spine),
+            "LTR puts the bid columns left of the spine: {ltr:?}"
+        );
+
+        let previous = rust_widgets::core::default_text_direction();
+        rust_widgets::core::set_default_text_direction(
+            rust_widgets::core::TextDirection::RightToLeft,
+        );
+        let mut rtl_ladder = build();
+        let rtl = ink_boxes(&mut rtl_ladder, geometry);
+        rust_widgets::core::set_default_text_direction(previous);
+
+        assert_eq!(rtl.len(), ltr.len(), "the same runs are drawn in both directions");
+        assert!(
+            rtl.iter().all(|&(left, _, _, _)| left >= spine),
+            "RTL puts the bid columns right of the spine: {rtl:?}"
+        );
     }
 }

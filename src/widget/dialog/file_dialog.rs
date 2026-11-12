@@ -481,6 +481,12 @@ pub struct FileDialog {
     sort_column: Option<SortColumn>,
     /// Cached visible-row rectangles, keyed by [`VisibleRowsKey`] (G-P08).
     visible_cache: VisibleRowsCache,
+    /// The details view's formatted size/modified text, keyed by [`VisibleRowsKey`] (W5-33).
+    ///
+    /// Each visible row used to run `format_size` and `format_modified`, two `String`s per row per
+    /// frame. Those strings are a pure function of the entries, so they are built once per change
+    /// alongside the rectangles and invalidated wherever `visible_cache` is.
+    detail_text_cache: RefCell<Option<(VisibleRowsKey, Rc<Vec<(String, String)>>)>>,
     /// Cached measured line height, keyed by the resolved font size's bits (G-P07).
     ///
     /// `list_rect` and `list_row_height` are read by every event and frame. The measurement
@@ -553,6 +559,7 @@ impl FileDialog {
             sort_descending: false,
             sort_column: None,
             visible_cache: RefCell::new(None),
+            detail_text_cache: RefCell::new(None),
             list_line_cache: core::cell::Cell::new(None),
         }
     }
@@ -774,6 +781,9 @@ impl FileDialog {
             selected_paths.iter().filter_map(|path| self.row_for_path(path)).collect();
         self.sort_changed.emit((column, self.sort_descending));
         *self.visible_cache.borrow_mut() = None;
+        // The formatted detail text is indexed by row, so a reorder invalidates it exactly as it
+        // invalidates the rectangles (W5-33).
+        *self.detail_text_cache.borrow_mut() = None;
         self.base.request_redraw();
     }
 
@@ -863,6 +873,7 @@ impl FileDialog {
         self.selected_files.clear();
         self.scroll = 0;
         *self.visible_cache.borrow_mut() = None;
+        *self.detail_text_cache.borrow_mut() = None;
         // A re-list keeps the caller's ordering instead of reverting to the host's order.
         if let Some(column) = self.sort_column {
             self.order_entries(column);
@@ -1878,13 +1889,7 @@ impl FileDialog {
 
     /// The visible rows and their indices into `entries`, served from a keyed cache (G-P08).
     fn visible_rows(&self) -> Rc<Vec<(usize, Rect)>> {
-        let key = VisibleRowsKey {
-            list: self.list_rect(),
-            row_height: self.list_row_height(),
-            header_height: self.list_header_height(),
-            scroll: self.scroll,
-            entries: self.entries.len(),
-        };
+        let key = self.visible_rows_key();
         if let Some((cached_key, rows)) = self.visible_cache.borrow().as_ref() {
             if *cached_key == key {
                 return Rc::clone(rows);
@@ -1893,6 +1898,48 @@ impl FileDialog {
         let rows = Rc::new(self.compute_visible_rows(&key));
         *self.visible_cache.borrow_mut() = Some((key, Rc::clone(&rows)));
         rows
+    }
+
+    /// The facts [`Self::visible_rows`] and [`Self::detail_texts`] are a pure function of.
+    fn visible_rows_key(&self) -> VisibleRowsKey {
+        VisibleRowsKey {
+            list: self.list_rect(),
+            row_height: self.list_row_height(),
+            header_height: self.list_header_height(),
+            scroll: self.scroll,
+            entries: self.entries.len(),
+        }
+    }
+
+    /// The details view's formatted size and modified text, one pair per visible row (W5-33).
+    ///
+    /// The paint loop used to call `format_size` and `format_modified` for every visible row on
+    /// every frame, two allocations each. Both are a pure function of the entries, so the strings
+    /// are built once and reused while the visible window and the listing hold; the returned
+    /// bytes are the ones those calls produced, so the painted cells do not change.
+    fn detail_texts(&self) -> Rc<Vec<(String, String)>> {
+        let key = self.visible_rows_key();
+        if let Some((cached_key, texts)) = self.detail_text_cache.borrow().as_ref() {
+            if *cached_key == key {
+                return Rc::clone(texts);
+            }
+        }
+        let texts: Vec<(String, String)> = self
+            .visible_rows()
+            .iter()
+            .map(|(index, _)| match self.entries.get(*index) {
+                Some(entry) => (
+                    entry.size.map(format_size).unwrap_or_default(),
+                    entry.modified.map(format_modified).unwrap_or_default(),
+                ),
+                // Unreachable: a row index always names an entry. Empty text keeps a corrupt
+                // index from painting a neighbour's facts.
+                None => (String::new(), String::new()),
+            })
+            .collect();
+        let texts = Rc::new(texts);
+        *self.detail_text_cache.borrow_mut() = Some((key, Rc::clone(&texts)));
+        texts
     }
 
     /// Rebuilds the visible-row list; [`Self::visible_rows`] is the cached entry point.
@@ -2387,7 +2434,11 @@ impl Draw for FileDialog {
                     }
                 }
             }
-            for (index, row) in self.visible_rows().iter().copied() {
+            // The details rows' formatted size/modified text, built once per change rather than
+            // twice per visible row per frame (W5-33). Only the details view reads it.
+            let detail_text =
+                if self.view_mode == ViewMode::Details { Some(self.detail_texts()) } else { None };
+            for (visible_index, (index, row)) in self.visible_rows().iter().copied().enumerate() {
                 if self.selected_rows.contains(&index) {
                     context.fill_rect(row, accent.with_alpha_f32(0.18));
                 }
@@ -2455,9 +2506,11 @@ impl Draw for FileDialog {
                                     if entry.is_directory { accent } else { ink },
                                     HorizontalAlignment::Left,
                                 );
-                                let size = entry.size.map(format_size).unwrap_or_default();
-                                let modified =
-                                    entry.modified.map(format_modified).unwrap_or_default();
+                                let (size, modified) = detail_text
+                                    .as_ref()
+                                    .and_then(|texts| texts.get(visible_index))
+                                    .map(|(size, modified)| (size.as_str(), modified.as_str()))
+                                    .unwrap_or(("", ""));
                                 let kind = entry.kind.label();
                                 context.draw_text_fitted_ellipsis(
                                     Rect::new(
@@ -2466,7 +2519,7 @@ impl Draw for FileDialog {
                                         size_col.width.max(1),
                                         line.height.max(1),
                                     ),
-                                    &size,
+                                    size,
                                     font,
                                     ink.with_alpha_f32(0.75),
                                     HorizontalAlignment::Right,
@@ -2478,7 +2531,7 @@ impl Draw for FileDialog {
                                         modified_col.width.max(1),
                                         line.height.max(1),
                                     ),
-                                    &modified,
+                                    modified,
                                     font,
                                     ink.with_alpha_f32(0.75),
                                     HorizontalAlignment::Left,
@@ -2711,6 +2764,7 @@ impl Draw for FileDialog {
         if let Some(focused) = self.focus.and_then(|index| row.buttons.get(index)) {
             context.draw_rounded_rect_stroke(*focused, 2, accent, 2);
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 
@@ -2992,6 +3046,43 @@ mod tests {
         assert_eq!(dialog.selected_file(), Some("src"));
         let svg = crate::widget::svg::render_to_svg(&mut dialog);
         assert!(svg.contains("data-text"), "the listing must paint its rows: {svg}");
+    }
+
+    /// The details text cache serves the bytes the per-frame formatting produced, and a re-list or
+    /// reorder invalidates it exactly like the row rectangles (W5-33).
+    #[test]
+    fn the_details_text_is_cached_and_invalidated_like_the_row_rects() {
+        struct SizedSource;
+        impl FileEntrySource for SizedSource {
+            fn entries(&self, _directory: &str) -> Vec<FileEntry> {
+                vec![
+                    FileEntry::new("dir", true),
+                    FileEntry::new("a.txt", false).with_metadata(Some(512), Some(0)),
+                ]
+            }
+        }
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 400));
+        dialog.set_source(Box::new(SizedSource));
+        dialog.set_view_mode(ViewMode::Details);
+
+        let texts = dialog.detail_texts();
+        let rows = dialog.visible_rows();
+        assert_eq!(texts.len(), rows.len(), "one pair per visible row");
+        for (pair, (index, _)) in texts.iter().zip(rows.iter()) {
+            let entry = &dialog.entries()[*index];
+            assert_eq!(pair.0, entry.size.map(format_size).unwrap_or_default());
+            assert_eq!(pair.1, entry.modified.map(format_modified).unwrap_or_default());
+        }
+        assert!(
+            texts.iter().any(|(size, modified)| size == "512 B" && modified == "1970-01-01"),
+            "the size and date are the formatted ones: {texts:?}"
+        );
+
+        let again = dialog.detail_texts();
+        assert!(Rc::ptr_eq(&texts, &again), "a steady frame must reuse the formatted text");
+        dialog.sort_by(SortColumn::Size);
+        let reordered = dialog.detail_texts();
+        assert!(!Rc::ptr_eq(&texts, &reordered), "a reorder must rebuild the formatted text");
     }
 
     /// The listing is filtered by the current filter, and switching filters re-lists

@@ -2391,6 +2391,9 @@ impl Draw for SpinBox {
                 HorizontalAlignment::Left,
             );
         }
+        // The band, because it is the face this control paints; a chevron dimmed at its bound is
+        // a per-button fact and does not stand in for the control-level disabled cue.
+        self.base.paint_disabled_veil(context, band);
     }
 }
 

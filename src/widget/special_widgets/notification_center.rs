@@ -1394,6 +1394,12 @@ impl Draw for NotificationCenter {
                 );
             }
         }
+
+        // The centre paints rows with their own selected/unread tints but nothing answers the
+        // pointer over the panel itself, so the shared layers carry the hover and the disabled
+        // state (W5-04, W5-03).
+        self.base.paint_hover_wash(context, rect);
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -1786,6 +1786,12 @@ impl Widget for VideoPlayer {
         &mut self.base
     }
 
+    /// The player has keyboard handling (space, arrows, mute and fullscreen), so the router must be
+    /// able to focus it. Its kind is not in `wants_keyboard_focus`, hence the direct statement.
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
     fn size_hint(&self) -> rust_widgets::core::Size {
         rust_widgets::core::Size::new(320, 240)
     }
@@ -2469,7 +2475,7 @@ impl EventHandler for VideoPlayer {
                 self.base.handle_event(event);
                 self.base.request_redraw();
             }
-            Event::KeyPress { key, modifiers } => {
+            Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
                 match (key, modifiers) {
                     // Space bar toggles play/pause.
                     (32, _) => {
@@ -3501,7 +3507,11 @@ mod tests {
 
         {
             let scrubber = vp.scrubber_mut().expect("attached");
-            scrubber.handle_event(&Event::MouseRelease { pos: Point::new(100, 12), button: 1 , modifiers: 0});
+            scrubber.handle_event(&Event::MouseRelease {
+                pos: Point::new(100, 12),
+                button: 1,
+                modifiers: 0,
+            });
         }
         assert_eq!(vp.apply_pending_scrubber_seeks(), 1, "the commit queues one seek");
         assert!(

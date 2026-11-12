@@ -603,6 +603,7 @@ impl Draw for ImePreedit {
                 text_color,
             );
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -49,6 +49,10 @@ pub(crate) use containers::{text_fingerprint, text_metrics_epoch};
 // `DrawConicGradient` command arm (G-203).
 pub(crate) use containers::{fill_conic_ramp, ramp_lut_for_stops, ConicWrite};
 
+// Shared gradient descriptions for recorded commands: a steady frame bumps a refcount instead of
+// copying the stop vector (W5-07).
+pub(crate) use containers::cached_gradient_arc;
+
 // The reference's own 256-entry ramp builder, shared with the WGPU bridge so a bridged gradient
 // uploads the table the software rasteriser would have sampled rather than re-interpolating the
 // stops on the GPU (which would drift at every stop boundary).

@@ -270,6 +270,12 @@ impl Draw for ValueSpinBox {
             context.draw_rect_stroke(rect, ink.with_alpha(50), 1);
             crate::widget::draw_icon_at(context, rect, ink, icon);
         }
+        // The spin box paints a field and two steppers but no interaction state of its own, so the
+        // shared hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
+        // The stepper arrows are part of this control's own chrome, so the whole field recedes
+        // when the spin box is disabled.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -4277,7 +4277,7 @@
         "readable": true,
         "writable": true,
         "tokens": [],
-        "default": "2026-11-12",
+        "default": "2026-11-13",
         "constraints": [    ]
       },
       {
@@ -34637,6 +34637,16 @@
         "name": "range_changed",
         "payload": "float",
         "shape": "tuple2"
+      },
+      {
+        "name": "slider_pressed",
+        "payload": "float",
+        "shape": "scalar"
+      },
+      {
+        "name": "slider_released",
+        "payload": "float",
+        "shape": "scalar"
       }
     ],
     "children": [],
@@ -35387,6 +35397,11 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "selection_changed",
         "payload": "uint",
         "shape": "optional_tuple2"
@@ -35394,6 +35409,11 @@
       {
         "name": "text_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -42819,6 +42839,11 @@
         "shape": "scalar"
       },
       {
+        "name": "editing_finished",
+        "payload": null,
+        "shape": null
+      },
+      {
         "name": "redo_available",
         "payload": "bool",
         "shape": "scalar"
@@ -46285,6 +46310,11 @@
         "shape": "scalar"
       },
       {
+        "name": "context_menu_requested",
+        "payload": "string",
+        "shape": "scalar"
+      },
+      {
         "name": "drag_finished",
         "payload": "string",
         "shape": "scalar"
@@ -46585,6 +46615,11 @@
       }
     ],
     "events": [
+      {
+        "name": "context_menu_requested",
+        "payload": "string",
+        "shape": "scalar"
+      },
       {
         "name": "drag_finished",
         "payload": "string",

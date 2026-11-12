@@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rust_widgets::compat::{lock, Arc, Mutex, VecDeque};
 use rust_widgets::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::coercion::expect_string;
@@ -2571,21 +2571,21 @@ impl EventHandler for WebEngineView {
                     // While the address bar has focus it owns the editing keys; the browser
                     // shortcuts below are suspended for the duration of the edit (MW-012).
                     match *key {
-                        13 => {
+                        key_codes::ENTER => {
                             self.commit_url_edit();
                         }
-                        27 => {
+                        key_codes::ESCAPE => {
                             self.cancel_url_edit();
                         }
-                        8 => self.url_edit_backspace(),
-                        46 => self.url_edit_delete(),
-                        37 => self.url_edit_move(-1),
-                        39 => self.url_edit_move(1),
-                        36 => {
+                        key_codes::BACKSPACE => self.url_edit_backspace(),
+                        key_codes::DELETE => self.url_edit_delete(),
+                        key_codes::LEFT => self.url_edit_move(-1),
+                        key_codes::RIGHT => self.url_edit_move(1),
+                        key_codes::HOME => {
                             self.url_edit_caret = 0;
                             self.base.request_redraw();
                         }
-                        35 => {
+                        key_codes::END => {
                             self.url_edit_caret =
                                 self.url_edit.as_ref().map(|buffer| buffer.len()).unwrap_or(0);
                             self.base.request_redraw();
@@ -2595,16 +2595,18 @@ impl EventHandler for WebEngineView {
                     return;
                 }
                 match *key {
-                    37 => {
+                    key_codes::LEFT => {
                         // Left arrow — go back
                         self.go_back();
                     }
-                    39 => {
+                    key_codes::RIGHT => {
                         // Right arrow — go forward
                         self.go_forward();
                     }
-                    116 => {
-                        // F5 — reload
+                    key_codes::F5 => {
+                        // F5 -- reload. The framework maps function keys to 1120..=1131
+                        // (`key_codes::F1..=F12`); 116 is lowercase `t` under that convention, so
+                        // the old literal never matched on a normalised backend.
                         self.reload();
                     }
                     82
@@ -2965,6 +2967,9 @@ impl Draw for WebEngineView {
                 ctx.fill_rect(highlight, accent.with_alpha(90));
             }
         }
+        // Tab focus must be visible on the view as on every other control (W5-38).
+        self.base.draw_focus_ring(ctx, g, 0);
+        crate::veil_if_disabled(&self.base, ctx);
     }
     fn uses_custom_drawing(&self) -> bool {
         true

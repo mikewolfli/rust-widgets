@@ -372,12 +372,18 @@ Rust API → extern "C" (C ABI)
 
 | Category | Count |
 |----------|-------|
-| Rust source files | 1,019 |
+| Rust source files | 1,020 |
 | Widget kinds (`WidgetKind` variants) | 231 |
-| Layout managers | 14 |
+| Layout managers | 15 |
 | Platform backends | 12 |
 | IME implementations | 4 |
 | Clipboard backends | 5 |
 | Gesture recognizers | 10 |
 | Test files | 75 integration + inline |
-| Benchmark files | 5 |
+| Benchmark files | 9 |
+
+Counts are derived, not hand-maintained: `find src -name '*.rs' | wc -l` (1,020),
+`WidgetKind::` variants in `src/widget/kind.rs` (231), `impl Layout for` in `src/layout/`
+(15), and `bench = true` entries in `Cargo.toml` (9). The earlier "14 layout / 5 benchmark"
+row was stale: two files matched the wrong pattern and two `[[bench]]` entries were added
+without updating the table (W5-25).

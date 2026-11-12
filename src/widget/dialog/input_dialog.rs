@@ -1424,6 +1424,7 @@ impl Draw for InputDialog {
         {
             context.draw_rounded_rect_stroke(*focused, 2, accent, 2);
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

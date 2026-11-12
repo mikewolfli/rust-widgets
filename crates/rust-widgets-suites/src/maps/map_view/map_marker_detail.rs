@@ -14,7 +14,7 @@
 //! the place it describes.
 
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::impl_draw_bridge;
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
@@ -497,7 +497,7 @@ impl EventHandler for MapMarkerDetail {
                     self.close();
                 }
             }
-            Event::KeyPress { key: 27, .. } => self.close(),
+            Event::KeyPress { key: key_codes::ESCAPE, .. } => self.close(),
             _ => {}
         }
     }
@@ -565,6 +565,7 @@ impl Draw for MapMarkerDetail {
                 HorizontalAlignment::Center,
             );
         }
+        self.base.paint_hover_wash(context, window);
         crate::veil_if_disabled(&self.base, context);
     }
 }

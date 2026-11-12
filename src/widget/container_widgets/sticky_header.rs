@@ -379,6 +379,11 @@ impl Draw for StickyHeader {
             let band = Rect::new(text_x, line.y, text_width.max(1), line.height.max(1));
             context.draw_text_fitted_ellipsis(band, &self.title, font, ink, alignment);
         }
+
+        // The band paints no interaction state of its own, so the shared layers answer the pointer
+        // and a disabled header (W5-04, W5-03).
+        self.base.paint_hover_wash(context, rect);
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

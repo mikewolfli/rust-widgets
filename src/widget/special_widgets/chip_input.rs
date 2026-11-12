@@ -693,6 +693,9 @@ impl Draw for ChipInput {
             }
             context.fill_rect(Rect::new(caret_x, caret_y - 1, 1, 15), ink);
         }
+        // The field paints tags and a text line but no interaction state of its own, so the shared
+        // hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

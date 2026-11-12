@@ -33,6 +33,7 @@ use rust_widgets::widget::capability::{
     RecordField, RecordList, RecordSchema, RecordValue, WidgetProperties,
 };
 use rust_widgets::widget::metrics::effective_font;
+use rust_widgets::widget::view_widgets::rtl_columns::{is_rtl, leading_alignment, mirror_span};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 
@@ -695,6 +696,11 @@ impl Draw for ChapterListPanel {
         context.face_with_gradient(rect, surface, None, Default::default(), 0, Color::BLACK);
         let font = effective_font(style);
         let active = self.active_chapter();
+        // Direction is read once for the frame. A row is the band every item in it is reflected
+        // in, so the thumbnail, the title and the start time swap ends together and keep their
+        // widths; the row itself is full-width, so nothing else about the geometry changes.
+        let rtl = is_rtl();
+        let leading = leading_alignment();
 
         for visible in 0..self.visible_row_count() {
             let index = self.scroll_offset + visible;
@@ -717,6 +723,16 @@ impl Draw for ChapterListPanel {
                     CHAPTER_THUMBNAIL_WIDTH,
                     thumb_height,
                 );
+                let thumb = if rtl {
+                    Rect::new(
+                        mirror_span(thumb.x, thumb.width, row),
+                        thumb.y,
+                        thumb.width,
+                        thumb.height,
+                    )
+                } else {
+                    thumb
+                };
                 context.fill_rect(thumb, Color::rgba(0, 0, 0, 24));
                 context.draw_rect(thumb, border);
                 text_x += CHAPTER_THUMBNAIL_WIDTH as i32 + CHAPTER_PADDING;
@@ -724,23 +740,23 @@ impl Draw for ChapterListPanel {
 
             let time_x = row.x + row.width as i32 - CHAPTER_TIME_WIDTH as i32 - CHAPTER_PADDING;
             let title_width = (time_x - text_x - CHAPTER_PADDING).max(0) as u32;
-            let title = Rect::new(text_x, row.y, title_width, row.height);
-            context.draw_text_line_ellipsis(
-                title,
-                &chapter.title,
-                font,
-                ink,
-                HorizontalAlignment::Left,
-            );
+            let title_x = if rtl { mirror_span(text_x, title_width, row) } else { text_x };
+            let title = Rect::new(title_x, row.y, title_width, row.height);
+            context.draw_text_line_ellipsis(title, &chapter.title, font, ink, leading);
             let time = self.times.get(index).map(String::as_str).unwrap_or("");
+            let time_x = if rtl { mirror_span(time_x, CHAPTER_TIME_WIDTH, row) } else { time_x };
             let time_band = Rect::new(time_x, row.y, CHAPTER_TIME_WIDTH, row.height);
-            context.draw_text_line_ellipsis(time_band, time, font, ink, HorizontalAlignment::Right);
+            // The start time sits on the row's trailing edge, which is the left one in RTL.
+            let time_alignment =
+                if rtl { HorizontalAlignment::Left } else { HorizontalAlignment::Right };
+            context.draw_text_line_ellipsis(time_band, time, font, ink, time_alignment);
             context.draw_line(
                 Point::new(row.x, row.bottom()),
                 Point::new(row.x + row.width as i32, row.bottom()),
                 border,
             );
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 
@@ -984,5 +1000,57 @@ mod tests {
             Ok(CapabilityValue::UInt(65_000)),
             "the published property reads the same accessor, not the frozen field"
         );
+    }
+
+    /// The ink boxes one draw leaves, sorted so two draws can be compared position by position.
+    fn ink_boxes(widget: &mut impl Draw, geometry: Rect) -> Vec<(i32, i32, i32, i32)> {
+        let svg = rust_widgets::widget::svg::render_widget_to_svg(widget, geometry);
+        let mut boxes = rust_widgets::widget::svg::text_ink_boxes(&svg);
+        boxes.sort_unstable();
+        boxes
+    }
+
+    /// An RTL page reflects the thumbnail, title and start-time columns about the row band
+    /// (W5-15).
+    ///
+    /// The row is full-width, so the reflection is the row's own mirror: the thumbnail moves to
+    /// the right, the start time to the left, and the title takes the band between them.
+    #[test]
+    fn rtl_mirrors_the_row_columns() {
+        let geometry = Rect::new(0, 0, 240, 60);
+        let mut ltr_panel = ChapterListPanel::new(geometry);
+        ltr_panel.set_row_height(30);
+        ltr_panel.set_show_thumbnails(true);
+        ltr_panel.set_chapters(chapters());
+        let ltr = ink_boxes(&mut ltr_panel, geometry);
+        assert_eq!(ltr.len(), 4, "two visible rows, each a title and a start time");
+
+        let previous = rust_widgets::core::default_text_direction();
+        rust_widgets::core::set_default_text_direction(
+            rust_widgets::core::TextDirection::RightToLeft,
+        );
+        let mut rtl_panel = ChapterListPanel::new(geometry);
+        rtl_panel.set_row_height(30);
+        rtl_panel.set_show_thumbnails(true);
+        rtl_panel.set_chapters(chapters());
+        let rtl = ink_boxes(&mut rtl_panel, geometry);
+        rust_widgets::core::set_default_text_direction(previous);
+
+        assert_eq!(rtl.len(), ltr.len(), "the same runs are drawn in both directions");
+        let edge = geometry.x + geometry.width as i32;
+        let mut mirrored: Vec<(i32, i32, i32, i32)> = ltr
+            .iter()
+            .map(|&(left, top, right, bottom)| (edge - right, top, edge - left, bottom))
+            .collect();
+        mirrored.sort_unstable();
+        for (expected, actual) in mirrored.iter().zip(rtl.iter()) {
+            // The run's *placement* is an exact mirror, but its ink starts at the first glyph's
+            // left bearing and ends at the last glyph's right bearing, so the two edges of one
+            // run can differ by a few pixels once the run is placed on the other side.
+            assert!(
+                (expected.0 - actual.0).abs() <= 4 && (expected.2 - actual.2).abs() <= 4,
+                "run {actual:?} is not the mirror of {expected:?}"
+            );
+        }
     }
 }

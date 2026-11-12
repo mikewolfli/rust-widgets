@@ -917,6 +917,9 @@ impl Draw for ProgressBar {
                 );
             }
         }
+        // The value is still painted while disabled — a progress bar has no disabled palette —
+        // so the veil is the only cue that the run can no longer be driven (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

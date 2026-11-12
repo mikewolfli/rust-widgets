@@ -207,6 +207,10 @@ pub mod census;
 pub mod special_widgets;
 #[cfg(full_widgets)]
 pub mod view_widgets;
+/// The direction-aware column reflection the table family uses, re-exported so a downstream
+/// crate can reach it as `rust_widgets::widget::rtl_columns` as well as through `view_widgets`.
+#[cfg(full_widgets)]
+pub use view_widgets::rtl_columns;
 // Individual widget files (not in subfolders)
 #[cfg(not(alloc_frugal))]
 pub mod snapshot;

@@ -1268,6 +1268,7 @@ impl Draw for FontDialog {
         self.ok_button = Rect::new(0, 0, 0, 0);
         self.cancel_button = Rect::new(0, 0, 0, 0);
         if self.no_buttons {
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
         let labels = self.action_labels();
@@ -1296,6 +1297,7 @@ impl Draw for FontDialog {
         // the read-only borrow can end instead of forcing a `WidgetStyle` clone.
         self.ok_button = ok_rect;
         self.cancel_button = cancel_rect;
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

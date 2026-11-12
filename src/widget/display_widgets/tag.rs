@@ -345,6 +345,16 @@ impl Widget for Tag {
         &mut self.base
     }
 
+    /// A closable tag is reachable by keyboard; a plain label tag is not.
+    ///
+    /// The tag's Delete/Backspace arm is focus-gated so an unfocused tag cannot eat the key of
+    /// whatever the user is editing (W5-02). That gate is only usable if the control can become
+    /// the focus owner, and a tag with no close action has nothing to do with the keyboard: making
+    /// every tag focusable would add tab stops that do nothing.
+    fn is_focusable(&self) -> bool {
+        self.closable
+    }
+
     fn size_hint(&self) -> Size {
         // The label's extent comes from the shared measurement primitives, not a hand-rolled
         // `chars * size`: the flat model this replaced was only correct while every cluster
@@ -531,6 +541,9 @@ impl Draw for Tag {
                 1,
             );
         }
+        // The tag and its close glyph keep their tone when disabled, so the veil is what shows
+        // that neither the label nor the "x" will answer (W5-03).
+        self.base.paint_disabled_veil(ctx, rect);
     }
 }
 

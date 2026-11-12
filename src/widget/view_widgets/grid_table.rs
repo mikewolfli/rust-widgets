@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, Signal1};
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -49,6 +49,23 @@ struct ColumnSpanCache {
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
+
+/// Resolves a companion's column token to this grid's column index (W5-11b).
+///
+/// A chooser and a summary row both speak the persisted `ColumnSpec` token, whose first field is
+/// the title. The exact title is tried first, then the token is parsed so a token written with a
+/// different width or capability still finds its column. A token this grid does not know answers
+/// `None` rather than being guessed at.
+fn resolve_column_token(
+    token: &str,
+    titles: &std::collections::HashMap<String, usize>,
+) -> Option<usize> {
+    if let Some(column) = titles.get(token) {
+        return Some(*column);
+    }
+    let spec = crate::widget::view_widgets::data_grid::ColumnSpec::from_token(token)?;
+    titles.get(&spec.title).copied()
+}
 
 /// Controls which parts of the grid respond to pointer selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +262,85 @@ pub struct GridTableWidget {
     show_scrollbar: bool,
     /// The empty/error caption this grid paints when it has no rows (UX-03).
     placeholder: CollectionPlaceholder,
+    /// Columns excluded from the painted run (W5-11a).
+    ///
+    /// A hidden column keeps its absolute source index and takes no slot in the painted run, which
+    /// is the contract `VirtualTable` publishes: the accessors, the hit test and the cell
+    /// addressing all speak absolute indices, and only the painted geometry collapses.
+    hidden_columns: std::collections::BTreeSet<usize>,
+    /// The attached column chooser binding, when one was attached (W5-11b).
+    column_chooser: Option<ColumnChooserBinding>,
+    /// The attached count strip, when one was attached (W5-11b).
+    grid_status_bar: Option<GridStatusBarBinding>,
+    /// The attached aggregate row, when one was attached (W5-11b).
+    summary_row: Option<SummaryRowBinding>,
+}
+
+/// The live link between a [`GridTableWidget`] and a
+/// [`ColumnChooser`](crate::widget::companions::ColumnChooser) (W5-11b).
+///
+/// The chooser reports persisted column tokens rather than source indices, so the link resolves
+/// each token through the column titles both controls were configured with and parks the answer
+/// in a shared queue. [`GridTableWidget::poll_column_chooser`] drains that queue, the same
+/// host-free shape `DataGrid`'s chooser binding uses.
+struct ColumnChooserBinding {
+    /// `(source column, visible)` changes reported since the last poll.
+    visibility: Arc<std::sync::Mutex<Vec<(usize, bool)>>>,
+    /// The subscription, dropped with the binding so a re-attach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// The live link between a [`GridTableWidget`] and a
+/// [`GridStatusBar`](crate::widget::companions::GridStatusBar) (W5-11b).
+///
+/// The strip consumes no grid signal, so the link holds no subscription; it keeps the shared
+/// count cell, the strip's paint request and the pair last written, which is what makes the poll
+/// idempotent.
+struct GridStatusBarBinding {
+    /// The count cell the strip reads through `GridStatusBar::row_count`.
+    counts: Arc<std::sync::Mutex<(u64, u64)>>,
+    /// The strip's paint request, emitted after a write.
+    redraw: GenericSignal,
+    /// The `(rows, selected)` pair last written.
+    pushed: (u64, u64),
+    /// Kept so the binding has the same shape as every other companion link.
+    _scope: ConnectionScope,
+}
+
+/// The live link between a [`GridTableWidget`] and a
+/// [`SummaryRow`](crate::widget::companions::SummaryRow) (W5-11b).
+///
+/// The grid computes the aggregates from its **projected** rows and writes the row's shared value
+/// cell, so the row repaints without the host copying numbers. `key` records the projection the
+/// values describe, which is what keeps a steady frame from re-walking the source.
+struct SummaryRowBinding {
+    /// The value cell the row reads through `SummaryRow::value`.
+    values: Arc<std::sync::Mutex<Vec<(String, f64)>>>,
+    /// The row's paint request, emitted after a write.
+    redraw: GenericSignal,
+    /// The aggregates copied from the row at attach time.
+    aggregates: Vec<crate::widget::companions::ColumnAggregate>,
+    /// The projection the stored values were computed from, or `None` before the first push.
+    key: Option<SummaryKey>,
+    /// The subscription scope; a summary row owns no grid-facing signal.
+    _scope: ConnectionScope,
+}
+
+/// The inputs that decide an attached summary row's numbers (W5-11b).
+///
+/// A data change, a sort edit or a new source all move the projected rows, and the aggregate list
+/// itself decides which cells are reported. Comparing this key is how
+/// [`GridTableWidget::poll_summary_row`] tells "the projection moved" from "the frame is steady".
+#[derive(Clone, PartialEq)]
+struct SummaryKey {
+    /// The source revision, or the grid's own generation when the source has none.
+    revision: u64,
+    /// The sort order in force.
+    sorts: Vec<GridTableSortSpec>,
+    /// The projected row count.
+    rows: usize,
+    /// The aggregate list being reported.
+    aggregates: Vec<crate::widget::companions::ColumnAggregate>,
 }
 
 impl GridTableWidget {
@@ -330,6 +426,10 @@ impl GridTableWidget {
             context_menu_requested: Signal1::new(),
             show_scrollbar: false,
             placeholder: CollectionPlaceholder::new(),
+            hidden_columns: std::collections::BTreeSet::new(),
+            column_chooser: None,
+            grid_status_bar: None,
+            summary_row: None,
         }
     }
 
@@ -913,6 +1013,383 @@ impl GridTableWidget {
         self.column_alignments.get(&col).copied().unwrap_or(HorizontalAlignment::Left)
     }
 
+    // -----------------------------------------------------------------------
+    // Column visibility (W5-11a)
+    // -----------------------------------------------------------------------
+
+    /// Whether `col` is hidden (W5-11a).
+    pub fn is_column_hidden(&self, col: usize) -> bool {
+        self.hidden_columns.contains(&col)
+    }
+
+    /// The hidden columns, in ascending order (W5-11a).
+    pub fn hidden_columns(&self) -> Vec<usize> {
+        self.hidden_columns.iter().copied().collect()
+    }
+
+    /// Replaces the hidden-column set (W5-11a).
+    ///
+    /// An index past the source's column count is dropped rather than stored, so a set that
+    /// outlives a narrower source cannot hide a column the replacement source does not have.
+    pub fn set_hidden_columns(&mut self, columns: Vec<usize>) {
+        let available = self.column_count();
+        let next: std::collections::BTreeSet<usize> =
+            columns.into_iter().filter(|column| *column < available).collect();
+        if next == self.hidden_columns {
+            return;
+        }
+        self.hidden_columns = next;
+        self.column_width_revision = self.column_width_revision.wrapping_add(1);
+        self.update_visibility();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Hides or shows `col` (W5-11a). Returns `false` for a column the source lacks.
+    ///
+    /// The absolute source index is unchanged by hiding: a hidden column keeps its index in the
+    /// accessors, the selection and the cell addressing, and only its painted slot is removed, so
+    /// the columns after it close the gap — the same contract `VirtualTable` publishes.
+    pub fn set_column_hidden(&mut self, col: usize, hidden: bool) -> bool {
+        if col >= self.column_count() {
+            return false;
+        }
+        let changed =
+            if hidden { self.hidden_columns.insert(col) } else { self.hidden_columns.remove(&col) };
+        if changed {
+            self.column_width_revision = self.column_width_revision.wrapping_add(1);
+            self.update_visibility();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        true
+    }
+
+    // -----------------------------------------------------------------------
+    // Companion wiring (W5-11b)
+    // -----------------------------------------------------------------------
+
+    /// Follows `chooser`'s column-visibility signal (W5-11b).
+    ///
+    /// The chooser reports persisted column tokens rather than source indices, so the link
+    /// resolves each token against the column names both controls were configured with and parks
+    /// the answer in a shared queue. [`Self::poll_column_chooser`] drains that queue from the paint
+    /// and event paths, so a chooser click reaches this grid without the host forwarding it.
+    ///
+    /// The chooser's reorder reports are deliberately not adopted: this grid paints by absolute
+    /// source index, so a display permutation would claim an order the picture does not have. A
+    /// token this grid does not know is ignored rather than guessed at.
+    ///
+    /// Attaching replaces any previous chooser, so calling this twice leaves one subscription.
+    pub fn attach_column_chooser(&mut self, chooser: &crate::widget::companions::ColumnChooser) {
+        let titles = Arc::new(self.column_title_lookup());
+        let visibility = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&visibility);
+        let lookup = Arc::clone(&titles);
+        let redraw = self.base.redraw_requested_signal().clone();
+        chooser.column_visibility_changed.connect_scoped(&scope, move |change| {
+            let (token, visible) = &*change;
+            let Some(column) = resolve_column_token(token, &lookup) else {
+                return;
+            };
+            sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((column, *visible));
+            // A chooser click redraws the grid, so the poll that applies it happens next frame.
+            redraw.emit();
+        });
+        self.column_chooser = Some(ColumnChooserBinding { visibility, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached chooser; the visibility it last set stays (W5-11b).
+    pub fn detach_column_chooser(&mut self) {
+        if self.column_chooser.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::ColumnChooser`] is attached (W5-11b).
+    pub fn is_column_chooser_attached(&self) -> bool {
+        self.column_chooser.is_some()
+    }
+
+    /// Applies every chooser visibility report queued since the last poll (W5-11b).
+    ///
+    /// Called from `draw` and `handle_event`, so a chooser click is reflected by the next frame.
+    /// Returns whether the painted columns changed.
+    pub fn poll_column_chooser(&mut self) -> bool {
+        let Some(binding) = self.column_chooser.as_ref() else {
+            return false;
+        };
+        let changes: Vec<(usize, bool)> = {
+            let mut guard =
+                binding.visibility.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            core::mem::take(&mut *guard)
+        };
+        let mut changed = false;
+        for (column, visible) in changes {
+            changed |= self.set_column_hidden(column, !visible);
+        }
+        changed
+    }
+
+    /// Attaches `bar` to this grid (W5-11b).
+    ///
+    /// The strip learns the grid's current row and selection counts immediately and
+    /// [`Self::poll_grid_status_bar`] rewrites them when they move. Both are facts this grid already
+    /// maintains, so there is no signal to subscribe to and no per-frame work for the host.
+    ///
+    /// Attaching replaces any previous strip, so calling this twice leaves one link rather than
+    /// two. The strip's own `status_clicked` signal is a strip-to-host fact; the grid neither
+    /// consumes nor forwards it.
+    pub fn attach_grid_status_bar(&mut self, bar: &crate::widget::companions::GridStatusBar) {
+        let (counts, redraw) = bar.counts_handle();
+        let current = self.grid_status_counts();
+        {
+            let mut guard = counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = current;
+        }
+        // The strip is a different control, so it needs its own paint request.
+        redraw.emit();
+        self.grid_status_bar = Some(GridStatusBarBinding {
+            counts,
+            redraw,
+            pushed: current,
+            _scope: ConnectionScope::new(),
+        });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached strip; the counts it last showed stay (W5-11b).
+    pub fn detach_grid_status_bar(&mut self) {
+        if self.grid_status_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::GridStatusBar`] is attached (W5-11b).
+    pub fn is_grid_status_bar_attached(&self) -> bool {
+        self.grid_status_bar.is_some()
+    }
+
+    /// Writes the grid's current counts into the attached strip when they moved (W5-11b).
+    ///
+    /// Called from `draw` and `handle_event`, so a row-count or selection change reaches the strip
+    /// on the next frame or interaction. Returns whether a write happened.
+    pub fn poll_grid_status_bar(&mut self) -> bool {
+        let current = self.grid_status_counts();
+        let Some(binding) = self.grid_status_bar.as_mut() else {
+            return false;
+        };
+        if binding.pushed == current {
+            return false;
+        }
+        binding.pushed = current;
+        {
+            let mut guard = binding.counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = current;
+        }
+        binding.redraw.emit();
+        true
+    }
+
+    /// The `(row count, selected count)` pair a status strip displays (W5-11b).
+    ///
+    /// A cell selection and a row selection both count the row they name, and a row named by both
+    /// counts once.
+    fn grid_status_counts(&self) -> (u64, u64) {
+        let rows = self.row_count() as u64;
+        let mut selected: std::collections::BTreeSet<usize> =
+            self.selected_rows.iter().copied().collect();
+        for (row, _) in &self.selected_cells {
+            selected.insert(*row);
+        }
+        if let Some((row, _)) = self.selected_cell {
+            selected.insert(row);
+        }
+        let selected = selected.len() as u64;
+        (rows, selected.min(rows))
+    }
+
+    /// Attaches `row` to this grid (W5-11b).
+    ///
+    /// The grid computes each configured aggregate over its **projected** rows — the rows left in
+    /// the current sort order — and writes the result through the row's shared value cell. The
+    /// aggregate list is copied from the row at attach time: a widget cannot hold a borrow of
+    /// another, so a later
+    /// [`SummaryRow::set_aggregates`](crate::widget::companions::SummaryRow::set_aggregates) needs a
+    /// re-attach.
+    ///
+    /// `Sum`, `Min`, `Max`, `Count` and `Average` are computed here;
+    /// [`ColumnAggregateKind::Custom`](crate::widget::companions::ColumnAggregateKind::Custom)
+    /// means a host-defined aggregate and is left to the row's own `set_value`. Cells are read as
+    /// display text, so a non-numeric cell contributes to `Count` but not to a numeric aggregate.
+    pub fn attach_summary_row(&mut self, row: &crate::widget::companions::SummaryRow) {
+        let (values, redraw) = row.values_handle();
+        let aggregates = row.aggregates().to_vec();
+        self.summary_row = Some(SummaryRowBinding {
+            values,
+            redraw,
+            aggregates,
+            key: None,
+            _scope: ConnectionScope::new(),
+        });
+        // Adopt the grid's current numbers now, so attaching does not wait for a frame.
+        self.apply_summary_row();
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached summary row; the values it last showed stay (W5-11b).
+    pub fn detach_summary_row(&mut self) {
+        if self.summary_row.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::SummaryRow`] is attached (W5-11b).
+    pub fn is_summary_row_attached(&self) -> bool {
+        self.summary_row.is_some()
+    }
+
+    /// Recomputes the attached row's aggregates when the projection moved (W5-11b).
+    ///
+    /// Called from `draw` and `handle_event`. Returns whether the row was written.
+    pub fn poll_summary_row(&mut self) -> bool {
+        if self.summary_row.is_none() {
+            return false;
+        }
+        // The aggregate walk reads the projection, so a sort that has not been materialised yet
+        // would report the previous order's numbers.
+        self.ensure_sort_order();
+        let key = self.summary_key();
+        let Some(binding) = self.summary_row.as_ref() else {
+            return false;
+        };
+        if binding.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.apply_summary_row();
+        true
+    }
+
+    /// The projection an attached summary row's numbers depend on (W5-11b).
+    fn summary_key(&self) -> SummaryKey {
+        SummaryKey {
+            revision: self.data_generation.load(std::sync::atomic::Ordering::Relaxed),
+            sorts: self.sort_specs.clone(),
+            rows: self.row_count(),
+            aggregates: self
+                .summary_row
+                .as_ref()
+                .map(|binding| binding.aggregates.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Computes the attached row's aggregates and writes them into its shared cell (W5-11b).
+    fn apply_summary_row(&mut self) {
+        let Some(binding) = self.summary_row.as_ref() else {
+            return;
+        };
+        let aggregates = binding.aggregates.clone();
+        let values = Arc::clone(&binding.values);
+        let redraw = binding.redraw.clone();
+        let key = self.summary_key();
+        let computed = self.compute_summary_values(&aggregates);
+        {
+            let mut guard = values.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = computed;
+        }
+        redraw.emit();
+        if let Some(binding) = self.summary_row.as_mut() {
+            binding.key = Some(key);
+        }
+    }
+
+    /// Aggregates `aggregates` over the projected rows (W5-11b).
+    ///
+    /// The walk reads the source one cell at a time in projected order, so a sorted grid reports
+    /// the same numbers the rows on screen would add up to. A token this grid cannot resolve is
+    /// skipped rather than reported as zero.
+    fn compute_summary_values(
+        &self,
+        aggregates: &[crate::widget::companions::ColumnAggregate],
+    ) -> Vec<(String, f64)> {
+        use crate::widget::companions::ColumnAggregateKind;
+        let Some(source) = self.data_source.as_ref() else {
+            return Vec::new();
+        };
+        let titles = self.column_title_lookup();
+        let mut values = Vec::new();
+        let mut cell = String::new();
+        for aggregate in aggregates {
+            if aggregate.kind == ColumnAggregateKind::Custom {
+                continue;
+            }
+            let Some(column) = resolve_column_token(&aggregate.column_token, &titles) else {
+                continue;
+            };
+            let mut populated = 0usize;
+            let mut numeric = 0usize;
+            let mut sum = 0.0f64;
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            for row in 0..self.row_count() {
+                cell.clear();
+                if !source.fill_cell(self.source_row(row), column, &mut cell) {
+                    continue;
+                }
+                let text = cell.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                populated += 1;
+                let Ok(number) = text.parse::<f64>() else {
+                    continue;
+                };
+                if !number.is_finite() {
+                    continue;
+                }
+                numeric += 1;
+                sum += number;
+                min = min.min(number);
+                max = max.max(number);
+            }
+            let value = match aggregate.kind {
+                ColumnAggregateKind::Sum => Some(sum),
+                ColumnAggregateKind::Min => (numeric > 0).then_some(min),
+                ColumnAggregateKind::Max => (numeric > 0).then_some(max),
+                ColumnAggregateKind::Count => Some(populated as f64),
+                ColumnAggregateKind::Average => (numeric > 0).then_some(sum / numeric as f64),
+                ColumnAggregateKind::Custom => None,
+            };
+            if let Some(value) = value.filter(|value| value.is_finite()) {
+                values.push((aggregate.column_token.clone(), value));
+            }
+        }
+        values
+    }
+
+    /// The title-to-column map built from the source's column names (W5-11b).
+    ///
+    /// A chooser and a summary row both address columns by their published token, whose first
+    /// field is the title. A source that names no columns has no tokens to resolve, which is the
+    /// honest answer for a matrix with positional headers.
+    fn column_title_lookup(&self) -> std::collections::HashMap<String, usize> {
+        let mut titles = std::collections::HashMap::new();
+        let Some(source) = self.data_source.as_ref() else {
+            return titles;
+        };
+        for index in 0..self.column_count() {
+            if let Some(name) = source.column_name(index) {
+                if !name.is_empty() {
+                    titles.entry(name).or_insert(index);
+                }
+            }
+        }
+        titles
+    }
+
     /// Sets one column's cell alignment, returning whether the column exists (V-001).
     pub fn set_column_alignment(&mut self, col: usize, alignment: HorizontalAlignment) -> bool {
         if col >= self.column_count() {
@@ -1425,6 +1902,12 @@ impl GridTableWidget {
             for ci in self.scroll_column..count {
                 if x >= build_extent {
                     break;
+                }
+                // A hidden column keeps its source index but takes no slot in the run (W5-11a), so
+                // the columns after it close the gap and every consumer of this cache — paint, hit
+                // test, resize handles — agrees about where each column sits.
+                if self.hidden_columns.contains(&ci) {
+                    continue;
                 }
                 let width = self.column_width(ci) as i32;
                 // Mirror the whole run inside the control's data band (U2-06): column 0
@@ -1982,6 +2465,12 @@ impl Draw for GridTableWidget {
             return;
         }
 
+        // Companion edits apply before the frame is painted, so a chooser click, a row-count change
+        // and the aggregate push all land in the picture being drawn (W5-11b).
+        self.poll_column_chooser();
+        self.poll_grid_status_bar();
+        self.poll_summary_row();
+
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
         // switch visible; the surface, the header, the row numbers, the grid lines and all
@@ -2335,6 +2824,11 @@ impl Draw for GridTableWidget {
 impl EventHandler for GridTableWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // The same companion polls as `draw`, so a click on a bound strip or chooser is applied by
+        // the interaction that produced it rather than by a later frame (W5-11b).
+        self.poll_column_chooser();
+        self.poll_grid_status_bar();
+        self.poll_summary_row();
         if !self.base.is_enabled() {
             // Disabling can happen mid-drag; a release delivered while disabled must not leave the
             // column latched into resize mode (the next plain move would keep resizing it).

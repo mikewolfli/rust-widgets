@@ -115,6 +115,12 @@ pub struct TextArea {
     pub undo_available: Signal1<bool>,
     /// Emitted with the new value whenever redo availability changes.
     pub redo_available: Signal1<bool>,
+    /// Emitted when editing ends — the area loses focus.
+    ///
+    /// The single-line field publishes the same signal on focus loss and on Enter/Escape; a
+    /// multi-line area keeps its newlines as content, so focus loss is the one unambiguous end of
+    /// an editing session here. Carries no payload.
+    pub editing_finished: GenericSignal,
     /// Last caret offset announced, so the signal is edge-triggered.
     caret_cursor_announced: usize,
     /// Last selected range announced, so the signal is edge-triggered.
@@ -332,6 +338,7 @@ impl TextArea {
             cursor_position_changed: Signal1::new(),
             undo_available: Signal1::new(),
             redo_available: Signal1::new(),
+            editing_finished: GenericSignal::new(),
             caret_cursor_announced: cursor_pos,
             caret_selection_announced: None,
             undo_available_announced: false,

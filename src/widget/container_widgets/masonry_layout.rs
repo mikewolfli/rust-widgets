@@ -693,6 +693,11 @@ impl Draw for MasonryLayout {
                 HorizontalAlignment::Left,
             );
         }
+
+        // The panel paints cards and their labels but no interaction state of its own, so the
+        // shared layers answer the pointer and a disabled layout (W5-04, W5-03).
+        self.base.paint_hover_wash(context, rect);
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

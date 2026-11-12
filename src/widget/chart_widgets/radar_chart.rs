@@ -948,6 +948,8 @@ impl Draw for RadarChart {
         let axis_count = self.axis_count();
         let Some(_max) = self.data_max() else {
             self.draw_placeholder(context, rect, &font, &chrome);
+            // The panel is already on screen, so a disabled chart still has to recede.
+            self.base.paint_disabled_veil(context, rect);
             return;
         };
         let Some((center, radius)) = self.geometry_center_radius() else {
@@ -955,6 +957,8 @@ impl Draw for RadarChart {
         };
         if axis_count == 0 {
             self.draw_placeholder(context, rect, &font, &chrome);
+            // Same exit as the no-data branch above: the frame and caption are painted.
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
 
@@ -994,6 +998,11 @@ impl Draw for RadarChart {
         if let Some(axis) = self.hovered_axis {
             self.draw_hover_spoke(context, center, radius, axis, &chrome);
         }
+        // Release the vertex scratch before the veil: the veil is a `&self` call that must not
+        // run while a `RefCell` borrow of the same control is still held.
+        drop(vertices);
+        // A disabled radar refuses hover and selection, so the painted chart must recede (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -830,6 +830,16 @@ impl Widget for TimelineWidget {
         crate::core::Size::new(600, 200)
     }
 
+    /// The timeline owns a focus-gated keyboard arm, so it must be able to hold focus.
+    ///
+    /// Its kind is `Chart`, which is shared with the read-only chart family; listing that kind in
+    /// [`WidgetKind::wants_keyboard_focus`](crate::widget::WidgetKind::wants_keyboard_focus) would
+    /// put every chart in the tab order, including the ones with no key handling. The override
+    /// keeps the opt-in local to the control that has the keyboard code (W5-02).
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
     /// Advances the entry animation.
     fn tick(&mut self, delta_ms: u32) -> bool {
         if !self.animate_entry {

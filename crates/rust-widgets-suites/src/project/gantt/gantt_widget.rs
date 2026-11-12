@@ -5,7 +5,7 @@
 
 use rust_widgets::compat::HashMap;
 use rust_widgets::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::render::RenderContext;
 use rust_widgets::signal::Signal1;
 use rust_widgets::widget::capability::coercion::expect_i64;
@@ -1779,6 +1779,12 @@ impl Widget for GanttWidget {
         &mut self.base
     }
 
+    /// The widget has keyboard handling (arrow-key selection and page scrolling), so the router must
+    /// be able to focus it. Its kind is `Chart`, which is not in `wants_keyboard_focus`.
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
     /// Paints itself, so it can be mounted into a native window.
     fn as_draw_mut(&mut self) -> Option<&mut dyn rust_widgets::widget::Draw> {
         Some(self)
@@ -2180,12 +2186,12 @@ impl EventHandler for GanttWidget {
                     }
                 }
             }
-            Event::KeyPress { key, .. } => match *key {
-                38 => {
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
+                key_codes::UP => {
                     let index = self.selected_index.map_or(0, |index| index.saturating_sub(1));
                     let _ = self.select_index(index);
                 }
-                40 => {
+                key_codes::DOWN => {
                     if !self.tasks.is_empty() {
                         let index = self
                             .selected_index
@@ -2193,8 +2199,8 @@ impl EventHandler for GanttWidget {
                         let _ = self.select_index(index);
                     }
                 }
-                33 => self.scroll_by(-(self.visible_row_count().max(1) as isize)),
-                34 => self.scroll_by(self.visible_row_count().max(1) as isize),
+                key_codes::PAGE_UP => self.scroll_by(-(self.visible_row_count().max(1) as isize)),
+                key_codes::PAGE_DOWN => self.scroll_by(self.visible_row_count().max(1) as isize),
                 _ => {}
             },
             _ => { /* Other events are not relevant */ }
@@ -2629,6 +2635,10 @@ impl Draw for GanttWidget {
                 }
             }
         }
+        // Tab focus must be visible on the chart as on every other control (W5-38).
+        let radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, radius);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

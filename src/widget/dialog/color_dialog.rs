@@ -170,6 +170,18 @@ fn color_from_hsv(hue: f32, saturation: f32, value: f32, alpha: u8) -> Color {
         alpha,
     )
 }
+/// The inputs [`ColorDialog::preset_rects`] is a pure function of (W5-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PresetRectsKey {
+    /// The painted frame the swatch x positions are derived from.
+    frame: Rect,
+    /// The preview band's top edge, or `None` when the dialog is too short to hold one.
+    preview_y: Option<i32>,
+    /// The number of palette entries offered before the width clamp, or `0` when the swatch
+    /// row is switched off.
+    palette: u32,
+}
+
 /// Color dialog for picking RGBA colors.
 ///
 /// The picker is a saturation/value plane at the current hue: the x axis is saturation and
@@ -180,6 +192,14 @@ pub struct ColorDialog {
     base: BaseWidget,
     /// The OK/Cancel labels, keyed by the catalogue generation.
     action_label_cache: crate::compat::RefCell<Option<(u64, crate::compat::Rc<Vec<String>>)>>,
+    /// The preset swatch rects and the inputs that produced them (W5-17).
+    ///
+    /// `draw` and [`ColorDialog::hex_field_rect`] both ask for the swatch row in the same frame,
+    /// and both calls used to rebuild the vector. The key covers every input
+    /// [`ColorDialog::compute_preset_rects`] reads, so a resize or a palette change rebuilds it
+    /// and a steady frame reuses the rectangles the paint and the hit test agree on.
+    preset_rect_cache:
+        crate::compat::RefCell<Option<(PresetRectsKey, crate::compat::Rc<Vec<Rect>>)>>,
     current_color: Color,
     /// The colour the dialog opened with, restored by [`ColorDialog::reject`].
     initial_color: Color,
@@ -247,6 +267,12 @@ pub struct ColorDialog {
     /// string, and the preview line was a `format!`). Appending into one buffer here
     /// keeps a steady-state frame allocation-free.
     draw_text_buf: String,
+    /// Reused buffer for the unfocused hex field's readout (W5-17).
+    ///
+    /// The field used to paint `current_color.to_hex_rgba()`, which allocated a `String` every
+    /// frame the dialog was shown. The same canonical bytes are appended here instead, and
+    /// `clear()` keeps the capacity between frames.
+    hex_readout: String,
 }
 impl ColorDialog {
     /// Distance from the dialog's top edge to the picker's top edge: the title bar's
@@ -337,6 +363,7 @@ impl ColorDialog {
         Self {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
             action_label_cache: crate::compat::RefCell::new(None),
+            preset_rect_cache: crate::compat::RefCell::new(None),
             current_color: Color::rgb(255, 255, 255),
             initial_color: Color::rgb(255, 255, 255),
             options_alpha: false,
@@ -362,6 +389,7 @@ impl ColorDialog {
             screen_color_sampled: Signal1::new(),
             focus: None,
             draw_text_buf: String::new(),
+            hex_readout: String::new(),
         }
     }
     /// Returns whether the dialog is modal. Defaults to `true`.
@@ -750,17 +778,37 @@ impl ColorDialog {
     }
 
     /// The preset swatch rects in the preview row, in palette order.
-    fn preset_rects(&self) -> Vec<Rect> {
-        if !self.show_presets {
-            return Vec::new();
+    ///
+    /// Served from a keyed cache: `draw` and [`ColorDialog::hex_field_rect`] both read the row
+    /// in one frame, and the rebuild used to happen twice (W5-17).
+    fn preset_rects(&self) -> Rc<Vec<Rect>> {
+        let key = PresetRectsKey {
+            frame: self.frame_rect(),
+            preview_y: self.preview_row_top(),
+            palette: if self.show_presets {
+                (PRESET_COLORS.len() + self.custom_colors.len()).min(8) as u32
+            } else {
+                0
+            },
+        };
+        if let Some((cached_key, rects)) = self.preset_rect_cache.borrow().as_ref() {
+            if *cached_key == key {
+                return Rc::clone(rects);
+            }
         }
-        let Some(preview_y) = self.preview_row_top() else {
+        let rects = Rc::new(self.compute_preset_rects(&key));
+        *self.preset_rect_cache.borrow_mut() = Some((key, Rc::clone(&rects)));
+        rects
+    }
+
+    /// Rebuilds the preset swatch rects; [`Self::preset_rects`] is the cached entry point.
+    fn compute_preset_rects(&self, key: &PresetRectsKey) -> Vec<Rect> {
+        let Some(preview_y) = key.preview_y else {
             return Vec::new();
         };
-        let rect = self.frame_rect();
-        let count = (PRESET_COLORS.len() + self.custom_colors.len()).min(8) as u32;
+        let rect = key.frame;
         let available = (rect.width.saturating_sub(96)) / 18;
-        let count = count.min(available);
+        let count = key.palette.min(available);
         (0..count)
             .map(|index| Rect::new(rect.x + 80 + index as i32 * 18, preview_y + 6, 14, 14))
             .collect()
@@ -1416,7 +1464,12 @@ impl Draw for ColorDialog {
                 let text = if self.hex_focused {
                     &self.hex_input
                 } else {
-                    &self.current_color.to_hex_rgba()
+                    // The same canonical `#RRGGBBAA` the discarded `to_hex_rgba()` produced, but
+                    // appended into the reused buffer: the unfocused field no longer allocates a
+                    // `String` per frame.
+                    self.hex_readout.clear();
+                    self.current_color.write_hex_rgba(&mut self.hex_readout);
+                    &self.hex_readout
                 };
                 let line = context.text_line(field, preview_font);
                 context.draw_text_fitted_ellipsis(
@@ -1482,6 +1535,7 @@ impl Draw for ColorDialog {
         // disagree about the button width, the gap between them, or where the row's left edge
         // falls. The labels are centred in their buttons and fitted to them.
         if self.no_buttons {
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
         let band = super::message_box::inset_action_band(
@@ -1512,6 +1566,7 @@ impl Draw for ColorDialog {
         if let Some(focused) = self.focus.and_then(|index| row.buttons.get(index)) {
             context.draw_rounded_rect_stroke(*focused, 2, accent, 2);
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 
@@ -1753,6 +1808,48 @@ mod tests {
         assert!(dialog.hex_focused);
         dialog.handle_event(&Event::TextInput { text: "#00FF00".to_string() });
         assert_eq!(dialog.current_color(), Color::rgb(0, 255, 0));
+    }
+
+    #[test]
+    fn the_unfocused_hex_field_paints_the_canonical_readout() {
+        // The field used to paint `current_color.to_hex_rgba()`, a fresh `String` per frame. It now
+        // paints the reused buffer, so the bytes have to stay exactly the ones that allocation
+        // produced -- including for a colour with alpha, where the RGBA form and the RGB form
+        // differ. The SVG backend paints glyph outlines rather than `<text>`, so the assertion is
+        // on the string `draw` hands it.
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 400, 300));
+        dialog.set_option(ColorDialogOption::ShowHexInput, true);
+        dialog.set_current_color(Color::rgba(0x11, 0x22, 0x33, 0x44));
+        assert!(dialog.hex_field_rect().is_some(), "the preview row carries the field");
+        let _ = crate::widget::svg::render_to_svg(&mut dialog);
+        assert_eq!(
+            dialog.hex_readout,
+            dialog.current_color().to_hex_rgba(),
+            "the field must paint the canonical RGBA hex"
+        );
+        assert_eq!(dialog.hex_readout, "#11223344");
+    }
+
+    #[test]
+    fn the_preset_row_is_reused_while_its_inputs_hold() {
+        // `draw` and `hex_field_rect` both read the swatch row in one frame. One rebuild is the
+        // contract; a resize or a palette change is what is allowed to invalidate it (W5-17).
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 400, 300));
+        dialog.set_option(ColorDialogOption::ShowPresetPalette, true);
+        let first = dialog.preset_rects();
+        let second = dialog.preset_rects();
+        assert!(Rc::ptr_eq(&first, &second), "a steady frame must reuse the cached swatch rects");
+        assert_eq!(&*first, &*second);
+
+        dialog.set_geometry(Rect::new(0, 0, 160, 300));
+        let resized = dialog.preset_rects();
+        assert!(
+            resized.len() < first.len(),
+            "a narrower frame offers fewer swatches: {} vs {}",
+            resized.len(),
+            first.len()
+        );
+        assert!(!Rc::ptr_eq(&first, &resized), "a resize must rebuild the swatch rects");
     }
 
     #[test]

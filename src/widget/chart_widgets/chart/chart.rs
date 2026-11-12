@@ -1683,6 +1683,9 @@ impl Draw for ChartWidget {
                 ink.legible_on(surface, 4.5).with_alpha(160),
                 HorizontalAlignment::Center,
             );
+            // The empty state paints the same chrome as a populated chart, so a disabled one has
+            // to recede here too (W5-03).
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
 
@@ -1909,6 +1912,9 @@ impl Draw for ChartWidget {
                 tooltip.draw(context);
             }
         }
+        // A chart that refuses every pointer gesture must not look live: the veil covers the
+        // panel, the marks and the companions painted above, in one place (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

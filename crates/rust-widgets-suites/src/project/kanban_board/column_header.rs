@@ -466,5 +466,7 @@ impl Draw for KanbanColumnHeader {
         if self.is_at_wip_limit() {
             context.draw_rect(badge, warning.blend(&accent, 0.2));
         }
+        self.base.paint_hover_wash(context, rect);
+        crate::veil_if_disabled(&self.base, context);
     }
 }

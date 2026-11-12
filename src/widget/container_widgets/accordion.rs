@@ -937,7 +937,10 @@ impl Draw for Accordion {
             let section = &self.sections[index];
             if is_header {
                 ctx.fill_rect(row, header_fill);
-                if self.focused_header == Some(index) {
+                // The outline is a *keyboard* focus indicator. A pointer press also records the
+                // focused header (so the arrow keys have a target), but the pointer already shows
+                // where the user is, so only a Tab/shortcut focus paints the ring.
+                if self.focused_header == Some(index) && self.base.draws_focus_ring() {
                     ctx.draw_rect_stroke(row, accent, 1);
                 }
                 ctx.draw_line(
@@ -1057,6 +1060,11 @@ impl Draw for Accordion {
             // An empty accordion still shows where it is; an outline is chrome, not content.
             ctx.draw_rect(rect, ink.blend(&surface, 0.8));
         }
+
+        // The stack paints headers and bodies from a per-row state but nothing answers the pointer
+        // over the control itself, so the shared hover layer carries it (W5-04). The disabled
+        // picture is already derived from `disabled_ink_on`, so no veil is added on top.
+        self.base.paint_hover_wash(ctx, rect);
     }
 }
 
@@ -1067,6 +1075,14 @@ impl EventHandler for Accordion {
             // A disabled control is inert: it consumes no input and emits nothing the user
             // cannot reach (`check_enabled_is_honoured.sh`).
             return;
+        }
+        // Tabbing onto the stack gives the arrow keys a starting header. Without this the header
+        // indicator only appeared after a pointer press or a first arrow key, so the initial
+        // keyboard focus had nothing to show.
+        if let Event::FocusGained { .. } = event {
+            if self.focused_header.is_none() && !self.sections.is_empty() {
+                self.set_focused_header(Some(0));
+            }
         }
         if let Event::MousePress { pos, button: 1, .. } = event {
             let hit = self
@@ -1263,6 +1279,26 @@ mod tests {
             modifiers: 0,
         });
         assert_eq!(accordion.expanded_ids(), vec!["b"]);
+    }
+
+    /// Tab focus alone paints a focused header, without a pointer press (W5-30).
+    ///
+    /// `focused_header` was only set by a press or by the first arrow key, and the header outline
+    /// ignored the focus reason altogether. This dispatches a real `FocusGained` and compares two
+    /// renders, so both halves are pinned: a header is targeted and the frame changes.
+    #[test]
+    fn focus_gained_without_a_pointer_changes_the_frame() {
+        let _guard = crate::style::theme_test_guard();
+        let mut accordion = accordion();
+        assert_eq!(accordion.focused_header(), None, "a fresh stack has no keyboard target");
+        let resting = crate::widget::svg::render_to_svg(&mut accordion);
+
+        accordion.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert_eq!(accordion.focused_header(), Some(0), "Tab focus lands on the first header");
+        assert!(accordion.expanded_ids().is_empty(), "focus alone must not open a section");
+
+        let focused = crate::widget::svg::render_to_svg(&mut accordion);
+        assert_ne!(resting, focused, "a keyboard-focused stack must paint a focus outline");
     }
 
     #[test]

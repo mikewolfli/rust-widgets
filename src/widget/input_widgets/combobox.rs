@@ -3085,6 +3085,9 @@ impl Draw for ComboBox {
                 }
             }
         }
+        // The band, because it is the face this control paints: the rows' per-item `enabled`
+        // tint is a separate fact and does not stand in for the control-level disabled cue.
+        self.base.paint_disabled_veil(context, band);
     }
 }
 

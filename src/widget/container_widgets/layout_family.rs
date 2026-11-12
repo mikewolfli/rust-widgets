@@ -551,6 +551,7 @@ impl Draw for Spacer {
         let palette = wrapper_palette(&self.base, "spacer");
         let color = palette.ink.blend(&palette.surface, 0.55);
         paint_dashed_frame(ctx, rect, color);
+        self.base.paint_disabled_veil(ctx, rect);
     }
 }
 
@@ -779,6 +780,7 @@ impl Draw for Center {
         let content = self.content_rect();
         place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "center", outer, content, &self.content);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -1056,6 +1058,7 @@ impl Draw for Align {
         let content = self.content_rect();
         place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "align", outer, content, &self.content);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -1239,6 +1242,7 @@ impl Draw for SizedBox {
         let content = self.content_rect();
         place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "sized_box", outer, content, &self.content);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -1447,6 +1451,7 @@ impl Draw for Padding {
         // content area is filled by the shared painter. `Padding` is the one wrapper whose
         // outer frame would otherwise be indistinguishable from a plain container.
         paint_wrapper(ctx, &self.base, "padding", outer, content, &self.content);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -1625,6 +1630,7 @@ impl Draw for Expanded {
         let content = self.content_rect();
         place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "expanded", outer, content, &self.content);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -1865,6 +1871,7 @@ impl Draw for Flexible {
         let content = self.content_rect();
         place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "flexible", outer, content, &self.content);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -2012,6 +2019,7 @@ impl Draw for IntrinsicWidth {
         let content = self.content_rect();
         place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "intrinsic_width", outer, content, &self.content);
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 
@@ -2371,6 +2379,7 @@ impl Draw for AspectRatio {
         if self.content.child.is_none() {
             paint_ratio_guides(ctx, &self.base, "aspect_ratio", content, &self.ratio_label_cache);
         }
+        self.base.paint_disabled_veil(ctx, outer);
     }
 }
 

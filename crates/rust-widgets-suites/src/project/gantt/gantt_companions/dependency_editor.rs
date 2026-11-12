@@ -459,6 +459,8 @@ impl Draw for DependencyEditor {
                 ink,
                 HorizontalAlignment::Left,
             );
+            self.base.paint_hover_wash(context, rect);
+            crate::veil_if_disabled(&self.base, context);
             return;
         }
         for index in 0..self.dependencies.len() {
@@ -483,5 +485,7 @@ impl Draw for DependencyEditor {
                 context.draw_line(end, Point::new(end.x - 4, end.y + 3), border);
             }
         }
+        self.base.paint_hover_wash(context, rect);
+        crate::veil_if_disabled(&self.base, context);
     }
 }

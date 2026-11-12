@@ -617,11 +617,13 @@ impl<'a> RenderContext<'a> {
     pub fn fill_gradient(&mut self, rect: Rect, gradient: &crate::style::Gradient) {
         let rect = self.offset_rect(rect);
         // Straight to the backend, which may paint it without owning a copy; a bucket traversal
-        // needs an owning handle, and an immutable gradient is shared by refcount (G-12).
+        // needs an owning handle, and the shared description cache keeps that handle's `Arc`
+        // pointing at the same value for an unchanged gradient instead of deep-copying the stops
+        // every frame (G-12, W5-07).
         if self.bucket_recording() {
             self.dispatch_owned(RenderCommand::DrawGradient {
                 rect,
-                gradient: crate::compat::Arc::new(gradient.clone()),
+                gradient: crate::render::pipeline::cached_gradient_arc(gradient),
             });
         } else {
             self.backend.fill_gradient(rect, gradient);

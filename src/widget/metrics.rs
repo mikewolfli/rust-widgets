@@ -1949,6 +1949,20 @@ pub mod dimensions {
     /// so a disabled label, a disabled frame and a disabled button all recede alike.
     pub const DISABLED_VEIL_ALPHA: u8 = 140;
 
+    /// How opaque the **hover state layer** is, as a byte alpha.
+    ///
+    /// # Why this is a shared constant
+    ///
+    /// [`HOVER_FILL_BLEND`](crate::style::HOVER_FILL_BLEND) is the fade a control applies to its
+    /// own fill (`0.08`). A control whose draw has no single fill to blend — a chart's plot area,
+    /// a list row, a toolbar band — needs the same gesture as an overlaid layer instead. This is
+    /// that weight as a byte alpha, so a wash and a blended fill read as one affordance rather
+    /// than two (W5-04).
+    ///
+    /// The ink is the surface's contrast colour, not a mid-grey: a half-transparent grey has no
+    /// direction, which is the same defect [`DISABLED_VEIL_ALPHA`] documents.
+    pub const HOVER_VEIL_ALPHA: u8 = 20;
+
     /// Which way a visual-density level shifts metric sizes.
     ///
     /// The density level is a signed offset in [`DENSITY_STEP`] units, and

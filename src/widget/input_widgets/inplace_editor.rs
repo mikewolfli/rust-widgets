@@ -1076,6 +1076,8 @@ impl Draw for InplaceEditor {
                 );
             }
         }
+        // The field, since that is the face this control paints and the one the hit test reads.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

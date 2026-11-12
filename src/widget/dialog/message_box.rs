@@ -1693,6 +1693,7 @@ impl Draw for MessageBox {
                 context.draw_rounded_rect_stroke(*button_rect, 3, primary, 2);
             }
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

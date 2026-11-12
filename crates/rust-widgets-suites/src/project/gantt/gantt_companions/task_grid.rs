@@ -13,6 +13,7 @@ use rust_widgets::widget::capability::properties_trait::{base_property_get, base
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
 use rust_widgets::widget::metrics::effective_font;
+use rust_widgets::widget::view_widgets::rtl_columns::{is_rtl, mirror_span};
 use rust_widgets::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
 
@@ -467,6 +468,12 @@ impl GanttTaskGrid {
     }
 
     /// [`Self::column_bounds`] into a caller-held buffer, for the paint path.
+    ///
+    /// In a right-to-left page every band is reflected inside the control's rectangle, so the
+    /// first column — the one a right-to-left reader starts at — is the rightmost. Widths are
+    /// unchanged and the bands still tile the rectangle, so the header, the row labels, the
+    /// separators and [`Self::column_at`] all read the same partition: the hit test moves with
+    /// the paint because neither derives its own geometry.
     fn fill_column_bounds(&self, out: &mut Vec<(usize, i32, u32)>) {
         out.clear();
         let rect = self.geometry();
@@ -484,6 +491,11 @@ impl GanttTaskGrid {
             };
             out.push((index, x, width));
             x += width as i32;
+        }
+        if is_rtl() {
+            for (_, start, width) in out.iter_mut() {
+                *start = mirror_span(*start, *width, rect);
+            }
         }
     }
 
@@ -663,6 +675,10 @@ impl Draw for GanttTaskGrid {
         let (surface, border, ink) = chart_chrome_palette(style, "gantt_task_grid");
         context.face_with_gradient(rect, surface, None, Default::default(), 0, Color::BLACK);
         let font = effective_font(style);
+        // Read once for the frame; `fill_column_bounds` is the single place that reflects the
+        // column bands, so `hit_header`/`column_at` agree with the paint without a second
+        // derivation.
+        let rtl = is_rtl();
         let mut bounds = core::mem::take(&mut self.column_bounds_scratch);
         self.fill_column_bounds(&mut bounds);
 
@@ -689,8 +705,12 @@ impl Draw for GanttTaskGrid {
         }
 
         // Column separators span the whole control, so the header and the rows share one
-        // partition; the last column has no trailing separator.
-        for (_, x, _) in bounds.iter().skip(1) {
+        // partition; the outer column has no separator on the pane's own edge. That column is
+        // the first entry in LTR and the last one once the bands are reflected.
+        for (position, (_, x, _)) in bounds.iter().enumerate() {
+            if (rtl && position + 1 == bounds.len()) || (!rtl && position == 0) {
+                continue;
+            }
             context.draw_line(
                 Point::new(*x, rect.y),
                 Point::new(*x, rect.y + rect.height as i32),
@@ -731,11 +751,20 @@ impl Draw for GanttTaskGrid {
             let label_x = first_x + GRID_PADDING + indent;
             let available =
                 (first_width as i32 - GRID_PADDING - indent - GRID_PADDING).max(0) as u32;
+            // The label band is reflected inside the column band that owns it: the indent then
+            // comes off the column's leading (right) edge instead of its left one.
+            let label_x = if rtl {
+                mirror_span(label_x, available, Rect::new(first_x, row.y, first_width.max(1), 0))
+            } else {
+                label_x
+            };
             let band = Rect::new(label_x, row.y, available, row.height);
             context.draw_text_line_ellipsis(band, &task.label, font, ink, column.alignment);
         }
         self.column_bounds_scratch = bounds;
         self.visible_indices_scratch = indices;
+        self.base.paint_hover_wash(context, rect);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 
@@ -1045,5 +1074,42 @@ mod tests {
 
         grid.set_row_height(40);
         assert_eq!(grid.row_height(), 24, "the chart still owns the bound height");
+    }
+
+    /// An RTL page mirrors the column run, and the header hit test moves with it (W5-15).
+    ///
+    /// The paint, `column_at` and `hit_header` all read `column_bounds`, so the reflection lives
+    /// in `fill_column_bounds` and the clicked header is the painted one without a second
+    /// derivation.
+    #[test]
+    fn rtl_mirrors_the_column_run_and_the_header_hit_test() {
+        let mut grid = GanttTaskGrid::new(Rect::new(0, 0, 200, 160));
+        grid.set_columns(alloc::vec![
+            TaskColumn::new("Task", 80, HorizontalAlignment::Left),
+            TaskColumn::new("Owner", 120, HorizontalAlignment::Left),
+        ]);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        grid.header_clicked.connect(move |column| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*column);
+            }
+        });
+
+        assert_eq!(grid.column_bounds(), alloc::vec![(0usize, 0, 80u32), (1usize, 80, 120u32)]);
+
+        let previous = rust_widgets::core::default_text_direction();
+        rust_widgets::core::set_default_text_direction(
+            rust_widgets::core::TextDirection::RightToLeft,
+        );
+
+        // The bands are reflected and keep their widths: column 0 starts at the right edge and
+        // the last column ends at the left one.
+        assert_eq!(grid.column_bounds(), alloc::vec![(0usize, 120, 80u32), (1usize, 0, 120u32)]);
+        // A press where column 0 now is reports column 0, not the last column.
+        grid.handle_event(&Event::MousePress { pos: Point::new(180, 5), button: 1, modifiers: 0 });
+        assert_eq!(seen.lock().map(|guard| guard.clone()).unwrap_or_default(), alloc::vec![0usize]);
+
+        rust_widgets::core::set_default_text_direction(previous);
     }
 }

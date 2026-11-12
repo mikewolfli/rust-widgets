@@ -437,6 +437,12 @@ pub struct PieMenu {
     /// frame for point lists whose length depends only on the item count. These buffers keep their
     /// capacity across frames; `clear()` at the start of each contour is the only reuse protocol.
     paint_scratch: crate::compat::RefCell<PieMenuScratch>,
+    /// Reused buffer for a wedge label that has to be elided (W5-34).
+    ///
+    /// `elide_to_width` returns a `Cow`, so it owns a `String` on every frame a label overflows
+    /// its wedge. The `_into` form appends the elided form here instead, and `clear()` keeps the
+    /// capacity between frames.
+    label_scratch: crate::compat::RefCell<String>,
     /// The wedges' contours, rebuilt only when the geometry or the item angles change.
     ///
     /// A wedge is a pure function of the centre, the two radii and its two angles, so a static
@@ -559,6 +565,7 @@ impl PieMenu {
             about_to_show: GenericSignal::new(),
             about_to_hide: GenericSignal::new(),
             paint_scratch: crate::compat::RefCell::new(PieMenuScratch::default()),
+            label_scratch: crate::compat::RefCell::new(String::new()),
             slice_paths: crate::compat::RefCell::new(SlicePathCache::default()),
         }
     }
@@ -1851,12 +1858,17 @@ impl Draw for PieMenu {
                 let half_chord = (label_r * (sweep * 0.5).sin()).abs();
                 let box_w = ((half_chord * 2.0) + 2.0 * TEXT_FIT_MARGIN as f32).max(1.0) as u32;
                 let available = (box_w as i32 - 2 * TEXT_FIT_MARGIN as i32).max(0) as u32;
-                let fitted = crate::widget::text_utils::elide_to_width(
+                let mut label_buf = self.label_scratch.borrow_mut();
+                let elided = crate::widget::text_utils::elide_to_width_into(
                     label_text,
                     available,
                     &mut |candidate| context.measure_text(candidate, font).width,
+                    &mut label_buf,
                 );
-                let line_height = context.measure_text(&fitted, font).height;
+                // `false` means the label fits whole and the buffer was left empty, so the
+                // borrowed text is painted; `true` means the elided form sits in the buffer.
+                let fitted: &str = if elided { label_buf.as_str() } else { label_text };
+                let line_height = context.measure_text(fitted, font).height;
                 let origin =
                     Point::new(lx.round() as i32, (ly - line_height as f32 / 2.0).round() as i32);
                 let pivot = Point::new(lx.round() as i32, ly.round() as i32);
@@ -1866,7 +1878,7 @@ impl Draw for PieMenu {
                 }
                 context.draw_text_rotated(
                     origin,
-                    &fitted,
+                    fitted,
                     font,
                     text_color,
                     HorizontalAlignment::Center,
@@ -3012,6 +3024,35 @@ mod tests {
         menu.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
         assert_eq!(menu.hovered_index(), Some(2), "the gap is stepped over");
         assert!(menu.items()[1].is_separator());
+    }
+
+    /// An overflowing wedge label is elided into the reused buffer, and a steady frame paints the
+    /// same picture (W5-34).
+    ///
+    /// # What this pins
+    ///
+    /// The label used to go through `elide_to_width`, whose `Cow` owns a `String` on every frame a
+    /// label overflowed. The `_into` form writes into `label_scratch`; two long labels are used so
+    /// the buffer holds the second one's elided form when `draw` returns.
+    #[test]
+    fn an_overflowing_wedge_label_elides_into_the_reused_buffer() {
+        let second_label = "Another caption far wider than its wedge";
+        let mut menu = PieMenu::new(Point::new(80, 80), 70.0);
+        menu.add_item("A caption far wider than its wedge");
+        menu.add_item(second_label);
+        menu.show_at(Point::new(80, 80));
+        menu.set_animation_progress(1.0);
+
+        let first = crate::widget::svg::render_to_svg(&mut menu);
+        let elided = menu.label_scratch.borrow().clone();
+        assert!(elided.ends_with('\u{2026}'), "an overflowing label elides: {elided:?}");
+        assert!(
+            second_label.starts_with(elided.trim_end_matches('\u{2026}')),
+            "the elided form is a prefix of the label: {elided:?}"
+        );
+
+        let second = crate::widget::svg::render_to_svg(&mut menu);
+        assert_eq!(first, second, "a steady frame paints the same wedges");
     }
 
     /// A shortcut label is painted, and the ring reveal is driven by `tick`.

@@ -1159,6 +1159,9 @@ impl Draw for TabView {
         if self.tabs.is_empty() {
             // Draw empty content area
             context.fill_rect(content_rect, content_background);
+            // An empty view still paints its strip and content plane, so a disabled one has to
+            // recede here as well (W5-03).
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
 
@@ -1382,6 +1385,12 @@ impl Draw for TabView {
                 }
             }
         }
+
+        // The tabs paint their selected and inactive states but nothing answers the pointer over
+        // the control itself, so the shared layers carry the hover and the disabled state
+        // (W5-04, W5-03).
+        self.base.paint_hover_wash(context, rect);
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

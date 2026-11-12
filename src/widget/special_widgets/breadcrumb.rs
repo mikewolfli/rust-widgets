@@ -3,11 +3,12 @@
 
 //! Breadcrumb navigation widget.
 
+use crate::compat::{lock, Arc, Mutex};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -96,6 +97,13 @@ pub struct Breadcrumb {
     caret_pos: usize,
     /// The uncommitted IME composition drawn inline at the caret.
     preedit: String,
+    /// The trail a bound control requested, shared with that control (W5-11c).
+    ///
+    /// A tree attaches with `&Breadcrumb` and cannot call [`Self::set_segments`], which needs
+    /// `&mut self`. The tree writes the ancestor chain here and emits the paired repaint signal;
+    /// [`Self::adopt_requested_segments`] installs it on this bar's next paint or event — the same
+    /// host-free shape `GridStatusBar::counts_handle` uses.
+    requested_segments: Arc<Mutex<Option<Vec<BreadcrumbSegment>>>>,
     /// Emitted when a segment is activated. Payload is segment id.
     pub segment_activated: Signal1<String>,
     /// Emitted with the segment id when a context menu is requested over one.
@@ -143,6 +151,7 @@ impl Breadcrumb {
             edit_buffer: String::new(),
             caret_pos: 0,
             preedit: String::new(),
+            requested_segments: Arc::new(Mutex::new(None)),
             segment_activated: Signal1::new(),
             context_menu_requested: Signal1::new(),
             path_edited: Signal1::new(),
@@ -520,6 +529,36 @@ impl Breadcrumb {
         &self.segments
     }
 
+    /// The shared trail cell a bound control writes, plus the signal that repaints this bar.
+    ///
+    /// A control attaches with `&Breadcrumb` and cannot call [`Self::set_segments`], which needs
+    /// `&mut self`. The writer stores the ancestor chain here and emits the returned signal so the
+    /// new trail reaches the picture without the host forwarding a frame. The request is adopted by
+    /// [`Self::adopt_requested_segments`] at the start of the next paint or event, which is the
+    /// same host-free shape [`crate::widget::companions::GridStatusBar::counts_handle`] uses.
+    pub fn segments_handle(&self) -> (Arc<Mutex<Option<Vec<BreadcrumbSegment>>>>, GenericSignal) {
+        (Arc::clone(&self.requested_segments), self.base.redraw_requested_signal().clone())
+    }
+
+    /// Installs a trail a bound control requested since the last call.
+    ///
+    /// Called from `draw` and `handle_event`, so a selection change in a bound tree is reflected
+    /// by the next frame or interaction. Returns whether a requested trail was adopted.
+    fn adopt_requested_segments(&mut self) -> bool {
+        let requested = {
+            let mut slot = lock(&self.requested_segments);
+            slot.take()
+        };
+        let Some(segments) = requested else {
+            return false;
+        };
+        if self.segments == segments {
+            return false;
+        }
+        self.set_segments(segments);
+        true
+    }
+
     /// Appends one segment.
     pub fn push_segment(&mut self, segment: BreadcrumbSegment) {
         self.segments.push(segment);
@@ -860,6 +899,9 @@ impl WidgetProperties for Breadcrumb {
 
 impl EventHandler for Breadcrumb {
     fn handle_event(&mut self, event: &Event) {
+        // A trail a bound tree requested lands before the event is interpreted, so the hit test
+        // and the keyboard selection address the segments on screen (W5-11c).
+        self.adopt_requested_segments();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -947,6 +989,9 @@ impl EventHandler for Breadcrumb {
 
 impl Draw for Breadcrumb {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Adopt a bound tree's requested trail before layout, so the slots the paint and the hit
+        // test read describe the segments about to be shown (W5-11c).
+        self.adopt_requested_segments();
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then fall back to a literal. Without the
         // theme step a light/dark switch would change nothing on screen because
@@ -1061,6 +1106,8 @@ impl Draw for Breadcrumb {
                 text_color,
                 1,
             );
+            // The editor replaces the trail on the same band, so the hover layer still applies.
+            self.base.paint_hover_wash(context, band);
             return;
         }
 
@@ -1199,6 +1246,11 @@ impl Draw for Breadcrumb {
                 );
             }
         }
+
+        // The trail paints segments and a popup but no interaction state of its own, so the shared
+        // hover layer answers the pointer (W5-04). It covers the drawn band, not the padded
+        // rectangle the control was given.
+        self.base.paint_hover_wash(context, band);
 
         // Tab and Shortcut focus must be visible here as on every other control (U3-04).
         let ring_rect = self.base.geometry();

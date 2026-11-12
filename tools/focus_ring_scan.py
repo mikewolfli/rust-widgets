@@ -24,6 +24,14 @@ RING_CONSTRUCTION = re.compile(r"FocusRing::for_control\s*\(")
 #     ring". Every draw site in this tree reaches the constructor through an `if` on it.
 PREDICATE = re.compile(r"\b(?:visual_focus|draws_focus_ring)\s*\(")
 
+# (c) The default-button emphasis ring. `Button::draw` paints a second ring for `is_default()` --
+#     the on-screen cue that Enter activates this button -- and that ring is not focus-driven at
+#     all: it must stay visible on a pointer-focused window as much as on a Tab-focused one.
+#     The scan matches the shared constructor, so this site is allowed only when it sits inside
+#     an `if` on `is_default()`. Anchoring to that shape is what keeps the exemption from
+#     becoming a file-level allowlist that would also hide a real focus-ring defect.
+EMPHASIS = re.compile(r"\bis_default\s*\(")
+
 # (b) A file that carries the pair itself: it holds a `FocusReason` field *and* classifies it. A
 #     control is allowed to own the rule as long as it owns both halves — the reason and the
 #     question asked of it. What is never allowed is holding a plain `focused: bool` and painting
@@ -62,27 +70,42 @@ def production_lines(path):
 
 
 def guarded_by_predicate(lines, index):
-    """Whether the ring construction at `lines[index]` sits inside an `if` on the predicate.
+    """Whether the ring construction at `lines[index]` sits inside an `if` on an allowed guard.
 
-    The search walks **backwards** from the constructor by a bounded window, because the guard is
-    written above the construction:
+    The search walks **outwards** through the construction's lexical block structure: braces are
+    counted backwards from the construction, so every step to depth 0 lands on the `{` that opens
+    a block containing it. Nested blocks (`else` arms, `if let` arms) are crossed without letting
+    their headers count, which is what a fixed-line window could not do -- a legitimate guard can
+    sit more than twelve lines above its construction once a branch and its comments intervene.
 
-        if self.visual_focus() {
-            let ring = FocusRing::for_control(rect, radius);
-            ...
-        }
-
-    A window rather than a statement parser: the tree's draw sites are short and direct, and a
-    brace-matching parser would be a lot of machinery for one rule. The window is deliberately
-    small so a guard that belongs to a *different* construct cannot satisfy this one.
+    Braces are counted rather than statements parsed: the tree's draw sites are short and direct,
+    and a full parser would be a lot of machinery for one rule. Because the walk only ever
+    considers blocks that lexically **contain** the construction, a guard belonging to a sibling
+    construct can never satisfy this one -- which is the property the old window only approximated.
     """
-    window = 12
-    for number, text in lines[max(0, index - window) : index]:
-        stripped = text.strip()
-        if stripped.startswith("//"):
+    depth = 0
+    previous_code = ""
+    for _, text in reversed(lines[:index]):
+        code = text.split("//", 1)[0]
+        stripped = code.strip()
+        if not stripped:
             continue
-        if PREDICATE.search(text) and ("if" in stripped or "match" in stripped):
-            return True
+        opens = stripped.count("{")
+        closes = stripped.count("}")
+        if depth == 0 and opens:
+            # Blocks whose brace sits alone on its own line take their header from the nearest
+            # earlier code line; rustfmt keeps the shared style (`if cond {`) in this tree.
+            header = stripped.split("{", 1)[0].strip() or previous_code
+            if (PREDICATE.search(header) or EMPHASIS.search(header)) and (
+                "if" in header or "match" in header
+            ):
+                return True
+        depth += closes - opens
+        if depth < 0:
+            # A macro or a brace inside a string balanced the walk early; keep climbing out so a
+            # real guard further up is still found. The direction of error stays a false positive.
+            depth = 0
+        previous_code = stripped
     return False
 
 

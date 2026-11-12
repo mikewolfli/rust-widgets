@@ -619,6 +619,8 @@ impl Draw for Badge {
             let center =
                 Point::new(rect.x + (rect.width as i32) / 2, rect.y + (rect.height as i32) / 2);
             context.fill_circle(center, dot_radius, faded(bg_color, opacity));
+            // The dot is the whole badge in this mode, so this exit needs the veil as well.
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
 
@@ -677,6 +679,9 @@ impl Draw for Badge {
             text_color,
             HorizontalAlignment::Center,
         );
+        // The pill keeps its severity colour when disabled — that colour is the badge's subject,
+        // not its state — so the veil is what marks the control as inert (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

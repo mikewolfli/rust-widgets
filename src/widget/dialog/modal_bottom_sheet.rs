@@ -657,6 +657,7 @@ impl Draw for ModalBottomSheet {
                 crate::set_widget_visible(content_id, false);
             }
         }
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

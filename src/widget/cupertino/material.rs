@@ -616,6 +616,9 @@ impl Draw for MaterialSnackbar {
         } else {
             self.action_rect = None;
         }
+        // The pill paints a message and an action but no interaction state of its own, so the
+        // shared hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, bar_rect);
     }
 }
 
@@ -1191,6 +1194,8 @@ impl Draw for MaterialNavigationRail {
         );
 
         if self.items.is_empty() && self.header_widget.is_none() {
+            // An empty rail is still a painted strip, so it answers the pointer too.
+            self.base.paint_hover_wash(context, Rect::new(rect.x, rect.y, rail_width, rect.height));
             return;
         }
 
@@ -1357,6 +1362,10 @@ impl Draw for MaterialNavigationRail {
                 );
             }
         }
+        // The rail paints destinations but no interaction state of its own, so the shared hover
+        // layer answers the pointer (W5-04). It covers the strip that was drawn rather than the
+        // caller's whole rectangle.
+        self.base.paint_hover_wash(context, Rect::new(rect.x, rect.y, rail_width, rect.height));
     }
 }
 

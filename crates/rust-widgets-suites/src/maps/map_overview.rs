@@ -535,6 +535,8 @@ impl Draw for MapOverviewPanel {
                 context.fill_rect(bar, accent);
                 context.fill_rect(Rect::new(bar.x + 2, bar.y + 2, 5, 1), accent);
             }
+            self.base.paint_hover_wash(context, self.base.geometry());
+            crate::veil_if_disabled(&self.base, context);
             return;
         }
 
@@ -545,6 +547,8 @@ impl Draw for MapOverviewPanel {
         rust_widgets::widget::draw::stroke_surface_border(context, area, [3, 3, 3, 3], border, 1);
 
         let Some(viewport) = self.viewport_box_rect() else {
+            self.base.paint_hover_wash(context, self.base.geometry());
+            crate::veil_if_disabled(&self.base, context);
             return;
         };
         context.fill_rect(viewport, accent.with_alpha(56));
@@ -562,6 +566,8 @@ impl Draw for MapOverviewPanel {
                 marker.color,
             );
         }
+        self.base.paint_hover_wash(context, self.base.geometry());
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

@@ -669,6 +669,10 @@ impl Draw for BarcodeScanner {
         };
         let dot_rect = Rect::new(rect.x + 6, rect.y + 6, 8, 8);
         context.fill_rect(dot_rect, status_color);
+
+        // The viewfinder paints its own chrome but no interaction state, so the shared hover layer
+        // answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

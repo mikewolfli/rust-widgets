@@ -660,48 +660,49 @@ impl Canvas {
     /// the historical pixel lattice.
     pub(super) fn draw_grid_lines(&self, context: &mut RenderContext, rect: Rect, color: Color) {
         let unit = self.grid_step.max(1) as i32;
-        let (xs, ys) = match self.grid_space {
+        // The two coordinate lists only depend on the viewport, the step and (in model space) the
+        // transform, and they are rebuilt every frame. They live in one pair of reused buffers so
+        // a steady frame pays no allocation and the drawn lines are unchanged.
+        let mut scratch = self.grid_scratch.borrow_mut();
+        let (xs, ys) = &mut *scratch;
+        xs.clear();
+        ys.clear();
+        match self.grid_space {
             GridSpace::Model => {
-                let mut xs = Vec::new();
-                let mut ys = Vec::new();
                 let left = self.transform.inverse_point(Point::new(rect.x, 0)).x;
                 let right =
                     self.transform.inverse_point(Point::new(rect.x + rect.width as i32, 0)).x;
-                push_model_ticks(&mut xs, left, right, unit, |x| {
+                push_model_ticks(xs, left, right, unit, |x| {
                     self.transform.point(Point::new(x, 0)).x
                 });
                 let top = self.transform.inverse_point(Point::new(0, rect.y)).y;
                 let bottom =
                     self.transform.inverse_point(Point::new(0, rect.y + rect.height as i32)).y;
-                push_model_ticks(&mut ys, top, bottom, unit, |y| {
+                push_model_ticks(ys, top, bottom, unit, |y| {
                     self.transform.point(Point::new(0, y)).y
                 });
-                (xs, ys)
             }
             GridSpace::Screen => {
-                let mut xs = Vec::new();
                 let mut x = rect.x;
                 while x <= rect.x + rect.width as i32 {
                     xs.push((x, x));
                     x += unit;
                 }
-                let mut ys = Vec::new();
                 let mut y = rect.y;
                 while y <= rect.y + rect.height as i32 {
                     ys.push((y, y));
                     y += unit;
                 }
-                (xs, ys)
             }
-        };
-        for (surface, _) in xs {
+        }
+        for &(surface, _) in xs.iter() {
             context.draw_line(
                 Point::new(surface, rect.y),
                 Point::new(surface, rect.y + rect.height as i32),
                 color,
             );
         }
-        for (surface, _) in ys {
+        for &(surface, _) in ys.iter() {
             context.draw_line(
                 Point::new(rect.x, surface),
                 Point::new(rect.x + rect.width as i32, surface),

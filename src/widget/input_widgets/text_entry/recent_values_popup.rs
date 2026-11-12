@@ -521,6 +521,9 @@ impl Draw for RecentValuesPopup {
                 ink.with_alpha(120),
                 HorizontalAlignment::Left,
             );
+            // The empty popup paints its own frame and message, so a disabled one recedes here as
+            // well as on the populated path (W5-03).
+            self.base.paint_disabled_veil(context, popup);
             return;
         }
 
@@ -547,6 +550,10 @@ impl Draw for RecentValuesPopup {
                 HorizontalAlignment::Left,
             );
         }
+
+        // The popup paints no disabled colour of its own, so the shared veil is what makes an
+        // inert history list recede (W5-03).
+        self.base.paint_disabled_veil(context, popup);
     }
 }
 

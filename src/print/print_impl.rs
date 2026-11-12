@@ -1889,10 +1889,17 @@ fn hex_color(color: Color) -> String {
 }
 
 /// Lowercase hex for a byte slice, used to carry image pixels in the command stream.
+///
+/// Indexed through a 16-entry nibble table rather than `format!` per byte: a 4 MB RGBA
+/// image is 4M bytes, and a `format!` in the loop meant 4M temporary `String`s per
+/// print job. The `with_capacity` below already reserves the exact output size, so this
+/// writes in place with no further allocation.
 fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0F) as usize] as char);
     }
     out
 }
@@ -2533,6 +2540,25 @@ mod tests {
         assert!(written.contains("show"), "a text command must become a PostScript text show");
         assert!(written.contains("showpage"), "the page-break must become a showpage");
         assert!(written.ends_with("%%EOF\n"), "the document must be terminated");
+    }
+
+    /// `encode_hex` must stay byte-for-byte compatible with the old `format!("{byte:02x}")`
+    /// loop, including zero padding, lowercase letters and the empty slice.
+    #[test]
+    fn encode_hex_matches_the_reference_encoding() {
+        // Explicit expected strings: `{byte:02x}` is the reference this replaced, so the
+        // table-driven form is pinned to it rather than merely to a round trip.
+        assert_eq!(encode_hex(&[]), "");
+        assert_eq!(encode_hex(&[0x00]), "00");
+        assert_eq!(encode_hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+        assert_eq!(
+            encode_hex(&[0x01, 0x10, 0x7f, 0x80, 0xc3, 0xde]),
+            "01107f80c3de",
+            "every nibble pair must be zero-padded and lowercase"
+        );
+        // The decoder in this module must accept what the encoder produces.
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        assert_eq!(decode_hex(&encode_hex(&bytes)).expect("round trip"), bytes);
     }
 
     /// The PostScript renderer must carry image **pixels**, not just their length.

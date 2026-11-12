@@ -273,6 +273,9 @@ impl Draw for CupertinoNavigationStack {
             ink,
             HorizontalAlignment::Left,
         );
+        // The stack paints page ticks and a title but no interaction state of its own, so the
+        // shared hover layer answers the pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
     }
 }
 

@@ -360,6 +360,11 @@ impl Draw for ValidationBubble {
                 );
             }
         }
+
+        // The bubble paints no interaction state of its own, so the shared layers answer a hover
+        // and a disabled control (W5-04, W5-03).
+        self.base.paint_hover_wash(context, bubble);
+        self.base.paint_disabled_veil(context, bubble);
     }
 }
 

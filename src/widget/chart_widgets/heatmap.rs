@@ -1323,6 +1323,8 @@ impl Draw for Heatmap {
                 text_color,
                 HorizontalAlignment::Left,
             );
+            // The frame above is already painted, so this exit still has to show a refusal.
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
 
@@ -1498,6 +1500,9 @@ impl Draw for Heatmap {
                 tooltip.draw(context);
             }
         }
+        // A disabled heat map still shows its matrix, so the veil is the only cue that the grid
+        // no longer answers a click, a drag or a wheel (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -452,5 +452,9 @@ impl Draw for KanbanCardView {
                 HorizontalAlignment::Left,
             );
         }
+        self.base.paint_hover_wash(context, rect);
+        // A card takes keyboard focus for its title edit, so that focus must be visible (W5-38).
+        self.base.draw_focus_ring(context, rect, 0);
+        crate::veil_if_disabled(&self.base, context);
     }
 }

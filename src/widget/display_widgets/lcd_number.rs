@@ -595,6 +595,9 @@ impl Draw for LCDNumber {
                 .unwrap_or_else(|| fg_color.blend(&bg_color, 0.3));
             context.fill_circle(Point::new(rect.x + 10, rect.y + 10), 5, overflow_color);
         }
+        // This control handles no input of its own, so disabling it changes nothing a pointer
+        // could notice — the receded picture is the only evidence that it is off (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

@@ -1826,7 +1826,18 @@ impl WidgetKind {
             // A form set walks its pages with the arrow keys and submits with Enter; a form
             // itself is a container whose fields own the focus, so only the set opts in.
             | Self::FormSet
-            | Self::PlaylistPanel => true,
+            | Self::PlaylistPanel
+            // Controls that own a focus-gated `Event::KeyPress` arm but whose kind was missing
+            // from this table (W5-02). The pointer router only focuses a kind that answers
+            // `true` here, so without these entries a click never made the control the focus
+            // owner and its key branch could never run.
+            | Self::PropertiesPanel
+            | Self::ImageGallery
+            | Self::ScrollBar
+            | Self::ScrollArea
+            | Self::Banner
+            | Self::EmptyState
+            | Self::ColorHistory => true,
             _ => false,
         }
     }

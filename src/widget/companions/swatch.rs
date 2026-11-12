@@ -240,6 +240,7 @@ impl Draw for Swatch {
                 surface.blend(&ink, 0.55),
                 crate::core::HorizontalAlignment::Center,
             );
+            self.base.paint_hover_wash(context, rect);
             return;
         }
 
@@ -255,6 +256,10 @@ impl Draw for Swatch {
                 context.draw_rect(ring, accent);
             }
         }
+
+        // The strip paints no interaction state of its own, so the shared hover layer answers the
+        // pointer (W5-04).
+        self.base.paint_hover_wash(context, rect);
 
         // Tab and Shortcut focus must be visible here as on every other control (U3-04).
         let ring_rect = self.base.geometry();

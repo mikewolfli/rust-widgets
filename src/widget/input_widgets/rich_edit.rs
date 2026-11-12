@@ -277,6 +277,14 @@ pub struct RichEdit {
     /// Note the name does not match the payload: it reports an offset, not a
     /// position struct.
     pub cursor_position_changed: Signal1<usize>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
+    /// Last availability values announced, so each signal is edge-triggered rather than emitted
+    /// on every keystroke that left it unchanged.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -371,6 +379,10 @@ impl RichEdit {
             selection_changed: Signal1::new(),
             read_only_changed: Signal1::new(),
             cursor_position_changed: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
+            undo_available_announced: false,
+            redo_available_announced: false,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -537,6 +549,7 @@ impl RichEdit {
         self.first_visible_line = 0;
         self.text_changed.emit_lazy(|| self.text.clone());
         self.cursor_position_changed.emit(self.text.len());
+        self.refresh_history_capabilities();
         self.base.request_redraw();
     }
 
@@ -589,6 +602,7 @@ impl RichEdit {
         }
         self.text_changed.emit_lazy(|| self.text.clone());
         self.scroll_caret_into_view();
+        self.refresh_history_capabilities();
         self.base.request_redraw();
     }
 
@@ -733,6 +747,7 @@ impl RichEdit {
             before,
             after,
         )));
+        self.refresh_history_capabilities();
         self.base.request_redraw();
     }
 
@@ -1078,6 +1093,7 @@ impl RichEdit {
             return false;
         }
         self.restore_history_text();
+        self.refresh_history_capabilities();
         true
     }
 
@@ -1089,6 +1105,7 @@ impl RichEdit {
             return false;
         }
         self.restore_history_text();
+        self.refresh_history_capabilities();
         true
     }
 
@@ -1099,6 +1116,24 @@ impl RichEdit {
     /// Returns `true` if [`RichEdit::redo`] would change the text.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
+    }
+
+    /// Announces undo/redo availability after a history mutation.
+    ///
+    /// The signals are edge-triggered: a typed run that extends one undo step still leaves the
+    /// availability at `true`, so re-announcing it on every keystroke would make a subscriber's
+    /// enable state flicker for no change of fact.
+    fn refresh_history_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
     }
 
     fn restore_history_text(&mut self) {
@@ -1496,6 +1531,16 @@ impl Widget for RichEdit {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -1865,6 +1910,9 @@ impl Draw for RichEdit {
                 );
             }
         }
+        // `read_only` already recesses the border, but that is a different fact from disabled:
+        // the document still has to recede when the editor itself is unavailable.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 
@@ -2390,6 +2438,35 @@ mod tests {
         assert!(re.can_redo());
         assert!(re.redo());
         assert_eq!(re.text(), "two");
+    }
+
+    /// An edit announces undo availability, and the undo announces redo availability.
+    ///
+    /// # The gap this pins (W5-26a)
+    ///
+    /// The editor owned a full `UndoStack`, `can_undo`/`can_redo`, and the two shortcuts, but
+    /// published no availability signal at all — so a host's Undo/Redo buttons had nothing to bind
+    /// them and stayed inert next to a working editor. This subscribes through the public signals
+    /// and drives the real edit/undo path, so a signal that is declared but never emitted fails.
+    #[test]
+    fn an_edit_announces_undo_and_the_undo_announces_redo() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        let undo_seen = Arc::new(AtomicBool::new(false));
+        let redo_seen = Arc::new(AtomicBool::new(false));
+        let sink = Arc::clone(&undo_seen);
+        re.undo_available.connect(move |value: Arc<bool>| sink.store(*value, Ordering::SeqCst));
+        let sink = Arc::clone(&redo_seen);
+        re.redo_available.connect(move |value: Arc<bool>| sink.store(*value, Ordering::SeqCst));
+
+        re.set_text("one".to_string());
+        assert!(undo_seen.load(Ordering::SeqCst), "an edit makes undo available");
+        assert!(!redo_seen.load(Ordering::SeqCst), "and leaves nothing to redo");
+
+        assert!(re.undo());
+        assert!(redo_seen.load(Ordering::SeqCst), "the undo makes redo available");
     }
 
     #[test]

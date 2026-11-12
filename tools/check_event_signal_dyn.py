@@ -102,7 +102,7 @@ CONVERTED: dict[str, str] = {
     "bottom_navigation_bar": "src/widget/nav_widgets/bottom_navigation_bar.rs",
     "bottom_sheet": "src/widget/dialog/bottom_sheet.rs",
     "breadcrumb": "src/widget/special_widgets/breadcrumb.rs",
-    "button": "src/widget/base_widgets/button.rs",
+    "button": "src/widget/base_widgets/button/api.rs",
     "calendar": "src/widget/advanced_widgets/calendar.rs",
     "calendar_mark_layer": "src/widget/companions/calendar_mark_layer.rs",
     "canvas": "src/widget/special_widgets/canvas/widget.rs",

@@ -249,6 +249,9 @@ impl Widget for TextArea {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
             "context_menu_requested" => Some(EventSignalRef::mapped(
                 "context_menu_requested",
                 &self.context_menu_requested,
@@ -460,6 +463,10 @@ impl EventHandler for TextArea {
             Event::FocusLost => {
                 self.focused = false;
                 self.cursor_blink.stop();
+                // Losing focus is the end of the editing session, announced the same way the
+                // single-line field announces it. Without this a host could observe the focus
+                // move but never learn that the user had finished with the document.
+                self.editing_finished.emit();
                 self.request_redraw();
             }
             // Platform-committed text (D09-INPUT-01), routed into the ordinary insert path. A
