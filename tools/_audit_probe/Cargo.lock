@@ -2189,15 +2189,15 @@ dependencies = [
 
 [[package]]
 name = "rust-widgets-font"
-version = "4.2.0"
+version = "4.3.0"
 
 [[package]]
 name = "rust-widgets-icons"
-version = "4.2.0"
+version = "4.3.0"
 
 [[package]]
 name = "rust_widgets"
-version = "4.2.0"
+version = "4.3.0"
 dependencies = [
  "chrono",
  "cocoa",

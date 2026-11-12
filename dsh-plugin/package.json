@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-rust-widgets",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "description": "DSH skill: maintain, extend and audit the rust-widgets Rust GUI library and its companion crates.",
   "license": "MIT",
   "author": "Mike Li",

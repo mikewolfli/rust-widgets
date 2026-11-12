@@ -24,27 +24,27 @@
 
 ## 安装
 
-> **4.2.0** 是当前版本：在 **4.1.0**（闭环轮）之上的完备性轮，**4.1.0** 又承接 **4.0.1**（上游反馈
-> 修复版）与 **4.0.0**（配合 **rustage** 重构的配套版本）。本轮落地 `docs/issues/issue-20261108.md`
-> ——热路径、box 布局缓存、容器 damage、所有文本面的 IME 组合串、以及配套控件——并让每个可构造控件的
-> 稳态帧零堆分配；图标目录迁入 `crates/rust-widgets-icons`。现有函数签名保持不变；详见
-> [changelog](CHANGELOG.md)。
+> **4.3.0** 是当前版本：在 **4.2.0**（完备性轮）之上的输入投递与代码健康轮，**4.2.0** 又承接
+> **4.1.0**（闭环轮）。本版让所有后端的输入字符走同一条 `TextInput`/`ImeCommit` 路径，为控件层
+> 分支的每个键码命名，把 Windows 功能键归一到框架约定，恢复 macOS/Linux 上的首字母 type-ahead，
+> 闭合设计器模式 2 的列表/容器缺口，并让重绘的 `AreaChart` 与富文本 tooltip 在稳态零分配。未删除任何
+> 公开签名；详见 [changelog](CHANGELOG.md)。
 
 ```toml
 [dependencies]
-rust_widgets = "4.2.0"
+rust_widgets = "4.3.0"
 ```
 
 **必须且只能选择一个设备配置**。它们互斥：`mini` 与 `embedded` 会把 crate 的一部分*编译掉*，
 与 `desktop` 叠加不是“取最小公共集”，而是一个无法工作的构建。
 
 ```toml
-rust_widgets = "4.2.0"                                                             # 默认特性集
-rust_widgets = { version = "4.2.0", features = ["desktop"] }                       # 仅 desktop profile
-rust_widgets = { version = "4.2.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "4.2.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "4.2.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "4.2.0", default-features = false, features = ["mini"] }
+rust_widgets = "4.3.0"                                                             # 默认特性集
+rust_widgets = { version = "4.3.0", features = ["desktop"] }                       # 仅 desktop profile
+rust_widgets = { version = "4.3.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["mini"] }
 ```
 
 | 配置 | 适用场景 |

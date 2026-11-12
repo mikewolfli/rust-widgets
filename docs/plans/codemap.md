@@ -2,7 +2,7 @@
 
 > **Generated**: 2026-11-12 (refreshed from `ls src/`, `Cargo.toml` and the test tree; the
 > 2026-06-15 map is historical)
-> **Version**: 4.2.0
+> **Version**: 4.3.0
 > **Branch**: main
 > **Total Tests**: approximately 11.5k `#[test]` attributes (see §7; run `cargo test` for the
 > current pass count)

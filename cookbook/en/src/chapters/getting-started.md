@@ -54,7 +54,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust_widgets = "4.2.0"
+rust_widgets = "4.3.0"
 ```
 
 The default feature set (`desktop`) pulls in the full desktop profile: GPU
@@ -130,13 +130,13 @@ compiles none of them.
 
 ```toml
 # Markdown only at compile time — no code editor, no lexer:
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop", "markdown-editor"] }
 
 # Markdown with fenced-code highlighting:
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
 
 # Code editor with the built-in languages:
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
 ```
 
 `editor` is the shared lower layer both build on (token/language vocabulary, `CaretStyle`,
@@ -148,23 +148,23 @@ paths, so splitting a build this way needs no source change from a caller.
 ```toml
 # Desktop Linux with Wayland, keep everything:
 [dependencies]
-rust_widgets = { version = "4.2.0", features = ["desktop", "linux-wayland"] }
+rust_widgets = { version = "4.3.0", features = ["desktop", "linux-wayland"] }
 
 # Tablet with auto-detected OS:
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["tablet"] }
 
 # Minimal embedded (no std):
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["embedded"] }
 
 # Mobile Android:
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = ["mobile", "android"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["mobile", "android"] }
 
 # WASM web app:
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = ["mobile", "wasm", "touch"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["mobile", "wasm", "touch"] }
 ```
 
 ### Build Profiles

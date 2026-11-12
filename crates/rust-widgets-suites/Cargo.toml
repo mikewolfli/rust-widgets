@@ -1,6 +1,6 @@
 [package]
 name = "rust-widgets-suites"
-version = "4.2.0"
+version = "4.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -60,7 +60,7 @@ web-http = ["webview", "dep:ureq"]
 # The dependency runs one way only: the parent cannot depend on this crate (Cargo rejects a
 # package cycle). The suite extends the parent's widget layer, so it takes the parent's default
 # (device) profile.
-rust_widgets = { version = "4.2.0", path = "../.." }
+rust_widgets = { version = "4.3.0", path = "../.." }
 # The migrated controls warn through `log` exactly as they did in the parent; the host decides
 # which logger, if any, is installed.
 log = "0.4"

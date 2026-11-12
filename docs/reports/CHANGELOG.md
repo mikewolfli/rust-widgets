@@ -5,10 +5,10 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
-## Unreleased — accessibility, input and table-direction round (2026-11-11/12)
+## 4.3.0 (2026-11-12) — input delivery, key-code discipline, designer fixes and allocation closure
 
-The round is recorded in `docs/log/log-20261111-1.md`, `log-20261111-2.md` and
-`log-20261112-1.md`. It is behaviour-only: no public type or import path is removed.
+The round is recorded in `docs/log/log-20261111-1.md`, `log-20261111-2.md`, `log-20261112-1.md`
+and `log-20261112-3.md`. It is behaviour-only: no public type or import path is removed.
 
 ### Added
 
@@ -25,6 +25,11 @@ The round is recorded in `docs/log/log-20261111-1.md`, `log-20261111-2.md` and
   2 px cell gap now falls on the same side the hit test asserts.
 - **Overscroll physics** — container families consume the shared damp/settle model instead of
   stopping at the edge.
+- **Designer mode-2 completeness** — list-valued properties (String/Number/Color lists) are emitted
+  with their declared kind, container content keys (`pages`/`sections`/`panes`) become child nodes,
+  value loss has its own report bucket, and a readiness table counts typed / wireable /
+  inexpressible entries per control (W4-07/08/23/24).
+- **`key_codes::INSERT`** — the Insert key has a name in the shared key-code vocabulary.
 
 ### Fixed
 
@@ -42,8 +47,23 @@ The round is recorded in `docs/log/log-20261111-1.md`, `log-20261111-2.md` and
   manual stepping reports `Ended` so it can be replayed.
 - **Charts and tables** — hover/extent caches are keyed by the inputs they actually read (data
   revision and font), removing per-frame rescans and stale tooltip sizes.
+- **Typed input takes one path** — every backend delivers a typed character as
+  `TextInput`/`ImeCommit`; a printable `KeyPress` no longer inserts a second copy (Windows typed
+  every character twice), and first-letter type-ahead works on macOS and Linux again. Covers text
+  fields, OTP, combo/dropdown/cascader/list/grid/font pickers and the IME preedit overlay.
+- **Key codes are named and normalised** — widget branches compare against
+  `crate::event::key_codes` instead of literals, and Windows maps `VK_F1`..`VK_F12`
+  (`112..=123`) into the framework's `1120..=1131` range, matching Linux and macOS. `F1`..`F12`
+  shortcuts previously parsed as lowercase `p`..`z` on Windows.
+- **Steady-state allocations** — a repainted `AreaChart` reuses pooled totals/polygon buffers and a
+  rich tooltip no longer builds an empty placeholder `Rc<Vec<_>>`; `tests/chart_allocations.rs`
+  pins zero allocations after warm-up for stacked and unstacked charts.
+- **Focus-ring and hover tail** — 11 keyboard-reachable controls gained the focus ring, and
+  stepper, app bar, collapsible pane and avatar gained hover feedback.
+- **Bidi and theme-font misses** — textarea/search controls map carets through bidi visual order,
+  and listbox/FAB honour the resolved theme face instead of a literal `sans-serif`.
 
-## Unreleased — editor layering, editor features, and the `rwui` CLI (BLUE31)
+## 4.3.0 (2026-11-12) — editor layering, editor features, and the `rwui` CLI (BLUE31)
 
 The round is recorded in `docs/log/log-20261110-1.md`. It gives the two editor controls a shared
 lower layer, makes them (and the lexer they share) independent Cargo features, and adds a host-side

@@ -764,7 +764,7 @@ Findings carry stable codes (`RWCLI-001` …), `--json` emits one JSON object pe
 ```toml
 # Cargo.toml
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = [
+rust_widgets = { version = "4.3.0", default-features = false, features = [
     "mini",
 ] }
 

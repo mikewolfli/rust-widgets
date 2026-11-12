@@ -1,7 +1,24 @@
 # Migration Guide
 
-> **Latest: 4.1.x → 4.2.0** — see [the 4.2.0 section](#41x--420-icons-and-suites-out-of-the-core-crate) below.
-> The 4.0.x → 4.1.0 section and the earlier 1.x/0.9.x notes are kept for projects still on those lines.
+> **Latest: 4.2.0 → 4.3.0** — see [the 4.3.0 section](#420--430-input-delivery-and-key-code-discipline) below.
+> The 4.1.x → 4.2.0 section and the earlier 1.x/0.9.x notes are kept for projects still on those lines.
+
+---
+
+# 4.2.0 → 4.3.0: input delivery and key-code discipline
+
+4.3.0 has **no breaking API changes**. The fixes affect behaviour and code health:
+
+- **Typed characters take one path.** Every backend delivers a typed character as
+  `Event::TextInput` (or `Event::ImeCommit`); a printable `Event::KeyPress` is no longer a second
+  content path. A custom control that matched printable key codes must handle `TextInput`
+  instead. On macOS and Linux this restores first-letter type-ahead (list boxes, drop-downs,
+  combo boxes, grids, cascaders, font pickers), which previously could never run there.
+- **Function keys use the framework range everywhere.** Windows now normalises `VK_F1`..`VK_F12`
+  (`112..=123`) to `key_codes::F1..=F12` (`1120..=1131`), matching Linux and macOS. `F1`..`F12`
+  shortcuts previously parsed as lowercase `p`..`z` on Windows.
+- **Key codes are named.** Widget branches compare against `crate::event::key_codes` constants
+  rather than literals; `key_codes::INSERT` is part of that vocabulary now.
 
 ---
 
@@ -823,19 +840,19 @@ profile was on. They are now three independent features:
 
 **Who is affected:** only callers that build with `default-features = false`. The crate's
 `default` set is `["desktop", "code-editor", "markdown-editor", "builtin-languages"]`, so a
-plain `rust_widgets = "4.2.0"` dependency behaves as before.
+plain `rust_widgets = "4.3.0"` dependency behaves as before.
 
 **Migration:** name the features you use.
 
 ```toml
 # No editor, smallest build (what `--features desktop` used to mean):
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop"] }
 
 # Code editor, with syntax highlighting:
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
 
 # Markdown only, with fenced-code highlighting:
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
 ```
 
 No source change is needed: every historical import path still resolves

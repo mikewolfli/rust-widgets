@@ -48,7 +48,7 @@ every companion crate:
 ## Version
 
 This package ships with the library, so its version is the library's version:
-both are `4.2.0`, read from the root `Cargo.toml`. `npm run check-version` (part
+both are `4.3.0`, read from the root `Cargo.toml`. `npm run check-version` (part
 of `npm test`) fails when the two diverge, and `npm run market-index` refuses to
 write an index whose version disagrees with the library.
 

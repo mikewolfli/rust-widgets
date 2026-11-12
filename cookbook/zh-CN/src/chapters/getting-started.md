@@ -52,7 +52,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust_widgets = "4.2.0"
+rust_widgets = "4.3.0"
 ```
 
 默认功能集（`desktop`）会拉取完整的桌面配置文件：通过 wgpu 的 GPU 渲染、操作系统原生平台后端、触摸支持、i18n、图表、辅助功能和高级控件。打印与 PDF 是独立的可选特性（`print`、`pdf`），不包含在配置文件中。
@@ -122,13 +122,13 @@ rust_widgets = "4.2.0"
 
 ```toml
 # 只编译 Markdown：没有代码编辑器，也没有词法器
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop", "markdown-editor"] }
 
 # Markdown + 围栏代码高亮
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop", "markdown-editor", "builtin-languages"] }
 
 # 代码编辑器 + 内置语言
-rust_widgets = { version = "4.2.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["desktop", "code-editor", "builtin-languages"] }
 ```
 
 `editor` 是两者共享的下层（token/语言词汇、`CaretStyle`、`FindBar`），不是第三个公开的编辑器控件。
@@ -139,23 +139,23 @@ rust_widgets = { version = "4.2.0", default-features = false, features = ["deskt
 ```toml
 # 桌面 Linux 使用 Wayland，保留所有功能：
 [dependencies]
-rust_widgets = { version = "4.2.0", features = ["desktop", "linux-wayland"] }
+rust_widgets = { version = "4.3.0", features = ["desktop", "linux-wayland"] }
 
 # 平板使用自动检测操作系统：
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["tablet"] }
 
 # 最小嵌入式（无 std）：
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["embedded"] }
 
 # 移动端 Android：
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = ["mobile", "android"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["mobile", "android"] }
 
 # WASM Web 应用：
 [dependencies]
-rust_widgets = { version = "4.2.0", default-features = false, features = ["mobile", "wasm", "touch"] }
+rust_widgets = { version = "4.3.0", default-features = false, features = ["mobile", "wasm", "touch"] }
 ```
 
 ### 构建配置文件
