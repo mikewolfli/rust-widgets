@@ -4,6 +4,7 @@
 //! Snackbar widget.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -771,10 +772,10 @@ impl EventHandler for Snackbar {
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
-                13 => {
+                key_codes::ENTER => {
                     let _ = self.trigger_action();
                 }
-                27 => self.dismiss(),
+                key_codes::ESCAPE => self.dismiss(),
                 // Unknown key; ignore
                 _ => {}
             },

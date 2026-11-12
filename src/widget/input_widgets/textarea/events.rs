@@ -10,6 +10,7 @@
 use crate::compat::ToString;
 use crate::core::{Point, Size};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
+use crate::event::key_codes;
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::widget::capability::coercion::{
@@ -546,17 +547,17 @@ impl EventHandler for TextArea {
                     return;
                 }
                 match *key {
-                    8 => {
+                    key_codes::BACKSPACE => {
                         // Backspace — one character back, or the whole selection.
                         self.delete_char();
                         self.request_redraw();
                     }
-                    46 => {
+                    key_codes::DELETE => {
                         // Delete — one character forward, or the whole selection.
                         self.delete_forward();
                         self.request_redraw();
                     }
-                    13 => {
+                    key_codes::ENTER => {
                         // Enter — insert a newline, over the selection if there is one.
                         self.insert_char('\n');
                         self.request_redraw();

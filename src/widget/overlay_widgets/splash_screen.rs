@@ -23,6 +23,7 @@
 //! and has interaction and lifecycle tests.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -594,7 +595,7 @@ impl EventHandler for SplashScreen {
             }
             // Escape skips only when the screen is skippable: a splash that cannot
             // be dismissed must not quietly disappear on a stray key press.
-            Event::KeyPress { key: 27, modifiers: _ } if self.skippable => {
+            Event::KeyPress { key: key_codes::ESCAPE, modifiers: _ } if self.skippable => {
                 self.skipped.emit(self.title.clone());
             }
             // Other events are not relevant for this widget

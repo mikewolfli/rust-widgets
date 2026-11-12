@@ -37,6 +37,7 @@
 
 use crate::compat::{Instant, RefCell, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -444,6 +445,68 @@ impl Cascader {
             }
         }
         f(&[])
+    }
+
+    /// Extends the current level's first-letter search with one committed character and moves
+    /// the browse mark to the first matching row.
+    ///
+    /// The character comes from `Event::TextInput`/`Event::ImeCommit`, the only delivery path
+    /// every backend uses for typing (W4-01). Reading a printable key code instead only worked
+    /// for letters on Windows, whose virtual-key code happens to equal the upper-case ASCII
+    /// value; macOS and Linux never deliver a `KeyPress` for a printable character at all.
+    fn type_ahead_push(&mut self, ch: char) {
+        if ch.is_control() {
+            return;
+        }
+        let level = self.expanded_path.len().saturating_sub(1);
+        let now = Instant::now();
+        let expired = self.type_ahead_started.is_none_or(|started| {
+            now.duration_since(started).as_millis()
+                > u128::from(crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS)
+        });
+        if expired {
+            self.type_ahead.clear();
+        }
+        self.type_ahead_started = Some(now);
+        self.type_ahead.push(ch);
+        let needle = crate::widget::input_widgets::text_match::fold(&self.type_ahead);
+        // The candidate rows come from the frame's own cache, so a keystroke allocates no
+        // index list (I-P12 / I-14).
+        let target = self.with_level_filtered(level, |rows, total| {
+            let len = if rows.is_empty() { total } else { rows.len() };
+            if len == 0 {
+                return None;
+            }
+            let row_at = |position: usize| {
+                if rows.is_empty() {
+                    position
+                } else {
+                    rows[position]
+                }
+            };
+            let start = self
+                .expanded_path
+                .get(level)
+                .and_then(|index| (0..len).find(|position| row_at(*position) == *index))
+                .map_or(0, |position| (position + 1) % len);
+            (0..len).map(|offset| row_at((start + offset) % len)).find(|&index| {
+                self.siblings_at(level).and_then(|siblings| siblings.get(index)).is_some_and(
+                    |option| {
+                        option.enabled
+                            && crate::widget::input_widgets::text_match::starts_with(
+                                &option.label,
+                                &needle,
+                            )
+                    },
+                )
+            })
+        });
+        if let Some(index) = target {
+            self.expanded_path.truncate(level);
+            self.expanded_path.push(index);
+            self.invalidate_level_rows();
+            self.base.request_redraw();
+        }
     }
 
     /// Runs `f` with the rows the filter keeps at `level`, and the level's unfiltered count
@@ -1900,10 +1963,10 @@ impl EventHandler for Cascader {
                 self.base.request_redraw();
             }
             Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => match *key {
-                27 => self.collapse(), // Escape
-                40 => self.move_browsed(1),
-                38 => self.move_browsed(-1),
-                39 => {
+                key_codes::ESCAPE => self.collapse(), // Escape
+                key_codes::DOWN => self.move_browsed(1),
+                key_codes::UP => self.move_browsed(-1),
+                key_codes::RIGHT => {
                     // Right walks into the next unbrowsed level: the highlighted branch of
                     // this level, or the first enabled row when the next level has not been
                     // entered yet. Re-choosing the deepest walked node would be idempotent and
@@ -1981,67 +2044,9 @@ impl EventHandler for Cascader {
                 // First-letter search inside the current level's filtered rows, the same
                 // type-ahead the rest of the family has (I-14).
                 //
-                // A filterable cascader leaves printable keys to `Event::TextInput`, which
-                // appends them to the filter. Every backend delivers typing that way, so running
-                // type-ahead from the raw key as well would perform two actions for one
-                // keystroke on the one backend (Windows) that also forwards `WM_KEYDOWN`
-                // for printable virtual keys (W4-01).
-                32..=126 if !self.filterable => {
-                    if let Some(ch) = char::from_u32(*key) {
-                        let level = self.expanded_path.len().saturating_sub(1);
-                        let now = Instant::now();
-                        let expired = self.type_ahead_started.is_none_or(|started| {
-                            now.duration_since(started).as_millis()
-                                > u128::from(
-                                    crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
-                                )
-                        });
-                        if expired {
-                            self.type_ahead.clear();
-                        }
-                        self.type_ahead_started = Some(now);
-                        self.type_ahead.push(ch);
-                        let needle =
-                            crate::widget::input_widgets::text_match::fold(&self.type_ahead);
-                        // The candidate rows come from the frame's own cache, so a keystroke
-                        // allocates no index list (I-P12 / I-14).
-                        let target = self.with_level_filtered(level, |rows, total| {
-                            let len = if rows.is_empty() { total } else { rows.len() };
-                            if len == 0 {
-                                return None;
-                            }
-                            let row_at = |position: usize| {
-                                if rows.is_empty() {
-                                    position
-                                } else {
-                                    rows[position]
-                                }
-                            };
-                            let start = self
-                                .expanded_path
-                                .get(level)
-                                .and_then(|index| (0..len).find(|position| row_at(*position) == *index))
-                                .map_or(0, |position| (position + 1) % len);
-                            (0..len).map(|offset| row_at((start + offset) % len)).find(|&index| {
-                                self.siblings_at(level)
-                                    .and_then(|siblings| siblings.get(index))
-                                    .is_some_and(|option| {
-                                        option.enabled
-                                            && crate::widget::input_widgets::text_match::starts_with(
-                                                &option.label,
-                                                &needle,
-                                            )
-                                    })
-                            })
-                        });
-                        if let Some(index) = target {
-                            self.expanded_path.truncate(level);
-                            self.expanded_path.push(index);
-                            self.invalidate_level_rows();
-                            self.base.request_redraw();
-                        }
-                    }
-                }
+                // Printable characters arrive as `Event::TextInput`/`ImeCommit`: a filterable
+                // cascader appends them to the filter, a non-filterable one uses them for the
+                // current level's type-ahead (W4-01). Both live in the arms below.
                 _ => {}
             },
             Event::Wheel { delta, modifiers } => {
@@ -2071,6 +2076,13 @@ impl EventHandler for Cascader {
                 self.filter.push_str(text);
                 self.invalidate_level_rows();
                 self.base.request_redraw();
+            }
+            // A non-filterable cascader has no text field, so the same committed text drives the
+            // current level's type-ahead (W4-01).
+            Event::TextInput { text } | Event::ImeCommit { text } if !self.filterable => {
+                for ch in text.chars() {
+                    self.type_ahead_push(ch);
+                }
             }
             // The uncommitted composition is drawn in the field and never enters the filter
             // (WC6-03), so the rows are not projected on half-built text.

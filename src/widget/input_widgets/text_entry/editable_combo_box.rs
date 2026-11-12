@@ -20,6 +20,7 @@
 //! `rect.x + rect.width - 20`.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
@@ -1219,15 +1220,15 @@ impl EventHandler for EditableComboBox {
                     return;
                 }
                 match *key {
-                    8 => {
+                    key_codes::BACKSPACE => {
                         self.backspace();
                         return;
                     }
-                    127 => {
+                    key_codes::DELETE_ASCII => {
                         self.delete_forward();
                         return;
                     }
-                    37 => {
+                    key_codes::LEFT => {
                         let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
                             .contains(crate::shortcut::Modifiers::SHIFT);
                         self.move_caret(-1, shift);

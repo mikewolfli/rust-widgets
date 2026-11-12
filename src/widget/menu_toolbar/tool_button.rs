@@ -1156,7 +1156,9 @@ impl EventHandler for ToolButton {
             Event::KeyPress { key, .. } if *key == key_codes::ESCAPE && self.menu_open => {
                 self.close_menu();
             }
-            Event::KeyPress { key: 13 | 32, .. } if self.base.is_enabled() => {
+            Event::KeyPress { key: key_codes::ENTER | key_codes::SPACE, .. }
+                if self.base.is_enabled() =>
+            {
                 self.click();
             }
             _ => { /* Other events are not relevant */ }

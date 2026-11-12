@@ -16,7 +16,7 @@
 
 use crate::compat::{format, lock, Arc, Mutex, String, ToString};
 use crate::core::{HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::impl_draw_bridge;
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -210,7 +210,7 @@ impl EventHandler for GridStatusBar {
             Event::MouseRelease { pos, button: 1, .. } if self.geometry().contains_point(*pos) => {
                 self.status_clicked.emit();
             }
-            Event::KeyPress { key, .. } if *key == 13 || *key == 32 => {
+            Event::KeyPress { key, .. } if *key == key_codes::ENTER || *key == key_codes::SPACE => {
                 self.status_clicked.emit();
             }
             _ => {}

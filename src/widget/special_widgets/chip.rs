@@ -4,6 +4,7 @@
 //! Chip widget.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1340,7 +1341,7 @@ impl EventHandler for Chip {
                 let pressed = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = pressed.contains(crate::shortcut::Modifiers::SHIFT);
                 match *key {
-                    37 => {
+                    key_codes::LEFT => {
                         if shift && self.multi_select {
                             self.selection_anchor.get_or_insert(self.focused_index.unwrap_or(0));
                         }
@@ -1351,7 +1352,7 @@ impl EventHandler for Chip {
                             self.selection_anchor = None;
                         }
                     }
-                    39 => {
+                    key_codes::RIGHT => {
                         if shift && self.multi_select {
                             self.selection_anchor.get_or_insert(self.focused_index.unwrap_or(0));
                         }

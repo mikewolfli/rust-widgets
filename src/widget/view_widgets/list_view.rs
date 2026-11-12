@@ -2015,35 +2015,9 @@ impl crate::event::EventHandler for ListView {
             crate::event::Event::KeyPress { key, modifiers }
                 if self.base.focus_reason().is_some() =>
             {
-                // Type-ahead first: a printable character is a query, not a navigation key (V-09).
-                // The navigation keys share the ASCII range (END is 35, HOME 36, the arrows
-                // 37..=40), so they are excluded explicitly; a modifier chord is a command, not
-                // a character.
-                let key_modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
-                let navigation_key = matches!(
-                    *key,
-                    crate::event::key_codes::PAGE_UP
-                        | crate::event::key_codes::PAGE_DOWN
-                        | crate::event::key_codes::END
-                        | crate::event::key_codes::HOME
-                        | crate::event::key_codes::LEFT
-                        | crate::event::key_codes::UP
-                        | crate::event::key_codes::RIGHT
-                        | crate::event::key_codes::DOWN
-                        | crate::event::key_codes::DELETE
-                );
-                let command_chord = key_modifiers.contains(crate::shortcut::Modifiers::CTRL)
-                    || key_modifiers.contains(crate::shortcut::Modifiers::META)
-                    || key_modifiers.contains(crate::shortcut::Modifiers::ALT);
-                if (crate::event::key_codes::SPACE..=126).contains(key)
-                    && !navigation_key
-                    && !command_chord
-                {
-                    if let Some(character) = char::from_u32(*key) {
-                        self.type_ahead(character);
-                    }
-                    return;
-                }
+                // Printable characters are a query, not a navigation key (V-09); they arrive as
+                // `Event::TextInput`/`ImeCommit`, the one path every backend uses (W4-01), and
+                // the arm below turns them into type-ahead.
                 let layout = self.list_layout();
                 let columns = layout.columns.max(1) as usize;
                 let rows_per_page =
@@ -2080,6 +2054,18 @@ impl crate::event::EventHandler for ListView {
             #[cfg(feature = "touch")]
             crate::event::Event::Tap { pos } => {
                 self.select_row_at_point(*pos);
+            }
+            // First-letter type-ahead from the one typing path every backend uses (W4-01). A
+            // `KeyPress` carries a virtual-key code on Windows and is not produced at all for
+            // printable characters on macOS or Linux, so it could never drive this search.
+            crate::event::Event::TextInput { text } | crate::event::Event::ImeCommit { text }
+                if self.base.focus_reason().is_some() =>
+            {
+                for ch in text.chars() {
+                    if !ch.is_control() {
+                        self.type_ahead(ch);
+                    }
+                }
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -2806,10 +2792,10 @@ mod tests {
             reason: crate::event::FocusReason::Tab,
         });
 
-        view.handle_event(&crate::event::Event::KeyPress { key: b'b' as u32, modifiers: 0 });
+        view.handle_event(&crate::event::Event::TextInput { text: "b".to_string() });
         assert_eq!(view.focused_row(), Some(1), "'b' jumps to beta");
 
-        view.handle_event(&crate::event::Event::KeyPress { key: b'r' as u32, modifiers: 0 });
+        view.handle_event(&crate::event::Event::TextInput { text: "r".to_string() });
         assert_eq!(view.focused_row(), Some(2), "'br' continues to bravo");
     }
 

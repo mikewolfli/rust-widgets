@@ -1714,6 +1714,78 @@ impl AreaChart {
     }
 }
 crate::impl_default_via_new!(AreaChart);
+
+/// The largest buffer a scratch pool may retain, in elements.
+///
+/// A one-off chart with a million points must not pin megabytes on the UI thread for the rest of
+/// the process; past this size the buffer is dropped and the next draw allocates once more.
+const AREA_SCRATCH_MAX: usize = 1 << 16;
+
+thread_local! {
+    /// Stacked totals, reused for the accumulation pass (R5-02).
+    static AREA_STACK_SCRATCH: crate::compat::RefCell<Option<Vec<f64>>> =
+        const { crate::compat::RefCell::new(None) };
+    /// Polygon vertices, reused across series and frames (R5-02).
+    static AREA_POLYGON_SCRATCH: crate::compat::RefCell<Option<Vec<Point>>> =
+        const { crate::compat::RefCell::new(None) };
+}
+
+/// A scratch vector borrowed from a thread-local pool and returned when dropped.
+///
+/// `Drop` returns the allocation even when [`AreaChart::draw`] takes its early `return`, so the
+/// buffer cannot be lost from the pool. A nested draw on the same thread finds the slot empty and
+/// uses a local vector instead: that costs one allocation in the re-entrant case and can never
+/// panic on a `RefCell` borrow, because the borrow is never held across a `ChartContext` call.
+struct PooledVec<T: 'static> {
+    buffer: Vec<T>,
+    slot: &'static std::thread::LocalKey<crate::compat::RefCell<Option<Vec<T>>>>,
+    max: usize,
+}
+
+impl<T: 'static> PooledVec<T> {
+    fn take(
+        slot: &'static std::thread::LocalKey<crate::compat::RefCell<Option<Vec<T>>>>,
+        max: usize,
+    ) -> Self {
+        let buffer = slot
+            .try_with(|cell| cell.try_borrow_mut().ok().and_then(|mut pooled| pooled.take()))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        Self { buffer, slot, max }
+    }
+}
+
+impl<T: 'static> core::ops::Deref for PooledVec<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.buffer
+    }
+}
+
+impl<T: 'static> core::ops::DerefMut for PooledVec<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.buffer
+    }
+}
+
+impl<T: 'static> Drop for PooledVec<T> {
+    fn drop(&mut self) {
+        let buffer = core::mem::take(&mut self.buffer);
+        if buffer.capacity() > self.max {
+            return;
+        }
+        let _ = self.slot.try_with(move |cell| {
+            if let Ok(mut pooled) = cell.try_borrow_mut() {
+                // A nested draw may have returned a buffer first; keep the larger allocation.
+                if pooled.as_ref().is_none_or(|held| buffer.capacity() > held.capacity()) {
+                    *pooled = Some(buffer);
+                }
+            }
+        });
+    }
+}
+
 impl Chart for AreaChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
@@ -1788,8 +1860,13 @@ impl Chart for AreaChart {
         let mut min_y = f64::MAX;
         let mut max_y = f64::MIN;
 
+        // Pooled buffers: see `PooledVec` (R5-02). The stacking pass fills the first one with
+        // totals for the bounds calculation, then reuses it for the running accumulation.
+        let mut totals = PooledVec::take(&AREA_STACK_SCRATCH, AREA_SCRATCH_MAX);
+
         if self.stacked {
-            let mut stacked_y_totals = vec![0.0f64; max_len];
+            totals.clear();
+            totals.resize(max_len, 0.0);
             for series in self.series.iter().filter(|series| series.visible) {
                 for (i, point) in series.data.iter().enumerate() {
                     if !point.x.is_finite() || !point.y.is_finite() {
@@ -1797,11 +1874,11 @@ impl Chart for AreaChart {
                     }
                     min_x = min_x.min(point.x);
                     max_x = max_x.max(point.x);
-                    stacked_y_totals[i] += point.y;
+                    totals[i] += point.y;
                 }
             }
             min_y = 0.0;
-            for &sy in &stacked_y_totals {
+            for &sy in totals.iter() {
                 min_y = min_y.min(sy);
                 max_y = max_y.max(sy);
             }
@@ -1850,49 +1927,54 @@ impl Chart for AreaChart {
             );
         }
         let baseline = layout.plot_y + layout.plot_h;
-        // Accumulated y-values for stacking mode. Only allocate when stacking is on: the
-        // common unstacked path used to pay for this buffer (and for a per-series
-        // `effective_y` vector) on every paint.
-        let mut accum = if self.stacked { vec![0.0_f64; max_len] } else { Vec::new() };
+        // Accumulated y-values for stacking mode. The totals buffer is already sized for this
+        // frame, so the second pass restarts it at zero instead of allocating again; the
+        // unstacked path leaves it empty and pays nothing (R5-02).
+        if self.stacked {
+            totals.fill(0.0);
+        }
+        let mut points = PooledVec::take(&AREA_POLYGON_SCRATCH, AREA_SCRATCH_MAX);
         for series in self.series.iter().filter(|series| series.visible) {
             if series.data.len() < 2 {
                 continue;
             }
             // Build the polygon from baseline up to data points, across, and back down.
             // Stacked values are accumulated in place, so no `effective_y` vector is
-            // materialised per series per frame.
-            let mut pts = Vec::with_capacity(series.data.len() * 2 + 2);
+            // materialised per series per frame. The vertex buffer is pooled and reused for
+            // every series (R5-02).
+            points.clear();
+            points.reserve(series.data.len() * 2 + 2);
             let p0 = &series.data[0];
             let x0 = layout.plot_x + (((p0.x - min_x) / span_x) as f32) * layout.plot_w;
             let first_y = if self.stacked {
-                let stacked_y = accum[0] + p0.y;
-                accum[0] = stacked_y;
+                let stacked_y = totals[0] + p0.y;
+                totals[0] = stacked_y;
                 stacked_y
             } else {
                 p0.y
             };
             let y0 = baseline - (((first_y - min_y) / span_y) as f32) * layout.plot_h;
-            pts.push(Point::from_f32(x0, baseline));
-            pts.push(Point::from_f32(x0, y0));
+            points.push(Point::from_f32(x0, baseline));
+            points.push(Point::from_f32(x0, y0));
             for (i, p) in series.data.iter().enumerate().skip(1) {
                 let effective_y = if self.stacked {
-                    let stacked_y = accum[i] + p.y;
-                    accum[i] = stacked_y;
+                    let stacked_y = totals[i] + p.y;
+                    totals[i] = stacked_y;
                     stacked_y
                 } else {
                     p.y
                 };
                 let x = layout.plot_x + (((p.x - min_x) / span_x) as f32) * layout.plot_w;
                 let y = baseline - (((effective_y - min_y) / span_y) as f32) * layout.plot_h;
-                pts.push(Point::from_f32(x, y));
+                points.push(Point::from_f32(x, y));
             }
             let last = &series.data[series.data.len() - 1];
             let last_x = layout.plot_x + (((last.x - min_x) / span_x) as f32) * layout.plot_w;
-            pts.push(Point::from_f32(last_x, baseline));
-            context.draw_polygon(&pts, series.color.with_alpha_f32(0.3));
+            points.push(Point::from_f32(last_x, baseline));
+            context.draw_polygon(&points, series.color.with_alpha_f32(0.3));
             // The top edge of the polygon is already the effective series line, so the
             // overlay reuses those points instead of recomputing (or storing) the values.
-            for pair in pts[1..pts.len() - 1].windows(2) {
+            for pair in points[1..points.len() - 1].windows(2) {
                 context.draw_line(pair[0], pair[1], 2.0, series.color);
             }
         }

@@ -8,6 +8,7 @@
 
 use crate::compat::Vec;
 use crate::core::Point;
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::widget::capability::coercion::{
     expect_bool, expect_string, expect_text_direction, expect_u32, text_direction_to_str,
@@ -452,7 +453,7 @@ impl EventHandler for Menu {
                     }
                 }
                 match *key {
-                    27 => {
+                    key_codes::ESCAPE => {
                         // Escape unwinds one level: an open nested panel closes before the
                         // menu itself does, which is the only order that makes Escape feel
                         // like "back" instead of "dismiss".
@@ -461,7 +462,7 @@ impl EventHandler for Menu {
                         }
                         self.hide();
                     }
-                    10 | 13 => {
+                    key_codes::LINE_FEED | key_codes::ENTER => {
                         // Enter chooses the highlighted entry. An empty highlight (or one that
                         // cannot be chosen) leaves the menu open, which is what makes a stray Enter
                         // harmless rather than a dismissal with no selection.

@@ -23,6 +23,7 @@
 use crate::compat::{lock, Arc, Mutex};
 use crate::compat::{HashMap, Instant, Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 #[cfg(full_widgets)]
@@ -1329,6 +1330,36 @@ impl ComboBox {
     fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
         prefix_row(&self.items, prefix, start, |index| self.is_item_enabled(index))
     }
+
+    /// Extends the closed-list type-ahead with one committed character.
+    ///
+    /// The character comes from `Event::TextInput`/`Event::ImeCommit`, the only delivery path
+    /// every backend uses for typing (W4-01). Reading a printable key code instead only worked
+    /// for letters on Windows, whose virtual-key code happens to equal the upper-case ASCII
+    /// value; macOS and Linux never deliver a `KeyPress` for a printable character at all.
+    fn type_ahead_push(&mut self, ch: char) {
+        if ch.is_control() || self.items.is_empty() {
+            return;
+        }
+        // A prefix older than the shared timeout no longer describes what the user is typing,
+        // so it is dropped before this key extends it (I-P06). Clearing queues no frame.
+        let now = Instant::now();
+        let expired = self.type_ahead_started.is_none_or(|started| {
+            now.duration_since(started).as_millis()
+                > u128::from(crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS)
+        });
+        if expired {
+            self.type_ahead.clear();
+        }
+        self.type_ahead_started = Some(now);
+        self.type_ahead.push(ch);
+        let start = self.hovered_item.or(self.current_index).map_or(0, |index| index + 1);
+        if let Some(index) = self.find_prefix(&self.type_ahead, start) {
+            self.set_hovered(Some(index));
+            self.set_current_index(Some(index));
+            self.base.request_redraw();
+        }
+    }
     /// Inserts an item at specified position.
     ///
     /// Repaints: the item list is painted, so a caller that grew it saw the old list until an
@@ -2083,12 +2114,12 @@ impl ComboBox {
         let shift = modifiers.contains(Modifiers::SHIFT);
         let caret_keys = !self.open;
         match key {
-            8 => self.edit_delete(|editor| editor.backspace()),
-            127 => self.edit_delete(|editor| editor.delete_forward()),
-            37 if caret_keys => self.move_editor_caret(-1, shift),
-            39 if caret_keys => self.move_editor_caret(1, shift),
-            36 if caret_keys => self.set_editor_caret(0, shift),
-            35 if caret_keys => self.set_editor_caret(usize::MAX, shift),
+            key_codes::BACKSPACE => self.edit_delete(|editor| editor.backspace()),
+            key_codes::DELETE_ASCII => self.edit_delete(|editor| editor.delete_forward()),
+            key_codes::LEFT if caret_keys => self.move_editor_caret(-1, shift),
+            key_codes::RIGHT if caret_keys => self.move_editor_caret(1, shift),
+            key_codes::HOME if caret_keys => self.set_editor_caret(0, shift),
+            key_codes::END if caret_keys => self.set_editor_caret(usize::MAX, shift),
             65 if primary => {
                 let _ = self.editor.select_all();
                 self.base.request_redraw();
@@ -2639,7 +2670,9 @@ impl EventHandler for ComboBox {
                     // does what a click on the field does. The empty-list guard is in the match arm's own
                     // condition rather than nested inside it, which is also what keeps the two spellings
                     // of "can this list be opened" from drifting.
-                    crate::event::key_codes::SPACE | 113 if !self.items.is_empty() => {
+                    crate::event::key_codes::SPACE | crate::event::key_codes::F2
+                        if !self.items.is_empty() =>
+                    {
                         self.toggle_open();
                     }
                     // Page keys move the highlight by a windowful while open, and jump to the
@@ -2674,44 +2707,9 @@ impl EventHandler for ComboBox {
                             self.base.request_redraw();
                         }
                     }
-                    // First-letter type-ahead: a printable key picks the next matching row. In an
-                    // editable box a printable key is **content** instead (I-06), so the two paths
-                    // are one match arm with the editable case first.
-                    32..=126 => {
-                        if let Some(ch) = char::from_u32(*key) {
-                            if self.editable {
-                                self.edit_insert(&ch.to_string());
-                                return;
-                            }
-                            if !self.items.is_empty() {
-                                // A prefix older than the shared timeout no longer describes what
-                                // the user is typing, so it is dropped before this key extends it
-                                // (I-P06). Clearing queues no frame by itself.
-                                let now = Instant::now();
-                                let expired = self.type_ahead_started.is_none_or(|started| {
-                                now.duration_since(started).as_millis()
-                                    > u128::from(
-                                        crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
-                                    )
-                            });
-                                if expired {
-                                    self.type_ahead.clear();
-                                }
-                                self.type_ahead_started = Some(now);
-                                self.type_ahead.push(ch);
-                                let start = self
-                                    .hovered_item
-                                    .or(self.current_index)
-                                    .map_or(0, |index| index + 1);
-                                if let Some(index) = self.find_prefix(&self.type_ahead, start) {
-                                    self.set_hovered(Some(index));
-                                    self.set_current_index(Some(index));
-                                    self.base.request_redraw();
-                                }
-                            }
-                        }
-                    }
-                    // Unknown key; ignore
+                    // Printable content is not taken from `KeyPress` (W4-01): every backend
+                    // delivers a typed character as `TextInput`/`ImeCommit`, and the arms below
+                    // own both the editable insertion and the closed-list type-ahead.
                     _ => {}
                 }
             }
@@ -2739,12 +2737,17 @@ impl EventHandler for ComboBox {
                     }
                 }
             }
-            // Platform-committed text reaches the widget here, not as a key press; an editable
-            // box inserts it into its value (I-06). The whole build of the field's text used to
-            // be key-press-only, so a desktop backend's `TextInput` never arrived at all.
+            // Platform-committed text reaches the widget here, not as a key press (I-06). An
+            // editable box inserts it into its value; a closed non-editable box uses it for the
+            // first-letter type-ahead that a `KeyPress` could never provide on macOS or Linux
+            // (W4-01).
             Event::TextInput { text } => {
                 if self.editable {
                     self.edit_insert(text);
+                } else {
+                    for ch in text.chars() {
+                        self.type_ahead_push(ch);
+                    }
                 }
             }
             // A commit ends the composition as well as inserting its text: an input method may
@@ -2754,6 +2757,10 @@ impl EventHandler for ComboBox {
                 if self.editable {
                     self.editor.clear_composition();
                     self.edit_insert(text);
+                } else {
+                    for ch in text.chars() {
+                        self.type_ahead_push(ch);
+                    }
                 }
             }
             // The uncommitted composition belongs to the inner editor while the user is building
@@ -3175,7 +3182,7 @@ mod tests {
         let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
         cb.add_items(vec!["alpha".into(), "beta".into()]);
         cb.set_editable(true);
-        cb.handle_event(&Event::key_press(97, 0)); // 'a'
+        cb.handle_event(&Event::text_input("a"));
         assert_eq!(cb.current_text(), "a");
         assert_eq!(cb.cursor_position(), 1);
         cb.handle_event(&Event::text_input("lpha"));
@@ -4073,7 +4080,7 @@ mod tests {
         let revision = cb.label_index.borrow().as_ref().map(|cache| cache.revision);
         assert_eq!(revision, Some(cb.item_revision), "the map is seeded for the current items");
 
-        cb.handle_event(&Event::key_press(97, 0)); // 'a'
+        cb.handle_event(&Event::text_input("a"));
         cb.handle_event(&Event::text_input("lpha"));
 
         assert_eq!(cb.current_index(), Some(0), "the first duplicate wins");

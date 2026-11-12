@@ -10,6 +10,7 @@
 
 use crate::compat::Cow;
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1073,7 +1074,7 @@ impl EventHandler for SegmentedButton {
             // Arrow and Space keys change the segmented button only while it holds focus: an
             // unfocused button must not take the keys of whatever the user is editing.
             Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
-                37 => {
+                key_codes::LEFT => {
                     if self.allows_multiple {
                         self.move_focus(-1);
                     } else {

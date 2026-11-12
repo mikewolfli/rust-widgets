@@ -43,6 +43,7 @@
 
 use crate::compat::{Cell, HashMap, RefCell};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -1570,14 +1571,14 @@ impl EventHandler for EmojiPicker {
             {
                 match *key {
                     // Backspace edits the search, which is the only text this control has.
-                    8 => {
+                    key_codes::BACKSPACE => {
                         let mut search = self.search.clone();
                         search.pop();
                         self.set_search(&search);
                     }
-                    37 => self.move_cursor(-1), // Left
-                    39 => self.move_cursor(1),  // Right
-                    38 => {
+                    key_codes::LEFT => self.move_cursor(-1), // Left
+                    key_codes::RIGHT => self.move_cursor(1), // Right
+                    key_codes::UP => {
                         let columns = self.columns() as i32;
                         self.move_cursor(-columns);
                     } // Up

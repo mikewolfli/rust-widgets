@@ -9,6 +9,7 @@
 //! every edit.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
@@ -1263,13 +1264,13 @@ impl EventHandler for SearchBox {
                     return;
                 }
                 match *key {
-                    8 => self.backspace(),
-                    127 => self.delete_forward(),
-                    37 => self.move_caret(-1, shift),
-                    39 => self.move_caret(1, shift),
-                    36 => self.move_caret_to(0, shift),
-                    35 => self.move_caret_to(self.text.len(), shift),
-                    13 => {
+                    key_codes::BACKSPACE => self.backspace(),
+                    key_codes::DELETE_ASCII => self.delete_forward(),
+                    key_codes::LEFT => self.move_caret(-1, shift),
+                    key_codes::RIGHT => self.move_caret(1, shift),
+                    key_codes::HOME => self.move_caret_to(0, shift),
+                    key_codes::END => self.move_caret_to(self.text.len(), shift),
+                    key_codes::ENTER => {
                         // Enter submits the query, then the field gives up focus. Escape only
                         // gives up focus: abandoning a search is not submitting it.
                         self.search_submitted.emit(self.text.clone());

@@ -7,6 +7,7 @@ use super::model::*;
 
 use crate::core::{Point, Size};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect};
+use crate::event::key_codes;
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -471,15 +472,15 @@ impl EventHandler for TextEdit {
                 }
 
                 match *key {
-                    8 => {
+                    key_codes::BACKSPACE => {
                         self.backspace();
                     }
-                    46 => {
+                    key_codes::DELETE => {
                         // Delete — the character *after* the caret. Unhandled before, so it fell
                         // through to the printable arm where key 46 is `.`.
                         self.delete_forward();
                     }
-                    13 => {
+                    key_codes::ENTER => {
                         // Enter — a newline at the caret, replacing the selection like any insert.
                         self.insert_str("\n");
                     }

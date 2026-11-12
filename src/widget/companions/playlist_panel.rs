@@ -21,6 +21,7 @@
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
 use crate::impl_widget_property_hooks;
@@ -434,14 +435,14 @@ impl EventHandler for PlaylistPanel {
                 }
             }
             Event::KeyPress { key, .. } => match *key {
-                38 => self.move_selection(-1),
-                40 => self.move_selection(1),
-                13 => {
+                key_codes::UP => self.move_selection(-1),
+                key_codes::DOWN => self.move_selection(1),
+                key_codes::ENTER => {
                     if let Some(index) = self.selected {
                         self.track_selected.emit(index);
                     }
                 }
-                46 => {
+                key_codes::DELETE => {
                     if let Some(index) = self.selected {
                         self.track_remove_requested.emit(index);
                     }

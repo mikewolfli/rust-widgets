@@ -224,7 +224,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                     return 0;
                 }
                 let event = crate::event::Event::KeyPress {
-                    key: wparam as u32,
+                    key: super::framework_key(wparam as u32),
                     modifiers: super::canvas::current_modifiers(),
                 };
                 // Inline, matching this arm's existing dependencies exactly: `key_target_for_id`
@@ -259,7 +259,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         WM_KEYUP => {
             if let Some(target) = key_target_for(hwnd) {
                 let event = crate::event::Event::KeyRelease {
-                    key: wparam as u32,
+                    key: super::framework_key(wparam as u32),
                     modifiers: super::canvas::current_modifiers(),
                 };
                 if crate::widget::runtime::dispatch_event(target, &event) {

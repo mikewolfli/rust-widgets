@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -380,17 +381,17 @@ impl EventHandler for MarkdownOutlinePanel {
             Event::KeyPress { key, .. } => {
                 let current = self.active_index.unwrap_or(0);
                 match *key {
-                    38 => {
+                    key_codes::UP => {
                         if !self.entries.is_empty() {
                             let _ = self.goto(current.saturating_sub(1));
                         }
                     }
-                    40 => {
+                    key_codes::DOWN => {
                         if !self.entries.is_empty() {
                             let _ = self.goto((current + 1).min(self.entries.len() - 1));
                         }
                     }
-                    13 if !self.entries.is_empty() => {
+                    key_codes::ENTER if !self.entries.is_empty() => {
                         let _ = self.goto(current.min(self.entries.len() - 1));
                     }
                     _ => { /* Other keys are not relevant */ }

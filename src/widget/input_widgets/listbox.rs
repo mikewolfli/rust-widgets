@@ -5,6 +5,7 @@
 use crate::compat::{Instant, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -1122,6 +1123,36 @@ impl ListBox {
         })
     }
 
+    /// Extends the first-letter type-ahead with one committed character and selects the first
+    /// matching row.
+    ///
+    /// The character comes from `Event::TextInput`/`Event::ImeCommit`, the only delivery path
+    /// every backend uses for typing (W4-01). Reading a printable key code instead only worked
+    /// for letters on Windows, whose virtual-key code happens to equal the upper-case ASCII
+    /// value; macOS and Linux never deliver a `KeyPress` for a printable character at all.
+    fn type_ahead_push(&mut self, ch: char) {
+        if ch.is_control() {
+            return;
+        }
+        // A prefix older than the shared timeout is dropped before this key extends it, so a
+        // stale search cannot keep intercepting the first letter of the next one (I-P06).
+        // Clearing queues no frame.
+        let now = Instant::now();
+        let expired = self.type_ahead_started.is_none_or(|started| {
+            now.duration_since(started).as_millis()
+                > u128::from(crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS)
+        });
+        if expired {
+            self.type_ahead.clear();
+        }
+        self.type_ahead_started = Some(now);
+        self.type_ahead.push(ch);
+        let start = self.current_row.map_or(0, |row| row + 1);
+        if let Some(target) = self.find_prefix(&self.type_ahead, start) {
+            self.select(target);
+        }
+    }
+
     /// The row the pointer is currently over, or `None`.
     pub fn hovered_row(&self) -> Option<usize> {
         self.hovered_row
@@ -1885,14 +1916,14 @@ impl EventHandler for ListBox {
                     return;
                 }
                 match *key {
-                    38 => {
+                    key_codes::UP => {
                         // Up arrow: move toward earlier selectable rows.
                         let start = self.current_row.unwrap_or(self.items.len());
                         if let Some(target) = (0..start).rev().find(|&i| self.is_item_enabled(i)) {
                             select_target(self, target);
                         }
                     }
-                    40 => {
+                    key_codes::DOWN => {
                         // Down arrow.
                         let start = self.current_row.map_or(0, |row| row + 1);
                         if let Some(target) =
@@ -1958,7 +1989,7 @@ impl EventHandler for ListBox {
                             }
                         }
                     }
-                    113 => {
+                    key_codes::F2 => {
                         // F2 requests a rename when that trigger is enabled.
                         if self.edit_triggers.contains(EditTriggers::F2) {
                             if let Some(current) = self.current_row {
@@ -1968,40 +1999,19 @@ impl EventHandler for ListBox {
                             }
                         }
                     }
-                    // Type-ahead: a printable character extends the prefix and jumps to the
-                    // first matching row from the current one. Without it a long list could
-                    // only be traversed with the arrows or the pointer.
-                    32..=126 => {
-                        // A modifier-held letter is a command chord, not type-ahead.
-                        if mods.contains(crate::shortcut::Modifiers::CTRL) {
-                            return;
-                        }
-                        if let Some(ch) = char::from_u32(*key) {
-                            // A prefix older than the shared timeout is dropped before this key
-                            // extends it, so a stale search cannot keep intercepting the first
-                            // letter of the next one (I-P06). Clearing queues no frame.
-                            let now = Instant::now();
-                            let expired = self.type_ahead_started.is_none_or(|started| {
-                                now.duration_since(started).as_millis()
-                                    > u128::from(
-                                        crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
-                                    )
-                            });
-                            if expired {
-                                self.type_ahead.clear();
-                            }
-                            self.type_ahead_started = Some(now);
-                            self.type_ahead.push(ch);
-                            let start = self.current_row.map_or(0, |row| row + 1);
-                            if let Some(target) = self.find_prefix(&self.type_ahead, start) {
-                                self.select(target);
-                            }
-                        }
-                    }
+                    // Printable characters arrive as `Event::TextInput`/`ImeCommit` and drive
+                    // the type-ahead arm below (W4-01); a raw key code is not a character.
                     _ => {
                         self.type_ahead.clear();
                         self.type_ahead_started = None;
                     }
+                }
+            }
+            // Typing, from the one path every backend uses (W4-01). This control has no text
+            // field, so a committed character is a type-ahead prefix rather than content.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                for ch in text.chars() {
+                    self.type_ahead_push(ch);
                 }
             }
             Event::Wheel { delta, modifiers } => {
@@ -3069,11 +3079,11 @@ mod tests {
         list.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
         assert_ne!(list.current_row(), Some(0), "PageDown moves by a screenful");
 
-        list.handle_event(&Event::KeyPress { key: 67, modifiers: 0 }); // 'C'
+        list.handle_event(&Event::TextInput { text: "C".to_string() });
         assert_eq!(list.current_row(), Some(2), "type-ahead jumps to the matching row");
 
         list.set_item_enabled(2, false);
-        list.handle_event(&Event::KeyPress { key: 67, modifiers: 0 });
+        list.handle_event(&Event::TextInput { text: "C".to_string() });
         assert_eq!(list.current_row(), Some(2), "a disabled row is not selectable");
 
         list.set_current_row(Some(0));
@@ -3119,7 +3129,7 @@ mod tests {
         });
 
         list.set_current_row(Some(1));
-        list.handle_event(&Event::KeyPress { key: 113, modifiers: 0 }); // F2
+        list.handle_event(&Event::KeyPress { key: key_codes::F2, modifiers: 0 });
         assert_eq!(requested.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(list.item(1), Some("Item 1"), "the label is the host's to change");
     }

@@ -39,6 +39,7 @@
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -740,16 +741,16 @@ impl EventHandler for SuggestionPopup {
         }
         match event {
             Event::KeyPress { key, .. } => match *key {
-                38 => {
+                key_codes::UP => {
                     self.move_highlight(-1);
                 }
-                40 => {
+                key_codes::DOWN => {
                     self.move_highlight(1);
                 }
-                36 => {
+                key_codes::HOME => {
                     self.set_highlight(self.visible.first().map(|_| 0));
                 }
-                35 => {
+                key_codes::END => {
                     self.set_highlight(self.visible.len().checked_sub(1));
                 }
                 13 => {

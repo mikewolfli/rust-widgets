@@ -18,6 +18,7 @@
 
 use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1129,14 +1130,14 @@ impl EventHandler for SplitButton {
                 self.set_menu_scroll(next);
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
-                13 | 32 => {
+                key_codes::ENTER | key_codes::SPACE => {
                     if self.menu_open {
                         let _ = self.select_highlighted_action();
                     } else {
                         let _ = self.trigger_primary();
                     }
                 }
-                40 => {
+                key_codes::DOWN => {
                     if !self.menu_open {
                         self.open_menu();
                     } else {

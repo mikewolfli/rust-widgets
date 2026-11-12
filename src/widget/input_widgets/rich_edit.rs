@@ -10,6 +10,7 @@
 //! editor's smaller set, and `render::rich_text::TextSpan` is a paint-time text/style pair. The
 //! three describe different roles, not duplicate definitions (principles #49 and #51).
 use crate::core::{Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::wheel::WheelScroll;
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -2099,7 +2100,7 @@ impl crate::event::EventHandler for RichEdit {
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
                 let primary = crate::shortcut::event_carries_primary(*modifiers);
                 match *key {
-                    8 if cursor > 0 => {
+                    key_codes::BACKSPACE if cursor > 0 => {
                         // Backspace — delete char before cursor, recorded as one splice (I-P55).
                         let boundary = floor_char_boundary(&self.text, cursor - 1);
                         let removed = cursor - boundary;
@@ -2109,7 +2110,7 @@ impl crate::event::EventHandler for RichEdit {
                         self.extend_caret = new_cursor;
                         self.cursor_position_changed.emit(new_cursor);
                     }
-                    127 if cursor < self.text.len() => {
+                    key_codes::DELETE_ASCII if cursor < self.text.len() => {
                         // Delete — remove the whole *character* after the cursor.
                         //
                         // `floor_char_boundary(cursor + 1)` floors **down**, so for a multi-byte

@@ -12,6 +12,7 @@
 //! [`WidgetKind::SpinBox`].
 
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -298,22 +299,22 @@ impl EventHandler for ValueSpinBox {
                 }
             }
             Event::KeyPress { key, .. } if self.editing => match *key {
-                13 => self.commit_draft(),
-                27 => {
+                key_codes::ENTER => self.commit_draft(),
+                key_codes::ESCAPE => {
                     self.editing = false;
                     self.draft.clear();
                     self.base.request_redraw();
                 }
-                8 => {
+                key_codes::BACKSPACE => {
                     self.draft.pop();
                     self.base.request_redraw();
                 }
-                38 => self.step_by(1),
-                40 => self.step_by(-1),
+                key_codes::UP => self.step_by(1),
+                key_codes::DOWN => self.step_by(-1),
                 _ => {}
             },
-            Event::KeyPress { key: 38, .. } => self.step_by(1),
-            Event::KeyPress { key: 40, .. } => self.step_by(-1),
+            Event::KeyPress { key: key_codes::UP, .. } => self.step_by(1),
+            Event::KeyPress { key: key_codes::DOWN, .. } => self.step_by(-1),
             Event::TextInput { text } if self.editing => {
                 self.draft.push_str(text);
                 self.base.request_redraw();

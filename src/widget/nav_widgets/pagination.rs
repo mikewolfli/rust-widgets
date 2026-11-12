@@ -894,7 +894,9 @@ impl Pagination {
         font: &Font,
         color: Color,
         outline: Color,
+        scratch: &mut String,
     ) {
+        use core::fmt::Write as _;
         context.draw_rect(rect, outline);
         let arrow_side = (rect.height / 3).clamp(6, 12);
         let arrow_box_width = (arrow_side + 4).min(rect.width);
@@ -915,8 +917,11 @@ impl Pagination {
         );
         let text_rect =
             Rect::new(rect.x, rect.y, rect.width.saturating_sub(arrow_box_width), rect.height);
-        let label = format!("{} / page", self.page_size);
-        draw_centered_label(context, text_rect, &label, font, color);
+        // Reused buffer: `format!` built one `String` per frame for a label whose only
+        // variable is the page size (R4-03).
+        scratch.clear();
+        let _ = write!(scratch, "{} / page", self.page_size);
+        draw_centered_label(context, text_rect, scratch.as_str(), font, color);
     }
 
     /// Draws the page-size popup and its option rows.
@@ -928,18 +933,18 @@ impl Pagination {
         color: Color,
         background: Color,
         outline: Color,
+        scratch: &mut String,
     ) {
         use core::fmt::Write as _;
         context.fill_rect(popup, background);
-        let mut label = String::new();
         for (index, option) in self.page_size_options.iter().enumerate() {
             let row = self.page_size_option_rect(popup, index);
             if self.page_size_hover == Some(index) {
                 context.fill_rect(row, background.blend(&color, 0.12));
             }
-            label.clear();
-            let _ = write!(label, "{option}");
-            draw_centered_label(context, row, &label, font, color);
+            scratch.clear();
+            let _ = write!(scratch, "{option}");
+            draw_centered_label(context, row, scratch.as_str(), font, color);
         }
         context.draw_rect(popup, outline);
     }
@@ -1373,10 +1378,31 @@ impl Draw for Pagination {
             self.jump_label_scratch = jump_label;
         }
         if let Some(page_size_rect) = layout.page_size_rect {
-            self.draw_page_size_cell(context, page_size_rect, font, text_color, outline);
+            // The label buffer was handed back above, so the selector reuses it rather than
+            // allocating a fresh `String` every frame (R4-03).
+            let mut size_label = core::mem::take(&mut self.label_scratch);
+            self.draw_page_size_cell(
+                context,
+                page_size_rect,
+                font,
+                text_color,
+                outline,
+                &mut size_label,
+            );
+            self.label_scratch = size_label;
         }
         if let Some(popup) = self.page_size_popup_rect() {
-            self.draw_page_size_popup(context, popup, font, text_color, background, outline);
+            let mut popup_label = core::mem::take(&mut self.label_scratch);
+            self.draw_page_size_popup(
+                context,
+                popup,
+                font,
+                text_color,
+                background,
+                outline,
+                &mut popup_label,
+            );
+            self.label_scratch = popup_label;
         }
 
         // The bar's own outline follows the face's radius, so the four corners close.

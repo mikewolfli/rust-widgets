@@ -17,6 +17,7 @@
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -441,18 +442,18 @@ impl EventHandler for RecentValuesPopup {
         }
         match event {
             Event::KeyPress { key, .. } => match *key {
-                38 => {
+                key_codes::UP => {
                     self.move_highlight(-1);
                 }
-                40 => {
+                key_codes::DOWN => {
                     self.move_highlight(1);
                 }
-                36 => self.set_highlight((!self.entries.is_empty()).then_some(0)),
-                35 => self.set_highlight(self.entries.len().checked_sub(1)),
-                13 => {
+                key_codes::HOME => self.set_highlight((!self.entries.is_empty()).then_some(0)),
+                key_codes::END => self.set_highlight(self.entries.len().checked_sub(1)),
+                key_codes::ENTER => {
                     self.commit_highlighted();
                 }
-                27 => self.hide(),
+                key_codes::ESCAPE => self.hide(),
                 _ => {}
             },
             Event::MousePress { pos, button: 1, .. } => {

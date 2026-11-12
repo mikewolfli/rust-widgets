@@ -21,6 +21,7 @@
 
 use crate::compat::{String, Vec};
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
 use crate::impl_widget_property_hooks;
@@ -356,11 +357,11 @@ impl EventHandler for LayerPanel {
             Event::KeyPress { key, .. } => {
                 if let Some((_, buffer)) = self.renaming.as_mut() {
                     match *key {
-                        8 => {
+                        key_codes::BACKSPACE => {
                             buffer.pop();
                             self.base.request_redraw();
                         }
-                        13 => {
+                        key_codes::ENTER => {
                             let finished = self.renaming.take();
                             if let Some((id, name)) = finished {
                                 if let Some(entry) =
@@ -383,9 +384,9 @@ impl EventHandler for LayerPanel {
                     return;
                 }
                 match *key {
-                    38 => self.move_selection(-1),
-                    40 => self.move_selection(1),
-                    46 => {
+                    key_codes::UP => self.move_selection(-1),
+                    key_codes::DOWN => self.move_selection(1),
+                    key_codes::DELETE => {
                         if let Some(id) = self.selected_layer {
                             self.remove_requested.emit(id);
                         }

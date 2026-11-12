@@ -23,6 +23,7 @@
 //! property contract, and has interaction tests.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -675,15 +676,15 @@ impl EventHandler for OtpInput {
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
                 match *key {
                     // Backspace.
-                    8 => {
+                    key_codes::BACKSPACE => {
                         self.backspace();
                     }
                     // Enter submits the entry; Escape abandons it. Both are reported to the
                     // host, because a segmented code field owns no policy beyond the code.
-                    13 => {
+                    key_codes::ENTER => {
                         self.submitted.emit(self.value());
                     }
-                    27 => {
+                    key_codes::ESCAPE => {
                         self.canceled.emit();
                     }
                     // Tab steps to the next box, Shift+Tab to the previous one. A code is a row

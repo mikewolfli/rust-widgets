@@ -10,6 +10,7 @@
 
 use super::date_utils::{days_in_month, parse_iso_date, DAY_NAMES, MONTH_NAMES};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 use crate::signal::Signal1;
@@ -1876,9 +1877,9 @@ impl EventHandler for RangePresetBar {
             // Arrow keys move the preset bar's cursor only while it holds focus: a bar embedded
             // in a page must not consume the arrows of whatever the user is editing.
             Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
-                37 | 38 => self.move_cursor(-1),
-                39 | 40 => self.move_cursor(1),
-                13 if !self.presets.is_empty() => {
+                key_codes::LEFT | key_codes::UP => self.move_cursor(-1),
+                key_codes::RIGHT | key_codes::DOWN => self.move_cursor(1),
+                key_codes::ENTER if !self.presets.is_empty() => {
                     self.select_index(self.cursor.min(self.presets.len() - 1));
                 }
                 _ => { /* Other keys are not relevant */ }

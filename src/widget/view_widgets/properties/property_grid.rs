@@ -10,6 +10,7 @@
 
 use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1837,7 +1838,7 @@ impl EventHandler for PropertyGrid {
                     return;
                 }
                 match *key {
-                    38 => {
+                    key_codes::UP => {
                         // Up arrow — the previous *painted* row, so a collapsed header is stepped
                         // over instead of selecting an item that is not on screen (V-17).
                         let current =

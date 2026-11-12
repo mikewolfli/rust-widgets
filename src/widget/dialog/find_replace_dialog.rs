@@ -10,6 +10,7 @@
 
 use crate::compat::{format, RefCell};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1272,17 +1273,17 @@ impl EventHandler for FindReplaceDialog {
                 let shift = *modifiers & 1 != 0;
                 let primary = *modifiers & (2 | 8) != 0;
                 match *key {
-                    27 => {
+                    key_codes::ESCAPE => {
                         // Escape
                         self.hide();
                         self.close_signal.emit(());
                         self.base.request_redraw();
                     }
-                    13 => {
+                    key_codes::ENTER => {
                         // Enter — trigger find next
                         self.find_next();
                     }
-                    8 => {
+                    key_codes::BACKSPACE => {
                         // Backspace
                         self.backspace_focused();
                     }
@@ -1304,9 +1305,9 @@ impl EventHandler for FindReplaceDialog {
                         let index = self.field_index();
                         let length = self.field_text(index).chars().count();
                         let target = match *key {
-                            37 => self.caret[index].saturating_sub(1),
-                            39 => (self.caret[index] + 1).min(length),
-                            36 => 0,
+                            key_codes::LEFT => self.caret[index].saturating_sub(1),
+                            key_codes::RIGHT => (self.caret[index] + 1).min(length),
+                            key_codes::HOME => 0,
                             _ => length,
                         };
                         self.move_caret(target, shift);

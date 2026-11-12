@@ -589,6 +589,21 @@ impl Tooltip {
         Size::new(width, height)
     }
 
+    /// The plain wrapped lines this tooltip paints, or `None` when rich runs own the layout.
+    ///
+    /// `None` is a statement about **which layout is in use**, not "there is no text": the rich
+    /// branch paints `rich_lines` and never reads this vector. Returning an `Option` instead of an
+    /// empty `Rc<Vec<String>>` removes the placeholder allocation the old `match` made on every
+    /// frame a rich tooltip painted (R5-01).
+    fn plain_lines(&self, context: &RenderContext, font: &Font) -> Option<Rc<Vec<String>>> {
+        if self.spans.is_empty() {
+            let label = if self.text.is_empty() { "Tooltip" } else { self.text.as_str() };
+            Some(self.wrapped_lines(context, label, font))
+        } else {
+            None
+        }
+    }
+
     /// The lines the plain label is painted on.
     ///
     /// Without wrapping this is the label itself, unchanged. With wrapping the text breaks
@@ -1113,11 +1128,10 @@ impl Draw for Tooltip {
         // same layout surface (DLG-010): with wrapping off they are one row, exactly as before;
         // with it on they break at spaces and newlines with their styles intact.
         let rich = if self.spans.is_empty() { None } else { Some(self.rich_lines(context, &font)) };
-        let label = if self.text.is_empty() { "Tooltip" } else { self.text.as_str() };
-        let lines = match &rich {
-            Some(_) => Rc::new(Vec::new()),
-            None => self.wrapped_lines(context, label, &font),
-        };
+        // `None` is not "no text": rich runs own the layout, so the plain path is not used on
+        // this paint. The old form materialised an empty `Rc<Vec<String>>` placeholder here,
+        // one allocation per frame for a value nothing read (R5-01).
+        let lines = self.plain_lines(context, &font);
 
         // Measured content width: the widest wrapped line, or the widest rich line. Either way
         // the bubble is capped by `max_width` and by the control itself.
@@ -1156,7 +1170,7 @@ impl Draw for Tooltip {
                 .saturating_add(dimensions::TOOLTIP_PADDING_V * 2),
             None if single_line || !self.spans.is_empty() => dimensions::TOOLTIP_HEIGHT,
             None => measured_line_height
-                .saturating_mul(lines.len().max(1) as u32)
+                .saturating_mul(lines.as_ref().map_or(1, |lines| lines.len().max(1)) as u32)
                 .saturating_add(dimensions::TOOLTIP_PADDING_V * 2),
         };
         let bubble = self.bubble_rect(rect, Size::new(total_width.max(1), bubble_height));
@@ -1217,7 +1231,7 @@ impl Draw for Tooltip {
                     x += advance;
                 }
             }
-        } else {
+        } else if let Some(lines) = &lines {
             let text_x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
             let band_width = (bubble.width.saturating_sub(dimensions::TOOLTIP_PADDING_H * 2) as i32
                 + 2 * fit_inset)
@@ -1838,6 +1852,32 @@ mod tests {
             tooltip.preferred_size().width,
             glyphs + dimensions::TOOLTIP_PADDING_H * 2,
             "the hint must reserve the bubble's own edging"
+        );
+    }
+
+    /// Rich runs never materialise the plain line vector (R5-01).
+    ///
+    /// The placeholder was not just wasteful: it made the two layouts look interchangeable at
+    /// the type level. `None` states which one is in use, and the rich branch alone owns the text.
+    #[test]
+    fn rich_runs_do_not_build_a_placeholder_line_vector() {
+        use crate::core::Size;
+        use crate::render::SoftwarePaintBackend;
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(120, 40), 1.0);
+        let context = RenderContext::new(&mut backend);
+
+        let plain = Tooltip::new("Hint", Rect::new(0, 0, 100, 40));
+        assert!(
+            plain.plain_lines(&context, &plain.bubble_font()).is_some(),
+            "a plain tooltip paints the wrapped label"
+        );
+
+        let mut rich = Tooltip::new("", Rect::new(0, 0, 100, 40));
+        rich.set_spans(vec![TooltipSpan::new("bold").with_bold(true)]);
+        assert!(
+            rich.plain_lines(&context, &rich.bubble_font()).is_none(),
+            "the rich path owns the layout; no placeholder vector is built"
         );
     }
 

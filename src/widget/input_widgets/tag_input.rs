@@ -8,6 +8,7 @@
 //! It emits `tags_changed` with the current list of tags on every change.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
@@ -1832,13 +1833,13 @@ impl EventHandler for TagInput {
                 // I-113: the open suggestion layer owns Up/Down/Enter/Tab/Escape.
                 if self.suggestions_open && !self.input_buffer.trim().is_empty() {
                     match *key {
-                        38 => {
+                        key_codes::UP => {
                             if self.popup.move_highlight(-1) {
                                 self.base.request_redraw();
                             }
                             return;
                         }
-                        40 => {
+                        key_codes::DOWN => {
                             if self.popup.move_highlight(1) {
                                 self.base.request_redraw();
                             }
@@ -1863,7 +1864,7 @@ impl EventHandler for TagInput {
                     }
                 }
                 match *key {
-                    8 => {
+                    key_codes::BACKSPACE => {
                         // Backspace removes the selection or the character before the caret;
                         // at the start of the buffer it removes the last tag.
                         let range = self.input_selection().or_else(|| {

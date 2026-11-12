@@ -2483,12 +2483,17 @@ impl EventHandler for GridTableWidget {
                             }
                         }
                     }
-                    32..=126 => {
-                        if let Some(character) = char::from_u32(*key) {
-                            self.type_ahead(character);
-                        }
-                    }
+                    // Printable characters arrive as `Event::TextInput`/`ImeCommit` and drive
+                    // the type-ahead arm below (W4-01); a raw key code is not a character.
                     _ => {}
+                }
+            }
+            // First-letter type-ahead from the one typing path every backend uses (W4-01).
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                for ch in text.chars() {
+                    if !ch.is_control() {
+                        self.type_ahead(ch);
+                    }
                 }
             }
 
@@ -3271,7 +3276,7 @@ mod tests {
         tbl.set_selection_mode(GridTableSelectionMode::Row);
         tbl.clear_selection();
         tbl.handle_event(&Event::MousePress { pos: first, button: 1, modifiers: 0 });
-        tbl.handle_event(&Event::KeyPress { key: 51, modifiers: 0 });
+        tbl.handle_event(&Event::TextInput { text: "3".to_string() });
         assert_eq!(
             tbl.selected_cell().map(|(row, _)| row),
             Some(3),

@@ -5,6 +5,7 @@
 
 use super::item::ToastLevel;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -372,7 +373,7 @@ impl EventHandler for Toast {
             {
                 self.trigger_action();
             }
-            Event::KeyPress { key: 27, modifiers: _ } => {
+            Event::KeyPress { key: key_codes::ESCAPE, modifiers: _ } => {
                 self.dismiss();
             }
             // Other events are not relevant for this widget

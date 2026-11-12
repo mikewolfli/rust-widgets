@@ -662,32 +662,25 @@ impl EventHandler for ImePreedit {
                     self.base.request_redraw();
                 }
             }
-            Event::KeyPress { key, modifiers } => {
-                if *key == key_codes::BACKSPACE {
-                    // Backspace removes the character before the caret, not the last character:
-                    // once the caret can sit inside the composition, those are different edits.
-                    if self.cursor > 0 {
-                        let mut boundary = self.cursor.saturating_sub(1);
-                        while boundary > 0 && !self.text.is_char_boundary(boundary) {
-                            boundary -= 1;
-                        }
-                        self.text.replace_range(boundary..self.cursor, "");
-                        self.cursor = boundary;
-                        self.segments.clear();
-                        self.invalidate_metrics();
-                        self.base.request_redraw();
-                    }
-                } else if *key >= 32 && *key <= 126 {
-                    let c = char::from_u32(*key).unwrap_or(' ');
-                    let c = if *modifiers & 0x02 != 0 { c.to_ascii_uppercase() } else { c };
-                    let mut buffer = [0u8; 4];
-                    let encoded = c.encode_utf8(&mut buffer);
-                    self.text.insert_str(self.cursor, encoded);
-                    self.cursor += encoded.len();
-                    self.segments.clear();
-                    self.invalidate_metrics();
-                    self.base.request_redraw();
+            // Printable characters arrive as `Event::TextInput` above, the one path every
+            // backend uses for typing (W4-01). Taking the printable key code here as well
+            // appended every character twice on Windows, the one backend that also forwards
+            // `WM_KEYDOWN` for printable virtual keys; macOS and Linux never send a `KeyPress`
+            // for a printable character at all.
+            Event::KeyPress { key, modifiers: _ }
+                if *key == key_codes::BACKSPACE && self.cursor > 0 =>
+            {
+                // Backspace removes the character before the caret, not the last character:
+                // once the caret can sit inside the composition, those are different edits.
+                let mut boundary = self.cursor.saturating_sub(1);
+                while boundary > 0 && !self.text.is_char_boundary(boundary) {
+                    boundary -= 1;
                 }
+                self.text.replace_range(boundary..self.cursor, "");
+                self.cursor = boundary;
+                self.segments.clear();
+                self.invalidate_metrics();
+                self.base.request_redraw();
             }
             _ => {}
         }
@@ -810,16 +803,18 @@ mod tests {
         use crate::widget::Widget;
 
         let mut preedit = ImePreedit::new(Rect::new(0, 0, 200, 30));
-        preedit.handle_event(&Event::KeyPress { key: 65, modifiers: 0 }); // 'A'
+        // Typed characters arrive as `TextInput`, the one path every backend uses (W4-01); one
+        // committed character must produce exactly one buffer character.
+        preedit.handle_event(&Event::TextInput { text: "A".to_string() });
         assert_eq!(preedit.text(), "A", "an enabled control accepts typed text");
 
         preedit.set_enabled(false);
-        preedit.handle_event(&Event::KeyPress { key: 66, modifiers: 0 }); // 'B'
+        preedit.handle_event(&Event::TextInput { text: "B".to_string() });
         assert_eq!(preedit.text(), "A", "a disabled control must not accept text");
 
         // Backspace is refused too, so the buffer is frozen rather than editable one way.
         preedit.set_enabled(true);
-        preedit.handle_event(&Event::KeyPress { key: 67, modifiers: 0 }); // 'C'
+        preedit.handle_event(&Event::TextInput { text: "C".to_string() });
         assert_eq!(preedit.text(), "AC");
         preedit.set_enabled(false);
         preedit.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // backspace

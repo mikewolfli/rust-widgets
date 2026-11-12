@@ -4,6 +4,7 @@
 //! Breadcrumb navigation widget.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -867,14 +868,14 @@ impl EventHandler for Breadcrumb {
         if self.editing {
             match event {
                 Event::KeyPress { key, .. } => match *key {
-                    8 => self.backspace_at_caret(),
-                    46 => self.delete_at_caret(),
-                    13 => self.commit_path_edit(),
-                    27 => self.cancel_path_edit(),
-                    37 => self.move_caret_by(-1),
-                    39 => self.move_caret_by(1),
-                    36 => self.set_caret_pos(0),
-                    35 => self.set_caret_pos(self.edit_buffer.chars().count()),
+                    key_codes::BACKSPACE => self.backspace_at_caret(),
+                    key_codes::DELETE => self.delete_at_caret(),
+                    key_codes::ENTER => self.commit_path_edit(),
+                    key_codes::ESCAPE => self.cancel_path_edit(),
+                    key_codes::LEFT => self.move_caret_by(-1),
+                    key_codes::RIGHT => self.move_caret_by(1),
+                    key_codes::HOME => self.set_caret_pos(0),
+                    key_codes::END => self.set_caret_pos(self.edit_buffer.chars().count()),
                     _ => {}
                 },
                 // Text arrives after the key arm so Enter/Escape are not also inserted. The
@@ -926,14 +927,17 @@ impl EventHandler for Breadcrumb {
             // `Widget::context_menu_event`; emitting in both places sent every right-click to the
             // host twice. The hook is the single emitter.
             Event::KeyPress { key, modifiers } => match *key {
-                27 if self.overflow_open => self.close_overflow(),
-                37 => self.move_selection(-1),
-                39 => self.move_selection(1),
-                13 => {
+                key_codes::ESCAPE if self.overflow_open => self.close_overflow(),
+                key_codes::LEFT => self.move_selection(-1),
+                key_codes::RIGHT => self.move_selection(1),
+                key_codes::ENTER => {
                     let _ = self.activate_selected();
                 }
-                113 | 2 => self.set_editing(true),
-                27 if *modifiers == 0 => self.set_editing(false),
+                // F2 starts editing. The old `113 | 2` spelling was the Win32 `VK_F2` value plus
+                // a code `Key::from_key_code` does not define (no backend produces it), so the
+                // Windows backend now normalises function keys and this arm names the constant.
+                key_codes::F2 => self.set_editing(true),
+                key_codes::ESCAPE if *modifiers == 0 => self.set_editing(false),
                 _ => { /* Other keys are not relevant */ }
             },
             _ => { /* Other events are not relevant */ }

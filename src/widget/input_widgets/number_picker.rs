@@ -25,6 +25,7 @@
 use core::fmt::Write as _;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -725,7 +726,7 @@ impl EventHandler for NumberPicker {
                     //
                     // The characters themselves arrive as `Event::TextInput` below (W4-01); this
                     // key path owns only the non-text keys.
-                    8 if self.entering => {
+                    key_codes::BACKSPACE if self.entering => {
                         self.entry_buffer.pop();
                         if self.entry_buffer.is_empty() {
                             self.entering = false;

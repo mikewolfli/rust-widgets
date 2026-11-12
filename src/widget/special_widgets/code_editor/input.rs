@@ -12,6 +12,7 @@ use super::editor::CodeEditor;
 use super::grid::LineGrid;
 use super::types::{Cursor, FindBarAction, TextPosition, MIN_TOUCH_TARGET};
 use crate::core::Point;
+use crate::event::key_codes;
 use crate::widget::Widget;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -124,13 +125,13 @@ impl CodeEditor {
         match key {
             // Word-wise movement and selection (Zed/VS Code bindings) must be
             // matched before the plain arrow arms or they become unreachable.
-            37 if ctrl_chord => self.move_word(-1, shift),
-            39 if ctrl_chord => self.move_word(1, shift),
+            key_codes::LEFT if ctrl_chord => self.move_word(-1, shift),
+            key_codes::RIGHT if ctrl_chord => self.move_word(1, shift),
             // Multi-cursor carets: Control+Alt+Up/Down, the VS Code gesture.
-            38 if ctrl && alt => {
+            key_codes::UP if ctrl && alt => {
                 self.add_cursor_above();
             }
-            40 if ctrl && alt => {
+            key_codes::DOWN if ctrl && alt => {
                 self.add_cursor_below();
             }
             // Moving the caret line is Alt+Up/Down, as in every mainstream editor.
@@ -300,15 +301,15 @@ impl CodeEditor {
     /// Handles a key while the context menu is open. `Some(())` means consumed.
     fn handle_menu_key(&mut self, key: u32, ctrl: bool) -> Option<()> {
         match key {
-            38 => {
+            key_codes::UP => {
                 self.move_menu_selection(-1);
                 Some(())
             }
-            40 => {
+            key_codes::DOWN => {
                 self.move_menu_selection(1);
                 Some(())
             }
-            27 | 0x84 => {
+            key_codes::ESCAPE | 0x84 => {
                 self.close_context_menu();
                 Some(())
             }
@@ -327,15 +328,15 @@ impl CodeEditor {
     /// Handles a key while the completion popup is open.
     fn handle_completion_key(&mut self, key: u32) -> Option<()> {
         match key {
-            38 | 33 => {
+            key_codes::UP | key_codes::PAGE_UP => {
                 self.move_completion_selection(-1);
                 Some(())
             }
-            40 | 34 => {
+            key_codes::DOWN | key_codes::PAGE_DOWN => {
                 self.move_completion_selection(1);
                 Some(())
             }
-            13 | 9 => {
+            key_codes::ENTER | key_codes::TAB => {
                 self.accept_completion();
                 Some(())
             }
@@ -350,7 +351,7 @@ impl CodeEditor {
     /// Handles a key while the find bar owns the keyboard.
     fn handle_find_key(&mut self, key: u32, shift: bool) -> bool {
         match key {
-            13 => {
+            key_codes::ENTER => {
                 if self.goto_mode {
                     self.commit_goto();
                 } else {
@@ -358,7 +359,7 @@ impl CodeEditor {
                 }
                 true
             }
-            8 => {
+            key_codes::BACKSPACE => {
                 self.backspace_find_query();
                 true
             }

@@ -20,6 +20,21 @@ mod windows_backend {
         assert_eq!(kind, Some(WidgetTriggerKind::Clicked));
     }
     #[test]
+    fn function_keys_are_normalised_to_the_framework_range() {
+        use crate::event::key_codes;
+        use crate::platform::windows::framework_key;
+
+        // `VK_F1`..`VK_F12` are `0x70..=0x7B`; the framework reserves `112..=123` for
+        // lowercase `p`..`z`, so forwarding the raw value made F-keys match letters.
+        assert_eq!(framework_key(0x70), key_codes::F1);
+        assert_eq!(framework_key(0x71), key_codes::F2);
+        assert_eq!(framework_key(0x7B), key_codes::F12);
+        // Everything else already agrees with the framework convention.
+        assert_eq!(framework_key(0x41), 0x41, "a letter keeps its ASCII code");
+        assert_eq!(framework_key(0x25), key_codes::LEFT, "an arrow keeps its code");
+        assert_eq!(framework_key(0x0D), key_codes::ENTER);
+    }
+    #[test]
     fn control_notify_mapping_line_edit_change_routes_value_changed() {
         let kind = control_notify_kind_for_widget(WindowsHandleKind::LineEdit, 0x0300);
         assert_eq!(kind, Some(WidgetTriggerKind::ValueChanged));

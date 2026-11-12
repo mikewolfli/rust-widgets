@@ -797,6 +797,34 @@ impl Dropdown {
         prefix_row(&self.labels, prefix, start, |index| self.is_item_enabled(index))
     }
 
+    /// Extends the open list's first-letter selection with one committed character.
+    ///
+    /// The character comes from `Event::TextInput`/`Event::ImeCommit`, the only delivery path
+    /// every backend uses for typing (W4-01). Reading a printable key code instead only worked
+    /// for letters on Windows, whose virtual-key code happens to equal the upper-case ASCII
+    /// value; macOS and Linux never deliver a `KeyPress` for a printable character at all.
+    fn type_ahead_push(&mut self, ch: char) {
+        if ch.is_control() {
+            return;
+        }
+        // A prefix older than the shared timeout no longer describes what the user is typing,
+        // so it is dropped before this key extends it (I-P06). Clearing queues no frame.
+        let now = Instant::now();
+        let expired = self.type_ahead_started.is_none_or(|started| {
+            now.duration_since(started).as_millis()
+                > u128::from(crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS)
+        });
+        if expired {
+            self.type_ahead.clear();
+        }
+        self.type_ahead_started = Some(now);
+        self.type_ahead.push(ch);
+        let start = (self.selected_index + 1).min(self.items.len());
+        if let Some(index) = self.find_prefix(&self.type_ahead, start) {
+            self.move_highlight(index);
+        }
+    }
+
     /// The nearest enabled row before or after `from`, or `None` when there is none.
     fn neighbour_enabled(&self, from: usize, forward: bool) -> Option<usize> {
         neighbour_row(self.items.len(), from, forward, |index| self.is_item_enabled(index))
@@ -1168,32 +1196,16 @@ impl EventHandler for Dropdown {
                         }
                         self.set_expanded(false);
                     }
-                    key_codes::SPACE..=126 => {
-                        // First-letter selection, wrapping from the current row.
-                        if let Some(ch) = char::from_u32(*key) {
-                            // A prefix older than the shared timeout no longer describes what the
-                            // user is typing, so it is dropped before this key extends it — the
-                            // stale buffer used to intercept the first letter of the next search
-                            // forever (I-P06). Clearing queues no frame by itself.
-                            let now = Instant::now();
-                            let expired = self.type_ahead_started.is_none_or(|started| {
-                                now.duration_since(started).as_millis()
-                                    > u128::from(
-                                        crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
-                                    )
-                            });
-                            if expired {
-                                self.type_ahead.clear();
-                            }
-                            self.type_ahead_started = Some(now);
-                            self.type_ahead.push(ch);
-                            let start = (self.selected_index + 1).min(self.items.len());
-                            if let Some(index) = self.find_prefix(&self.type_ahead, start) {
-                                self.move_highlight(index);
-                            }
-                        }
-                    }
+                    // Printable characters arrive as `Event::TextInput`/`ImeCommit` and drive
+                    // the type-ahead arm below (W4-01); a raw key code is not a character.
                     _ => {}
+                }
+            }
+            // Typing, from the one path every backend uses (W4-01). An open dropdown turns a
+            // committed character into a first-letter search among its rows.
+            Event::TextInput { text } | Event::ImeCommit { text } if self.expanded => {
+                for ch in text.chars() {
+                    self.type_ahead_push(ch);
                 }
             }
             Event::Wheel { delta, modifiers } => {
@@ -1873,9 +1885,10 @@ mod tests {
         assert_eq!(dropdown.highlighted_index(), Some(9));
         assert_eq!(dropdown.scroll_offset(), 7, "the mark is kept visible");
 
-        // Type-ahead wraps and marks the first matching label.
-        dropdown.handle_event(&Event::KeyPress { key: 73, modifiers: 0 }); // 'I'
-        dropdown.handle_event(&Event::KeyPress { key: 116, modifiers: 0 }); // 't'
+        // Type-ahead wraps and marks the first matching label (W4-01: typed text arrives as
+        // `TextInput`, not as a printable key code).
+        dropdown.handle_event(&Event::TextInput { text: "I".to_string() });
+        dropdown.handle_event(&Event::TextInput { text: "t".to_string() });
         assert_eq!(dropdown.highlighted_index(), Some(1));
 
         // Enter is what commits the mark.

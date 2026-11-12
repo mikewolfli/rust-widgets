@@ -7,6 +7,7 @@ use super::model::*;
 
 use crate::core::{Point, Size};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::platform::EchoMode;
 
@@ -214,15 +215,15 @@ impl LineEdit {
         let primary = crate::shortcut::event_carries_primary(modifiers);
         let modifiers = crate::shortcut::Modifiers::from_event_bits(modifiers);
         match key {
-            8 => {
+            key_codes::BACKSPACE => {
                 // Backspace
                 self.backspace();
             }
-            46 => {
+            key_codes::DELETE => {
                 // Delete
                 self.delete();
             }
-            13 => {
+            key_codes::ENTER => {
                 // Enter/Return
                 self.return_pressed.emit();
                 self.editing_finished.emit();

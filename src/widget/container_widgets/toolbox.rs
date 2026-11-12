@@ -3,6 +3,7 @@
 
 //! Tool box widget.
 use crate::core::{Color, HorizontalAlignment, ObjectId, Orientation, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1324,7 +1325,8 @@ impl EventHandler for ToolBox {
                 // keyboard cannot select a page whose tab is nowhere on screen.
                 let next = match (self.orientation, key) {
                     // Vertical: Up/Down; Horizontal: Left/Right
-                    (Orientation::Vertical, 38) | (Orientation::Horizontal, 37) => {
+                    (Orientation::Vertical, &key_codes::UP)
+                    | (Orientation::Horizontal, &key_codes::LEFT) => {
                         // Up/Left
                         if self.current_index > 0 {
                             Some(self.current_index - 1)
@@ -1332,7 +1334,8 @@ impl EventHandler for ToolBox {
                             None
                         }
                     }
-                    (Orientation::Vertical, 40) | (Orientation::Horizontal, 39) => {
+                    (Orientation::Vertical, &key_codes::DOWN)
+                    | (Orientation::Horizontal, &key_codes::RIGHT) => {
                         // Down/Right
                         let next = self.current_index + 1;
                         if next < self.items.len() {

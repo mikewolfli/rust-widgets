@@ -4,6 +4,7 @@
 //! VirtualTable pointer/keyboard handling.
 
 use super::*;
+use crate::event::key_codes;
 
 impl EventHandler for VirtualTable {
     fn handle_event(&mut self, event: &Event) {
@@ -86,10 +87,10 @@ impl EventHandler for VirtualTable {
                 let page = page_rows.max(1) as isize;
                 let last = self.row_count().saturating_sub(1) as isize;
                 match *key {
-                    37 => self.move_current_cell(0, -1, *modifiers),
-                    39 => self.move_current_cell(0, 1, *modifiers),
-                    38 => self.move_current_cell(-1, 0, *modifiers),
-                    40 => self.move_current_cell(1, 0, *modifiers),
+                    key_codes::LEFT => self.move_current_cell(0, -1, *modifiers),
+                    key_codes::RIGHT => self.move_current_cell(0, 1, *modifiers),
+                    key_codes::UP => self.move_current_cell(-1, 0, *modifiers),
+                    key_codes::DOWN => self.move_current_cell(1, 0, *modifiers),
                     crate::event::key_codes::PAGE_UP => {
                         self.move_current_cell(-page, 0, *modifiers)
                     }

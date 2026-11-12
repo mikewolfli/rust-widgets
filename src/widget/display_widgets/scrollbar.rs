@@ -4,6 +4,7 @@
 //! Scroll bar widget.
 use crate::compat::ToString;
 use crate::core::{Color, Orientation, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -1328,11 +1329,11 @@ impl EventHandler for ScrollBar {
             // embedded in a page must not consume the arrows of whatever the user is editing.
             Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
                 match *key {
-                    37 => {
+                    key_codes::LEFT => {
                         // Left arrow (or up arrow for vertical)
                         self.trigger_action(ScrollBarAction::LineUp);
                     }
-                    38 => {
+                    key_codes::UP => {
                         // Up arrow (or right arrow for horizontal)
                         if self.orientation == Orientation::Vertical {
                             self.trigger_action(ScrollBarAction::LineUp);

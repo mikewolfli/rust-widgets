@@ -9,6 +9,7 @@
 //! organizing shortcuts by category.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::{Key, Modifiers, PlatformShortcutStyle, Shortcut};
@@ -1264,7 +1265,7 @@ impl EventHandler for ShortcutEditor {
                 // I-112: a focused filter bar consumes printable input and Backspace.
                 if self.filter_focused && !self.is_capturing() {
                     match *key {
-                        8 => {
+                        key_codes::BACKSPACE => {
                             self.filter_text.pop();
                             // A new filter starts at the top of its own result set (I-112),
                             // the rule `set_filter` applies; editing the buffer directly left
@@ -1272,7 +1273,7 @@ impl EventHandler for ShortcutEditor {
                             self.scroll_offset = 0;
                             self.base.request_redraw();
                         }
-                        27 => {
+                        key_codes::ESCAPE => {
                             self.filter_focused = false;
                             self.base.request_redraw();
                         }
@@ -1290,16 +1291,16 @@ impl EventHandler for ShortcutEditor {
                 // Losing focus does **not** commit: the default rolls the unconfirmed recording
                 // back, so a binding only changes when the user confirms it (I-028).
                 if self.is_capturing() {
-                    if *key == 27 {
+                    if *key == key_codes::ESCAPE {
                         self.cancel_capture();
                         return;
                     }
-                    if *key == 8 {
+                    if *key == key_codes::BACKSPACE {
                         self.capture_keys.clear();
                         self.base.request_redraw();
                         return;
                     }
-                    if *key == 13
+                    if *key == key_codes::ENTER
                         && (mods.contains(crate::shortcut::Modifiers::CTRL)
                             || mods.contains(crate::shortcut::Modifiers::PRIMARY))
                     {

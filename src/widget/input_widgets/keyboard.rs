@@ -1021,7 +1021,9 @@ impl EventHandler for Keyboard {
                         if at != held {
                             self.pressed_key = Some(at);
                             if let Some(key) = self.keys.get(at.0).and_then(|row| row.get(at.1)) {
-                                if key.key_code != NO_KEY && key.key_code != 8 && key.key_code != 13
+                                if key.key_code != NO_KEY
+                                    && key.key_code != key_codes::BACKSPACE
+                                    && key.key_code != key_codes::ENTER
                                 {
                                     self.swipe_text.push_str(&key.label);
                                 }

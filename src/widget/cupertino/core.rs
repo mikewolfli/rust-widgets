@@ -11,6 +11,7 @@
 use crate::core::HorizontalAlignment;
 use crate::core::Point;
 use crate::core::{Color, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -624,11 +625,11 @@ impl EventHandler for CupertinoAlertDialog {
             // A modal dialog's keyboard path: Enter confirms, Escape cancels when there is a
             // cancel action (MW-12).
             Event::KeyPress { key, .. } => match *key {
-                13 | 10 => {
+                key_codes::ENTER | key_codes::LINE_FEED => {
                     self.confirmed.emit();
                     self.base.request_redraw();
                 }
-                27 if !self.cancel_text.is_empty() => {
+                key_codes::ESCAPE if !self.cancel_text.is_empty() => {
                     self.canceled.emit();
                     self.base.request_redraw();
                 }

@@ -17,6 +17,7 @@
 
 use crate::compat::{Box, MiniToString, Rc, RefCell, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -1752,15 +1753,15 @@ impl EventHandler for MaskedEdit {
                     return;
                 }
                 match *key {
-                    8 => {
+                    key_codes::BACKSPACE => {
                         // Backspace — the character behind the caret, or the whole selection.
                         self.backspace();
                     }
-                    127 => {
+                    key_codes::DELETE_ASCII => {
                         // Delete — the character at the caret, or the whole selection.
                         self.delete();
                     }
-                    13 => {
+                    key_codes::ENTER => {
                         // Enter commits the value and ends the edit. The mask has nothing left
                         // to resolve, but the two signals are the commit's observable form.
                         self.return_pressed.emit();

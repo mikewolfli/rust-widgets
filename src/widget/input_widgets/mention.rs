@@ -38,6 +38,7 @@
 //! `create_mention` on `ControlBackend`.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -1701,18 +1702,18 @@ impl EventHandler for Mention {
                     return;
                 }
                 match *key {
-                    8 => {
+                    key_codes::BACKSPACE => {
                         self.backspace();
                     }
-                    37 => self.move_caret_left(),
-                    39 => self.move_caret_right(),
+                    key_codes::LEFT => self.move_caret_left(),
+                    key_codes::RIGHT => self.move_caret_right(),
                     // I-101: Home/End reach the ends of the single-line value.
-                    36 => {
+                    key_codes::HOME => {
                         self.caret = 0;
                         self.refresh();
                         self.base.request_redraw();
                     }
-                    35 => {
+                    key_codes::END => {
                         self.caret = self.text.len();
                         self.refresh();
                         self.base.request_redraw();

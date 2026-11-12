@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::core::{Point, Rect};
+use crate::event::key_codes;
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::shortcut::Key;
@@ -470,7 +471,7 @@ impl MarkdownEditor {
             _ if primary_shift_shortcut(key, modifiers, Key::Z) => {
                 let _ = self.redo();
             }
-            9 => {
+            key_codes::TAB => {
                 // Tab indents; Shift+Tab outdents. With no selection the caret gains one indent
                 // level, which is what markdown's nested lists and code blocks need.
                 if shift {

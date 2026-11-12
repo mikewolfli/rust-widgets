@@ -14,6 +14,7 @@
 
 use crate::compat::Rc;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 
 use crate::signal::{GenericSignal, Signal1};
@@ -1324,6 +1325,40 @@ use crate::render::RenderContext;
 use crate::widget::Draw;
 
 impl FontComboBox {
+    /// Extends the first-letter type-ahead with one committed character.
+    ///
+    /// The character comes from `Event::TextInput`/`Event::ImeCommit`, the only delivery
+    /// path every backend uses for a typed character (W4-01). Reading a printable key code
+    /// instead only worked on Windows for letters, whose virtual-key code happens to equal
+    /// the upper-case ASCII value; digits and punctuation could never match a family name.
+    fn type_ahead_push(&mut self, ch: char) {
+        // A prefix older than the shared timeout no longer describes what the user is
+        // typing, so it is dropped before this key extends it (I-P06). Clearing queues no
+        // frame by itself.
+        let now = crate::compat::Instant::now();
+        let expired = self.type_ahead_started.is_none_or(|started| {
+            now.duration_since(started).as_millis()
+                > u128::from(crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS)
+        });
+        if expired {
+            self.type_ahead.clear();
+        }
+        self.type_ahead_started = Some(now);
+        self.type_ahead.push(ch);
+        // Folded once per key and compared byte-wise per row (I-P05).
+        let prefix = crate::widget::input_widgets::text_match::fold(&self.type_ahead);
+        let start = self.current_index.max(-1) as usize + 1;
+        if let Some((offset, _)) =
+            self.visible_fonts.iter().enumerate().skip(start).find(|(_, name)| {
+                crate::widget::input_widgets::text_match::starts_with(name, &prefix)
+            })
+        {
+            if let Some(original) = self.original_index_at(offset) {
+                self.set_current_index(original as i32);
+            }
+        }
+    }
+
     /// Resolves a press at `pos`: the field opens the list, a popup row commits that row, and
     /// a press outside both dismisses.
     fn press_at(&mut self, pos: Point) {
@@ -1369,6 +1404,14 @@ impl EventHandler for FontComboBox {
             Event::TextInput { text } | Event::ImeCommit { text } if self.editable => {
                 self.edit_insert(text);
             }
+            // A non-editable combo has no insertion point, so committed text drives the
+            // first-letter type-ahead instead. This is the same character path the editable
+            // arm above uses; both read `TextInput`/`ImeCommit` rather than a key code (W4-01).
+            Event::TextInput { text } | Event::ImeCommit { text } if !self.editable => {
+                for ch in text.chars().filter(|ch| !ch.is_control()) {
+                    self.type_ahead_push(ch);
+                }
+            }
             Event::KeyPress { key, modifiers } if self.editable => {
                 // Mirrors `EditableComboBox`'s key convention: 8 is backspace, 127 forward
                 // delete, 13 Enter, 27 Escape, the caret keys move the insertion point (Shift
@@ -1376,16 +1419,16 @@ impl EventHandler for FontComboBox {
                 let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT);
                 match *key {
-                    8 => self.edit_backspace(),
-                    127 => self.edit_delete_forward(),
-                    37 => self.edit_move_caret(-1, shift),
-                    39 => self.edit_move_caret(1, shift),
-                    36 => self.edit_set_caret(0, shift),
-                    35 => self.edit_set_caret(usize::MAX, shift),
-                    13 => {
+                    key_codes::BACKSPACE => self.edit_backspace(),
+                    key_codes::DELETE_ASCII => self.edit_delete_forward(),
+                    key_codes::LEFT => self.edit_move_caret(-1, shift),
+                    key_codes::RIGHT => self.edit_move_caret(1, shift),
+                    key_codes::HOME => self.edit_set_caret(0, shift),
+                    key_codes::END => self.edit_set_caret(usize::MAX, shift),
+                    key_codes::ENTER => {
                         self.commit_edit();
                     }
-                    27 => {
+                    key_codes::ESCAPE => {
                         // Escape discards the edit rather than committing it, which is
                         // the only difference between the two exit paths and therefore
                         // the whole reason both exist.
@@ -1415,49 +1458,15 @@ impl EventHandler for FontComboBox {
                 let count = self.visible_fonts.len() as isize;
                 let row = self.visible_row_of_current();
                 match *key {
-                    38 => self.move_to_visible_row(row - 1),
-                    40 => self.move_to_visible_row(row + 1),
-                    33 => self.move_to_visible_row(row - page),
-                    34 => self.move_to_visible_row(row + page),
-                    36 => self.move_to_visible_row(0),
-                    35 => self.move_to_visible_row(count - 1),
-                    27 => self.hide_popup(),
-                    32..=126 => {
-                        if let Some(ch) = char::from_u32(*key) {
-                            // A prefix older than the shared timeout no longer describes what
-                            // the user is typing, so it is dropped before this key extends it
-                            // (I-P06). Clearing queues no frame by itself.
-                            let now = crate::compat::Instant::now();
-                            let expired = self.type_ahead_started.is_none_or(|started| {
-                                now.duration_since(started).as_millis()
-                                    > u128::from(
-                                        crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
-                                    )
-                            });
-                            if expired {
-                                self.type_ahead.clear();
-                            }
-                            self.type_ahead_started = Some(now);
-                            self.type_ahead.push(ch);
-                            // Folded once per key and compared byte-wise per row (I-P05).
-                            let prefix =
-                                crate::widget::input_widgets::text_match::fold(&self.type_ahead);
-                            let start = self.current_index.max(-1) as usize + 1;
-                            if let Some((offset, _)) =
-                                self.visible_fonts.iter().enumerate().skip(start).find(
-                                    |(_, name)| {
-                                        crate::widget::input_widgets::text_match::starts_with(
-                                            name, &prefix,
-                                        )
-                                    },
-                                )
-                            {
-                                if let Some(original) = self.original_index_at(offset) {
-                                    self.set_current_index(original as i32);
-                                }
-                            }
-                        }
-                    }
+                    key_codes::UP => self.move_to_visible_row(row - 1),
+                    key_codes::DOWN => self.move_to_visible_row(row + 1),
+                    key_codes::PAGE_UP => self.move_to_visible_row(row - page),
+                    key_codes::PAGE_DOWN => self.move_to_visible_row(row + page),
+                    key_codes::HOME => self.move_to_visible_row(0),
+                    key_codes::END => self.move_to_visible_row(count - 1),
+                    key_codes::ESCAPE => self.hide_popup(),
+                    // Printable characters arrive as `Event::TextInput`/`ImeCommit` and are
+                    // handled by the type-ahead arm above (W4-01).
                     _ => {}
                 }
             }

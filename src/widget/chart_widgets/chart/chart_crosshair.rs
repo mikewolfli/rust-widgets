@@ -33,6 +33,7 @@
 //! of its own, which is why it is allowlisted as a passive overlay.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -476,7 +477,7 @@ impl EventHandler for ChartCrosshair {
                     self.hide();
                 }
             }
-            Event::KeyPress { key: 27, .. } => self.hide(),
+            Event::KeyPress { key: key_codes::ESCAPE, .. } => self.hide(),
             _ => {}
         }
     }

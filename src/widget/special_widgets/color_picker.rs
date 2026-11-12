@@ -4,6 +4,7 @@
 //! ColorPicker widget.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -948,12 +949,12 @@ impl EventHandler for ColorPicker {
             Event::KeyPress { key, modifiers } => {
                 if self.hex_editing {
                     match *key {
-                        8 => {
+                        key_codes::BACKSPACE => {
                             self.hex_buffer.pop();
                             self.base.request_redraw();
                         }
-                        13 => self.commit_hex(),
-                        27 => {
+                        key_codes::ENTER => self.commit_hex(),
+                        key_codes::ESCAPE => {
                             self.hex_editing = false;
                             self.base.request_redraw();
                         }

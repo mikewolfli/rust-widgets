@@ -32,6 +32,7 @@
 
 use crate::compat::{String, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
 use crate::impl_widget_property_hooks;
@@ -476,7 +477,7 @@ impl EventHandler for TooltipManager {
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => self.note_pointer(*pos),
             Event::MouseLeave { .. } => self.note_leave(),
-            Event::KeyPress { key: 27, .. } => self.hide(),
+            Event::KeyPress { key: key_codes::ESCAPE, .. } => self.hide(),
             _ => {}
         }
     }

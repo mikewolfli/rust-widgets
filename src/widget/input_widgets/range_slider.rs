@@ -9,6 +9,7 @@
 //! highlighted.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1213,7 +1214,7 @@ impl EventHandler for RangeSlider {
                 // crate, so it is left alone here.
                 if *modifiers == 0 {
                     match *key {
-                        9 => {
+                        key_codes::TAB => {
                             if self.tab_cycle_complete {
                                 // Both handles have been visited; the next Tab belongs to
                                 // the host's focus navigation (I-111).

@@ -4,6 +4,7 @@
 //! Dial (knob) widget.
 use crate::compat::Vec;
 use crate::core::{Color, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -665,12 +666,12 @@ impl EventHandler for Dial {
             // Keyboard stepping is reachable only while the dial holds focus: a dial
             // embedded in a page must not consume the arrows of whatever the user is editing.
             Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
-                37 | 40 => self.set_value(self.value - self.single_step), // Left/Down
-                38 | 39 => self.set_value(self.value + self.single_step), // Up/Right
-                33 => self.set_value(self.value - self.page_step),
-                34 => self.set_value(self.value + self.page_step),
-                36 => self.set_value(self.minimum),
-                35 => self.set_value(self.maximum),
+                key_codes::LEFT | key_codes::DOWN => self.set_value(self.value - self.single_step), // Left/Down
+                key_codes::UP | key_codes::RIGHT => self.set_value(self.value + self.single_step), // Up/Right
+                key_codes::PAGE_UP => self.set_value(self.value - self.page_step),
+                key_codes::PAGE_DOWN => self.set_value(self.value + self.page_step),
+                key_codes::HOME => self.set_value(self.minimum),
+                key_codes::END => self.set_value(self.maximum),
                 // Unknown key; ignore
                 _ => {}
             },

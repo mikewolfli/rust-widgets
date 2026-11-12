@@ -2,6 +2,7 @@
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
 use crate::impl_widget_property_hooks;
@@ -247,7 +248,7 @@ impl EventHandler for FilterRow {
                     return;
                 };
                 match *key {
-                    8 => {
+                    key_codes::BACKSPACE => {
                         if let Some(editor) = self.editors.get_mut(column) {
                             editor.pop();
                         }
@@ -257,8 +258,8 @@ impl EventHandler for FilterRow {
                             self.base.request_redraw();
                         }
                     }
-                    13 => self.commit_column(column),
-                    27 => {
+                    key_codes::ENTER => self.commit_column(column),
+                    key_codes::ESCAPE => {
                         if let Some(editor) = self.editors.get_mut(column) {
                             editor.clear();
                         }

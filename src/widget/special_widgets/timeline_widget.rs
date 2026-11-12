@@ -4,6 +4,7 @@
 //! TimelineWidget for basic time-range visualization.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1153,11 +1154,11 @@ impl EventHandler for TimelineWidget {
             // is editing.
             Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
                 match *key {
-                    38 => {
+                    key_codes::UP => {
                         let next = self.selected_index.map_or(0, |index| index.saturating_sub(1));
                         let _ = self.select_index(next);
                     }
-                    40 => {
+                    key_codes::DOWN => {
                         if !self.items.is_empty() {
                             let next = self
                                 .selected_index

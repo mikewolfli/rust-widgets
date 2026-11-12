@@ -1142,7 +1142,7 @@ unsafe fn forward_key(hwnd: HWND, wparam: WPARAM) {
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
     };
-    let key = wparam as u32;
+    let key = super::framework_key(wparam as u32);
     const VK_TAB: u32 = 0x09;
     const WIDGET_SHIFT: u32 = 1;
     if key == VK_TAB {
@@ -1178,7 +1178,10 @@ unsafe fn forward_key_release(hwnd: HWND, wparam: WPARAM) {
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
     };
-    let event = Event::KeyRelease { key: wparam as u32, modifiers: current_modifiers() };
+    let event = Event::KeyRelease {
+        key: super::framework_key(wparam as u32),
+        modifiers: current_modifiers(),
+    };
     let target = key_target_for_id(widget_id);
     if crate::widget::runtime::dispatch_event(target, &event) {
         invalidate_canvas(hwnd);

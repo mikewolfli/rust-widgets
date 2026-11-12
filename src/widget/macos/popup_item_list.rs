@@ -11,6 +11,7 @@
 //! [`WidgetKind::PopupWindow`].
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -285,7 +286,7 @@ impl EventHandler for PopupItemList {
                     }
                 }
             }
-            Event::KeyPress { key: 27, .. } => self.dismiss(),
+            Event::KeyPress { key: key_codes::ESCAPE, .. } => self.dismiss(),
             _ => {}
         }
     }

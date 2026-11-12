@@ -54,6 +54,12 @@ pub const BACKSPACE: u32 = 8;
 /// The Delete (forward-delete) key.
 pub const DELETE: u32 = 46;
 
+/// The Insert key.
+///
+/// Present for the same reason the other named keys are: a control that branches on it must be
+/// able to say what `45` means (W4-11).
+pub const INSERT: u32 = 45;
+
 /// The ASCII DEL code, the other spelling of [`DELETE`] some hosts deliver.
 ///
 /// [`crate::shortcut::Key::from_key_code`] folds both `46` and `127` to `Key::Delete`. A handler
@@ -185,6 +191,7 @@ mod tests {
             (PAGE_UP, Key::PageUp),
             (PAGE_DOWN, Key::PageDown),
             (DELETE, Key::Delete),
+            (INSERT, Key::Insert),
             (F, Key::F),
             (F1, Key::F1),
             (F2, Key::F2),

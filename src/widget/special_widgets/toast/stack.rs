@@ -5,6 +5,7 @@
 
 use super::item::{ToastItem, ToastLevel};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -959,14 +960,14 @@ impl EventHandler for ToastStack {
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
-                38 => {
+                key_codes::UP => {
                     if let Some(index) = self.selected_index {
                         if index > 0 {
                             let _ = self.select_index(index - 1);
                         }
                     }
                 }
-                40 => {
+                key_codes::DOWN => {
                     if let Some(index) = self.selected_index {
                         if index + 1 < self.toasts.len() {
                             let _ = self.select_index(index + 1);

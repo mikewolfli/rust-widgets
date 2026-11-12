@@ -4,6 +4,7 @@
 //! NotificationCenter widget.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1156,12 +1157,12 @@ impl EventHandler for NotificationCenter {
             // embedded in a page must not consume the arrows of whatever the user is editing.
             Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
                 match *key {
-                    38 => self.move_selection_by(-1),
-                    40 => self.move_selection_by(1),
-                    13 => {
+                    key_codes::UP => self.move_selection_by(-1),
+                    key_codes::DOWN => self.move_selection_by(1),
+                    key_codes::ENTER => {
                         let _ = self.activate_selected();
                     }
-                    46 => {
+                    key_codes::DELETE => {
                         if let Some(id) = self.selected_id().map(str::to_owned) {
                             let _ = self.remove(&id);
                         }
