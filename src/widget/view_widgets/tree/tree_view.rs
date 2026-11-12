@@ -4534,7 +4534,7 @@ mod tests {
     fn an_attached_tree_find_bar_moves_the_selection() {
         let mut view = TreeView::new(Rect::new(0, 0, 200, 200));
         view.set_model(Arc::new(StaticTreeModel));
-        let mut bar = crate::widget::companions::TreeFindBar::new(Rect::new(0, 0, 200, 28));
+        let bar = crate::widget::companions::TreeFindBar::new(Rect::new(0, 0, 200, 28));
         view.attach_tree_find_bar(&bar);
         assert!(view.is_tree_find_bar_attached());
 

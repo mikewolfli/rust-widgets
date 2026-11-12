@@ -9,13 +9,14 @@
 //! including strikeout and font family/size overrides. `textedit::CharFormat` is the plain-text
 //! editor's smaller set, and `render::rich_text::TextSpan` is a paint-time text/style pair. The
 //! three describe different roles, not duplicate definitions (principles #49 and #51).
+use crate::compat::{lock, Arc, Mutex};
 use crate::core::{Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::wheel::WheelScroll;
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::capability::coercion::{expect_bool, expect_selection_range, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -348,7 +349,36 @@ pub struct RichEdit {
     /// text the user has not committed would make a host validate a half-typed phrase. Keeping
     /// the composition beside the value, and painting it inline, is what makes CJK input legible
     /// without pretending the value changed (IN2-04).
+    /// The attached shared find/replace strip, when a host bound one (W5-12).
+    find_replace_bar: Option<FindReplaceBinding>,
     composition: Option<String>,
+}
+
+/// The shared slot and subscriptions an attached `FindReplaceBar` reports through.
+///
+/// The bar owns no document, so its four intents are queued here and applied by
+/// [`RichEdit::poll_find_replace_bar`]; the context and counters are the bar's own handles, so the
+/// editor never holds a stale copy (W5-12, the same shape `TextEdit` uses).
+struct FindReplaceBinding {
+    /// The intents reported since the last poll.
+    intents: Arc<Mutex<Vec<FindRequest>>>,
+    /// `(query, replacement, match_case, use_regex)` as last written by the bar.
+    context: Arc<Mutex<(String, String, bool, bool)>>,
+    /// `(total, current)` match counters written back to the bar.
+    matches: Arc<Mutex<(usize, usize)>>,
+    /// The bar's paint request, emitted after a counter write.
+    redraw: GenericSignal,
+    /// The subscriptions, dropped with the binding so a detach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// One intent reported by an attached `FindReplaceBar` and not yet applied.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FindRequest {
+    Next,
+    Previous,
+    ReplaceOne,
+    ReplaceAll,
 }
 
 struct VisualRowsCache {
@@ -364,6 +394,32 @@ struct FormatRunsCache {
     revision: u64,
     spans_revision: u64,
     runs: Rc<Vec<(usize, usize, CharFormat)>>,
+}
+
+/// The end offset of a literal match of `query` starting at `start`, or `None`.
+///
+/// A character-wise comparison keeps the answer on a character boundary for multi-byte text. Case
+/// folding is per character, which is the honest limit without the Unicode multi-character tables.
+#[cfg(full_widgets)]
+fn match_query_at(haystack: &str, start: usize, query: &str, match_case: bool) -> Option<usize> {
+    if !haystack.is_char_boundary(start) {
+        return None;
+    }
+    let mut consumed = start;
+    let mut chars = haystack[start..].chars();
+    for wanted in query.chars() {
+        let found = chars.next()?;
+        let same = if match_case {
+            found == wanted
+        } else {
+            found == wanted || found.to_lowercase().eq(wanted.to_lowercase())
+        };
+        if !same {
+            return None;
+        }
+        consumed += found.len_utf8();
+    }
+    Some(consumed)
 }
 impl RichEdit {
     /// Creates an empty rich editor.
@@ -403,6 +459,7 @@ impl RichEdit {
             format_toolbar: None,
             cursor_blink: crate::style::CursorBlink::new(),
             composition: None,
+            find_replace_bar: None,
         }
     }
 
@@ -1182,6 +1239,246 @@ impl RichEdit {
         self.selection_changed.emit(self.selection);
         self.base.request_redraw();
     }
+
+    // ── FindReplaceBar wiring (W5-12) ──
+
+    /// Attaches the shared find/replace strip to this editor.
+    ///
+    /// Rich text was the one long-document editor with no find surface: `TextEdit` and `TextArea`
+    /// both consume this bar, and a rich document needs the same strip. The four intents are
+    /// queued and applied by [`Self::poll_find_replace_bar`], so a strip click reaches the
+    /// document on the next frame. Attaching replaces any previous bar.
+    ///
+    /// Matching is **literal**: the crate has no regular-expression engine, so the bar's
+    /// `use_regex` flag is a host concern (the same boundary `TextEdit` documents).
+    /// `match_case` is honoured.
+    #[cfg(full_widgets)]
+    pub fn attach_find_replace_bar(&mut self, bar: &crate::widget::companions::FindReplaceBar) {
+        let intents = Arc::new(Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        let sink = Arc::clone(&intents);
+        let request_redraw = redraw.clone();
+        bar.find_next.connect_scoped(&scope, move || {
+            lock(&sink).push(FindRequest::Next);
+            request_redraw.emit();
+        });
+        let sink = Arc::clone(&intents);
+        let request_redraw = redraw.clone();
+        bar.find_previous.connect_scoped(&scope, move || {
+            lock(&sink).push(FindRequest::Previous);
+            request_redraw.emit();
+        });
+        let sink = Arc::clone(&intents);
+        let request_redraw = redraw.clone();
+        bar.replace_one.connect_scoped(&scope, move || {
+            lock(&sink).push(FindRequest::ReplaceOne);
+            request_redraw.emit();
+        });
+        let sink = Arc::clone(&intents);
+        bar.replace_all.connect_scoped(&scope, move || {
+            lock(&sink).push(FindRequest::ReplaceAll);
+            redraw.emit();
+        });
+
+        let (matches, bar_redraw) = bar.match_counts_handle();
+        self.find_replace_bar = Some(FindReplaceBinding {
+            intents,
+            context: bar.context_handle(),
+            matches,
+            redraw: bar_redraw,
+            _scope: scope,
+        });
+        // Adopt the bar's current query now, so its counter starts in step with the document.
+        let (query, _replacement, match_case, _use_regex) = self.find_replace_context();
+        self.report_find_replace_matches(&query, match_case);
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached find/replace bar; the last reported counts stay.
+    #[cfg(full_widgets)]
+    pub fn detach_find_replace_bar(&mut self) {
+        if self.find_replace_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`crate::widget::companions::FindReplaceBar`] is attached.
+    #[cfg(full_widgets)]
+    pub fn is_find_replace_bar_attached(&self) -> bool {
+        self.find_replace_bar.is_some()
+    }
+
+    /// Applies every find/replace intent reported since the last poll.
+    ///
+    /// Called from `draw` and `handle_event`, so a strip click reaches the document on the next
+    /// frame or interaction. Returns whether the document or the selection moved.
+    #[cfg(full_widgets)]
+    pub fn poll_find_replace_bar(&mut self) -> bool {
+        let Some(binding) = self.find_replace_bar.as_ref() else {
+            return false;
+        };
+        let intents: Vec<FindRequest> = {
+            let mut guard = lock(&binding.intents);
+            core::mem::take(&mut *guard)
+        };
+        if intents.is_empty() {
+            return false;
+        }
+        let (query, replacement, match_case, _use_regex) = self.find_replace_context();
+        let mut applied = false;
+        for intent in intents {
+            applied |= match intent {
+                FindRequest::Next => self.find_replace_step(&query, match_case, true),
+                FindRequest::Previous => self.find_replace_step(&query, match_case, false),
+                FindRequest::ReplaceOne => self.find_replace_one(&query, &replacement, match_case),
+                FindRequest::ReplaceAll => self.find_replace_all(&query, &replacement, match_case),
+            };
+        }
+        applied
+    }
+
+    /// The attached bar's `(query, replacement, match_case, use_regex)`, or empty defaults.
+    #[cfg(full_widgets)]
+    fn find_replace_context(&self) -> (String, String, bool, bool) {
+        match self.find_replace_bar.as_ref() {
+            Some(binding) => lock(&binding.context).clone(),
+            None => (String::new(), String::new(), false, false),
+        }
+    }
+
+    /// Moves the selection to the next or previous match, wrapping at the document ends.
+    #[cfg(full_widgets)]
+    fn find_replace_step(&mut self, query: &str, match_case: bool, forward: bool) -> bool {
+        if query.is_empty() {
+            self.write_find_replace_counts(0, 0);
+            return false;
+        }
+        let matches = self.find_replace_matches(query, match_case);
+        if matches.is_empty() {
+            self.write_find_replace_counts(0, 0);
+            return false;
+        }
+        let from =
+            self.selection.map(|(start, end)| if forward { end } else { start }).unwrap_or(0);
+        let index = if forward {
+            matches.iter().position(|&(start, _)| start >= from).unwrap_or(0)
+        } else {
+            matches.iter().rposition(|&(_, end)| end <= from).unwrap_or(matches.len() - 1)
+        };
+        let (start, end) = matches[index];
+        self.set_selection(start, end);
+        self.write_find_replace_counts(matches.len(), index);
+        true
+    }
+
+    /// Replaces the current match, or the next one when the selection is not a match.
+    #[cfg(full_widgets)]
+    fn find_replace_one(&mut self, query: &str, replacement: &str, match_case: bool) -> bool {
+        if self.read_only || query.is_empty() {
+            self.report_find_replace_matches(query, match_case);
+            return false;
+        }
+        let matches = self.find_replace_matches(query, match_case);
+        if matches.is_empty() {
+            self.write_find_replace_counts(0, 0);
+            return false;
+        }
+        let target = self.selection.filter(|range| matches.contains(range)).or_else(|| {
+            let from = self.selection.map_or(0, |(_, end)| end);
+            matches
+                .iter()
+                .copied()
+                .find(|&(start, _)| start >= from)
+                .or_else(|| matches.first().copied())
+        });
+        let Some((start, end)) = target else {
+            self.write_find_replace_counts(matches.len(), 0);
+            return false;
+        };
+        self.set_selection(start, end);
+        let before = self.text.clone();
+        self.apply_splice(start, end - start, replacement, false);
+        let changed = self.text != before;
+        self.report_find_replace_matches(query, match_case);
+        changed
+    }
+
+    /// Replaces every match in one edit, which is one undo step through the editor's own path.
+    #[cfg(full_widgets)]
+    fn find_replace_all(&mut self, query: &str, replacement: &str, match_case: bool) -> bool {
+        if self.read_only || query.is_empty() {
+            self.report_find_replace_matches(query, match_case);
+            return false;
+        }
+        let matches = self.find_replace_matches(query, match_case);
+        if matches.is_empty() {
+            self.write_find_replace_counts(0, 0);
+            return false;
+        }
+        let mut next = String::with_capacity(self.text.len());
+        let mut consumed = 0usize;
+        for &(start, end) in &matches {
+            next.push_str(&self.text[consumed..start]);
+            next.push_str(replacement);
+            consumed = end;
+        }
+        next.push_str(&self.text[consumed..]);
+        let before = self.text.clone();
+        self.set_text(next);
+        let changed = self.text != before;
+        self.report_find_replace_matches(query, match_case);
+        changed
+    }
+
+    /// Counts the matches of `query` and writes `(total, current)` into the attached bar.
+    #[cfg(full_widgets)]
+    fn report_find_replace_matches(&self, query: &str, match_case: bool) {
+        let matches = self.find_replace_matches(query, match_case);
+        let anchor = self.selection.map_or(0, |(start, _)| start);
+        let current = matches.iter().position(|&(start, _)| start >= anchor).unwrap_or(0);
+        self.write_find_replace_counts(matches.len(), current);
+    }
+
+    /// Writes `(total, current)` to the attached bar when it changed.
+    #[cfg(full_widgets)]
+    fn write_find_replace_counts(&self, total: usize, current: usize) {
+        let Some(binding) = self.find_replace_bar.as_ref() else {
+            return;
+        };
+        let current = if total == 0 { 0 } else { current.min(total - 1) };
+        {
+            let mut guard = lock(&binding.matches);
+            if *guard == (total, current) {
+                return;
+            }
+            *guard = (total, current);
+        }
+        binding.redraw.emit();
+    }
+
+    /// Every non-overlapping literal match of `query`, as ordered `(start, end)` byte ranges.
+    #[cfg(full_widgets)]
+    fn find_replace_matches(&self, query: &str, match_case: bool) -> Vec<(usize, usize)> {
+        let mut matches = Vec::new();
+        if query.is_empty() {
+            return matches;
+        }
+        let mut start = 0usize;
+        while start < self.text.len() {
+            if let Some(end) = match_query_at(&self.text, start, query, match_case) {
+                matches.push((start, end));
+                start = end;
+            } else {
+                match self.text[start..].chars().next() {
+                    Some(ch) => start += ch.len_utf8(),
+                    None => break,
+                }
+            }
+        }
+        matches
+    }
     /// The byte offset a point falls on, resolved against the laid-out lines.
     ///
     /// # How a point becomes an offset
@@ -1662,6 +1959,10 @@ impl WidgetProperties for RichEdit {
 }
 impl Draw for RichEdit {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Apply an attached find/replace bar's intents before the frame is painted, so a strip
+        // click moves the selection on the next frame (W5-12).
+        #[cfg(full_widgets)]
+        self.poll_find_replace_bar();
         let rect = self.base.geometry();
         use crate::core::Color;
 
@@ -2028,6 +2329,8 @@ impl RichEdit {
 
 impl crate::event::EventHandler for RichEdit {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        #[cfg(full_widgets)]
+        self.poll_find_replace_bar();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -3171,5 +3474,40 @@ mod tests {
             "the B cell bolds the selected run"
         );
         assert_eq!(re.selection(), Some((0, 5)), "a strip press does not disturb the selection");
+    }
+
+    /// W5-12: the rich editor consumes the shared find/replace strip.
+    ///
+    /// The control already owns a full text model and undo stack, so a long document had no find
+    /// surface while both plain-text editors had one. The binding must move the selection to a
+    /// match and replace every occurrence in one edit.
+    #[test]
+    fn the_find_replace_bar_finds_and_replaces_every_match() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 320, 200));
+        re.set_text("alpha beta alpha gamma alpha".to_string());
+        let mut bar = crate::widget::companions::FindReplaceBar::new(Rect::new(0, 0, 320, 40));
+        bar.set_query("alpha");
+        bar.set_replacement("delta");
+
+        re.attach_find_replace_bar(&bar);
+        assert!(re.is_find_replace_bar_attached());
+        assert_eq!(re.selection(), None, "attaching only adopts the query");
+
+        bar.find_next.emit();
+        assert!(re.poll_find_replace_bar(), "next moves the selection");
+        assert_eq!(re.selection(), Some((0, 5)), "the first occurrence is selected");
+
+        bar.find_next.emit();
+        assert!(re.poll_find_replace_bar());
+        assert_eq!(re.selection(), Some((11, 16)), "the second occurrence is selected");
+
+        bar.replace_all.emit();
+        assert!(re.poll_find_replace_bar(), "replace-all edits the document");
+        assert_eq!(re.text(), "delta beta delta gamma delta");
+
+        re.detach_find_replace_bar();
+        assert!(!re.is_find_replace_bar_attached());
+        bar.find_next.emit();
+        assert!(!re.poll_find_replace_bar(), "a detached bar moves nothing");
     }
 }

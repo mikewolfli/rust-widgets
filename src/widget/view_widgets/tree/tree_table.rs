@@ -4193,7 +4193,7 @@ mod tests {
     fn an_attached_tree_find_bar_moves_the_selection() {
         let mut table = TreeTable::new(Rect::new(0, 0, 240, 200));
         table.set_model(std::sync::Arc::new(SampleTreeTableModel));
-        let mut bar = crate::widget::companions::TreeFindBar::new(Rect::new(0, 0, 200, 28));
+        let bar = crate::widget::companions::TreeFindBar::new(Rect::new(0, 0, 200, 28));
         table.attach_tree_find_bar(&bar);
         assert!(table.is_tree_find_bar_attached());
 
