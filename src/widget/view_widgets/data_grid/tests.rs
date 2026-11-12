@@ -1752,6 +1752,27 @@ fn column_description_insert_remove_and_rename() {
     );
 }
 
+/// `Ctrl+F` announces a find request, and only while the grid has keyboard focus (U3-41).
+///
+/// The grid cannot own the bar, so the host opens the `GridFindBar` it attached. The focus gate
+/// matters because the same chord in a neighbouring control must not open this grid's search.
+#[test]
+fn ctrl_f_asks_the_host_to_open_the_find_bar() {
+    let mut grid = static_grid(3, 2);
+    let hits = std::sync::Arc::new(AtomicUsize::new(0));
+    let sink = std::sync::Arc::clone(&hits);
+    grid.find_requested_signal().connect(move |_| {
+        sink.fetch_add(1, Ordering::SeqCst);
+    });
+
+    grid.handle_event(&Event::KeyPress { key: crate::event::key_codes::F, modifiers: 2 });
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "an unfocused grid does not answer Ctrl+F");
+
+    grid.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+    grid.handle_event(&Event::KeyPress { key: crate::event::key_codes::F, modifiers: 2 });
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "Ctrl+F asks for the find surface");
+}
+
 /// The grid's `SortOrder` and the data source's are one type (principle #54).
 #[test]
 fn sort_order_is_the_data_source_definition() {

@@ -27,7 +27,7 @@ use crate::IconData;
 /// Symbols outline; with the feature off it resolves to generated fallback geometry. A
 /// variant round-trips through [`IconName::as_str`] and [`IconName::from_name`], and the
 /// integrity tests assert that two variants share a picture only where upstream itself
-/// publishes one outline under two names ([`UPSTREAM_ALIASES`])).
+/// publishes one outline under two names ([`UPSTREAM_ALIASES`](crate::UPSTREAM_ALIASES)).
 ///
 /// Variants whose token starts with a digit take a `Num` prefix (`10k` -> `Num10k`),
 /// because a Rust identifier cannot start with a digit; the token is unchanged.

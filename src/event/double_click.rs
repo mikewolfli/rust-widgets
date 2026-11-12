@@ -7,7 +7,7 @@
 //!
 //! Double-click semantics existed in three independent places: the touch recogniser
 //! (`gesture::DoubleTapGesture`, using [`crate::gesture::tuning`]), the host's
-//! [`Event::MouseDoubleClick`](crate::event::Event::MouseDoubleClick) (each backend uses its own
+//! [`Event::MouseDoubleClick`] (each backend uses its own
 //! OS interval), and the JSON compatibility key. The first two could disagree about the same
 //! physical gesture: a touch double-tap and a mouse double-click had different thresholds and no
 //! shared definition.

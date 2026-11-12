@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
+#![cfg(full_widgets)]
 
 //! Regression: every control with a keyboard arm must be reachable in the tab order.
 //!

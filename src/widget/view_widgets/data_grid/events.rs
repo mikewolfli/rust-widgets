@@ -19,6 +19,9 @@ impl crate::event::EventHandler for DataGrid {
         self.poll_grid_status_bar();
         self.poll_summary_row();
         self.poll_header_menu();
+        // A row the bound find bar landed on is applied before the event is routed, so the frame
+        // that follows the match already shows the moved current cell (U3-41).
+        self.poll_find_bar();
         // The base keeps the control-level hover/press facts and answers `widget_state()`. This
         // handler did not forward to it, so `"data_grid:hover"` could never fire.
         self.base.handle_event(event);
@@ -152,6 +155,16 @@ impl crate::event::EventHandler for DataGrid {
                 // pointer before emitting; an arm here would emit a duplicate, stale request.
             }
             Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                // Ctrl+F asks the host to open the attached find bar (U3-41). The grid cannot own
+                // the bar, so the request travels as an event; the check precedes the row/column
+                // guard so an empty grid still opens its search surface.
+                if *key == crate::event::key_codes::F
+                    && modifiers.contains(crate::shortcut::Modifiers::CTRL)
+                {
+                    self.find_requested.emit(());
+                    return;
+                }
                 let page = self.visible_row_capacity().max(1);
                 // The paint pass enumerates the filtered/sorted projection, so keyboard bounds
                 // must use its length; the source count let a key walk onto rows nothing painted.
@@ -165,7 +178,6 @@ impl crate::event::EventHandler for DataGrid {
                     .current_cell
                     .or(self.selection)
                     .unwrap_or((self.scroll_row, self.scroll_column));
-                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT)
                     && self.selection_mode
                         == crate::widget::view_widgets::list_view::SelectionMode::Extended;

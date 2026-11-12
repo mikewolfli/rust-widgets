@@ -573,6 +573,40 @@ impl WidgetProperties for Window {
     }
 }
 
+/// One of the three buttons painted into a self-drawn title bar.
+///
+/// U3-32: the paint path drew all three traffic lights while the press path answered only the
+/// close dot, so minimise/maximise looked clickable and were not. Naming the three buttons makes
+/// the paint path and the press path enumerate the same set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChromeButton {
+    Close,
+    Minimize,
+    Maximize,
+}
+
+impl Window {
+    /// Which painted chrome button contains `pos`, if any.
+    ///
+    /// The geometry is the same `WindowChromeGeometry` the paint path uses, so a button cannot be
+    /// painted where it cannot be hit, and a zero-sized button (a window too small to fit it) never
+    /// answers a press.
+    fn chrome_button_at(
+        chrome: &crate::widget::window_decorations::WindowChromeGeometry,
+        pos: Point,
+    ) -> Option<ChromeButton> {
+        if chrome.close.contains_point(pos) {
+            Some(ChromeButton::Close)
+        } else if chrome.minimize.contains_point(pos) {
+            Some(ChromeButton::Minimize)
+        } else if chrome.maximize.contains_point(pos) {
+            Some(ChromeButton::Maximize)
+        } else {
+            None
+        }
+    }
+}
+
 impl EventHandler for Window {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -583,11 +617,7 @@ impl EventHandler for Window {
             event
         {
             if *button == crate::event::mouse_button::PRIMARY && self.decorated {
-                // The close dot is the first of the three painted buttons. Tapping it is the
-                // only window action the self-drawn chrome offers: minimise/maximise are the
-                // window manager's job and remain reachable through `set_window_state`.
-                //
-                // The box comes from the same `WindowChromeGeometry` the paint path uses, so the
+                // The box comes from the same `WindowChromeGeometry` the paint path uses, so a
                 // button cannot be drawn where it cannot be clicked.
                 let bounds = self.geometry();
                 let client = Rect::new(0, 0, bounds.width, bounds.height);
@@ -597,9 +627,38 @@ impl EventHandler for Window {
                     self.close_button_size,
                     self.button_spacing,
                 );
-                if chrome.close.contains_point(*pos) {
-                    self.close();
-                    return;
+                match Self::chrome_button_at(&chrome, *pos) {
+                    Some(ChromeButton::Close) => {
+                        self.close();
+                        return;
+                    }
+                    // U3-32: the other two lights used to be painted but inert — a tap on them
+                    // did nothing at all. They now drive the same `set_window_state` a host would
+                    // call, so the painted buttons and the real window agree. The frugal profile
+                    // has no platform state interface, so its body is empty rather than absent:
+                    // an absent arm would leave the enum non-exhaustive there.
+                    Some(ChromeButton::Minimize) => {
+                        #[cfg(not(alloc_frugal))]
+                        let _ = self
+                            .set_window_state(crate::platform::WindowStateFlag::Minimized, true);
+                        return;
+                    }
+                    Some(ChromeButton::Maximize) => {
+                        // Toggle: a second tap on a maximised window restores it, which is what
+                        // the green light does on every platform that draws one.
+                        #[cfg(not(alloc_frugal))]
+                        {
+                            let maximized = self
+                                .window_state(crate::platform::WindowStateFlag::Maximized)
+                                .unwrap_or(false);
+                            let _ = self.set_window_state(
+                                crate::platform::WindowStateFlag::Maximized,
+                                !maximized,
+                            );
+                        }
+                        return;
+                    }
+                    None => {}
                 }
             }
         }
@@ -1183,6 +1242,77 @@ mod window_contract_tests {
             modifiers: 0,
         });
         assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The three painted lights are three distinct hit targets.
+    ///
+    /// # The defect this pins
+    ///
+    /// U3-32: `handle_event` answered only the close dot, so the minimise and maximise lights were
+    /// painted affordances with no action. Their boxes must resolve to their own buttons rather
+    /// than falling through to "nothing" (or, worse, to close).
+    #[test]
+    fn the_three_painted_lights_are_three_hit_targets() {
+        use crate::widget::window_decorations::WindowChromeGeometry;
+
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+        window.set_decorated(true);
+        let chrome = WindowChromeGeometry::compute(
+            Rect::new(0, 0, 400, 300),
+            window.title_bar_height(),
+            window.close_button_size(),
+            window.button_spacing(),
+        );
+        for (button, expected) in [
+            (chrome.close, ChromeButton::Close),
+            (chrome.minimize, ChromeButton::Minimize),
+            (chrome.maximize, ChromeButton::Maximize),
+        ] {
+            assert_ne!(button.width, 0, "a 400 px window fits all three lights");
+            let centre =
+                Point::new(button.x + button.width as i32 / 2, button.y + button.height as i32 / 2);
+            assert_eq!(Window::chrome_button_at(&chrome, centre), Some(expected));
+        }
+        // The strip between the lights belongs to no button.
+        let between = Point::new(chrome.close.x + chrome.close.width as i32 + 4, chrome.close.y);
+        assert_eq!(Window::chrome_button_at(&chrome, between), None);
+    }
+
+    /// Tapping minimise or maximise must not take the close path.
+    ///
+    /// The platform record is not modelled by every backend, so the assertion is on the one
+    /// observable that is: neither button emits `closed`.
+    #[test]
+    fn the_other_two_lights_do_not_close_the_window() {
+        use crate::widget::window_decorations::WindowChromeGeometry;
+
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+        window.set_decorated(true);
+        let chrome = WindowChromeGeometry::compute(
+            Rect::new(0, 0, 400, 300),
+            window.title_bar_height(),
+            window.close_button_size(),
+            window.button_spacing(),
+        );
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let c = closed.clone();
+        window.closed.connect(move || {
+            c.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        for button in [chrome.minimize, chrome.maximize] {
+            window.handle_event(&Event::MousePress {
+                pos: Point::new(
+                    button.x + button.width as i32 / 2,
+                    button.y + button.height as i32 / 2,
+                ),
+                button: 1,
+                modifiers: 0,
+            });
+        }
+        assert!(
+            !closed.load(std::sync::atomic::Ordering::SeqCst),
+            "minimise and maximise are window-state requests, not close requests"
+        );
     }
 
     #[test]

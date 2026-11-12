@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Companion-widget bindings: pagination, filter row, chooser, status bar, summary, header menu.
+//! Companion-widget bindings: pagination, filter row, chooser, status bar, summary, header menu,
+//! find bar.
 
+use super::grid_find_bar::GridFindBar;
 use super::*;
 
 /// The live link between a [`DataGrid`] and a [`Pagination`] bar.
@@ -120,9 +122,23 @@ pub(crate) enum HeaderMenuRequest {
 /// attach time and parks the resolved requests in a shared queue. [`DataGrid::poll_header_menu`]
 /// drains that queue, the same host-free shape the chooser and filter-row links use.
 pub(crate) struct HeaderMenuBinding {
-    /// The requests reported since the last poll.
+    /// Requests the menu queued since the last poll.
     pub(crate) requests: Arc<Mutex<Vec<HeaderMenuRequest>>>,
-    /// The subscriptions, dropped with the binding so a re-attach leaves no slot behind.
+    /// The subscription, dropped with the binding so a detached grid leaves no slot behind.
+    pub(crate) _scope: ConnectionScope,
+}
+
+/// The live link between a [`DataGrid`] and a [`GridFindBar`] (U3-41).
+///
+/// The bar reports the **source** row it landed on, while the grid navigates by projected row. The
+/// link parks the reported source row and [`DataGrid::poll_find_bar`] maps it through the grid's
+/// projection before moving the current cell, which is the same host-free shape the filter row
+/// uses: a widget cannot hold a borrow of another, so the signal writes state and the grid reads it
+/// on its next paint or interaction.
+pub(crate) struct FindBarBinding {
+    /// The source row the bar most recently landed on, if it has reported one since the last poll.
+    pub(crate) matches: Arc<Mutex<Option<usize>>>,
+    /// The subscription, dropped with the binding so a detached grid leaves no slot behind.
     pub(crate) _scope: ConnectionScope,
 }
 
@@ -937,6 +953,79 @@ impl DataGrid {
         self.set_filter_expr(expr);
         true
     }
+
+    // ── GridFindBar wiring (U3-41) ──
+
+    /// Follows `bar`'s `match_found` stream (U3-41).
+    ///
+    /// The bar searches the bound source, so the row it reports is a **source** index; the grid
+    /// paints projected rows. Attaching subscribes to the report and parks it until the next
+    /// [`Self::poll_find_bar`], which maps the source row through the grid's current filter/sort and
+    /// moves the current cell there. A report for a row the projection hides moves nothing, because
+    /// selecting a row nothing paints would put the current cell outside the visible model.
+    ///
+    /// Programmatic navigation is untouched: a grid with no bar attached never polls. Attaching
+    /// replaces any previous bar, so calling it twice leaves one subscription rather than two.
+    pub fn attach_find_bar(&mut self, bar: &GridFindBar) {
+        let matches = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&matches);
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+        bar.match_found.connect_scoped(&scope, move |row| {
+            *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(*row);
+            // The grid repaints so the poll that moves the current cell runs on the next frame
+            // rather than on whatever event happens to arrive afterwards.
+            redraw.emit();
+        });
+        // A queued match must not survive the bar's close: `close` clears the query and the
+        // cursor, so applying a report it produced just before closing would move the grid to a
+        // row the (now closed) search no longer names.
+        let closed_sink = Arc::clone(&matches);
+        let closed_redraw = self.base.redraw_requested_signal().clone();
+        bar.closed.connect_scoped(&scope, move |_| {
+            *closed_sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            closed_redraw.emit();
+        });
+        self.find_bar = Some(FindBarBinding { matches, _scope: scope });
+    }
+
+    /// Stops following the attached find bar; the current cell stays where it is.
+    pub fn detach_find_bar(&mut self) {
+        if self.find_bar.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`GridFindBar`] is attached.
+    pub fn is_find_bar_attached(&self) -> bool {
+        self.find_bar.is_some()
+    }
+
+    /// Applies the match the attached find bar reported since the last poll (U3-41).
+    ///
+    /// Called from `draw` and `handle_event`, so a typed query moves the current cell on the next
+    /// frame or interaction without the host forwarding it. Returns whether a match was applied.
+    pub fn poll_find_bar(&mut self) -> bool {
+        let reported = {
+            let Some(binding) = self.find_bar.as_ref() else {
+                return false;
+            };
+            binding.matches.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take()
+        };
+        let Some(source_row) = reported else {
+            return false;
+        };
+        let columns = self.column_count();
+        if columns == 0 {
+            return false;
+        }
+        let projected = self.index_projection();
+        let Some(row) = projected.iter().position(|&source| source == source_row) else {
+            return false;
+        };
+        let column = self.current_cell.map(|(_, column)| column).unwrap_or(0).min(columns - 1);
+        self.set_current_cell(row, column)
+    }
 }
 
 #[cfg(test)]
@@ -994,5 +1083,100 @@ mod tests {
         assert!(grid.poll_column_chooser(), "a visibility change is painted");
         assert!(grid.is_column_hidden(2), "C was hidden");
         assert!(!grid.poll_column_chooser(), "the queue is drained");
+    }
+
+    /// A find-bar match moves the current cell to the row the bar named (U3-41).
+    ///
+    /// The bar reports a **source** row; the grid navigates projected rows. With no filter or sort
+    /// the two agree, which is what pins the plumbing before the mapping test below.
+    #[test]
+    fn an_attached_find_bar_moves_the_current_cell_to_the_matching_row() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 300, 200));
+        let rows = || {
+            Arc::new(Source {
+                data: vec![
+                    vec!["alpha".to_string()],
+                    vec!["beta".to_string()],
+                    vec!["gamma".to_string()],
+                ],
+            })
+        };
+        grid.set_data_source(rows());
+        let mut bar = GridFindBar::new(Rect::new(0, 0, 220, 28));
+        bar.set_data_source(rows());
+        grid.attach_find_bar(&bar);
+        assert!(grid.is_find_bar_attached());
+
+        bar.set_query("gamma");
+        assert!(!grid.poll_find_bar(), "nothing is reported until the bar searches");
+        assert_eq!(bar.find_next(), Some(2));
+        assert!(grid.poll_find_bar());
+        assert_eq!(grid.current_cell(), Some((2, 0)));
+        assert!(!grid.poll_find_bar(), "the report is drained");
+
+        grid.detach_find_bar();
+        assert!(!grid.is_find_bar_attached());
+    }
+
+    /// A match on a row the projection hides moves nothing.
+    ///
+    /// The bar searches the source and cannot see the grid's filter; the grid must not select a row
+    /// that is not in the projection, because the current cell would then name a row nothing paints.
+    #[test]
+    fn a_match_hidden_by_the_filter_does_not_move_the_current_cell() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 300, 200));
+        let rows = || {
+            Arc::new(Source {
+                data: vec![
+                    vec!["alpha".to_string()],
+                    vec!["beta".to_string()],
+                    vec!["gamma".to_string()],
+                ],
+            })
+        };
+        grid.set_data_source(rows());
+        grid.set_filter_expr(FilterExpr::Predicate(FilterCondition::new(
+            0,
+            FilterOperator::Contains,
+            "alpha".to_string(),
+        )));
+        let mut bar = GridFindBar::new(Rect::new(0, 0, 220, 28));
+        bar.set_data_source(rows());
+        grid.attach_find_bar(&bar);
+
+        bar.set_query("gamma");
+        assert_eq!(bar.find_next(), Some(2), "the bar searches every source row");
+        assert!(!grid.poll_find_bar(), "gamma is filtered out of the grid");
+        assert_eq!(grid.current_cell(), None);
+    }
+
+    /// A reported match does not outlive the bar that reported it.
+    ///
+    /// `GridFindBar::close` clears the query and its match cursor. A report it queued just before
+    /// closing must therefore be discarded, or the grid would select a row the closed search no
+    /// longer names.
+    #[test]
+    fn closing_the_bar_discards_a_match_it_had_already_reported() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 300, 200));
+        let rows = || {
+            Arc::new(Source {
+                data: vec![
+                    vec!["alpha".to_string()],
+                    vec!["beta".to_string()],
+                    vec!["gamma".to_string()],
+                ],
+            })
+        };
+        grid.set_data_source(rows());
+        let mut bar = GridFindBar::new(Rect::new(0, 0, 220, 28));
+        bar.set_data_source(rows());
+        bar.open();
+        grid.attach_find_bar(&bar);
+
+        bar.set_query("gamma");
+        assert_eq!(bar.find_next(), Some(2));
+        bar.close();
+        assert!(!grid.poll_find_bar(), "the close discarded the queued match");
+        assert_eq!(grid.current_cell(), None);
     }
 }

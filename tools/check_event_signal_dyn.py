@@ -41,7 +41,9 @@ compared against everything the rows sharing its struct publish.
 # Reverse injection
 
 `--inject=<control>.<event>` pretends one arm is missing and requires a failure, so a check that
-quietly found nothing cannot pass.
+quietly found nothing cannot pass. `--inject-unconverted=<control>` pretends a registered control
+is not in `CONVERTED`, which is what exercises direction 2's hard failure while the allowlist is
+empty.
 
 Run from the repo root.
 """
@@ -72,9 +74,9 @@ SRC = REPO / "src"
 #      must not resolve a name the capability does not publish (a dead arm that looks like
 #      support);
 #   2. every control that publishes events and is **not** in `CONVERTED` must be listed in
-#      `NOT_YET_CONVERTED`. That second list is the honest record of the gap, and it can only
-#      shrink: adding a control to it requires a reason, and converting a control requires
-#      moving it from one list to the other.
+#      `NOT_YET_CONVERTED` with a reason. That list is empty today: every publishing control is
+#      converted. A new capability therefore has to be wired, or explicitly accepted with a
+#      reason, before this gate will pass — so the gap cannot quietly grow.
 #
 # Why the second list matters more than it looks: "161 of 188 controls publish an event that no
 # subscription can reach" was previously a number only a person could compute. Naming each one
@@ -90,23 +92,31 @@ CONVERTED: dict[str, str] = {
     "app_bar": "src/widget/nav_widgets/app_bar.rs",
     "arc": "src/widget/display_widgets/arc.rs",
     "auto_complete_edit": "src/widget/input_widgets/text_entry/auto_complete_edit.rs",
+    "avatar": "src/widget/misc_widgets/avatar.rs",
+    "axis_picker": "src/widget/companions/axis_picker.rs",
+    "badge": "src/widget/display_widgets/badge.rs",
     "banner": "src/widget/overlay_widgets/banner.rs",
-    "barcode_scanner": "src/widget/misc_widgets/barcode_scanner.rs",
     "bar_chart": "src/widget/chart_widgets/bar_chart.rs",
+    "barcode_scanner": "src/widget/misc_widgets/barcode_scanner.rs",
     "bezier_curve_editor": "src/widget/misc_widgets/bezier_curve_editor.rs",
     "bottom_navigation_bar": "src/widget/nav_widgets/bottom_navigation_bar.rs",
     "bottom_sheet": "src/widget/dialog/bottom_sheet.rs",
     "breadcrumb": "src/widget/special_widgets/breadcrumb.rs",
     "button": "src/widget/base_widgets/button.rs",
     "calendar": "src/widget/advanced_widgets/calendar.rs",
+    "calendar_mark_layer": "src/widget/companions/calendar_mark_layer.rs",
     "canvas": "src/widget/special_widgets/canvas/widget.rs",
     "carousel": "src/widget/container_widgets/carousel.rs",
     "cascader": "src/widget/input_widgets/cascader.rs",
     "chart": "src/widget/chart_widgets/chart/chart.rs",
     "chart_crosshair": "src/widget/chart_widgets/chart/chart_crosshair.rs",
+    "chart_data_table": "src/widget/companions/chart_data_table.rs",
+    "chart_reference_line": "src/widget/chart_widgets/chart/chart_reference_line.rs",
     "chart_tooltip": "src/widget/companions/chart_tooltip.rs",
     "check_box": "src/widget/base_widgets/checkbox.rs",
     "chip": "src/widget/special_widgets/chip.rs",
+    "chip_input": "src/widget/special_widgets/chip_input.rs",
+    "clock": "src/widget/display_widgets/clock.rs",
     "code_editor": "src/widget/special_widgets/code_editor/editor/widget_impl.rs",
     "collapsible_pane": "src/widget/container_widgets/collapsible_pane.rs",
     "color_dialog": "src/widget/dialog/color_dialog.rs",
@@ -116,6 +126,7 @@ CONVERTED: dict[str, str] = {
     "combo_box": "src/widget/input_widgets/combobox.rs",
     "command_link": "src/widget/input_widgets/command_link.rs",
     "command_palette": "src/widget/special_widgets/command_palette.rs",
+    "command_palette_host": "src/widget/companions/command_palette_host.rs",
     "confirm_dialog": "src/widget/dialog/alert_dialogs.rs",
     "context_menu": "src/widget/menu_toolbar/menu/menu/events.rs",
     "cupertino_alert_dialog": "src/widget/cupertino/core.rs",
@@ -131,7 +142,10 @@ CONVERTED: dict[str, str] = {
     "date_time_edit": "src/widget/advanced_widgets/date_time_edit.rs",
     "dial": "src/widget/advanced_widgets/dial.rs",
     "dialog": "src/widget/dialog/dialog_widget.rs",
+    "dock_area": "src/widget/container_widgets/dockwidget.rs",
     "dock_widget": "src/widget/container_widgets/dockwidget.rs",
+    "drag_ghost_layer": "src/widget/companions/drag_ghost_layer.rs",
+    "drop_down_popup_host": "src/widget/companions/drop_down_popup_host.rs",
     "drop_zone": "src/widget/misc_widgets/drop_zone.rs",
     "dropdown": "src/widget/input_widgets/dropdown.rs",
     "dropdown_menu": "src/widget/menu_toolbar/menu/dropdown_menu.rs",
@@ -144,27 +158,38 @@ CONVERTED: dict[str, str] = {
     "file_dialog": "src/widget/dialog/file_dialog.rs",
     "filter_row": "src/widget/companions/filter_row.rs",
     "find_bar": "src/widget/special_widgets/editor/companions/find_bar.rs",
+    "find_replace_bar": "src/widget/companions/find_replace_bar.rs",
     "find_replace_dialog": "src/widget/dialog/find_replace_dialog.rs",
+    "flex": "src/widget/container_widgets/linear_layouts.rs",
     "floating_label": "src/widget/display_widgets/floating_label.rs",
+    "flow_layout": "src/widget/container_widgets/linear_layouts.rs",
     "font_combo_box": "src/widget/input_widgets/font_combo_box.rs",
     "font_dialog": "src/widget/dialog/font_dialog.rs",
     "freeform_shape": "src/widget/special_widgets/freeform_shape/shape.rs",
+    "gauge": "src/widget/chart_widgets/gauge.rs",
     "grid": "src/widget/special_widgets/grid.rs",
+    "grid_status_bar": "src/widget/companions/grid_status_bar.rs",
     "grid_table": "src/widget/view_widgets/grid_table.rs",
     "grid_view_header": "src/widget/view_widgets/data_grid/header.rs",
     "group_box": "src/widget/container_widgets/groupbox.rs",
+    "header_menu": "src/widget/companions/header_menu.rs",
     "heatmap": "src/widget/chart_widgets/heatmap.rs",
     "hero_animation": "src/widget/media_widgets/hero_animation.rs",
     "image_gallery": "src/widget/view_widgets/image_gallery.rs",
     "image_view": "src/widget/display_widgets/image_view.rs",
     "inplace_editor": "src/widget/input_widgets/inplace_editor.rs",
     "input_dialog": "src/widget/dialog/input_dialog.rs",
+    "key_sequence_editor": "src/widget/advanced_widgets/key_sequence_edit.rs",
     "keyboard": "src/widget/input_widgets/keyboard.rs",
+    "label": "src/widget/base_widgets/label.rs",
+    "layer_panel": "src/widget/companions/layer_panel.rs",
     "lcd_number": "src/widget/display_widgets/lcd_number.rs",
     "legend": "src/widget/companions/legend.rs",
     "line_chart": "src/widget/chart_widgets/line_chart.rs",
     "line_edit": "src/widget/input_widgets/text_entry/lineedit/events.rs",
+    "line_number_gutter": "src/widget/companions/line_number_gutter.rs",
     "list_box": "src/widget/input_widgets/listbox.rs",
+    "list_state_host": "src/widget/companions/list_state_host.rs",
     "list_view": "src/widget/view_widgets/list_view.rs",
     "mac_segmented_control": "src/widget/macos/segmented_control.rs",
     "mac_source_list": "src/widget/macos/source_list.rs",
@@ -173,7 +198,9 @@ CONVERTED: dict[str, str] = {
     "mac_window_chrome": "src/widget/macos/window_chrome.rs",
     "markdown_editor": "src/widget/special_widgets/markdown_editor/events.rs",
     "markdown_outline_panel": "src/widget/special_widgets/markdown_editor/outline.rs",
+    "markdown_toolbar": "src/widget/special_widgets/markdown_toolbar.rs",
     "masked_edit": "src/widget/input_widgets/text_entry/masked_edit.rs",
+    "masonry_layout": "src/widget/container_widgets/masonry_layout.rs",
     "material_navigation_rail": "src/widget/cupertino/material.rs",
     "material_snackbar": "src/widget/cupertino/material.rs",
     "mdi_area": "src/widget/container_widgets/mdiarea.rs",
@@ -181,9 +208,11 @@ CONVERTED: dict[str, str] = {
     "menu": "src/widget/menu_toolbar/menu/menu/events.rs",
     "menu_bar": "src/widget/menu_toolbar/menu/menu_bar.rs",
     "menu_button": "src/widget/menu_toolbar/menu_button.rs",
+    "menu_panel": "src/widget/companions/menu_panel.rs",
     "message_box": "src/widget/dialog/message_box.rs",
     "meter": "src/widget/display_widgets/meter.rs",
     "mini_canvas": "src/widget/display_widgets/mini_canvas.rs",
+    "mini_chart": "src/widget/display_widgets/mini_chart.rs",
     "mobile_date_picker": "src/widget/misc_widgets/mobile_date_picker.rs",
     "modal_bottom_sheet": "src/widget/dialog/modal_bottom_sheet.rs",
     "multi_select_combo_box": "src/widget/input_widgets/multi_select_combo_box.rs",
@@ -198,9 +227,12 @@ CONVERTED: dict[str, str] = {
     "phone_input": "src/widget/input_widgets/text_entry/lineedit/events.rs",
     "pie_chart": "src/widget/chart_widgets/pie_chart.rs",
     "pie_menu": "src/widget/advanced_widgets/pie_menu.rs",
+    "playlist_panel": "src/widget/companions/playlist_panel.rs",
+    "popover": "src/widget/dialog/popover.rs",
     "popup_window": "src/widget/dialog/popup_window.rs",
     "preset_chip_bar": "src/widget/misc_widgets/preset_chip_bar.rs",
     "progress_bar": "src/widget/display_widgets/progressbar.rs",
+    "progress_circle": "src/widget/display_widgets/progress_circle.rs",
     "progress_dialog": "src/widget/dialog/progress_dialog.rs",
     "properties_panel": "src/widget/view_widgets/properties/properties_panel.rs",
     "property_grid": "src/widget/view_widgets/properties/property_grid.rs",
@@ -225,7 +257,10 @@ CONVERTED: dict[str, str] = {
     "signature_pad": "src/widget/special_widgets/signature_pad.rs",
     "slider": "src/widget/display_widgets/slider.rs",
     "snackbar": "src/widget/special_widgets/snackbar.rs",
+    "sparkline": "src/widget/chart_widgets/sparkline.rs",
+    "speed_dial": "src/widget/companions/speed_dial.rs",
     "spin_box": "src/widget/input_widgets/spinbox.rs",
+    "spinner": "src/widget/display_widgets/spinner.rs",
     "splash_screen": "src/widget/overlay_widgets/splash_screen.rs",
     "split_button": "src/widget/special_widgets/split_button.rs",
     "split_layout": "src/widget/container_widgets/splitter.rs",
@@ -233,7 +268,9 @@ CONVERTED: dict[str, str] = {
     "stacked_widget": "src/widget/container_widgets/stackedwidget.rs",
     "status_bar": "src/widget/menu_toolbar/status_bar.rs",
     "stepper": "src/widget/container_widgets/stepper.rs",
+    "summary_row": "src/widget/companions/summary_row.rs",
     "swatch": "src/widget/companions/swatch.rs",
+    "swipe_actions": "src/widget/companions/swipe_actions.rs",
     "swipe_to_dismiss": "src/widget/overlay_widgets/swipe_to_dismiss.rs",
     "switch": "src/widget/display_widgets/switch.rs",
     "tab_bar": "src/widget/advanced_widgets/tab_bar.rs",
@@ -242,6 +279,7 @@ CONVERTED: dict[str, str] = {
     "table": "src/widget/view_widgets/table_widget/widget.rs",
     "table_widget": "src/widget/view_widgets/table_widget/widget.rs",
     "tag": "src/widget/display_widgets/tag.rs",
+    "tag_group": "src/widget/display_widgets/tag_group.rs",
     "tag_input": "src/widget/input_widgets/tag_input.rs",
     "text_area": "src/widget/input_widgets/textarea/events.rs",
     "text_edit": "src/widget/input_widgets/textedit/events.rs",
@@ -256,13 +294,16 @@ CONVERTED: dict[str, str] = {
     "tool_box": "src/widget/container_widgets/toolbox.rs",
     "tool_button": "src/widget/menu_toolbar/tool_button.rs",
     "tooltip_manager": "src/widget/companions/tooltip_manager.rs",
+    "tree_find_bar": "src/widget/companions/tree_find_bar.rs",
     "tree_table": "src/widget/view_widgets/tree/tree_table.rs",
     "tree_view": "src/widget/view_widgets/tree/tree_view.rs",
     "virtual_list": "src/widget/view_widgets/virtual_list.rs",
     "virtual_table": "src/widget/view_widgets/virtual_table/widget.rs",
     "window": "src/widget/window.rs",
     "wizard_dialog": "src/widget/dialog/wizard.rs",
+    "wrap_layout": "src/widget/container_widgets/linear_layouts.rs",
     "zoom_pan_controller": "src/widget/companions/zoom_pan.rs",
+    "zoom_strip": "src/widget/companions/zoom_strip.rs",
 }
 
 STRUCT_IMPL: dict[str, str] = {
@@ -275,23 +316,31 @@ STRUCT_IMPL: dict[str, str] = {
     "app_bar": "AppBar",
     "arc": "Arc",
     "auto_complete_edit": "AutoCompleteEdit",
+    "avatar": "Avatar",
+    "axis_picker": "AxisPicker",
+    "badge": "Badge",
     "banner": "Banner",
-    "barcode_scanner": "BarcodeScanner",
     "bar_chart": "BarChart",
+    "barcode_scanner": "BarcodeScanner",
     "bezier_curve_editor": "BezierCurveEditor",
     "bottom_navigation_bar": "BottomNavigationBar",
     "bottom_sheet": "BottomSheet",
     "breadcrumb": "Breadcrumb",
     "button": "Button",
     "calendar": "Calendar",
+    "calendar_mark_layer": "CalendarMarkLayer",
     "canvas": "Canvas",
     "carousel": "Carousel",
     "cascader": "Cascader",
     "chart": "ChartWidget",
     "chart_crosshair": "ChartCrosshair",
+    "chart_data_table": "ChartDataTable",
+    "chart_reference_line": "ChartReferenceLine",
     "chart_tooltip": "ChartTooltip",
     "check_box": "CheckBox",
     "chip": "Chip",
+    "chip_input": "ChipInput",
+    "clock": "Clock",
     "code_editor": "CodeEditor",
     "collapsible_pane": "CollapsiblePane",
     "color_dialog": "ColorDialog",
@@ -301,6 +350,7 @@ STRUCT_IMPL: dict[str, str] = {
     "combo_box": "ComboBox",
     "command_link": "CommandLink",
     "command_palette": "CommandPalette",
+    "command_palette_host": "CommandPaletteHost",
     "confirm_dialog": "ConfirmDialog",
     "context_menu": "Menu",
     "cupertino_alert_dialog": "CupertinoAlertDialog",
@@ -316,7 +366,10 @@ STRUCT_IMPL: dict[str, str] = {
     "date_time_edit": "DateTimeEdit",
     "dial": "Dial",
     "dialog": "Dialog",
+    "dock_area": "DockArea",
     "dock_widget": "DockWidget",
+    "drag_ghost_layer": "DragGhostLayer",
+    "drop_down_popup_host": "DropDownPopupHost",
     "drop_zone": "DropZone",
     "dropdown": "Dropdown",
     "dropdown_menu": "DropdownMenu",
@@ -329,28 +382,38 @@ STRUCT_IMPL: dict[str, str] = {
     "file_dialog": "FileDialog",
     "filter_row": "FilterRow",
     "find_bar": "FindBar",
+    "find_replace_bar": "FindReplaceBar",
     "find_replace_dialog": "FindReplaceDialog",
+    "flex": "Flex",
     "floating_label": "FloatingLabel",
+    "flow_layout": "FlowLayout",
     "font_combo_box": "FontComboBox",
     "font_dialog": "FontDialog",
     "freeform_shape": "FreeformShapeWidget",
+    "gauge": "Gauge",
     "grid": "GridWidget",
+    "grid_status_bar": "GridStatusBar",
     "grid_table": "GridTableWidget",
     "grid_view_header": "GridViewHeader",
     "group_box": "GroupBox",
+    "header_menu": "HeaderMenu",
     "heatmap": "Heatmap",
     "hero_animation": "HeroAnimation",
     "image_gallery": "ImageGallery",
     "image_view": "ImageView",
     "inplace_editor": "InplaceEditor",
     "input_dialog": "InputDialog",
+    "key_sequence_editor": "KeySequenceEdit",
     "keyboard": "Keyboard",
+    "label": "Label",
+    "layer_panel": "LayerPanel",
     "lcd_number": "LCDNumber",
     "legend": "Legend",
     "line_chart": "LineChart",
     "line_edit": "LineEdit",
+    "line_number_gutter": "LineNumberGutter",
     "list_box": "ListBox",
-    "pie_chart": "PieChart",
+    "list_state_host": "ListStateHost",
     "list_view": "ListView",
     "mac_segmented_control": "MacSegmentedControl",
     "mac_source_list": "MacSourceList",
@@ -359,7 +422,9 @@ STRUCT_IMPL: dict[str, str] = {
     "mac_window_chrome": "MacWindowChrome",
     "markdown_editor": "MarkdownEditor",
     "markdown_outline_panel": "MarkdownOutlinePanel",
+    "markdown_toolbar": "MarkdownToolbar",
     "masked_edit": "MaskedEdit",
+    "masonry_layout": "MasonryLayout",
     "material_navigation_rail": "MaterialNavigationRail",
     "material_snackbar": "MaterialSnackbar",
     "mdi_area": "MdiArea",
@@ -367,9 +432,11 @@ STRUCT_IMPL: dict[str, str] = {
     "menu": "Menu",
     "menu_bar": "MenuBar",
     "menu_button": "MenuButton",
+    "menu_panel": "MenuPanel",
     "message_box": "MessageBox",
     "meter": "Meter",
     "mini_canvas": "MiniCanvas",
+    "mini_chart": "MiniChart",
     "mobile_date_picker": "MobileDatePicker",
     "modal_bottom_sheet": "ModalBottomSheet",
     "multi_select_combo_box": "MultiSelectComboBox",
@@ -382,10 +449,14 @@ STRUCT_IMPL: dict[str, str] = {
     "panel": "GroupBox",
     "password_edit": "LineEdit",
     "phone_input": "LineEdit",
+    "pie_chart": "PieChart",
     "pie_menu": "PieMenu",
-    "preset_chip_bar": "PresetChipBar",
+    "playlist_panel": "PlaylistPanel",
+    "popover": "Popover",
     "popup_window": "PopupWindow",
+    "preset_chip_bar": "PresetChipBar",
     "progress_bar": "ProgressBar",
+    "progress_circle": "ProgressCircle",
     "progress_dialog": "ProgressDialog",
     "properties_panel": "PropertiesPanel",
     "property_grid": "PropertyGrid",
@@ -410,7 +481,10 @@ STRUCT_IMPL: dict[str, str] = {
     "signature_pad": "SignaturePad",
     "slider": "Slider",
     "snackbar": "Snackbar",
+    "sparkline": "Sparkline",
+    "speed_dial": "SpeedDial",
     "spin_box": "SpinBox",
+    "spinner": "Spinner",
     "splash_screen": "SplashScreen",
     "split_button": "SplitButton",
     "split_layout": "Splitter",
@@ -418,7 +492,9 @@ STRUCT_IMPL: dict[str, str] = {
     "stacked_widget": "StackedWidget",
     "status_bar": "StatusBar",
     "stepper": "Stepper",
+    "summary_row": "SummaryRow",
     "swatch": "Swatch",
+    "swipe_actions": "SwipeActions",
     "swipe_to_dismiss": "SwipeToDismiss",
     "switch": "Switch",
     "tab_bar": "TabBar",
@@ -427,6 +503,7 @@ STRUCT_IMPL: dict[str, str] = {
     "table": "TableWidget",
     "table_widget": "TableWidget",
     "tag": "Tag",
+    "tag_group": "TagGroup",
     "tag_input": "TagInput",
     "text_area": "TextArea",
     "text_edit": "TextEdit",
@@ -441,13 +518,16 @@ STRUCT_IMPL: dict[str, str] = {
     "tool_box": "ToolBox",
     "tool_button": "ToolButton",
     "tooltip_manager": "TooltipManager",
+    "tree_find_bar": "TreeFindBar",
     "tree_table": "TreeTable",
     "tree_view": "TreeView",
     "virtual_list": "VirtualList",
     "virtual_table": "VirtualTable",
     "window": "Window",
     "wizard_dialog": "WizardDialog",
+    "wrap_layout": "WrapLayout",
     "zoom_pan_controller": "ZoomPanController",
+    "zoom_strip": "ZoomStrip",
 }
 
 
@@ -513,6 +593,11 @@ NOT_YET_CONVERTED_REASON = (
     "`event_signal_dyn` is unimplemented, so `forward_all` wires none of its names. "
     "`unwired_events_for` reports the whole shortfall, so the gap is visible rather than silent."
 )
+
+# Controls that publish events but have not implemented `event_signal_dyn`, mapped to the reason
+# the gap is accepted. Empty is the intended resting state: every publishing control in the root
+# crate is converted. Adding a row is a deliberate decision, not a place to park a new control.
+NOT_YET_CONVERTED: dict[str, str] = {}
 
 CENSUS = REPO / "tools/event_published_census.txt"
 
@@ -651,6 +736,12 @@ def _struct_impl_body(source: str, struct_name: str) -> str | None:
     )
     match = pattern.search(source)
     if match is None:
+        # A layout owner such as `DockArea` is not a `Widget`: it publishes a capability row and
+        # resolves its names from an inherent `event_signal_dyn` (C-001). Reading that block is
+        # the same per-struct scoping, applied to the owner shape the crate documents.
+        pattern = re.compile(r"impl\s+" + re.escape(struct_name) + r"(?:<[^>]*>)?\s*\{")
+        match = pattern.search(source)
+    if match is None:
         return None
     open_at = match.end() - 1
     depth = 0
@@ -747,9 +838,12 @@ def declared_name_mismatches(
 
 def main() -> int:
     inject = None
+    inject_unconverted = None
     for argument in sys.argv[1:]:
         if argument.startswith("--inject="):
             inject = argument.split("=", 1)[1]
+        elif argument.startswith("--inject-unconverted="):
+            inject_unconverted = argument.split("=", 1)[1]
 
     try:
         aliases = read_alias_registry()
@@ -761,11 +855,28 @@ def main() -> int:
     published = read_census()
     failures: list[str] = []
     checked = 0
-    converted = sorted(CONVERTED)
+    converted_set = set(CONVERTED)
+    if inject_unconverted is not None:
+        # Self-test for direction 2: a publishing control that is neither converted nor accepted
+        # must fail. Without this, the branch could only be exercised by a real regression.
+        if not published.get(inject_unconverted):
+            print(
+                f"❌ --inject-unconverted={inject_unconverted}: no publishing control of that "
+                "name"
+            )
+            return 1
+        if inject_unconverted not in converted_set:
+            print(
+                f"❌ --inject-unconverted={inject_unconverted}: the control is not in CONVERTED, "
+                "so the injection changes nothing"
+            )
+            return 1
+        converted_set.discard(inject_unconverted)
+    converted = sorted(converted_set)
     unconverted = sorted(
         control
         for control, names in published.items()
-        if names and control not in CONVERTED
+        if names and control not in converted_set
     )
 
     # Direction 0: the alias registry and this table must name one identity each.
@@ -949,6 +1060,15 @@ def main() -> int:
         if len(unconverted) > 5:
             print(f"  … and {len(unconverted) - 5} more")
         print(f"  reason for every one: {NOT_YET_CONVERTED_REASON}")
+        for control in unconverted:
+            reason = NOT_YET_CONVERTED.get(control)
+            if reason is None:
+                failures.append(
+                    f"{control}: publishes {len(published[control])} event(s) but is neither "
+                    "converted nor listed in NOT_YET_CONVERTED with a reason"
+                )
+            else:
+                print(f"  {control}: accepted gap — {reason}")
 
     print(f"converted controls checked: {checked}")
     for control in converted:

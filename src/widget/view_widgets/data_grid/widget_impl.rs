@@ -101,6 +101,12 @@ impl Widget for DataGrid {
                 &self.context_menu_requested,
                 |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
             )),
+            // U3-41: the grid announces Ctrl+F; the host opens the bar it attached.
+            "find_requested" => {
+                Some(EventSignalRef::mapped("find_requested", &self.find_requested, |_v| {
+                    CapabilityValue::Null
+                }))
+            }
             "edit_requested" => {
                 Some(EventSignalRef::mapped("edit_requested", &self.edit_requested, |v| {
                     crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([

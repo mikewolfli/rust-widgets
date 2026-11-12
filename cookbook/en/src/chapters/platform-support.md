@@ -577,6 +577,13 @@ if let Some(event) = state.pop_drop_event() {
 state.inject_drop_event(event);
 ```
 
+> **Scope.** Drag and drop here is **application-internal**. The backends record the drag in
+> `BackendState`, and none of them creates the native drag objects an operating-system drag
+> requires (Windows `IDropSource`/`IDropTarget` through `DoDragDrop`/`RegisterDragDrop`, and the
+> equivalent pasteboard/XDND objects on other desktops). A file dragged in from the desktop
+> therefore does not arrive as a `DropEvent`. A host that owns OS-level dragging can still
+> deliver the result through `inject_drop_event`; that is the supported extension point.
+
 ---
 
 ## 8. IME System

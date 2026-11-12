@@ -97,6 +97,8 @@ pub struct DataGrid {
     pub(crate) summary_row: Option<SummaryRowBinding>,
     /// The `HeaderMenu` this grid follows, when one is attached (COMP-A8).
     pub(crate) header_menu: Option<HeaderMenuBinding>,
+    /// The `GridFindBar` this grid follows, when one is attached (U3-41).
+    pub(crate) find_bar: Option<FindBarBinding>,
     /// Whether the attached header menu asked the host to open a column chooser (COMP-A8).
     pub(crate) column_chooser_requested: bool,
     /// Emitted when the selection changes; query [`DataGrid::selected_cells`] for the units.
@@ -148,6 +150,12 @@ pub struct DataGrid {
     pub edit_requested: Signal1<(usize, usize)>,
     /// Emitted when the context menu is requested at a point.
     pub context_menu_requested: Signal1<Point>,
+    /// Emitted when the user asks for the find surface (`Ctrl+F`).
+    ///
+    /// The grid cannot own a child widget, so it announces the request and the host opens the
+    /// `GridFindBar` it attached with [`DataGrid::attach_find_bar`]. This is what makes the
+    /// published `Ctrl+F` gesture reachable without the grid duplicating the bar.
+    pub(crate) find_requested: Signal1<()>,
     /// Emitted with the new expression whenever the filter changes.
     pub filter_changed: Signal1<FilterExpr>,
     /// Emitted with the zero-based page when a page from the bound [`Pagination`] is applied.
@@ -240,6 +248,7 @@ impl DataGrid {
             grid_status_bar: None,
             summary_row: None,
             header_menu: None,
+            find_bar: None,
             column_chooser_requested: false,
             selection_changed: Signal1::new(),
             current_changed: Signal1::new(),
@@ -262,6 +271,7 @@ impl DataGrid {
             sort_changed: Signal1::new(),
             edit_requested: Signal1::new(),
             context_menu_requested: Signal1::new(),
+            find_requested: Signal1::new(),
             filter_changed: Signal1::new(),
             page_applied: Signal1::new(),
             hidden_columns: BTreeSet::new(),
@@ -496,6 +506,14 @@ impl DataGrid {
     /// The signal emitted with a double-clicked cell.
     pub fn cell_double_clicked_signal(&self) -> &Signal1<(usize, usize)> {
         &self.cell_double_clicked
+    }
+
+    /// The signal emitted when the user asks for the find surface (`Ctrl+F`).
+    ///
+    /// A host that attached a [`GridFindBar`](crate::widget::view_widgets::GridFindBar) opens it
+    /// here; the grid itself does not own the bar (U3-41).
+    pub fn find_requested_signal(&self) -> &Signal1<()> {
+        &self.find_requested
     }
 
     /// The signal emitted after a user resize with `(column, width)`.

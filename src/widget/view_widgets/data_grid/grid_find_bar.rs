@@ -11,9 +11,16 @@
 //!
 //! # Wiring
 //!
-//! A host routes Ctrl+F to `GridFindBar::open` and forwards `match_found` to the grid's
-//! selection + `ensure_visible`. The bar owns no table, so it works with every member of the
-//! family (DataGrid, GridTable, VirtualTable).
+//! The supported path is the host-free binding: call [`DataGrid::attach_find_bar`] once, connect
+//! the grid's `find_requested` signal to `GridFindBar::open`, and press Ctrl+F. The grid maps
+//! each reported **source** row through its current filter/sort and moves the current cell there,
+//! so the host does not forward `match_found` by hand.
+//!
+//! A table that cannot use the binding (another member of the family) can still subscribe to
+//! `match_found` and apply the index itself. The bar owns no table, so it works with every member
+//! of the family (DataGrid, GridTable, VirtualTable).
+//!
+//! [`DataGrid::attach_find_bar`]: crate::widget::view_widgets::DataGrid::attach_find_bar
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
@@ -77,17 +84,29 @@ impl GridFindBar {
     }
 
     /// Binds the source the bar searches.
+    ///
+    /// [`DataGrid::attach_find_bar`](crate::widget::view_widgets::DataGrid::attach_find_bar)
+    /// subscribes to [`Self::match_found`] and maps the reported source row through the grid's
+    /// projection before moving the current cell.
     pub fn set_data_source(&mut self, source: Arc<dyn IncrementalTableDataSource>) {
         self.source = Some(source);
         self.current_match = None;
     }
 
     /// Opens the bar and focuses its query.
+    ///
+    /// The doc said "and focuses its query" while the body only flipped the flag, so typed text
+    /// went wherever focus already was (U3-41 audit). The tree family's bar does the show/focus
+    /// pair; this one now matches it, which is what makes a host's Ctrl+F path usable without a
+    /// second focus call.
     pub fn open(&mut self) {
         if self.visible {
             return;
         }
         self.visible = true;
+        self.base.show();
+        let id = crate::widget::runtime::registry_id_of(self.base.id()).unwrap_or(self.base.id());
+        let _ = crate::widget::runtime::focus_widget(id);
         self.base.request_redraw();
     }
 
@@ -100,6 +119,7 @@ impl GridFindBar {
         self.query.clear();
         self.preedit.clear();
         self.current_match = None;
+        self.base.hide();
         self.closed.emit(());
         self.base.request_redraw();
     }
@@ -293,6 +313,18 @@ impl Widget for GridFindBar {
     /// The query/replace fields edit text, so composition text belongs to this control even
     /// though its kind is the shared `Panel` (U3-02).
     fn accepts_ime_input(&self) -> bool {
+        true
+    }
+    /// A closed bar paints nothing, so it must not accept a press over its rectangle.
+    fn contains_point(&self, point: Point) -> bool {
+        self.visible && self.base.contains_point_with_touch_expansion(point)
+    }
+    /// A find bar owns the keyboard while it is open, so Tab must be able to reach it.
+    ///
+    /// Its kind is `Panel`, which `WidgetKind::wants_keyboard_focus` does not list; without this
+    /// override the bar could not be focused by click or by Tab, and `Ctrl+F` left the keys in the
+    /// grid behind it (U3-41).
+    fn is_focusable(&self) -> bool {
         true
     }
     fn set_state_theme_hook(&mut self) {

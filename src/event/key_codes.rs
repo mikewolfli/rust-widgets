@@ -78,6 +78,14 @@ pub const HOME: u32 = 36;
 /// The End key.
 pub const END: u32 = 35;
 
+/// The `F` letter key.
+///
+/// Letters are part of the convention too: [`ascii_key_code`] folds a printable character to its
+/// upper-case ASCII value, so `Ctrl+F` reaches a handler as `70`. Only the letters a control
+/// actually branches on need a name here; this one exists because the data grid opens its find
+/// bar on `Ctrl+F` (U3-41).
+pub const F: u32 = 70;
+
 /// The Page Up key.
 pub const PAGE_UP: u32 = 33;
 
@@ -170,6 +178,7 @@ mod tests {
             (PAGE_UP, Key::PageUp),
             (PAGE_DOWN, Key::PageDown),
             (DELETE, Key::Delete),
+            (F, Key::F),
             (F1, Key::F1),
             (F2, Key::F2),
             (F3, Key::F3),

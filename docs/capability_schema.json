@@ -10858,6 +10858,11 @@
         "shape": "scalar"
       },
       {
+        "name": "find_requested",
+        "payload": null,
+        "shape": null
+      },
+      {
         "name": "header_clicked",
         "payload": "uint",
         "shape": "scalar"

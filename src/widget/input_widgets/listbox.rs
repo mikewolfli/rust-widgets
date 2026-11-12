@@ -2270,6 +2270,7 @@ mod tests {
         list.handle_event(&Event::MouseRelease { pos: Point::new(rail.x, 90), button: 1 });
     }
 
+    #[cfg(full_widgets)]
     #[test]
     fn an_empty_list_keeps_an_empty_state_caption() {
         let mut list = ListBox::new(Rect::new(0, 0, 200, 120));

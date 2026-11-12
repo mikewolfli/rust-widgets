@@ -439,7 +439,7 @@ impl Widget for Badge {
         match name {
             "count_changed" => {
                 Some(EventSignalRef::mapped("count_changed", &self.count_changed, |value| {
-                    CapabilityValue::Int(*value as i64)
+                    CapabilityValue::UInt(*value as u64)
                 }))
             }
             "level_changed" => {

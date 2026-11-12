@@ -20,6 +20,8 @@ impl Draw for DataGrid {
         self.poll_grid_status_bar();
         self.poll_summary_row();
         self.poll_header_menu();
+        // A find-bar match moves the current cell before the frame that shows it (U3-41).
+        self.poll_find_bar();
         let rect = self.base.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for

@@ -2311,10 +2311,12 @@ impl Platform for WindowsPlatform {
     fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
         #[cfg(target_os = "windows")]
         {
-            // State-backed drag-drop (platform native OLE pending)
-            // Full OLE implementation (IDropSource/IDropTarget) requires:
-            // DoDragDrop, OleInitialize, RegisterDragDrop, RevokeDragDrop
-            // See: https://learn.microsoft.com/en-us/windows/win32/shell/dragdrop
+            // Application-internal drag and drop, recorded by the shared backend state.
+            //
+            // U3-36 (decided): this backend does **not** create the OLE objects an OS-level drag
+            // needs (IDropSource/IDropTarget via OleInitialize/DoDragDrop/RegisterDragDrop). The
+            // supported surface is in-app dragging plus `inject_drop_event` for a host that owns
+            // native dragging; `cookbook/*/src/chapters/platform-support.md` states the boundary.
             self.state.begin_drag(source_widget_id, mime, payload)
         }
         #[cfg(not(target_os = "windows"))]
@@ -2326,7 +2328,7 @@ impl Platform for WindowsPlatform {
     fn poll_drop_event(&self) -> Option<DropEvent> {
         #[cfg(target_os = "windows")]
         {
-            // State-backed drop event polling (OLE polling pending)
+            // State-backed drop events only; see `begin_drag` for the OS-level boundary (U3-36).
             self.state.pop_drop_event()
         }
         #[cfg(not(target_os = "windows"))]
@@ -2337,7 +2339,7 @@ impl Platform for WindowsPlatform {
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         #[cfg(target_os = "windows")]
         {
-            // State-backed drop event injection (OLE injection pending)
+            // The supported extension point for a host that owns native dragging (U3-36).
             self.state.inject_drop_event(event)
         }
         #[cfg(not(target_os = "windows"))]

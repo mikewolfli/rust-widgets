@@ -507,6 +507,12 @@ if let Some(event) = state.pop_drop_event() {
 state.inject_drop_event(event);
 ```
 
+> **範圍。** 這裡的拖放是**應用程式內**拖放。各後端把拖曳記錄在 `BackendState`，但都不建立作業系統級
+> 拖曳所需的原生物件（Windows 的 `IDropSource`/`IDropTarget`，經由
+> `DoDragDrop`/`RegisterDragDrop`；其他桌面平台對應的 pasteboard/XDND 物件）。因此，從桌面拖入
+> 的檔案不會以 `DropEvent` 的形式到達。接管作業系統級拖曳的宿主仍可透過
+> `inject_drop_event` 投遞結果——這是受支援的擴充點。
+
 ---
 
 ## 8. IME 系統

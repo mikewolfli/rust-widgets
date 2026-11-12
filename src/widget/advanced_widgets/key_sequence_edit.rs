@@ -547,13 +547,22 @@ impl Widget for KeySequenceEdit {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "sequence_changed" | "key_sequence_changed" => {
+            // The two published spellings carry different declared shapes: the compatibility
+            // spelling is a one-element list, the canonical name is a scalar string. They used to
+            // share one arm that always built the tuple, so the canonical wire delivered a
+            // `Tuple` where its row promises `String`.
+            "sequence_changed" => {
                 Some(EventSignalRef::mapped("sequence_changed", &self.key_sequence_changed, |v| {
                     CapabilityValue::Tuple(crate::compat::Vec::from([CapabilityValue::String(
                         v.to_display_string(),
                     )]))
                 }))
             }
+            "key_sequence_changed" => Some(EventSignalRef::mapped(
+                "key_sequence_changed",
+                &self.key_sequence_changed,
+                |v| CapabilityValue::String(v.to_display_string()),
+            )),
             "conflict_detected" => {
                 Some(EventSignalRef::mapped("conflict_detected", &self.conflict_detected, |v| {
                     CapabilityValue::String(v.to_display_string())
@@ -1414,6 +1423,47 @@ mod tests {
         second.set_chords(vec![KeySequence::new(0x01, 86, "V")]);
         assert!(!first.conflicts_with(&second));
         assert_eq!(first.sequence_len(), 2, "set_chords keeps every chord");
+    }
+
+    /// The canonical and compatibility spellings keep the payload shapes their rows declare.
+    ///
+    /// `key_sequence_changed` promises a scalar string; `sequence_changed` promises a one-element
+    /// list (the compatibility spelling). One shared arm used to deliver the tuple for both, so the
+    /// canonical wire delivered a carrier its row does not declare.
+    #[test]
+    fn the_two_sequence_spellings_keep_their_declared_payload_shapes() {
+        use crate::widget::Widget;
+        use std::sync::{Arc, Mutex};
+
+        let editor = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        let canonical = Arc::new(Mutex::new(Vec::<CapabilityValue>::new()));
+        let compat = Arc::new(Mutex::new(Vec::<CapabilityValue>::new()));
+
+        let canonical_sink = Arc::clone(&canonical);
+        editor
+            .event_signal_dyn("key_sequence_changed")
+            .expect("the canonical spelling is published")
+            .subscribe(Box::new(move |value| {
+                canonical_sink.lock().unwrap().push(value.clone());
+            }));
+        let compat_sink = Arc::clone(&compat);
+        editor
+            .event_signal_dyn("sequence_changed")
+            .expect("the compatibility spelling is published")
+            .subscribe(Box::new(move |value| {
+                compat_sink.lock().unwrap().push(value.clone());
+            }));
+
+        editor.key_sequence_changed.emit(KeySequence::new(0x01, 83, "S"));
+
+        assert!(
+            matches!(canonical.lock().unwrap().first(), Some(CapabilityValue::String(_))),
+            "key_sequence_changed is declared as a scalar string"
+        );
+        assert!(
+            matches!(compat.lock().unwrap().first(), Some(CapabilityValue::Tuple(_))),
+            "sequence_changed is declared as a one-element list"
+        );
     }
 
     #[test]

@@ -600,3 +600,21 @@ The sentinel steps ([3/4], [4/4]) are not separately injected: they exist for th
 **exporter** stops carrying a fact (a control losing the shared `a11y_role` row, a renamed event
 reverting), which a byte comparison cannot see because the exporter is internally consistent in
 both states.
+
+## Event-wiring registration (2026-11-12)
+
+The 39 controls whose `event_signal_dyn` was already implemented but unregistered were added to
+`CONVERTED` + `STRUCT_IMPL`. Two injections now prove both failure directions, including the new
+direction-2 branch:
+
+| gate | injected | reported |
+|---|---|---|
+| `check_event_signal_dyn.sh` (`--inject=`) | pretended `tree_find_bar.match_changed` had no arm | `tree_find_bar: \`match_changed\` is published but \`event_signal_dyn\` does not resolve it` / `tree_find_bar: \`event_signal_dyn\` resolves \`__injected__\`, which neither this control nor any control sharing its struct publishes — nothing can subscribe to it` / exit 1 |
+| `check_event_signal_dyn.sh` (`--inject-unconverted=`) | pretended `tree_find_bar` was not registered in `CONVERTED` | `tree_find_bar: publishes 1 event(s) but is neither converted nor listed in NOT_YET_CONVERTED with a reason` / exit 1 |
+
+The `--inject-unconverted` mode exists because `NOT_YET_CONVERTED` is now empty: without it the
+hard-failure branch could only be observed by a real regression. Registering the 39 controls also
+put their arms under `check_event_payload_types.sh` for the first time, which found two real
+carrier mismatches (`badge.count_changed` delivered `Int` for a declared `UInt`;
+`key_sequence_editor.key_sequence_changed` delivered the compatibility tuple for a declared scalar
+string). Both arms were fixed; the second has a regression test.

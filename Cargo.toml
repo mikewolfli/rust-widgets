@@ -1229,6 +1229,15 @@ name = "export_control_svgs"
 path = "examples/export_control_svgs.rs"
 required-features = ["desktop", "code-editor", "markdown-editor", "builtin-languages"]
 
+# AG-13 — writes `docs/capability_schema.json`. It reads `WidgetFactory` and
+# `all_capability_manifests_json`, which exist only under `full_widgets` (a real device profile
+# with the unstripped widget set), so a cross-profile `cargo check --examples` (harmony/ios/mini)
+# must skip it rather than try to compile a body whose imports are configured out.
+[[example]]
+name = "export_capability_schema"
+path = "examples/export_capability_schema.rs"
+required-features = ["desktop"]
+
 # BLUE25 ICON-6 — renders every `IconName` and prints its contour count, ink and a
 # digest of the picture, so `tools/icon_census.txt` has a reproducible producer and
 # `tests/icon_census_test.rs` can assert every icon draws ink and no two draw one
