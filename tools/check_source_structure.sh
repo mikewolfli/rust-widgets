@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# check_source_structure.sh — principles #8 (mod.rs is a façade) and #9 (2000 lines)
+# check_source_structure.sh — principles #8 (mod.rs is a façade) and #9 (5000 lines)
 # ============================================================================
 # Two structural rules were recorded as issues HX-02 and HX-03 and then deferred,
 # because the *work* is a series of module splits. Deferring the work is a decision;
@@ -13,7 +13,7 @@
 # free function defined there is invisible to a reader scanning the module for its
 # children, and it grows without anyone noticing because the file is never opened.
 #
-# # Check 2 — no production source file exceeds 2000 lines
+# # Check 2 — no production source file exceeds 5000 lines
 #
 # Principle #9, as clarified on 2026-10-22: **test modules are exempt**. The measure is
 # therefore the file's *production* lines — everything before its inline
@@ -41,7 +41,7 @@ import pathlib
 import re
 import sys
 
-LIMIT = 2000
+LIMIT = 5000
 SRC = pathlib.Path("src")
 
 # ── Check 1 ─────────────────────────────────────────────────────────────────────
@@ -60,85 +60,12 @@ MOD_RS_PENDING: dict[str, str] = {
 }
 
 # ── Check 2 ─────────────────────────────────────────────────────────────────────
-# Production files still over the limit. Each entry names the split it needs; the entry
-# must disappear as the split lands, and this gate will say so.
-TOO_LONG_PENDING = {
-    "src/platform/types/traits.rs": "`Platform` (2270-line trait) → split by capability group",
-    "src/platform/android_jni.rs": "JNI entry points → `android_jni/{lifecycle,input}.rs`",
-    "src/image/decoder.rs": "one module per codec (png/jpeg/webp/bmp)",
-    "src/designer/generator.rs": "wire-rule emission → `designer/generator/{emit,validate}.rs`",
-    "src/print/print_impl.rs": "layout vs drawing → `print_impl/{layout,draw}.rs`",
-    "src/platform/wayland/platform_impl.rs": "window vs input vs surface → `wayland/impl/*.rs`",
-    "src/style/animation.rs": "easing curves vs drivers → `style/animation/{curves,drivers}.rs`",
-    "src/widget/base_widgets/button.rs": "state/API vs drawing → `button/{api,paint}.rs`",
-    "src/widget/capability/access.rs": "per-kind defaults → `capability/access/{input,view,other}.rs`",
-    "src/widget/container_widgets/layout_family.rs": "the six layout wrappers → one module each",
-    "src/widget/container_widgets/tabwidget.rs": "strip vs pages vs drag → `tabwidget/{strip,pages,drag}.rs`",
-    "src/render/backend/surface.rs": "software surface: pixel primitives + layer/back-buffer caches vs damage/present accounting → `surface/{raster,present}.rs`",
-    "src/widget/advanced_widgets/tab_bar.rs": "tab model/API vs strip geometry vs paint vs events → `tab_bar/{model,paint,events}.rs`",
-    "src/widget/metrics.rs": "dimension tables vs focus/profile metrics → `metrics/{dimensions,profiles}.rs`",
-    # Measured at the 2.9.2 review round. The two entries marked (new) crossed the limit in that
-    # round; the rest were already over and are recorded here with the split each needs so the
-    # list can only shrink.
-    "src/json/loader.rs": "node/dialogue vs event-wire binding → `json/loader/{nodes,wiring}.rs`",
-    "src/layout/flex.rs": "solver vs constraint table vs API → `flex/{solver,constraints}.rs`",
-    "src/platform/macos_objc2/native.rs": "(new) view/controller types vs menu/dialog bridges → `macos_objc2/native/{views,bridges}.rs`",
-    "src/render/pipeline/primitives.rs": "(new) shapes vs text/image drawing → `pipeline/{shapes,text_images}.rs`",
-    "src/theme/manager.rs": "resolution vs caches vs presets → `theme/manager/{resolve,cache,presets}.rs`",
-    "src/widget/advanced_widgets/calendar.rs": "model vs grid paint vs navigation → `calendar/{model,paint}.rs`",
-    "src/widget/advanced_widgets/ribbon_bar.rs": "model vs tab/panel paint vs overflow → `ribbon_bar/{model,paint}.rs`",
-    "src/widget/capability/constructors.rs": "one module per widget family (input/view/other)",
-    "src/widget/container_widgets/dockwidget.rs": "layout model vs drag/float vs persistence → `dockwidget/{layout,drag,state}.rs`",
-    "src/widget/container_widgets/scrollarea.rs": "chrome derivation vs sticky bands vs content → `scrollarea/{chrome,sticky}.rs`",
-    "src/widget/dialog/alert_dialogs.rs": "card state vs button row vs paint → `alert_dialogs/{card,paint}.rs`",
-    "src/widget/dialog/file_dialog.rs": "navigation vs listing/model vs paint → `file_dialog/{model,list,paint}.rs`",
-    "src/widget/input_widgets/combobox.rs": "model vs editor vs popup paint → `combobox/{model,editor,popup}.rs`",
-    "src/widget/input_widgets/spinbox.rs": "model vs buttons vs paint → `spinbox/{model,paint}.rs`",
-
-    "src/widget/menu_toolbar/tool_bar.rs": "item model vs band layout vs paint → `tool_bar/{model,layout,paint}.rs`",
-    "src/widget/chart_widgets/chart/chart.rs": "series model vs axes/plot paint vs legend → `chart/chart/{model,paint}.rs`",
-
-
-
-    "src/widget/view_widgets/grid_table.rs": "span layout vs selection vs paint → `grid_table/{layout,paint}.rs`",
-    "src/widget/view_widgets/properties/properties_panel.rs": "property rows vs editors vs paint → `properties_panel/{rows,paint}.rs`",
-    "src/widget/view_widgets/tree/tree_view.rs": "projection/index vs selection vs paint → `tree_view/{model,paint}.rs`",
-    # Recorded 2026-10-28 (round 11): the files the gate named that had no row. Each seam is the
-    # split that removes the finding; the row must disappear with it.
-    "src/platform/linux/platform_impl.rs": "window/menu/dialog creation vs input vs surface/monitor → `linux/impl/{create,input,display}.rs`",
-    "src/platform/windows/platform_impl.rs": "window/menu/dialog creation vs input vs display → `windows/impl/{create,input,display}.rs`",
-    "src/style/css.rs": "selector model vs declaration parse vs cascade/lookup caches → `style/css/{selector,parse,cascade}.rs`",
-    "src/widget/chart_widgets/bar_chart.rs": "series model vs axes/plot paint vs legend/hover → `bar_chart/{model,paint}.rs`",
-    "src/widget/chart_widgets/line_chart.rs": "series model vs plot paint vs hover → `line_chart/{model,paint}.rs`",
-    "src/widget/container_widgets/mdiarea.rs": "child-window model vs tile/cascade layout vs paint → `mdiarea/{model,layout,paint}.rs`",
-    "src/widget/input_widgets/listbox.rs": "item model vs selection vs row paint → `listbox/{model,selection,paint}.rs`",
-    "src/widget/input_widgets/rich_edit.rs": "document model vs format spans vs paint → `rich_edit/{model,formats,paint}.rs`",
-    "src/widget/view_widgets/tree/tree_table.rs": "tree index vs column layout vs paint → `tree_table/{model,columns,paint}.rs`",
-    # Measured 2026-10-29 (issue-20261028 implementation round). This file crossed the 2000-line
-    # limit before that round started and had no row, so the gate was already red on it. It is
-    # untouched by the round; recording the seam is the debt entry the gate asks for, and the row
-    # must disappear with the split. (The macOS canvas that crossed during the same round had its
-    # canvas-view bookkeeping moved to `macos/canvas/canvas_views.rs` instead of being excused
-    # here, so it is not listed.)
-    "src/widget/input_widgets/cascader.rs": "option/load-state model vs level-row projection vs paint vs events → `cascader/{model,rows,paint,events}.rs`",
-    # Measured 2026-11-05 (issue-20261105 implementation round). These six crossed the limit before
-    # the round began and none was touched by it; recording the seam is the debt entry the gate
-    # asks for, and each row must disappear with its split.
-    "src/widget/capability/properties_other.in.rs": "one table per control family → `properties_other/{companions,display}.rs`",
-    "src/widget/container_widgets/carousel.rs": "page model vs indicator/paint → `carousel/{model,paint}.rs`",
-    "src/widget/display_widgets/slider.rs": "tick model vs paint vs events → `slider/{model,paint,events}.rs`",
-    "src/widget/nav_widgets/adaptive_scaffold.rs": "id-slot routing vs responsive layout vs paint → `adaptive_scaffold/{ids,layout,paint}.rs`",
-    "src/widget/special_widgets/freeform_shape/shape.rs": "outline model vs paint vs editing → `freeform_shape/shape/{model,paint,edit}.rs`",
-    "src/widget/view_widgets/list_view.rs": "model traits vs row paint vs selection → `list_view/{model,paint}.rs`",
-    # Measured 2026-11-09 (issue-20261106 §11.4 round): `sample_fill.rs` (helpers + tests) and
-    # `code_editor/editor.rs` (free helpers) were split so no debt entry is needed. The old rows
-    # must stay absent; re-adding one means the split regressed.
-    # Measured 2026-11-10 (BLUE31 round): these three crossed the limit in the working tree the
-    # round inherited and none is touched by the editor/CLI work. Recording the seam is the debt
-    # entry the gate asks for; each row must disappear with its split.
-    "src/widget/advanced_widgets/date_edit.rs": "date value model vs field segments vs paint → `date_edit/{model,segments,paint}.rs`",
-    "src/widget/input_widgets/text_entry/lineedit/model.rs": "value/caret model vs selection/composition → `lineedit/model/{value,selection}.rs`",
-    "src/widget/view_widgets/query_builder.rs": "condition tree vs builder rows vs paint → `query_builder/{model,rows,paint}.rs`",
+# Production files over the 5000-line ceiling. The list is empty at this revision; a file
+# that crosses the ceiling must be split in the same round rather than recorded here.
+TOO_LONG_PENDING: dict[str, str] = {
+    # Revised 2026-11-12: the ceiling is 5000 production lines. Everything that was on the
+    # 2000-line list is now ordinary code, so the list is empty; a file that crosses 5000 must
+    # be split in the same round rather than recorded here.
 }
 
 

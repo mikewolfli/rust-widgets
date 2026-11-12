@@ -1787,7 +1787,7 @@ mod tests {
             timeline.drag_preview
         );
 
-        timeline.handle_event(&Event::mouse_release(200, 12, 1));
+        timeline.handle_event(&Event::mouse_release(200, 12, 1, 0));
         assert_eq!(timeline.drag_preview, None, "release clears the preview");
     }
 }

@@ -87,9 +87,19 @@ impl PrintPagination {
         self.ranges = ranges;
         Ok(())
     }
+    /// The largest copy count this pagination will materialize (T3-14).
+    ///
+    /// `selected_pages` expands `pages × copies` into one `Vec<u32>`, so a host dialog that
+    /// forwarded `u32::MAX` (or any mistaken large value) allocated that many indices before the
+    /// first page was rendered. 999 is the usual spooler convention and is far above any real job.
+    pub const MAX_COPIES: u32 = 999;
+
     /// Set copy count.
+    ///
+    /// Clamped to `1..=MAX_COPIES`: a value outside that range cannot be honoured without
+    /// materializing an unbounded page list.
     pub fn set_copies(&mut self, copies: u32) {
-        self.copies = copies.max(1);
+        self.copies = copies.clamp(1, Self::MAX_COPIES);
     }
     /// Set page order.
     pub fn set_page_order(&mut self, order: PageOrder) {
@@ -510,7 +520,7 @@ impl PrintDialog {
     }
     /// Sets requested copy count and mirrors it into pagination.
     pub fn set_copies(&mut self, copies: u32) {
-        self.copies = copies.max(1);
+        self.copies = copies.clamp(1, PrintPagination::MAX_COPIES);
         self.pagination.set_copies(self.copies);
     }
     /// Return current pagination settings.
@@ -957,18 +967,20 @@ impl PrintBackend {
                     .map_err(|err| format!("clock error: {err}"))?
                     .as_millis();
                 let label = format!("memory-job-{ts}");
-                if let Ok(mut jobs) = MEMORY_PRINT_JOBS.lock() {
-                    jobs.push((label, content));
-                    // Evict the oldest instead of growing without bound; see
-                    // `MEMORY_PRINT_JOB_LIMIT`.
-                    if jobs.len() > MEMORY_PRINT_JOB_LIMIT {
-                        jobs.remove(0);
-                    }
-                    log::info!(
-                        "[print] Memory backend stored print job ({} commands)",
-                        job.commands.len()
-                    );
+                // Recover a poisoned lock like every other access to this table: a panic in one
+                // previous print must not silently drop every later memory job (T3-34).
+                let mut jobs =
+                    MEMORY_PRINT_JOBS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                jobs.push((label, content));
+                // Evict the oldest instead of growing without bound; see
+                // `MEMORY_PRINT_JOB_LIMIT`.
+                if jobs.len() > MEMORY_PRINT_JOB_LIMIT {
+                    jobs.remove(0);
                 }
+                log::info!(
+                    "[print] Memory backend stored print job ({} commands)",
+                    job.commands.len()
+                );
                 Ok(())
             }
         }
@@ -2380,6 +2392,20 @@ mod tests {
         pagination.set_collate(false);
         let pages = pagination.selected_pages(4);
         assert_eq!(pages, vec![0, 0, 1, 1, 2, 2]);
+    }
+
+    /// T3-14: a copy count is bounded before it becomes a page list.
+    #[test]
+    fn pagination_bounds_the_copy_count() {
+        let mut pagination = PrintPagination::new();
+        pagination.set_copies(u32::MAX);
+        assert_eq!(pagination.copies, PrintPagination::MAX_COPIES);
+        // Even the maximum expands deterministically rather than overflowing.
+        let pages = pagination.selected_pages(2);
+        assert_eq!(pages.len(), 2 * PrintPagination::MAX_COPIES as usize);
+
+        pagination.set_copies(0);
+        assert_eq!(pagination.copies, 1, "zero copies is still one copy");
     }
     #[test]
     fn printer_respects_explicit_pagination() {

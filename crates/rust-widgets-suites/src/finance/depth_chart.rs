@@ -859,6 +859,7 @@ impl Draw for DepthChart {
                 });
             }
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

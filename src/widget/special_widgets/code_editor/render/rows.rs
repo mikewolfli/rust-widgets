@@ -287,6 +287,10 @@ impl CodeEditor {
                             hidden,
                             font_size_bits: font.size().to_bits(),
                             font_weight: font.weight(),
+                            font_family_hash: font_family_hash(font.family()),
+                            font_italic: font.is_italic(),
+                            letter_spacing_bits: font.letter_spacing().to_bits(),
+                            word_spacing_bits: font.word_spacing().to_bits(),
                         };
                         let mut labels = self.fold_labels.borrow_mut();
                         let index = match labels.iter().position(|cached| cached.key == key) {

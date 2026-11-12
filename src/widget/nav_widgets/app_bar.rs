@@ -779,6 +779,14 @@ impl Draw for AppBar {
                 crate::widget::BaseWidget::disabled_ink_weight(),
             )
         };
+        // A hovered bar lifts its fill a small step toward the ink, so pointing at the bar is
+        // visible even where the theme declares no `app_bar:hover` fill. At rest the fill is
+        // untouched, which keeps the default picture byte-identical.
+        let background = if is_enabled && self.base.is_hovered() {
+            background.blend(&text_color, 0.03)
+        } else {
+            background
+        };
         context.face_with_gradient_corners(
             rect,
             background,
@@ -1132,6 +1140,12 @@ impl EventHandler for AppBar {
         }
 
         match event {
+            // The bar's fill answers a hover, so the entry/exit transitions own a repaint (the
+            // base only records the flag).
+            Event::MouseEnter { .. } | Event::MouseLeave { .. } => {
+                self.base.handle_event(event);
+                self.base.request_redraw();
+            }
             // A press arms the bar and records which affordance it touched; it commits
             // nothing. The action belongs to the release, which is the crate's click
             // convention and the only way one physical click can report one event.
@@ -1148,7 +1162,7 @@ impl EventHandler for AppBar {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1266,7 +1280,7 @@ mod tests {
         // Tap in left zone (first 48px). The press arms the bar, the release commits.
         bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not emit");
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 1);
     }
 
@@ -1284,7 +1298,11 @@ mod tests {
         // Tap in center — falls through to back when show_back is true
         bar.handle_event(&Event::MousePress { pos: Point::new(188, 28), button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not emit");
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(188, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(188, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(fired.load(Ordering::SeqCst), 1);
     }
 
@@ -1302,7 +1320,11 @@ mod tests {
         // Tap in right action zone (last 80px)
         bar.handle_event(&Event::MousePress { pos: Point::new(340, 28), button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not emit");
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(340, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(340, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(fired.load(Ordering::SeqCst), 1);
     }
 
@@ -1320,7 +1342,11 @@ mod tests {
 
         // Tap in center — action should NOT fire
         bar.handle_event(&Event::MousePress { pos: Point::new(188, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(188, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(188, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(action_fired.load(Ordering::SeqCst), 0);
     }
 
@@ -1344,7 +1370,7 @@ mod tests {
         });
 
         bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1, modifiers: 0 });
         assert_eq!(back_fired.load(Ordering::SeqCst), 0);
         assert_eq!(action_fired.load(Ordering::SeqCst), 0);
     }
@@ -1409,7 +1435,7 @@ mod tests {
 
         // Right-button click should be ignored
         bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 2, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 2 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 2, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 0);
     }
 
@@ -1425,11 +1451,11 @@ mod tests {
         });
 
         // A release with no press behind it is not a click.
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a bare release must not emit");
 
         bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "one press+release emits once");
     }
 
@@ -1568,14 +1594,18 @@ mod tests {
 
         // Right edge: the arrow. Its zone is 48 px wide, so 380 is inside it.
         bar.handle_event(&Event::MousePress { pos: Point::new(380, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(380, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(380, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(back.load(Ordering::SeqCst), 1, "tapping the drawn arrow must press back");
         assert_eq!(action.load(Ordering::SeqCst), 0, "and must not press the action");
 
         // Left edge: the action, in an 80 px zone.
         back.store(0, Ordering::SeqCst);
         bar.handle_event(&Event::MousePress { pos: Point::new(20, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 28), button: 1, modifiers: 0 });
         assert_eq!(
             action.load(Ordering::SeqCst),
             1,
@@ -1658,7 +1688,7 @@ mod tests {
         });
         let pos = Point::new(overflow_rect.x + overflow_rect.width as i32 / 2, 28);
         bar.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos, button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert!(
             overflowed.load(Ordering::SeqCst),
             "tapping the drawn overflow must open the folded actions"
@@ -1699,7 +1729,7 @@ mod tests {
             back_sink.fetch_add(1, Ordering::SeqCst);
         });
         bar.handle_event(&Event::MousePress { pos: Point::new(20, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 28), button: 1, modifiers: 0 });
         assert_eq!(leading.load(Ordering::SeqCst), 1);
         assert_eq!(back.load(Ordering::SeqCst), 0, "the custom icon is not the back affordance");
     }
@@ -1718,7 +1748,11 @@ mod tests {
             sink.store(*index, Ordering::SeqCst);
         });
         bar.handle_event(&Event::MousePress { pos: Point::new(370, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(370, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(370, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(
             fired.load(Ordering::SeqCst),
             0,
@@ -1746,7 +1780,7 @@ mod tests {
         let pressed = crate::widget::svg::render_to_svg(&mut bar);
         assert_ne!(resting, pressed, "a press must change the pixels, not only the state");
 
-        bar.handle_event(&Event::MouseRelease { pos, button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_eq!(bar.widget_state(), WidgetState::Normal);
         assert!(bar.pressed_zone().is_none(), "the release clears the feedback");
     }
@@ -1779,7 +1813,7 @@ mod tests {
 
         bar.set_enabled(true);
         assert_eq!(bar.widget_state(), WidgetState::Normal, "the latch was cleared, not hidden");
-        bar.handle_event(&Event::MouseRelease { pos, button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_eq!(
             fired.load(Ordering::SeqCst),
             0,

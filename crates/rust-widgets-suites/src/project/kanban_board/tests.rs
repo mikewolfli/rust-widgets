@@ -333,7 +333,7 @@ mod cases {
 
         board.handle_event(&Event::mouse_press(centre.x, centre.y, 1));
         board.handle_event(&Event::mouse_move(centre.x + 1, centre.y));
-        board.handle_event(&Event::mouse_release(centre.x + 1, centre.y, 1));
+        board.handle_event(&Event::mouse_release(centre.x + 1, centre.y, 1, 0));
 
         assert_eq!(
             seen.lock().expect("activation sink poisoned").as_deref(),
@@ -357,7 +357,7 @@ mod cases {
 
         board.handle_event(&Event::mouse_press(start.x, start.y, 1));
         board.handle_event(&Event::mouse_move(start.x + 40, start.y + 10));
-        board.handle_event(&Event::mouse_release(start.x + 40, start.y + 10, 1));
+        board.handle_event(&Event::mouse_release(start.x + 40, start.y + 10, 1, 0));
 
         assert_eq!(
             *activations.lock().expect("activation counter poisoned"),
@@ -377,7 +377,7 @@ mod cases {
         board.handle_event(&Event::mouse_move(start.x + 40, start.y + 10));
         assert!(board.is_dragging_card(), "the drag must be active before the drop");
         board.handle_event(&Event::mouse_move(target.x, target.y));
-        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1, 0));
 
         assert_eq!(board.position_of("a"), Some(CardPosition { column: 2, card: 0 }));
         assert!(board.column(0).unwrap().cards.is_empty());
@@ -390,7 +390,7 @@ mod cases {
         board.handle_event(&Event::mouse_press(start.x, start.y, 1));
         board.handle_event(&Event::mouse_move(start.x + 40, start.y));
         // Far to the right of the last column.
-        board.handle_event(&Event::mouse_release(5000, 200, 1));
+        board.handle_event(&Event::mouse_release(5000, 200, 1, 0));
 
         assert_eq!(board.position_of("a"), Some(CardPosition { column: 0, card: 0 }));
         assert!(!board.is_dragging_card());
@@ -412,7 +412,7 @@ mod cases {
         board.handle_event(&Event::mouse_press(start.x, start.y, 1));
         board.handle_event(&Event::mouse_move(start.x + 40, start.y));
         board.handle_event(&Event::mouse_move(target.x, target.y));
-        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1, 0));
 
         assert_eq!(
             board.position_of("dragged"),
@@ -476,7 +476,7 @@ mod cases {
         // Cross the drag threshold, then release over the lower half of the last card so the
         // card lands after it.
         board.handle_event(&Event::mouse_move(first.x, last.y + last.height as i32 - 2));
-        board.handle_event(&Event::mouse_release(first.x, last.y + last.height as i32 - 2, 1));
+        board.handle_event(&Event::mouse_release(first.x, last.y + last.height as i32 - 2, 1, 0));
 
         assert_eq!(
             board.position_of("a"),
@@ -825,7 +825,7 @@ mod cases {
 
         board.handle_event(&Event::mouse_press(a.x + 10, a.y + 10, 1));
         board.handle_event(&Event::mouse_move(a.x + 10, target_y));
-        board.handle_event(&Event::mouse_release(a.x + 10, target_y, 1));
+        board.handle_event(&Event::mouse_release(a.x + 10, target_y, 1, 0));
         assert_eq!(board.card_lane("a"), Some("slow"));
     }
 
@@ -984,7 +984,7 @@ mod cases {
 
         board.handle_event(&Event::mouse_press(b.x + 10, b.y + 10, 1));
         board.handle_event(&Event::mouse_move(column_x, gap_y));
-        board.handle_event(&Event::mouse_release(column_x, gap_y, 1));
+        board.handle_event(&Event::mouse_release(column_x, gap_y, 1, 0));
 
         assert_eq!(board.card_lane("b"), Some("fast"), "the nearest band wins");
     }
@@ -1055,7 +1055,7 @@ mod cases {
         board.handle_event(&Event::mouse_press(start.x, start.y, 1));
         board.handle_event(&Event::mouse_move(start.x + 40, start.y + 10));
         board.handle_event(&Event::mouse_move(target.x, target.y));
-        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1, 0));
 
         let position = board.position_of("a").expect("a moved");
         assert_eq!(position, CardPosition { column: 2, card: 0 });
@@ -1246,7 +1246,7 @@ mod cases {
         let target = Point::new(dst.x + dst.width as i32 / 2, dst.y + HEADER_HEIGHT as i32 + 10);
         board.handle_event(&Event::mouse_press(start.x, start.y, 1));
         board.handle_event(&Event::mouse_move(target.x, target.y));
-        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1, 0));
 
         assert!(
             board.column(1).expect("dst").cards.len() <= 2,
@@ -1280,7 +1280,7 @@ mod cases {
         let target = card_center(&board, CardPosition { column: 0, card: 2 });
         board.handle_event(&Event::mouse_press(start.x, start.y, 1));
         board.handle_event(&Event::mouse_move(target.x, target.y));
-        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1, 0));
 
         let order: Vec<&str> = board
             .column(0)
@@ -1424,7 +1424,7 @@ mod cases {
         let target = Point::new(start.x, slow.y + slow.height as i32 / 2);
         board.handle_event(&Event::mouse_press(start.x, start.y, 1));
         board.handle_event(&Event::mouse_move(target.x, target.y));
-        board.handle_event(&Event::mouse_release(target.x, target.y, 1));
+        board.handle_event(&Event::mouse_release(target.x, target.y, 1, 0));
 
         assert_eq!(board.card_lane("a"), Some("slow"));
         assert_eq!(

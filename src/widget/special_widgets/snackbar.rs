@@ -757,7 +757,7 @@ impl EventHandler for Snackbar {
                     self.swipe_offset = 0.0;
                 }
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 let Some(origin) = self.swipe_origin_x.take() else {
                     return;
                 };
@@ -1147,7 +1147,7 @@ mod tests {
         // With the gesture off, a drag is inert.
         bar.handle_event(&Event::mouse_press(10, 90, 1));
         bar.handle_event(&Event::mouse_move(280, 90));
-        bar.handle_event(&Event::mouse_release(280, 90, 1));
+        bar.handle_event(&Event::mouse_release(280, 90, 1, 0));
         assert!(bar.is_visible(), "a disabled swipe must not dismiss");
         assert_eq!(bar.swipe_offset(), 0.0);
 
@@ -1157,7 +1157,7 @@ mod tests {
         bar.handle_event(&Event::mouse_press(10, 90, 1));
         bar.handle_event(&Event::mouse_move(160, 90));
         assert_eq!(bar.swipe_offset(), 150.0);
-        bar.handle_event(&Event::mouse_release(160, 90, 1));
+        bar.handle_event(&Event::mouse_release(160, 90, 1, 0));
         assert!(!bar.is_visible(), "a swipe past the threshold must dismiss");
         assert_eq!(bar.swipe_offset(), 0.0);
 
@@ -1165,7 +1165,7 @@ mod tests {
         bar.show("Still here");
         bar.handle_event(&Event::mouse_press(10, 90, 1));
         bar.handle_event(&Event::mouse_move(40, 90));
-        bar.handle_event(&Event::mouse_release(40, 90, 1));
+        bar.handle_event(&Event::mouse_release(40, 90, 1, 0));
         assert!(bar.is_visible(), "a short drag must not dismiss");
     }
 

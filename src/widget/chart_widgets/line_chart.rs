@@ -3341,7 +3341,7 @@ mod tests {
             }
         });
         lc.handle_event(&Event::MousePress { pos: pixel, button: 1, modifiers: 0 });
-        lc.handle_event(&Event::MouseRelease { pos: pixel, button: 1 });
+        lc.handle_event(&Event::MouseRelease { pos: pixel, button: 1, modifiers: 0 });
         assert_eq!(*clicked.lock().unwrap(), vec![(0, 1)], "the click was not swallowed by pan");
     }
 

@@ -3060,7 +3060,7 @@ mod tests {
         let y = gantt.lane_rect(0).y + 10;
         gantt.handle_event(&Event::mouse_press(x1 - 1, y, 1));
         gantt.handle_event(&Event::mouse_move(x1 + 20, y));
-        gantt.handle_event(&Event::mouse_release(x1 + 20, y, 1));
+        gantt.handle_event(&Event::mouse_release(x1 + 20, y, 1, 0));
 
         assert!(
             gantt.tasks()[0].end > 10,
@@ -3094,7 +3094,7 @@ mod tests {
         // Halfway across the bottom strip: the bar's 100 % becomes 50 %.
         let mid = x0 + (x1 - x0) / 2;
         gantt.handle_event(&Event::mouse_press(mid, bar_bottom, 1));
-        gantt.handle_event(&Event::mouse_release(mid, bar_bottom, 1));
+        gantt.handle_event(&Event::mouse_release(mid, bar_bottom, 1, 0));
 
         let task = &gantt.tasks()[0];
         assert_eq!((task.start, task.end), (start, end), "progress must not move the bar");
@@ -3529,7 +3529,7 @@ mod tests {
         let after = gantt.viewport();
         assert!(after.0 > before.0, "dragging left advances the window");
         assert_eq!(after.1 - after.0, before.1 - before.0, "the span is unchanged");
-        gantt.handle_event(&Event::mouse_release(start.x - 100, start.y, 1));
+        gantt.handle_event(&Event::mouse_release(start.x - 100, start.y, 1, 0));
         assert!(!gantt.is_panning());
     }
 
@@ -3623,7 +3623,7 @@ mod tests {
         gantt.remove_task(0);
         assert_eq!(gantt.drag.as_ref().map(|drag| drag.task), Some(0), "the drag follows the row");
 
-        gantt.handle_event(&Event::mouse_release(x, y, 1));
+        gantt.handle_event(&Event::mouse_release(x, y, 1, 0));
         assert!(gantt.drag.is_none());
 
         // A fresh drag whose own row disappears is cancelled, not committed elsewhere.
@@ -3770,7 +3770,7 @@ mod tests {
         assert!(gantt.drag.is_none());
         assert_eq!(gantt.selected_id(), None, "a pan is not a selection");
         assert!(seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default().is_empty());
-        gantt.handle_event(&Event::mouse_release(empty.x, empty.y, 1));
+        gantt.handle_event(&Event::mouse_release(empty.x, empty.y, 1, 0));
 
         // The label gutter is a selection target and lies outside the pan surface.
         gantt.handle_event(&Event::mouse_press(10, lane.y + 10, 1));

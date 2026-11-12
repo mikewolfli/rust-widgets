@@ -19,7 +19,6 @@ use crate::i18n::NumberFormat;
 
 /// The decimal/grouping separators for the active language.
 #[cfg(feature = "i18n")]
-#[allow(dead_code)]
 pub(crate) fn number_format() -> NumberFormat {
     thread_local! {
         // `(generation, format)`: the generation is bumped by every `set_language`, so a
@@ -81,23 +80,6 @@ pub(crate) fn localize_decimal_point(text: &mut crate::compat::String) {
         }
         *text = rewritten;
     }
-}
-
-/// Formats a fixed-point decimal with the locale's decimal separator.
-#[cfg(feature = "i18n")]
-#[allow(dead_code)]
-pub(crate) fn format_decimal(value: f64, decimals: u32) -> crate::compat::String {
-    let language = crate::i18n::current_language();
-    crate::i18n::format_number(value, decimals, language.as_deref())
-}
-
-/// Formats a fixed-point decimal; with i18n off this is the C locale spelling.
-#[cfg(not(feature = "i18n"))]
-#[allow(dead_code)]
-pub(crate) fn format_decimal(value: f64, decimals: u32) -> crate::compat::String {
-    let mut text = crate::compat::String::new();
-    let _ = core::fmt::Write::write_fmt(&mut text, format_args!("{value:.*}", decimals as usize));
-    text
 }
 
 /// Normalises user-entered number text to the `f64` grammar (`str::parse`).

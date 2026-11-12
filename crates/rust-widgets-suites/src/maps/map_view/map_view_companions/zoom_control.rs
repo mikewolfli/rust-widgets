@@ -507,5 +507,6 @@ impl Draw for ZoomControl {
                 HorizontalAlignment::Left,
             );
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }

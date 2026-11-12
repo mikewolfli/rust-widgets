@@ -191,6 +191,18 @@ struct SearchAdvanceCache {
     cuts: Vec<(usize, i32)>,
 }
 
+/// One `(start, end)` range and one advance per character, derived from a cumulative cut table.
+fn ranges_and_advances(cuts: &[(usize, i32)]) -> (Vec<(usize, usize)>, Vec<f32>) {
+    let count = cuts.len().saturating_sub(1);
+    let mut ranges = Vec::with_capacity(count);
+    let mut advances = Vec::with_capacity(count);
+    for pair in cuts.windows(2) {
+        ranges.push((pair[0].0, pair[1].0));
+        advances.push((pair[1].1 - pair[0].1) as f32);
+    }
+    (ranges, advances)
+}
+
 impl SearchBar {
     /// Creates a new SearchBar widget with the given geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -723,7 +735,7 @@ impl Widget for SearchBar {
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
         let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
-        let x = origin.x + self.prefix_advance(font, caret);
+        let x = origin.x + self.caret_advance(font, caret);
         Some(crate::widget::widget_trait::InputMethodQuery {
             caret_rect: Rect::new(x, rect.y + 4, 1, rect.height.saturating_sub(8).max(1)),
             caret_byte: Some(caret),
@@ -965,10 +977,12 @@ impl Draw for SearchBar {
         // — Selection band —
         if !self.text.is_empty() {
             if let Some((start, end)) = self.selection_range() {
-                let start_x =
-                    value_origin.x + context.measure_text(&self.text[..start], font).width as i32;
-                let end_x =
-                    value_origin.x + context.measure_text(&self.text[..end], font).width as i32;
+                let start_x = value_origin.x + self.caret_advance(font, start);
+                let end_x = value_origin.x + self.caret_advance(font, end);
+                // The two logical offsets can swap visual sides in an RTL run, so order them
+                // before building the band (UX6-02).
+                let (start_x, end_x) =
+                    if start_x <= end_x { (start_x, end_x) } else { (end_x, start_x) };
                 let line_height = context.text_line(Rect::new(0, 0, 1, rect.height), font).height;
                 context.fill_rect(
                     Rect::new(
@@ -1047,8 +1061,7 @@ impl Draw for SearchBar {
             if self.focused && self.cursor_blink.is_visible() {
                 let caret_byte =
                     crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
-                let caret_x = value_origin.x
-                    + context.measure_text(&self.text[..caret_byte], font).width as i32;
+                let caret_x = value_origin.x + self.caret_advance(font, caret_byte);
                 let caret_x = caret_x.min(text_left + text_width as i32 - 1).max(text_left);
                 context.draw_line(
                     Point::new(caret_x, value_box.y + 2),
@@ -1238,6 +1251,11 @@ impl SearchBar {
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
         let dx = (x - origin.x).max(0);
+        // A reordered (RTL) value paints its clusters in visual order, so map the press back
+        // through the same permutation before the logical boundary search (UX6-02).
+        if let Some(byte) = self.visual_byte_at(font, dx) {
+            return byte;
+        }
         // Read the cached boundaries instead of shaping every glyph on each press (IP-007).
         let cuts = self.advance_cuts(font);
         let mut best = 0usize;
@@ -1286,6 +1304,55 @@ impl SearchBar {
             .map(|(_, advance)| *advance)
             .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0))
     }
+
+    /// The caret's advance, routed through the **visual** order when the value reorders.
+    ///
+    /// A right-to-left value is painted in visual order, so the logical prefix advance places the
+    /// caret at the opposite end of the run (UX6-02). An all-LTR value keeps the cached logical
+    /// prefix untouched.
+    fn caret_advance(&self, font: &crate::core::Font, byte: usize) -> i32 {
+        self.visual_prefix_advance(font, byte).unwrap_or_else(|| self.prefix_advance(font, byte))
+    }
+
+    /// The **visual** advance of the caret at `byte`, or `None` for a left-to-right value.
+    fn visual_prefix_advance(&self, font: &crate::core::Font, byte: usize) -> Option<i32> {
+        if !crate::render::text::bidi::has_rtl_char(&self.text) {
+            return None;
+        }
+        let cuts = self.advance_cuts(font);
+        if cuts.len() < 2 {
+            return None;
+        }
+        let (ranges, advances) = ranges_and_advances(&cuts);
+        let levels = crate::render::text::line::line_bidi_levels(&self.text, &ranges, font, 1.0);
+        crate::render::text::bidi::caret_visual_advance_from_levels(
+            levels.as_ref(),
+            &ranges,
+            &advances,
+            byte,
+        )
+        .map(|x| x.round() as i32)
+    }
+
+    /// The logical byte boundary nearest a **visual** `x`, or `None` for a left-to-right value.
+    fn visual_byte_at(&self, font: &crate::core::Font, x: i32) -> Option<usize> {
+        if !crate::render::text::bidi::has_rtl_char(&self.text) {
+            return None;
+        }
+        let cuts = self.advance_cuts(font);
+        if cuts.len() < 2 {
+            return None;
+        }
+        let (ranges, advances) = ranges_and_advances(&cuts);
+        let levels = crate::render::text::line::line_bidi_levels(&self.text, &ranges, font, 1.0);
+        let boundary = crate::render::text::bidi::caret_boundary_from_visual_advance(
+            levels.as_ref(),
+            &ranges,
+            &advances,
+            x as f32,
+        )?;
+        Some(cuts.get(boundary).map_or_else(|| self.text.len(), |&(offset, _)| offset))
+    }
 }
 
 impl EventHandler for SearchBar {
@@ -1302,7 +1369,7 @@ impl EventHandler for SearchBar {
             // UX6-09: a double-click selects the word under the pointer, the same rule the
             // `LineEdit` family applies. The recent-search menu keeps its own press arm, so a
             // double-click on a menu row must not select text behind it.
-            Event::MouseDoubleClick { pos, button }
+            Event::MouseDoubleClick { pos, button, .. }
                 if *button == 1
                     && self.geometry().contains_point(*pos)
                     && self.recent_row_at(*pos).is_none() =>
@@ -1369,7 +1436,7 @@ impl EventHandler for SearchBar {
                     self.base.request_redraw();
                 } else if *key == key_codes::BACKSPACE {
                     self.backspace();
-                } else if *key == 127 {
+                } else if *key == key_codes::DELETE_ASCII {
                     // Delete removes the character after the caret.
                     let (start, end) = self.selection_range().unwrap_or_else(|| {
                         (
@@ -1384,30 +1451,21 @@ impl EventHandler for SearchBar {
                         self.selection_anchor = None;
                         self.record_splice(start, &removed, "");
                     }
-                } else if *key == 37 {
+                } else if *key == key_codes::LEFT {
                     self.move_caret(-1, shift);
-                } else if *key == 39 {
+                } else if *key == key_codes::RIGHT {
                     self.move_caret(1, shift);
-                } else if *key == 36 {
+                } else if *key == key_codes::HOME {
                     self.move_caret(-(self.text.chars().count() as i32), shift);
-                } else if *key == 35 {
+                } else if *key == key_codes::END {
                     self.move_caret(self.text.chars().count() as i32, shift);
-                } else if *key == 40 && self.text.is_empty() {
+                } else if *key == key_codes::DOWN && self.text.is_empty() {
                     self.show_recent = !self.recent_searches.is_empty();
                     self.base.request_redraw();
-                } else if *key >= 32 && *key <= 126 {
-                    // Printable ASCII. A control chord must not be typed as text: this arm used to
-                    // run for `Ctrl+B` too, which inserted a letter instead of leaving the chord to
-                    // the host (I-021). The three modifiers are tested separately because
-                    // `Modifiers::contains` compares the whole mask.
-                    let chord_held = mods.contains(crate::shortcut::Modifiers::CTRL)
-                        || mods.contains(crate::shortcut::Modifiers::ALT)
-                        || mods.contains(crate::shortcut::Modifiers::META);
-                    if !chord_held {
-                        if let Some(c) = char::from_u32(*key) {
-                            self.insert_text(&c.to_string());
-                        }
-                    }
+                } else if *key >= key_codes::SPACE && *key <= 126 {
+                    // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01) and
+                    // the committed arm appends it; the raw key is not applied again or a
+                    // Windows `WM_KEYDOWN` + `WM_CHAR` pair would type every character twice.
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
@@ -1545,7 +1603,11 @@ mod tests {
     fn a_double_click_selects_the_word_under_the_pointer() {
         let mut sb = make_search_bar();
         sb.set_text("alpha beta");
-        sb.handle_event(&Event::MouseDoubleClick { pos: Point::new(2, 16), button: 1 });
+        sb.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(2, 16),
+            button: 1,
+            modifiers: 0,
+        });
         let (start, end) = sb.selection_range().expect("a double-click must select a word");
         assert_eq!(&sb.text()[start..end], "alpha");
     }
@@ -1566,6 +1628,52 @@ mod tests {
         assert!(svg.ends_with("</svg>"));
     }
 
+    /// UX6-02 for the search bar: caret and click follow the value's **visual** order.
+    ///
+    /// A right-to-left query is painted in visual order, so the logical prefix advance put the
+    /// caret at the opposite end of the run. The two ends must swap, and a press past the run's
+    /// visual end must resolve back to logical offset 0.
+    #[cfg(feature = "text-bidi")]
+    #[test]
+    fn an_rtl_query_places_the_caret_and_a_click_through_the_visual_order() {
+        let mut sb = make_search_bar();
+        sb.set_text("\u{05d0}\u{05d1}\u{05d2} abc");
+
+        sb.set_cursor_position(0);
+        let at_start = sb
+            .input_method_query()
+            .expect("an editable field reports an insertion point")
+            .caret_rect
+            .x;
+        let len = sb.text().len();
+        sb.set_cursor_position(len);
+        let at_end = sb
+            .input_method_query()
+            .expect("an editable field reports an insertion point")
+            .caret_rect
+            .x;
+        assert!(
+            at_start > at_end,
+            "logical start is the visual right end of an RTL value: {at_start} vs {at_end}"
+        );
+
+        let (text_left, _) = sb.value_text_box(sb.geometry());
+        let line = sb.text().to_string();
+        let font = effective_font(sb.style());
+        let total: i32 = line
+            .char_indices()
+            .map(|(start, ch)| {
+                estimate_text_width(&line[start..start + ch.len_utf8()], font, 1.0) as i32
+            })
+            .sum();
+        sb.handle_event(&Event::mouse_press(text_left + total + 20, 20, 1));
+        assert_eq!(
+            sb.cursor_position(),
+            0,
+            "the visual right edge of a right-to-left value is its logical start"
+        );
+    }
+
     #[test]
     fn search_bar_undo_redo_restores_text() {
         let mut sb = make_search_bar();
@@ -1584,8 +1692,8 @@ mod tests {
     fn search_bar_key_shortcuts_drive_history() {
         let mut sb = make_search_bar();
         sb.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
-        sb.handle_event(&Event::KeyPress { key: 97, modifiers: 0 });
-        sb.handle_event(&Event::KeyPress { key: 98, modifiers: 0 });
+        sb.handle_event(&Event::text_input("a"));
+        sb.handle_event(&Event::text_input("b"));
         assert_eq!(sb.text(), "ab");
 
         let primary = primary_modifier_event_bits();
@@ -1615,14 +1723,14 @@ mod tests {
     #[test]
     fn keys_are_gated_on_focus() {
         let mut sb = make_search_bar();
-        sb.handle_event(&Event::KeyPress { key: 97, modifiers: 0 });
+        sb.handle_event(&Event::text_input("a"));
         assert_eq!(sb.text(), "", "an unfocused bar must ignore the keyboard");
 
         sb.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
-        sb.handle_event(&Event::KeyPress { key: 97, modifiers: 0 });
+        sb.handle_event(&Event::text_input("a"));
         assert_eq!(sb.text(), "a");
         sb.handle_event(&Event::FocusLost);
-        sb.handle_event(&Event::KeyPress { key: 98, modifiers: 0 });
+        sb.handle_event(&Event::text_input("b"));
         assert_eq!(sb.text(), "a", "losing focus stops editing");
     }
 
@@ -1678,7 +1786,7 @@ mod tests {
         sb.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         sb.set_text("helo");
         sb.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
-        sb.handle_event(&Event::KeyPress { key: 108, modifiers: 0 });
+        sb.handle_event(&Event::text_input("l"));
         assert_eq!(sb.text(), "hello");
 
         sb.set_text("alpha beta");

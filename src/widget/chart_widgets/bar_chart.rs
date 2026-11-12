@@ -268,6 +268,12 @@ pub struct BarChart {
     /// Bumped whenever the bars, series, category labels or a series' visibility change, so the
     /// hover read-out cache cannot describe stale data.
     data_revision: u64,
+    /// Cached `(data_revision, min, max)` from [`Self::value_extent`] (T3-18).
+    ///
+    /// `resolve_y_range` runs on every draw, and `value_extent` walks every series and point.
+    /// The sibling `chart.rs` and `line_chart.rs` already key their extents on the revision; this
+    /// was the one pane that re-scanned each frame.
+    value_extent_cache: core::cell::Cell<Option<(u64, f64, f64)>>,
     /// The hover tooltip's formatted lines and their widest measured width, keyed by
     /// `(category index, data revision, font size bits)`.
     hover_readout: RefCell<Option<HoverReadout>>,
@@ -445,6 +451,7 @@ impl BarChart {
             last_pointer: None,
             last_legend_area: None,
             data_revision: 0,
+            value_extent_cache: core::cell::Cell::new(None),
             hover_readout: RefCell::new(None),
             #[cfg(feature = "chart")]
             y_label_cache: None,
@@ -1901,6 +1908,12 @@ impl BarChart {
 
     /// The lowest and highest drawn value, across the active data model.
     fn value_extent(&self) -> (f64, f64) {
+        let revision = self.data_revision;
+        if let Some((cached_revision, min, max)) = self.value_extent_cache.get() {
+            if cached_revision == revision {
+                return (min, max);
+            }
+        }
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         if self.series.is_empty() {
@@ -1945,6 +1958,7 @@ impl BarChart {
         if !min.is_finite() || !max.is_finite() {
             (0.0, 10.0)
         } else {
+            self.value_extent_cache.set(Some((revision, min, max)));
             (min, max)
         }
     }

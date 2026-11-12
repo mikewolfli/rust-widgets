@@ -113,8 +113,8 @@ impl EventLog {
         let msg = msg.into();
 
         // One writer mutex order everywhere in this type: rows first, then entries.
-        let mut rows = self.rows.lock().unwrap();
-        let mut entries = self.entries.lock().unwrap();
+        let mut rows = self.rows.lock().unwrap_or_else(|error| error.into_inner());
+        let mut entries = self.entries.lock().unwrap_or_else(|error| error.into_inner());
         if entries.len() >= EVENT_LOG_CAPACITY {
             entries.pop_front();
         }
@@ -152,9 +152,9 @@ impl EventLog {
     /// Wires the panel rows that mirror this log, and fills them with what is already there.
     fn attach_rows(&self, handles: Vec<LabelHandle>) {
         // Same lock order as `append`: rows first, then entries.
-        let mut rows = self.rows.lock().unwrap();
+        let mut rows = self.rows.lock().unwrap_or_else(|error| error.into_inner());
         let tail: Vec<String> = {
-            let entries = self.entries.lock().unwrap();
+            let entries = self.entries.lock().unwrap_or_else(|error| error.into_inner());
             let start = entries.len().saturating_sub(handles.len());
             entries.range(start..).cloned().collect()
         };
@@ -180,7 +180,7 @@ impl EventLog {
     }
 
     fn snapshot(&self) -> Vec<String> {
-        self.entries.lock().unwrap().iter().cloned().collect()
+        self.entries.lock().unwrap_or_else(|error| error.into_inner()).iter().cloned().collect()
     }
 }
 
@@ -540,7 +540,7 @@ impl LayoutTrait for ControlGridLayout {
         // two sub-windows inside the area after a resize; the Shuffle button owns the choice.
         if moved > 0 {
             let (area, cascade) = {
-                let state = self.mdi.lock().unwrap();
+                let state = self.mdi.lock().unwrap_or_else(|error| error.into_inner());
                 (state.area, state.cascade)
             };
             if let Some(area_id) = area {
@@ -1515,7 +1515,7 @@ fn build_all_controls(
         // row state, which is also what a resize re-applies; deriving it from `round % 2` here
         // would let the two paths disagree after any resize.
         let (mdi_id, cascade) = {
-            let mut state = mdi_arrange.lock().unwrap();
+            let mut state = mdi_arrange.lock().unwrap_or_else(|error| error.into_inner());
             state.cascade = !state.cascade;
             (state.area, state.cascade)
         };
@@ -1671,7 +1671,7 @@ fn build_all_controls(
     // Report the paradigm row's ids so the Shuffle wiring below can reach the MDI area. The
     // scaffold id is only logged: its form switches on the window width by itself.
     let _ = scaffold_id;
-    *mdi_target.lock().unwrap() = MdiRowState { area: mdi_id, cascade: true };
+    *mdi_target.lock().unwrap_or_else(|error| error.into_inner()) = MdiRowState { area: mdi_id, cascade: true };
 
     BuiltControls { slots, mdi: mdi_target }
 }

@@ -73,8 +73,9 @@ struct InlineDeclEntry {
 struct RulesEntry {
     /// The source text, compared on a hash hit.
     text: String,
-    /// The parsed rules; shared so a repeated application re-uses the parse (G-403).
-    rules: Rc<Vec<CssRule>>,
+    /// The parsed rules, with each selector resolved once (G-403, W4-15); shared so a repeated
+    /// application re-uses the parse instead of re-running `parse_selector` per rule.
+    rules: Rc<Vec<ParsedCssRule>>,
     /// Monotonic use stamp; the smallest one is evicted at capacity (G-161).
     last_used: u64,
 }
@@ -893,7 +894,14 @@ impl CssParser {
     /// rule is the honest reading of an unknown kind) while the trace reports it.
     pub fn parse_prepared_rules(css: &str) -> Result<Vec<ParsedCssRule>, String> {
         let (rules, spans) = Self::parse_rules_with(css, true)?;
-        Ok(rules
+        Ok(Self::prepare_rules(rules, spans))
+    }
+
+    /// Resolves every rule's selector once and pairs it with the declaration spans the parse walk
+    /// produced. Shared by [`Self::parse_prepared_rules`] (spans requested) and the inline apply
+    /// cache (spans empty), so both paths agree about how a selector parsed (W4-15).
+    fn prepare_rules(rules: Vec<CssRule>, spans: Vec<RuleDeclarationSpans>) -> Vec<ParsedCssRule> {
+        rules
             .into_iter()
             .zip(spans)
             .map(|(rule, declaration_spans)| {
@@ -907,7 +915,7 @@ impl CssParser {
                     declaration_spans,
                 }
             })
-            .collect())
+            .collect()
     }
 
     /// Parse a selector string into a `CssSelector`.
@@ -2253,8 +2261,8 @@ impl CssParser {
     ) -> Result<(), String> {
         let rules = Self::cached_rules(css)?;
         for rule in rules.iter() {
-            if let Some(selector) = Self::parse_selector(&rule.selector_text) {
-                if matches(&selector) {
+            if let Some(selector) = rule.selector.as_ref() {
+                if matches(selector) {
                     Self::apply_declarations(&rule.declarations, style)?;
                 }
             }
@@ -2267,7 +2275,7 @@ impl CssParser {
     /// Returns the shared parse, so a control applying the same inline CSS as its siblings pays
     /// one lexer pass for the whole class rather than one per control. A hash collision misses
     /// because the stored text is compared.
-    fn cached_rules(css: &str) -> Result<Rc<Vec<CssRule>>, String> {
+    fn cached_rules(css: &str) -> Result<Rc<Vec<ParsedCssRule>>, String> {
         let hash = declaration_hash(css);
         let hit = RULES_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
@@ -2281,7 +2289,8 @@ impl CssParser {
         if let Some(hit) = hit {
             return Ok(hit);
         }
-        let rules = Rc::new(Self::parse_rules(css)?);
+        let (rules, spans) = Self::parse_rules_with(css, false)?;
+        let rules = Rc::new(Self::prepare_rules(rules, spans));
         RULES_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
             if cache.len() >= RULES_CACHE_LIMIT {

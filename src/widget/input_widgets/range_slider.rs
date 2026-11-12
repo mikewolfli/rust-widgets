@@ -1155,7 +1155,7 @@ impl EventHandler for RangeSlider {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.press_at(*pos);
             }
-            Event::MouseRelease { pos: _, button } if *button == 1 => {
+            Event::MouseRelease { pos: _, button, .. } if *button == 1 => {
                 self.release_handles();
             }
             // Touch drives the same handle grab and release without a translated mouse gesture.
@@ -1720,7 +1720,7 @@ mod tests {
         assert_ne!(resting, dragged, "a held handle must not paint like a resting one");
 
         // Releasing returns the handle to its resting size, so the emphasis is not latched.
-        rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1 });
+        rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1, modifiers: 0 });
         assert!(!rs.is_dragging());
         let released = crate::widget::svg::render_to_svg(&mut rs);
         assert_eq!(released, resting, "releasing must restore the resting frame");
@@ -1798,7 +1798,7 @@ mod tests {
             );
         }
 
-        rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1 });
+        rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1, modifiers: 0 });
         assert!(!rs.is_dragging());
     }
 
@@ -1840,7 +1840,7 @@ mod tests {
                 "{direction:?}: dragging to the bottom must reach the lower floor, got {}",
                 rs.upper_value()
             );
-            rs.handle_event(&Event::MouseRelease { pos: upper_centre, button: 1 });
+            rs.handle_event(&Event::MouseRelease { pos: upper_centre, button: 1, modifiers: 0 });
         }
     }
 
@@ -1881,7 +1881,7 @@ mod tests {
                     "{direction:?}: y={y} must not change a horizontal drag's value"
                 );
             }
-            rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1 });
+            rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1, modifiers: 0 });
         }
     }
 

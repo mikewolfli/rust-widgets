@@ -343,7 +343,7 @@ impl EventHandler for MarkdownToolbar {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 let pressed = self.pressed.take();
                 self.base.request_redraw();
                 if let Some(index) = pressed {

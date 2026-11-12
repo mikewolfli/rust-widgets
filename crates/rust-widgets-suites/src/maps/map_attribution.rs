@@ -648,6 +648,7 @@ impl Draw for MapAttributionOverlay {
                 HorizontalAlignment::Left,
             );
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

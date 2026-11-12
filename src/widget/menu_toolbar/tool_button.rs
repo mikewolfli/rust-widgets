@@ -1752,7 +1752,7 @@ mod tests {
         assert!(btn.is_menu_open());
         assert!(btn.has_open_popup());
 
-        btn.handle_event(&Event::mouse_release(arrow.x + 1, arrow.y + 1, 1));
+        btn.handle_event(&Event::mouse_release(arrow.x + 1, arrow.y + 1, 1, 0));
         btn.close_menu();
 
         let triggered = Arc::new(AtomicUsize::new(0));
@@ -1761,7 +1761,7 @@ mod tests {
             count.fetch_add(1, Ordering::SeqCst);
         });
         btn.handle_event(&Event::mouse_press(5, 5, 1));
-        btn.handle_event(&Event::mouse_release(5, 5, 1));
+        btn.handle_event(&Event::mouse_release(5, 5, 1, 0));
         assert_eq!(triggered.load(Ordering::SeqCst), 1);
         assert!(!btn.is_menu_open(), "the body performs the main action, not the popup");
     }
@@ -1785,7 +1785,7 @@ mod tests {
 
         // The release ends the held gesture; it must not also fire the main action or close
         // the menu it just produced.
-        btn.handle_event(&Event::mouse_release(15, 25, 1));
+        btn.handle_event(&Event::mouse_release(15, 25, 1, 0));
         assert!(btn.is_menu_open());
     }
 
@@ -1900,7 +1900,7 @@ mod tests {
         });
         // Press then release
         btn.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1, modifiers: 0 });
-        btn.handle_event(&Event::MouseRelease { pos: Point::new(15, 25), button: 1 });
+        btn.handle_event(&Event::MouseRelease { pos: Point::new(15, 25), button: 1, modifiers: 0 });
         assert!(clicked.load(Ordering::SeqCst));
     }
 
@@ -1979,7 +1979,7 @@ mod tests {
         });
         // Mouse press+release should be blocked
         btn.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1, modifiers: 0 });
-        btn.handle_event(&Event::MouseRelease { pos: Point::new(15, 25), button: 1 });
+        btn.handle_event(&Event::MouseRelease { pos: Point::new(15, 25), button: 1, modifiers: 0 });
         assert!(
             !clicked.load(Ordering::SeqCst),
             "Disabled button should not emit clicked on mouse events"

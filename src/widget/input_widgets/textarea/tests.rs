@@ -266,17 +266,17 @@ fn textarea_focus_events() {
 #[test]
 fn textarea_keypress_insertion() {
     let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
-    ta.handle_event(&Event::KeyPress { key: 72, modifiers: 0 }); // 'H'
-    ta.handle_event(&Event::KeyPress { key: 105, modifiers: 0 }); // 'i'
+    ta.handle_event(&Event::text_input("H")); // 'H'
+    ta.handle_event(&Event::text_input("i")); // 'i'
     assert_eq!(ta.text(), "Hi");
 }
 
 #[test]
 fn textarea_keypress_enter_inserts_newline() {
     let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
-    ta.handle_event(&Event::KeyPress { key: 65, modifiers: 0 }); // 'A'
+    ta.handle_event(&Event::text_input("A")); // 'A'
     ta.handle_event(&Event::KeyPress { key: 13, modifiers: 0 }); // Enter
-    ta.handle_event(&Event::KeyPress { key: 66, modifiers: 0 }); // 'B'
+    ta.handle_event(&Event::text_input("B")); // 'B'
     assert_eq!(ta.text(), "A\nB");
 }
 
@@ -572,7 +572,7 @@ fn typing_over_a_selection_replaces_it() {
     }
     assert_eq!(ta.selected_text(), "hello");
 
-    ta.handle_event(&Event::key_press(88, 0)); // 'X'
+    ta.handle_event(&Event::text_input("X")); // 'X'
     assert_eq!(ta.text(), "X world", "the selection was consumed, not kept beside the insert");
     assert_eq!(ta.cursor_pos(), 1, "and the caret sits after what replaced it");
     assert_eq!(ta.selection_anchor(), None, "the range it described is gone");
@@ -651,7 +651,7 @@ fn a_control_chord_is_not_typed_into_the_area() {
     // A control code on its own is not content either.
     ta.handle_event(&Event::key_press(0, 0)); // NUL
     assert!(ta.text().is_empty(), "a bare control code is not content");
-    ta.handle_event(&Event::key_press(98, 0));
+    ta.handle_event(&Event::text_input("b"));
     assert_eq!(ta.text(), "b");
 }
 
@@ -755,6 +755,51 @@ fn a_press_places_the_caret_where_the_pointer_landed() {
     assert_eq!(ta.selection_anchor(), Some(1), "and it is the anchor for a drag");
 }
 
+/// The measured width of `text` through the same surface the text area measures with.
+#[cfg(feature = "text-bidi")]
+fn line_width(ta: &TextArea, text: &str) -> i32 {
+    let mut backend = crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+    crate::render::RenderContext::new(&mut backend).measure_text(text, ta.text_font()).width as i32
+}
+
+/// UX6-02 for the multi-line field: an RTL row's caret uses the **visual** order.
+///
+/// # What this pins
+///
+/// The caret was placed at "the width of the logical prefix", which is the caret's on-screen x
+/// only while the row paints left to right. The shared renderer reorders a right-to-left row, so
+/// logical offset 0 belongs at the row's *right* end; before the mapping the marker sat at the
+/// left edge of the row the glyphs were not painted at.
+#[cfg(feature = "text-bidi")]
+#[test]
+fn an_rtl_line_places_the_caret_at_its_visual_side() {
+    // The first strong character is Hebrew, so the paragraph resolves right-to-left and the
+    // trailing Latin run is painted to the left of it.
+    let mut ta = area("\u{05d0}\u{05d1}\u{05d2} abc");
+    ta.set_cursor_pos(0);
+    let caret = ta
+        .input_method_query()
+        .expect("an editable area always reports an insertion point")
+        .caret_rect
+        .x;
+    assert!(
+        caret > pen_x(&ta),
+        "logical offset 0 is the visual right end of an RTL row: caret {caret}, origin {}",
+        pen_x(&ta)
+    );
+}
+
+/// A click at the visual right edge of an RTL row maps back to logical offset 0.
+#[cfg(feature = "text-bidi")]
+#[test]
+fn a_click_at_the_visual_right_edge_of_an_rtl_line_lands_at_the_logical_start() {
+    let mut ta = area("\u{05d0}\u{05d1}\u{05d2} abc");
+    let line = ta.text().to_string();
+    let right_edge = pen_x(&ta) + line_width(&ta, &line) + 5;
+    ta.handle_event(&Event::mouse_press(right_edge, click_y(&ta), 1));
+    assert_eq!(ta.cursor_pos(), 0, "the right edge of a right-to-left row is its logical start");
+}
+
 /// A drag extends the selection; a hover that was never pressed does not move the caret.
 #[cfg(device_profile)]
 #[test]
@@ -775,7 +820,7 @@ fn a_drag_extends_the_selection_but_a_bare_hover_does_not() {
     assert_eq!(ta.selected_text(), "bcd", "the drag selected the span between the points");
 
     // The release ends the gesture, so a later hover is inert again and the range is kept.
-    ta.handle_event(&Event::mouse_release(x4, y, 1));
+    ta.handle_event(&Event::mouse_release(x4, y, 1, 0));
     ta.handle_event(&Event::mouse_move(origin + 140, y));
     assert_eq!(ta.cursor_pos(), 4, "a hover after the release does not extend");
     assert_eq!(ta.selected_text(), "bcd", "and the selection the user made is kept");
@@ -1361,7 +1406,7 @@ fn clipboard_shortcuts_copy_and_paste() {
 #[test]
 fn a_double_click_selects_a_word() {
     let mut ta = TextArea::new("alpha beta".to_string(), Rect::new(0, 0, 300, 80));
-    ta.handle_event(&Event::MouseDoubleClick { pos: Point::new(8, 8), button: 1 });
+    ta.handle_event(&Event::MouseDoubleClick { pos: Point::new(8, 8), button: 1, modifiers: 0 });
     assert_eq!(ta.selected_text(), "alpha");
 }
 

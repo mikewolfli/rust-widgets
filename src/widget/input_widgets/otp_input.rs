@@ -722,11 +722,10 @@ impl EventHandler for OtpInput {
                         self.set_focused_index((self.focused_index + 1).min(self.length));
                     }
                     _ => {
-                        if *key >= 32 && *key < 127 && !primary {
-                            if let Some(ch) = char::from_u32(*key) {
-                                self.insert_char(ch);
-                            }
-                        }
+                        // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01),
+                        // which the commit arm below maps into `insert_char`. Taking the printable
+                        // key here as well inserted it twice on Windows, the one backend that also
+                        // forwards `WM_KEYDOWN` for printable virtual keys.
                     }
                 }
             }
@@ -1315,8 +1314,8 @@ mod tests {
     #[test]
     fn typed_keys_reach_the_boxes() {
         let mut otp = otp();
-        otp.handle_event(&Event::key_press('7' as u32, 0));
-        otp.handle_event(&Event::key_press('8' as u32, 0));
+        otp.handle_event(&Event::text_input("7"));
+        otp.handle_event(&Event::text_input("8"));
         assert_eq!(otp.value(), "78");
         assert_eq!(otp.focused_index(), 2);
 

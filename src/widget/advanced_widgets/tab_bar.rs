@@ -2083,7 +2083,7 @@ impl EventHandler for TabBar {
             }
             // A double click on the strip's empty space asks the host for a new tab; a
             // double click on a tab or on the scroll chrome is not that gesture (ADV-009).
-            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+            Event::MouseDoubleClick { pos, button, .. } if *button == 1 => {
                 if self.geometry().contains_point(*pos) && self.tab_at_position(*pos).is_none() {
                     let on_scroll_button =
                         self.scroll_button_rects().is_some_and(|(left, right)| {
@@ -3009,7 +3009,7 @@ mod tests {
         bar.handle_event(&Event::mouse_move(third.x + 2, third.y + 2));
         assert_eq!(bar.drag_target(), Some(2), "the preview follows the pointer");
         assert!(bar.is_dragging());
-        bar.handle_event(&Event::mouse_release(third.x + 2, third.y + 2, 1));
+        bar.handle_event(&Event::mouse_release(third.x + 2, third.y + 2, 1, 0));
         assert!(!bar.is_dragging());
         assert_eq!(bar.drag_target(), None);
         assert_eq!(bar.tab_text(2), Some("One"), "the release committed");
@@ -3238,11 +3238,11 @@ mod tests {
         });
 
         // The single tab ends well before x = 350.
-        bar.handle_event(&Event::mouse_double_click(350, 12, 1));
+        bar.handle_event(&Event::mouse_double_click(350, 12, 1, 0));
         assert_eq!(requests.load(Ordering::SeqCst), 1, "empty space requests a tab");
 
         let tab = bar.tab_rect(0).expect("the tab has a box");
-        bar.handle_event(&Event::mouse_double_click(tab.x + 2, tab.y + 2, 1));
+        bar.handle_event(&Event::mouse_double_click(tab.x + 2, tab.y + 2, 1, 0));
         assert_eq!(requests.load(Ordering::SeqCst), 1, "a tab is not empty space");
     }
 
@@ -3259,7 +3259,7 @@ mod tests {
         assert!(bar.is_dragging());
 
         let second = bar.tab_rect(1).expect("tab 1 has a box");
-        bar.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 3));
+        bar.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 3, 0));
 
         assert!(!bar.is_dragging(), "the non-primary release cancels");
         assert_eq!(bar.tab_text(0), Some("A"), "no reorder happened");
@@ -3278,7 +3278,7 @@ mod tests {
         bar.set_movable(false);
         assert!(!bar.is_dragging());
         let second = bar.tab_rect(1).expect("tab 1 has a box");
-        bar.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 1));
+        bar.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 1, 0));
         assert_eq!(bar.tab_text(0), Some("A"));
 
         bar.set_movable(true);

@@ -104,19 +104,19 @@ impl TableWidget {
     /// Precedence is the explicit column structure's title (when non-empty), then a host header
     /// label, then the model/source's own name. The order matters: `set_column_title` must be
     /// visible, while a table that never named a column keeps its historical blank or model name.
-    pub(super) fn column_title(&self, column: usize) -> Option<String> {
+    pub(super) fn column_title(&self, column: usize) -> Option<alloc::borrow::Cow<'_, str>> {
         if let Some(title) = self
             .columns
             .get(column)
             .map(|spec| spec.title.as_str())
             .filter(|title| !title.is_empty())
         {
-            return Some(title.to_string());
+            return Some(alloc::borrow::Cow::Borrowed(title));
         }
         if let Some(label) = self.header_labels.get(column).filter(|label| !label.is_empty()) {
-            return Some(label.clone());
+            return Some(alloc::borrow::Cow::Borrowed(label.as_str()));
         }
-        self.source_column_name(column)
+        self.source_column_name(column).map(alloc::borrow::Cow::Owned)
     }
 
     /// How many rows the band can show from `scroll_row`, walking the same heights the paint does.

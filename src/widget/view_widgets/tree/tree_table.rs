@@ -238,6 +238,14 @@ pub struct TreeTable {
     column_width: u32,
     /// Per-column width overrides (V-13). `column_width` stays the fallback/default.
     column_widths: Vec<u32>,
+    /// Bumped by every width change, so the prefix table below can be reused.
+    column_geometry_revision: u32,
+    /// `(revision, column_count, prefix_sum)` for [`Self::prefix_width`] (T3-29).
+    ///
+    /// `column_span_ltr` runs per cell per frame and summed `0..column` each time, which made a
+    /// paint O(rows × columns²). `grid_table` already keys its run cache on the same inputs;
+    /// this is that cache for the tree table.
+    column_prefix_cache: std::cell::RefCell<Option<(u32, usize, Vec<i32>)>>,
     selected_row: Option<usize>,
     /// The row the pointer is currently over, or `None` when it is between/outside the rows.
     ///
@@ -342,6 +350,8 @@ impl TreeTable {
             row_height: 20,
             column_width: 140,
             column_widths: Vec::new(),
+            column_geometry_revision: 0,
+            column_prefix_cache: std::cell::RefCell::new(None),
             selected_row: None,
             hovered_row: None,
             projection_changed: Signal1::new(),
@@ -484,6 +494,7 @@ impl TreeTable {
             return;
         }
         self.column_width = column_width;
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -514,6 +525,7 @@ impl TreeTable {
             return;
         }
         self.column_widths[column] = width;
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -595,16 +607,42 @@ impl TreeTable {
         let rect = self.base.geometry();
         let width = self.column_width_at(column);
         let frozen = self.frozen_columns();
-        let prefix = |upto: usize| -> i32 {
-            (0..upto).map(|index| self.column_width_at(index) as i32).sum()
-        };
         if column < frozen {
-            return (rect.x.saturating_add(prefix(column)), width);
+            return (rect.x.saturating_add(self.prefix_width(column)), width);
         }
-        let frozen_width = prefix(frozen);
+        let frozen_width = self.prefix_width(frozen);
         let start = self.scroll_column.max(frozen);
-        let x = rect.x.saturating_add(frozen_width).saturating_add(prefix(column)) - prefix(start);
+        let x = rect.x.saturating_add(frozen_width).saturating_add(self.prefix_width(column))
+            - self.prefix_width(start);
         (x, width)
+    }
+
+    /// The summed width of columns `0..upto`, from a revision-keyed prefix table (T3-29).
+    fn prefix_width(&self, upto: usize) -> i32 {
+        let count = self.column_count();
+        let mut cache = self.column_prefix_cache.borrow_mut();
+        let stale = match cache.as_ref() {
+            Some((revision, cached_count, _)) => {
+                *revision != self.column_geometry_revision || *cached_count != count
+            }
+            None => true,
+        };
+        if stale {
+            let mut prefix = Vec::with_capacity(count.saturating_add(1));
+            let mut sum = 0i32;
+            prefix.push(0);
+            for column in 0..count {
+                sum = sum.saturating_add(self.column_width_at(column) as i32);
+                prefix.push(sum);
+            }
+            *cache = Some((self.column_geometry_revision, count, prefix));
+        }
+        let (_, cached_count, prefix) = cache.as_ref().expect("the prefix table was just built");
+        if upto <= *cached_count {
+            return prefix.get(upto).copied().unwrap_or(0);
+        }
+        let base = prefix.get(*cached_count).copied().unwrap_or(0);
+        base + (*cached_count..upto).map(|column| self.column_width_at(column) as i32).sum::<i32>()
     }
 
     /// The part of `column`'s span that is actually painted to the right of the frozen prefix.
@@ -620,9 +658,7 @@ impl TreeTable {
             return self.mirror_span_if_rtl(x, width);
         }
         let rect = self.base.geometry();
-        let frozen_end = rect
-            .x
-            .saturating_add((0..frozen).map(|index| self.column_width_at(index) as i32).sum());
+        let frozen_end = rect.x.saturating_add(self.prefix_width(frozen));
         let end = x.saturating_add(width as i32);
         if end <= frozen_end {
             return None;
@@ -2129,13 +2165,10 @@ impl Draw for TreeTable {
                     // A node icon sits between the disclosure gutter and the label (RW-10).
                     // Column 0 is the tree column, so only it carries the icon.
                     if col == 0 {
-                        let icon_name = self
-                            .row_path(row)
-                            .and_then(|path| {
-                                self.model.as_ref().and_then(|model| model.node_icon(path))
-                            })
-                            .map(str::to_string);
-                        if let Some(name) = icon_name.as_deref() {
+                        let icon_name = self.row_path(row).and_then(|path| {
+                            self.model.as_ref().and_then(|model| model.node_icon(path))
+                        });
+                        if let Some(name) = icon_name {
                             let side = self.row_height.saturating_sub(6).clamp(1, 20);
                             let icon_rect = Rect::new(
                                 text_x,
@@ -2247,7 +2280,7 @@ impl crate::event::EventHandler for TreeTable {
                     }
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some(row) = self.row_at(pos.y) {
                     let _ = self.select_row(row);
                     self.row_activated.emit(row);

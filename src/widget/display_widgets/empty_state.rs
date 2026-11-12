@@ -700,7 +700,7 @@ impl EventHandler for EmptyState {
                     }
                 }
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button == 1 {
                     if self.base.is_pressed() {
                         self.base.set_pressed(false);
@@ -880,7 +880,7 @@ mod tests {
         let click_y = btn_rect.y + btn_rect.height as i32 / 2;
         es.handle_event(&Event::mouse_press(click_x, click_y, 1));
         assert!(!*fired.lock().unwrap(), "a press arms the button but does not commit");
-        es.handle_event(&Event::mouse_release(click_x, click_y, 1));
+        es.handle_event(&Event::mouse_release(click_x, click_y, 1, 0));
         assert!(*fired.lock().unwrap(), "a release inside commits the action");
     }
 
@@ -902,12 +902,12 @@ mod tests {
         let inside_y = btn_rect.y + btn_rect.height as i32 / 2;
         es.handle_event(&Event::mouse_press(inside_x, inside_y, 1));
         // Dragged off the button before release: the gesture is abandoned.
-        es.handle_event(&Event::mouse_release(1, 1, 1));
+        es.handle_event(&Event::mouse_release(1, 1, 1, 0));
         assert!(!*fired.lock().unwrap(), "a release outside must not commit");
         assert!(!es.base.is_pressed(), "the arm is cleared either way");
 
         // A release that was never armed does not commit either.
-        es.handle_event(&Event::mouse_release(inside_x, inside_y, 1));
+        es.handle_event(&Event::mouse_release(inside_x, inside_y, 1, 0));
         assert!(!*fired.lock().unwrap());
     }
 
@@ -926,7 +926,7 @@ mod tests {
         let pressed = crate::widget::svg::render_to_svg(&mut es);
         assert_ne!(resting, pressed, "a press must paint a pressed state");
 
-        es.handle_event(&Event::mouse_release(click_x, click_y, 1));
+        es.handle_event(&Event::mouse_release(click_x, click_y, 1, 0));
         let released = crate::widget::svg::render_to_svg(&mut es);
         assert_eq!(resting, released, "the resting drawing returns after the release");
     }
@@ -1207,7 +1207,7 @@ mod tests {
         let at = Point::new(secondary.x + 4, secondary.y + 4);
         es.handle_event(&Event::MousePress { pos: at, button: 1, modifiers: 0 });
         assert_eq!(pressed.load(std::sync::atomic::Ordering::SeqCst), 0, "a press only arms");
-        es.handle_event(&Event::MouseRelease { pos: at, button: 1 });
+        es.handle_event(&Event::MouseRelease { pos: at, button: 1, modifiers: 0 });
         assert_eq!(pressed.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         // Clearing the secondary restores the single-action picture.

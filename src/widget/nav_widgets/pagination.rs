@@ -101,6 +101,11 @@ pub struct Pagination {
     /// the loop and put back afterwards, which keeps the borrow of `self` free for the reads the
     /// loop also needs.
     label_scratch: String,
+    /// The jump cell's text buffer, reused across frames like `label_scratch` (W4-42).
+    ///
+    /// The jump cell is painted once per frame; a fresh `String` there was one heap allocation
+    /// per paint even though its contents change only when the buffer or the editing flag does.
+    jump_label_scratch: String,
     /// Whether the wheel steps the page when it is not consumed elsewhere.
     wheel_paging_enabled: bool,
     /// Emitted with the zero-based page a cell activation landed on.
@@ -174,6 +179,7 @@ impl Pagination {
             page_size_hover: None,
             hovered_page: None,
             label_scratch: String::new(),
+            jump_label_scratch: String::new(),
             wheel_paging_enabled: true,
             clicked: Signal1::new(),
             page_hover_changed: Signal1::new(),
@@ -864,15 +870,16 @@ impl Pagination {
         font: &Font,
         color: Color,
         outline: Color,
+        scratch: &mut String,
     ) {
         context.draw_rect(rect, outline);
-        let mut buffer = String::new();
+        scratch.clear();
         let label = if self.jump_editing {
             // The caret is a plain underscore, so the cell reads as an input without
             // needing a second focus indicator in a 32 px row.
-            buffer.push_str(&self.jump_buffer);
-            buffer.push('_');
-            buffer.as_str()
+            scratch.push_str(&self.jump_buffer);
+            scratch.push('_');
+            scratch.as_str()
         } else {
             "Go"
         };
@@ -1360,7 +1367,10 @@ impl Draw for Pagination {
         self.label_scratch = label;
 
         if let Some(jump_rect) = layout.jump_rect {
-            self.draw_jump_cell(context, jump_rect, font, text_color, outline);
+            let mut jump_label = core::mem::take(&mut self.jump_label_scratch);
+            self.draw_jump_cell(context, jump_rect, font, text_color, outline, &mut jump_label);
+            jump_label.clear();
+            self.jump_label_scratch = jump_label;
         }
         if let Some(page_size_rect) = layout.page_size_rect {
             self.draw_page_size_cell(context, page_size_rect, font, text_color, outline);
@@ -1377,6 +1387,11 @@ impl Draw for Pagination {
             outline,
             1,
         );
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 
     fn uses_custom_drawing(&self) -> bool {
@@ -2033,5 +2048,29 @@ mod tests {
         assert!(!bar.restore_state(&wrong_version));
         assert_eq!(bar.page_size(), 10);
         assert_eq!(bar.page(), 2);
+    }
+
+    /// A keyboard-focused pager paints the ring Tab must show.
+    ///
+    /// # What this pins
+    ///
+    /// The pager is in the tab order and its key arms are focus-gated, but the draw path had no
+    /// focus visual at all (W4-05): the focus ring is the only stroke that changes between the
+    /// resting and focused frames.
+    #[test]
+    fn a_keyboard_focused_pager_paints_a_focus_ring() {
+        let _guard = crate::style::theme_test_guard();
+        let mut bar = bar();
+        bar.set_total(95);
+        bar.set_page_size(10);
+
+        let resting = crate::widget::svg::render_to_svg(&mut bar);
+        bar.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let focused = crate::widget::svg::render_to_svg(&mut bar);
+        assert_ne!(resting, focused, "Tab focus must change the painted picture");
+
+        bar.handle_event(&Event::FocusLost);
+        let blurred = crate::widget::svg::render_to_svg(&mut bar);
+        assert_eq!(resting, blurred, "losing focus restores the resting picture");
     }
 }

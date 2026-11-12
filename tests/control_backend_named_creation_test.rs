@@ -534,8 +534,10 @@ fn the_web_methods_answer_zero_because_the_control_is_in_another_crate() {
 /// The previous version of this protection was a hand-picked sample, which is how
 /// `create_web_view` stayed wrong while a test named `create_web_view_allocates_valid_id`
 /// passed. A sample cannot be trusted to grow with the surface, so the count of the
-/// table is pinned here and the *membership* is checked against the trait in
-/// `tools/check_control_create_names.py`, which parses both sides.
+/// table is pinned below: a new `create_*` on the trait fails this test until it is
+/// added here. There is no separate gate for the membership — the pinned count is the
+/// check (the previous comment named `tools/check_control_create_names.py`, which does
+/// not exist; T3-33).
 #[test]
 fn creation_table_covers_the_whole_create_surface() {
     let backend = CustomPaintControlBackend::new();

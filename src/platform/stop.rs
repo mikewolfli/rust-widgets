@@ -146,6 +146,9 @@ pub(crate) fn honour_request_on_loop_thread() {
     // is one atomic load, which is what the still-frame guarantee costs per frame.
     if crate::platform::get_platform().quit() {
         let _ = take();
+        // The session is over: drop work scheduled for it so it cannot run in the next loop in
+        // this process (T3-49). Work queued after this point is a new session's and is kept.
+        let _ = crate::platform::main_thread::clear_on_loop_thread();
     }
 }
 

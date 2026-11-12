@@ -2683,7 +2683,11 @@ mod tests {
         let mut center = Center::new(Rect::new(0, 0, 100, 100));
         center.handle_event(&Event::MouseMove { pos: Point::new(5, 5) });
         center.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
-        center.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
+        center.handle_event(&Event::MouseRelease {
+            pos: Point::new(5, 5),
+            button: 1,
+            modifiers: 0,
+        });
     }
 
     #[test]

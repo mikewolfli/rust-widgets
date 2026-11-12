@@ -224,7 +224,7 @@ fn alt_drag_selects_a_column_and_edits_every_line() {
         modifiers: 4,
     });
     editor.handle_event(&Event::MouseMove { pos: end });
-    editor.handle_event(&Event::MouseRelease { pos: end, button: 1 });
+    editor.handle_event(&Event::MouseRelease { pos: end, button: 1, modifiers: 0 });
     // Two carets, each selecting the rectangle's columns.
     assert!(!editor.extra_cursors.is_empty(), "a rectangular drag creates a caret per line");
     editor.insert("Z");

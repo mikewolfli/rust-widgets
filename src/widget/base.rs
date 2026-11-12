@@ -439,6 +439,15 @@ impl BaseWidget {
     /// already shows the final transform. A caller that animates towards a transform must
     /// interpolate its own parameters and call this once with the final values when reduced
     /// motion is on.
+    ///
+    /// # Reachability
+    ///
+    /// The `3d` feature is an **enabling API with no in-crate consumer**:
+    /// [`Self::set_item_transform`], [`Self::set_rotation`], [`Self::set_mesh_3d`] and
+    /// [`Self::mesh_3d_command`] are called nowhere outside this file (verified by grep, G-228 /
+    /// T3-35). The renderer's projective-transform stack and mesh replay are wired and tested, so
+    /// a host can drive them today; nothing in the library, the demos or the examples does. That
+    /// is stated here rather than presenting the feature as exercised by the shipped controls.
     #[cfg(feature = "3d")]
     pub fn set_item_transform(&mut self, rotation_radians: f32, scale: (f32, f32), origin: Point) {
         // A non-finite parameter would poison every mapped point (and a NaN rectangle draws
@@ -1670,7 +1679,7 @@ impl EventHandler for BaseWidget {
             Event::MousePress { pos, button, .. } => {
                 self.mouse_down.emit((*pos, *button));
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 self.mouse_up.emit((*pos, *button));
             }
             Event::MouseDown((pos, button)) => {
@@ -1880,7 +1889,7 @@ mod tests {
         // A complete press/release pair, which is what a Button would turn into a
         // click in its own handler.
         bw.handle_event(&Event::MousePress { pos: Point::new(1, 1), button: 1, modifiers: 0 });
-        bw.handle_event(&Event::MouseRelease { pos: Point::new(1, 1), button: 1 });
+        bw.handle_event(&Event::MouseRelease { pos: Point::new(1, 1), button: 1, modifiers: 0 });
 
         assert_eq!(
             *clicks.lock().expect("lock"),
@@ -2554,7 +2563,7 @@ mod tests {
         bw.handle_event(&Event::MousePress { pos: Point::new(50, 30), button: 1, modifiers: 0 });
         assert!(bw.is_pressed());
         assert!(bw.is_grabbed());
-        bw.handle_event(&Event::MouseRelease { pos: Point::new(50, 30), button: 1 });
+        bw.handle_event(&Event::MouseRelease { pos: Point::new(50, 30), button: 1, modifiers: 0 });
         assert!(!bw.is_pressed());
         assert!(!bw.is_grabbed());
     }

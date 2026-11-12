@@ -1189,6 +1189,11 @@ impl Draw for NavigationDrawer {
         }
 
         context.pop_clip();
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 
@@ -1277,7 +1282,7 @@ impl EventHandler for NavigationDrawer {
                     }
                 }
                 Event::MouseMove { pos } => self.drag_to(pos.x as f32),
-                Event::MouseRelease { pos, button } if *button == 1 => {
+                Event::MouseRelease { pos, button, .. } if *button == 1 => {
                     if self.drag.is_some() {
                         self.drag_to(pos.x as f32);
                         // A tap on the handle (no meaningful travel) opens rather than snaps
@@ -1367,7 +1372,7 @@ impl EventHandler for NavigationDrawer {
                 }
                 self.base.handle_event(event);
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1594,7 +1599,11 @@ mod tests {
         // Press alone does not close; release does
         assert!(drawer.is_open());
 
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(350, 300), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(350, 300),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!drawer.is_open());
     }
 
@@ -1613,7 +1622,11 @@ mod tests {
         // Not yet selected on press
         assert_eq!(drawer.selected_index().unwrap_or(0), 0);
 
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, target_y), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, target_y),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(drawer.selected_index().unwrap_or(0), 1);
     }
 
@@ -1628,7 +1641,11 @@ mod tests {
             button: 2,
             modifiers: 0,
         });
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(350, 300), button: 2 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(350, 300),
+            button: 2,
+            modifiers: 0,
+        });
         assert!(drawer.is_open());
         assert_eq!(drawer.selected_index().unwrap_or(0), 0);
     }
@@ -1645,7 +1662,11 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(350, 300), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(350, 300),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(drawer.is_open());
     }
 
@@ -1660,7 +1681,11 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, 100), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, 100),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(drawer.selected_index().unwrap_or(0), 0);
     }
 
@@ -1761,7 +1786,7 @@ mod tests {
         );
 
         drawer.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
-        drawer.handle_event(&Event::MouseRelease { pos, button: 1 });
+        drawer.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_ne!(drawer.selected_index(), Some(1), "a disabled item cannot be chosen");
 
         // Keyboard traversal skips it too: Down from the first item lands on the third.
@@ -1850,7 +1875,11 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(2, 200), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(2, 200),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(drawer.is_open(), "the edge affordance must be usable, not decorative");
     }
 
@@ -1861,7 +1890,11 @@ mod tests {
         while drawer.tick(60) {}
         let y = 60 + 48 + 24;
         drawer.handle_event(&Event::MousePress { pos: Point::new(20, y), button: 1, modifiers: 0 });
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, y), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, y),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(drawer.selected_index(), Some(1));
         assert!(!drawer.is_open(), "a chosen destination dismisses the modal drawer");
     }
@@ -1899,14 +1932,22 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, 76), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, 76),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(drawer.is_open(), "a section heading does not select or close");
         drawer.handle_event(&Event::MousePress {
             pos: Point::new(20, 116),
             button: 1,
             modifiers: 0,
         });
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, 116), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, 116),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(drawer.selected_index(), Some(0));
         assert!(!drawer.is_open(), "the item below the section is still reachable");
     }
@@ -1931,7 +1972,11 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        drawer.handle_event(&Event::MouseRelease { pos: Point::new(350, 300), button: 1 });
+        drawer.handle_event(&Event::MouseRelease {
+            pos: Point::new(350, 300),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(drawer.is_open(), "a persistent drawer has no scrim to dismiss it");
     }
 

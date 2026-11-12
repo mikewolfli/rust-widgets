@@ -568,7 +568,7 @@ fn a_control_chord_is_not_typed_into_the_field() {
 
     // The unmodified key is still text, so the guard did not disable typing. The key codes
     // are ASCII, so 66 is the uppercase `B` and 98 the lowercase `b`.
-    le.handle_event(&Event::key_press(98, 0));
+    le.handle_event(&Event::text_input("b"));
     assert_eq!(le.text(), "b", "a plain `b` is content");
 }
 
@@ -636,7 +636,7 @@ fn a_drag_extends_the_selection_but_a_bare_hover_does_not() {
     assert_eq!(le.selected_text(), "bcd", "the drag selected the span between the two points");
 
     // The release ends the gesture, so a later hover is inert again.
-    le.handle_event(&Event::mouse_release(origin + 4 * cell, mid, 1));
+    le.handle_event(&Event::mouse_release(origin + 4 * cell, mid, 1, 0));
     le.handle_event(&Event::mouse_move(field.x + 7 * cell, mid));
     assert_eq!(le.cursor_position(), 4, "a hover after the release does not extend");
     assert_eq!(le.selected_text(), "bcd", "and the selection the user made is kept");
@@ -2204,7 +2204,11 @@ mod composition_tests {
         let mut field = LineEdit::new(Rect::new(0, 0, 240, 48));
         field.set_text("alpha beta");
         // `alpha` occupies the leading cells; a press inside it selects that word.
-        field.handle_event(&Event::MouseDoubleClick { pos: Point::new(3, 10), button: 1 });
+        field.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(3, 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(field.selected_text(), "alpha");
     }
 

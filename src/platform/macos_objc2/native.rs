@@ -1735,6 +1735,7 @@ impl RustWidgetsObjc2CanvasView {
                 MousePhase::Release => Event::MouseRelease {
                     pos: position,
                     button: crate::event::mouse_button::PRIMARY,
+                    modifiers,
                 },
                 MousePhase::Drag | MousePhase::Move => Event::MouseMove { pos: position },
                 MousePhase::SecondaryPress => Event::mouse_press_with(
@@ -1746,11 +1747,13 @@ impl RustWidgetsObjc2CanvasView {
                 MousePhase::SecondaryRelease => Event::MouseRelease {
                     pos: position,
                     button: crate::event::mouse_button::SECONDARY,
+                    modifiers,
                 },
                 MousePhase::DoubleClick => Event::mouse_double_click(
                     position.x,
                     position.y,
                     crate::event::mouse_button::PRIMARY,
+                    modifiers,
                 ),
             };
             let delivered = crate::platform::platform_facts().route_pointer_event(

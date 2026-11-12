@@ -137,9 +137,6 @@ pub struct FindReplaceDialog {
     /// Selection anchor, in characters, for each field. Equal to the caret when nothing is
     /// selected; the range between the two is the selected text.
     anchor: [usize; 2],
-    /// Whether the host has delivered committed text. Once it has, raw key codes are no longer
-    /// treated as characters, so a non-Latin layout is not double-inserted.
-    text_input_seen: bool,
     /// The host's match report: `(current, total)`, or `None` for "no matches" (DLG-11).
     match_report: Option<(usize, usize)>,
     /// The painted report text, keyed by the report it was formatted from.
@@ -175,7 +172,6 @@ impl FindReplaceDialog {
             caret: [0, 0],
             preedit: String::new(),
             anchor: [0, 0],
-            text_input_seen: false,
             match_report: None,
             status_cache: RefCell::new(None),
             no_matches_text: crate::compat::String::new(),
@@ -1323,21 +1319,16 @@ impl EventHandler for FindReplaceDialog {
                         self.base.request_redraw();
                     }
                     _ => {
-                        // Printable ASCII is the fallback for a host that only reports key
-                        // codes. Once committed text has arrived, the backend is speaking the
-                        // text protocol and the raw key would either duplicate the character
-                        // or insert a code a non-Latin layout never meant as a character.
-                        if !self.text_input_seen && *key >= 32 && *key <= 126 {
-                            if let Some(ch) = char::from_u32(*key) {
-                                self.insert_text(&ch.to_string());
-                            }
-                        }
+                        // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01).
+                        // Every backend delivers a typed character that way, and the committed
+                        // arm below inserts it; accepting the raw key as well typed it twice on
+                        // Windows, the one backend that also forwards `WM_KEYDOWN` for printable
+                        // virtual keys.
                     }
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 self.preedit.clear();
-                self.text_input_seen = true;
                 let filtered: String =
                     text.chars().filter(|character| !character.is_control()).collect();
                 if !filtered.is_empty() {
@@ -1786,9 +1777,6 @@ mod tests {
         dialog.show();
         dialog.handle_event(&Event::TextInput { text: "搜索".to_string() });
         assert_eq!(dialog.find_text(), "搜索");
-        // The raw key fallback no longer applies once the backend speaks committed text.
-        dialog.handle_event(&Event::KeyPress { key: 'x' as u32, modifiers: 0 });
-        assert_eq!(dialog.find_text(), "搜索");
         dialog.handle_event(&Event::ImeCommit { text: "值".to_string() });
         assert_eq!(dialog.find_text(), "搜索值");
     }
@@ -1805,7 +1793,7 @@ mod tests {
         dialog.handle_event(&Event::KeyPress { key: key_codes::LEFT, modifiers: 1 });
         dialog.handle_event(&Event::KeyPress { key: key_codes::LEFT, modifiers: 1 });
         assert_eq!(dialog.selected_range(index), Some((4, 6)));
-        dialog.handle_event(&Event::KeyPress { key: 'X' as u32, modifiers: 0 });
+        dialog.handle_event(&Event::text_input("X"));
         assert_eq!(dialog.find_text(), "abcdX");
         assert_eq!(dialog.caret[index], 5);
     }

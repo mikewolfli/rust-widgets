@@ -243,6 +243,12 @@ fn build_f32_frame(
 ///
 /// Only supports `Mp3`, `Flac`, `Ogg`, `Aac`, and `Opus`.
 /// Returns a `String` error on failure.
+///
+/// # Reachability (G-228)
+///
+/// Reached only through [`super::encoder::encode`] with the `video-codecs` feature; it is the
+/// FFmpeg implementation of that host-tool API, not a separate entry point.
+///
 pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8>, String> {
     ffmpeg_next::init().map_err(|e| {
         format!(

@@ -333,6 +333,12 @@ pub trait JsEngine: Send + Sync {
     fn get_global(&self, name: &str, context: &JsContext) -> Option<JsValue>;
 }
 
+/// Maximum depth of nested user-function calls before the interpreter reports a `JsError`.
+///
+/// Chosen so a runaway recursion is caught long before the native stack is exhausted, while
+/// ordinary scripts (and the tests' small call chains) stay far below it.
+const MAX_CALL_DEPTH: usize = 32;
+
 /// A small interpreter that understands a pragmatic *subset* of JavaScript.
 ///
 /// It is not a conforming engine: it supports var/let/const declarations,
@@ -369,6 +375,12 @@ pub struct SimpleJsEngine {
     /// is bounded and cleared wholesale when it overflows, because an interpreter that keeps
     /// every script it has ever seen would grow without limit.
     block_cache: HashMap<String, Arc<Vec<String>>>,
+    /// Current depth of user-function calls, bounded by [`MAX_CALL_DEPTH`].
+    ///
+    /// The interpreter is a tree-walker, so a script such as `function f(n) { return f(n); }`
+    /// would otherwise consume native stack until the process aborts — not a `JsError` the host
+    /// could handle. The bound follows the `for` loop's runaway policy: report it, never crash.
+    call_depth: usize,
 }
 impl SimpleJsEngine {
     /// Creates an engine with the five built-in functions pre-registered and no
@@ -382,12 +394,12 @@ impl SimpleJsEngine {
         functions.insert("String".to_string(), JsValue::Function("String".to_string()));
         functions.insert("Number".to_string(), JsValue::Function("Number".to_string()));
         functions.insert("Boolean".to_string(), JsValue::Function("Boolean".to_string()));
-        Self { variables: HashMap::new(), functions, block_cache: HashMap::new() }
+        Self { variables: HashMap::new(), functions, block_cache: HashMap::new(), call_depth: 0 }
     }
     /// Parses a literal: numbers, strings, booleans, `null`/`undefined`, array literals and
     /// a variable reference. **No operators** — see [`Self::eval_expression`], which is what
     /// evaluates anything containing one.
-    fn parse_literal(&mut self, s: &str) -> JsValue {
+    fn parse_literal(&mut self, s: &str, context: &mut JsContext) -> JsValue {
         let s = s.trim().trim_end_matches(';');
         if s == "undefined" {
             return JsValue::Undefined;
@@ -413,8 +425,10 @@ impl SimpleJsEngine {
             if inner.is_empty() {
                 return JsValue::Array(Vec::new());
             }
-            let elements: Vec<JsValue> =
-                split_top_level(inner).into_iter().map(|part| self.parse_literal(&part)).collect();
+            let elements: Vec<JsValue> = split_top_level(inner)
+                .into_iter()
+                .map(|part| self.parse_literal(&part, context))
+                .collect();
             return JsValue::Array(elements);
         }
         if let Ok(n) = s.parse::<f64>() {
@@ -436,9 +450,9 @@ impl SimpleJsEngine {
         if let Some((name, raw_args)) = parse_call(s) {
             let mut evaluated = Vec::with_capacity(raw_args.len());
             for arg in &raw_args {
-                evaluated.push(self.eval_expression(arg).unwrap_or(JsValue::Undefined));
+                evaluated.push(self.eval_expression(arg, context).unwrap_or(JsValue::Undefined));
             }
-            if let Ok(value) = self.call_function(&name, &evaluated, &mut JsContext::new()) {
+            if let Ok(value) = self.call_function(&name, &evaluated, context) {
                 return value;
             }
         }
@@ -464,14 +478,14 @@ impl SimpleJsEngine {
     ///
     /// `+` concatenates when either side is a string, which is ECMAScript's rule and the
     /// behaviour a caller writing `"n=" + n` expects.
-    fn eval_expression(&mut self, expr: &str) -> JsResult<JsValue> {
+    fn eval_expression(&mut self, expr: &str, context: &mut JsContext) -> JsResult<JsValue> {
         let expr = expr.trim();
         if expr.is_empty() {
             return Ok(JsValue::Undefined);
         }
         // A whole expression in parentheses: strip and recurse, so `(1 + 2) * 3` groups.
         if expr.starts_with('(') && matching_paren(expr) == Some(expr.len() - 1) {
-            return self.eval_expression(&expr[1..expr.len() - 1]);
+            return self.eval_expression(&expr[1..expr.len() - 1], context);
         }
 
         // Lowest precedence first, so the *last* split is the outer operation.
@@ -489,11 +503,11 @@ impl SimpleJsEngine {
                 // Short-circuit *and* `||`, because evaluating the right side of either
                 // has no effect but can fail (a divide by zero is fine in JS, but a
                 // malformed right side would raise where ECMAScript would not).
-                let left_value = self.eval_expression(left)?;
+                let left_value = self.eval_expression(left, context)?;
                 match op {
                     "&&" => {
                         return if left_value.is_truthy() {
-                            self.eval_expression(right)
+                            self.eval_expression(right, context)
                         } else {
                             Ok(left_value)
                         };
@@ -502,22 +516,22 @@ impl SimpleJsEngine {
                         return if left_value.is_truthy() {
                             Ok(left_value)
                         } else {
-                            self.eval_expression(right)
+                            self.eval_expression(right, context)
                         };
                     }
                     _ => {}
                 }
-                let right_value = self.eval_expression(right)?;
+                let right_value = self.eval_expression(right, context)?;
                 return Ok(apply_operator(op, &left_value, &right_value));
             }
         }
 
         // Unary minus and logical not, which bind tighter than any binary operator above.
         if let Some(rest) = expr.strip_prefix('!') {
-            return Ok(JsValue::Boolean(!self.eval_expression(rest)?.is_truthy()));
+            return Ok(JsValue::Boolean(!self.eval_expression(rest, context)?.is_truthy()));
         }
         if let Some(rest) = expr.strip_prefix('-') {
-            let value = self.eval_expression(rest)?;
+            let value = self.eval_expression(rest, context)?;
             return Ok(JsValue::Number(-value.to_number()));
         }
 
@@ -532,17 +546,16 @@ impl SimpleJsEngine {
             return Ok(value.clone());
         }
         if let Some((name, raw_args)) = parse_call(expr) {
-            let mut ctx = JsContext::new();
             // Arguments are expressions: a quoted literal stays a string, a bare identifier
             // reads its variable, and `f(a + 1)` really computes the sum. Passing the raw
             // text through a literal parser turned `String('hello')` into `"undefined"`.
             let mut evaluated = Vec::with_capacity(raw_args.len());
             for arg in &raw_args {
-                evaluated.push(self.eval_expression(arg).unwrap_or(JsValue::Undefined));
+                evaluated.push(self.eval_expression(arg, context).unwrap_or(JsValue::Undefined));
             }
-            return self.call_function(&name, &evaluated, &mut ctx);
+            return self.call_function(&name, &evaluated, context);
         }
-        Ok(self.parse_literal(expr))
+        Ok(self.parse_literal(expr, context))
     }
 
     /// Evaluates a block (a semicolon-delineated sequence of statements) and
@@ -609,7 +622,13 @@ impl SimpleJsEngine {
             // When there is only one piece and it is the input itself, the block wrapper
             // added nothing, so `eval_stmt` is the right entry point: it owns the
             // constructs the split could not reach.
-            last_val = if stmts.len() == 1 && stmts[0] == block {
+            // A single statement goes straight to `eval_stmt`. Comparing against `block`
+            // (rather than just the length) missed the ordinary `return a;` body: the
+            // statement is trimmed and has lost its `;`, so it never compared equal and the
+            // statement re-entered `evaluate`. That nested evaluate exports the whole variable
+            // namespace — including a call's **parameters** — into the caller's context, which
+            // leaked `a` from `function f(a) { return a; } f(1)` (T3-47).
+            last_val = if stmts.len() == 1 {
                 self.eval_stmt(stmt, context)?
             } else {
                 self.evaluate(stmt, context)?
@@ -662,7 +681,7 @@ impl SimpleJsEngine {
                         stmt.len(),
                     ));
                 }
-                let value = self.eval_expression(rest[eq_pos + 1..].trim())?;
+                let value = self.eval_expression(rest[eq_pos + 1..].trim(), context)?;
                 self.variables.insert(name.to_string(), value.clone());
                 return Ok(value);
             }
@@ -725,7 +744,7 @@ impl SimpleJsEngine {
                 JsError::at_offset("Unclosed condition in 'if'".to_string(), stmt, stmt.len())
             })?;
             let condition = stmt[cond_start + 1..cond_start + cond_end].trim();
-            let cond_val = self.eval_expression(condition)?;
+            let cond_val = self.eval_expression(condition, context)?;
             let after_cond = stmt[cond_start + cond_end + 1..].trim();
             let mut body = after_cond;
             let mut else_body: Option<String> = None;
@@ -793,7 +812,7 @@ impl SimpleJsEngine {
             // exactly-10000-iteration loop. `0..10000` ran the body 10000 times but never
             // re-tested, so a loop that finishes on its 10000th pass was reported as runaway.
             for _ in 0..=10000 {
-                let cond_val = self.eval_expression(&loop_cond)?;
+                let cond_val = self.eval_expression(&loop_cond, context)?;
                 if !cond_val.is_truthy() {
                     completed = true;
                     break;
@@ -817,7 +836,12 @@ impl SimpleJsEngine {
         // --- return ---
         if stmt.starts_with("return ") || stmt == "return" {
             let val = if stmt.len() > 7 {
-                self.evaluate(stmt[6..].trim(), context)?
+                // Evaluate the returned expression, not the whole statement pipeline: `evaluate`
+                // synchronises every engine variable into the caller's context afterwards, and
+                // during a call that namespace still holds the **parameters**. That leaked
+                // `a` as a global from `function f(a) { return a; } f(1)` the moment the real
+                // context was threaded through instead of a throwaway one (T3-47).
+                self.eval_expression(stmt[7..].trim(), context)?
             } else {
                 JsValue::Undefined
             };
@@ -841,13 +865,13 @@ impl SimpleJsEngine {
                 if before != '<' && before != '>' && before != '!' && before != '=' {
                     let name = stmt[..eq_pos].trim().to_string();
                     let value_str = stmt[eq_pos + 1..].trim();
-                    let value = self.eval_expression(value_str)?;
+                    let value = self.eval_expression(value_str, context)?;
                     self.variables.insert(name, value.clone());
                     return Ok(value);
                 }
             }
         }
-        self.eval_expression(stmt)
+        self.eval_expression(stmt, context)
     }
 }
 crate::impl_default_via_new!(SimpleJsEngine);
@@ -1258,7 +1282,7 @@ impl JsEngine for SimpleJsEngine {
                     )
                 })?;
                 let content = &script[start..end];
-                let value = self.eval_expression(content)?;
+                let value = self.eval_expression(content, context)?;
                 context.log(value.to_string());
                 return Ok(value);
             }
@@ -1281,7 +1305,7 @@ impl JsEngine for SimpleJsEngine {
                     let name = rest[..eq_pos].trim().to_string();
                     let value_str = rest[eq_pos + 1..].trim();
                     // Check if value is a function definition or complex expression
-                    let value = self.eval_expression(value_str)?;
+                    let value = self.eval_expression(value_str, context)?;
                     self.variables.insert(name, value.clone());
                     return Ok(value);
                 } else {
@@ -1306,7 +1330,7 @@ impl JsEngine for SimpleJsEngine {
             if starts_a_statement(script) || is_assignment_expression(script) {
                 return self.eval_stmt(script, context);
             }
-            self.eval_expression(script)
+            self.eval_expression(script, context)
         })();
         // Write the namespace back so the context (and any engine sharing it) sees the
         // script's declarations and assignments.
@@ -1346,6 +1370,12 @@ impl JsEngine for SimpleJsEngine {
                     }
                 });
             if let Some((params, body)) = candidate {
+                if self.call_depth >= MAX_CALL_DEPTH {
+                    return Err(JsError::new(format!(
+                        "call stack exceeded {MAX_CALL_DEPTH} frames while calling `{name}`"
+                    )));
+                }
+                self.call_depth = self.call_depth.saturating_add(1);
                 // Save existing variables that collide with parameter names. `None` means the
                 // name was not defined before the call, so restoring must remove it rather than
                 // leave `undefined` behind as a global the script never declared.
@@ -1356,6 +1386,7 @@ impl JsEngine for SimpleJsEngine {
                     self.variables.insert(p.clone(), arg_val);
                 }
                 let result = self.eval_block(&body, context);
+                self.call_depth = self.call_depth.saturating_sub(1);
                 // Restore saved variables
                 for (p, val) in saved {
                     match val {
@@ -1800,11 +1831,11 @@ mod tests {
         assert_eq!(engine.evaluate("var n = 3; n", &mut context).unwrap(), JsValue::Number(3.0));
     }
 
-    /// A function body whose only `;` is inside its braces must not re-enter the block
-    /// evaluator forever. This reproduced as a **stack overflow** (not an error) before the
-    /// single-piece case was routed to `eval_stmt`.
+    /// A single-statement function body is routed to `eval_stmt` rather than re-entering the
+    /// block evaluator. This reproduced as a **stack overflow** (not an error) before that
+    /// routing existed.
     #[test]
-    fn a_function_body_does_not_recurse_forever() {
+    fn a_single_statement_function_body_is_evaluated() {
         let mut engine = SimpleJsEngine::new();
         let mut context = JsContext::new();
         let defined = engine.evaluate("function add(a, b) { return a + b; }", &mut context);
@@ -1815,6 +1846,29 @@ mod tests {
             &mut context,
         );
         assert_eq!(called.unwrap(), JsValue::Number(5.0), "the body runs the arithmetic");
+    }
+
+    /// Runaway user-function recursion is reported as a `JsError`, not left to abort the process
+    /// with a native stack overflow (T3-06).
+    #[test]
+    fn runaway_recursion_is_an_error_not_a_stack_overflow() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        engine
+            .evaluate("function down(n) { return down(n); }", &mut context)
+            .expect("defining a recursive function must not overflow the stack");
+        let error = engine
+            .call_function("down", &[JsValue::Number(1.0)], &mut context)
+            .expect_err("the call must be refused once the depth bound is reached");
+        assert!(
+            error.to_string().contains("call stack exceeded"),
+            "the error must name the cause: {error}"
+        );
+        // The counter is restored, so an ordinary call after the failure still works.
+        let seven = engine
+            .call_function("parseInt", &[JsValue::String("7".to_string())], &mut context)
+            .expect("the failed recursion must leave the engine usable");
+        assert_eq!(seven, JsValue::Number(7.0));
     }
 
     /// Short-circuiting must not evaluate the branch it skips, and must still yield the

@@ -34,7 +34,7 @@
 /// `3.0` means the content follows a third of the overscrolled distance: it moves, so the user
 /// knows the gesture arrived, and it visibly resists, so the gesture does not read as a scroll
 /// that silently did nothing.
-pub const DAMPING_DIVISOR: f32 = 3.0;
+pub(crate) const DAMPING_DIVISOR: f32 = 3.0;
 
 /// Below this many logical pixels an offset counts as at rest.
 ///
@@ -43,7 +43,27 @@ pub const DAMPING_DIVISOR: f32 = 3.0;
 pub const SETTLE_THRESHOLD: f32 = 0.5;
 
 /// The default duration of a spring-back from a released overscroll.
-pub const SETTLE_DURATION_MS: f32 = 200.0;
+///
+/// Read from `theme.motion.normal`, the same token every other transition uses, so a
+/// reduced-motion preference or a re-tempoed theme shortens the settle without this module
+/// knowing about either. `200` is the no-theme fallback the default preset produces.
+pub(crate) fn settle_duration_ms() -> f32 {
+    // A device profile is what has a theme to read; the unstripped-but-profile-less build (the
+    // `desktop-runtime,controls-custom` set) has the control but no `Theme::motion`, so it keeps
+    // the preset's 200 ms.
+    #[cfg(full_widgets)]
+    {
+        crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.motion.normal as f32)
+            .unwrap_or(200.0)
+            .max(1.0)
+    }
+    #[cfg(not(full_widgets))]
+    {
+        200.0
+    }
+}
 
 /// Damps pointer travel that has run past the content boundary.
 ///
@@ -61,27 +81,27 @@ pub fn damp(delta: f32) -> f32 {
 ///
 /// A divisor at or below zero would multiply the travel (or invert it), which is not a damping at
 /// all, so it falls back to [`DAMPING_DIVISOR`].
-pub fn damp_with(delta: f32, divisor: f32) -> f32 {
+pub(crate) fn damp_with(delta: f32, divisor: f32) -> f32 {
     let divisor = if divisor > 0.0 { divisor } else { DAMPING_DIVISOR };
     delta / divisor
 }
 
-/// One frame of a spring-back from `offset`, over a [`SETTLE_DURATION_MS`] animation.
+/// One frame of a spring-back from `offset`, over a [`settle_duration_ms`] animation.
 ///
 /// Returns the remaining offset. The decay is linear in the frame time rather than a fixed
 /// per-frame fraction, so the animation takes the same wall-clock time at 30 fps and at 120 fps;
 /// and it snaps to exactly zero at [`SETTLE_THRESHOLD`] so a caller can test `offset == 0.0`
 /// to learn that the animation is over.
 pub fn settle_step(offset: f32, delta_ms: u32) -> f32 {
-    settle_step_over(offset, delta_ms, SETTLE_DURATION_MS)
+    settle_step_over(offset, delta_ms, settle_duration_ms())
 }
 
 /// [`settle_step`] with an explicit duration, for a control that settles faster or slower.
-pub fn settle_step_over(offset: f32, delta_ms: u32, duration_ms: f32) -> f32 {
+pub(crate) fn settle_step_over(offset: f32, delta_ms: u32, duration_ms: f32) -> f32 {
     if offset.abs() <= SETTLE_THRESHOLD {
         return 0.0;
     }
-    let duration = if duration_ms > 0.0 { duration_ms } else { SETTLE_DURATION_MS };
+    let duration = if duration_ms > 0.0 { duration_ms } else { settle_duration_ms() };
     let fraction = (delta_ms as f32 / duration).clamp(0.0, 1.0);
     let remaining = offset * (1.0 - fraction);
     if remaining.abs() <= SETTLE_THRESHOLD {
@@ -202,14 +222,17 @@ mod tests {
         let mut offset = 90.0f32;
         // Half the duration leaves half the offset — the decay is in time, not in frames, which
         // is what keeps a 30 fps host and a 120 fps host settling over the same wall-clock span.
-        offset = settle_step(offset, 100);
+        // The maths is tested against an explicit duration so the assertion does not depend on
+        // whichever theme the shared manager happens to hold; `settle_step` only supplies the
+        // theme's `normal` token as that duration.
+        offset = settle_step_over(offset, 100, 200.0);
         assert!((offset - 45.0).abs() < 0.01, "half the time is half the travel: {offset}");
-        offset = settle_step(offset, 100);
+        offset = settle_step_over(offset, 100, 200.0);
         assert!((offset - 22.5).abs() < 0.01, "the same fraction applies again: {offset}");
         // A frame as long as the whole duration lands on zero, not on a fraction of a pixel.
-        assert_eq!(settle_step(offset, 200), 0.0);
+        assert_eq!(settle_step_over(offset, 200, 200.0), 0.0);
         // And a tiny offset is already at rest.
-        assert_eq!(settle_step(0.4, 16), 0.0);
+        assert_eq!(settle_step_over(0.4, 16, 200.0), 0.0);
         assert!(!is_settling(0.4));
         assert!(is_settling(0.6));
     }

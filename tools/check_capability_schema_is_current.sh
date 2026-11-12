@@ -39,6 +39,12 @@
 #     `check_widget_registration_fidelity.sh` (the document is as complete as the factory).
 #
 # Usage: tools/check_capability_schema_is_current.sh
+#
+# The exporter runs under a 900 s bound inside the gate, so the runner's budget must be
+# larger for that bound to be the one that produces the verdict (principle #104).
+#
+# rw-gate-budget: 1200
+#
 # Exit 0 = the committed document matches a fresh export and carries its sentinels.
 # Exit 1 = a finding (the drift command is printed).
 # ============================================================================
@@ -81,7 +87,9 @@ print(f"  PASS  {len(document)} controls, every entry carrying properties and ev
 PY
 
 echo "[2/4] a fresh export matches the committed bytes"
-cargo run --quiet --example export_capability_schema -- --check
+# Bounded like every other command in the suite: a wedged exporter used to hang
+# both this gate and the run that launched it (principle #58).
+rw_run_bounded "$RW_TIMEOUT_DEFAULT" cargo run --quiet --example export_capability_schema -- --check
 
 echo "[3/4] sentinels: the shared row and the event renames"
 "$PYTHON" - "$DOC" <<'PY'

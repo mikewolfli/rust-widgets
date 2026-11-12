@@ -1741,7 +1741,7 @@ impl EventHandler for Label {
                 // highlight a link, and the press must not arm one either.
                 self.pressed_link = if self.base.is_enabled() { self.link_at(*pos) } else { None };
             }
-            Event::MouseRelease { pos, button }
+            Event::MouseRelease { pos, button, .. }
                 if *button == crate::event::mouse_button::PRIMARY && self.base.is_enabled() =>
             {
                 let released = self.link_at(*pos);
@@ -1862,7 +1862,7 @@ impl Draw for Label {
         // Draw text
         if !self.text.is_empty() && !self.has_pixmap() {
             // The ink is the theme's own: `disabled` when the control is inert, `foreground`
-            // otherwise. Both used to be literals — `rgb(150,150,150)` and `rgb(0,0,0)` — which made
+            // otherwise. Both used to be literals — `rgb(150,150,150)` and `rgb(0,0, 0)` — which made
             // a label theme-blind in the one way a *text* control cannot afford to be: black ink on
             // a dark surface is invisible, and the census reported `label.svg` as a picture of
             // nothing at all until `render_widget_to_svg_on` learned to composite it over the
@@ -2444,7 +2444,7 @@ mod tests {
     ///
     /// # The defect this pins
     ///
-    /// Both inks were literals — `rgb(0,0,0)` enabled and `rgb(150,150,150)` disabled — so a label
+    /// Both inks were literals — `rgb(0,0, 0)` enabled and `rgb(150,150,150)` disabled — so a label
     /// was theme-blind in the one way a text control cannot afford: black ink on a dark surface is
     /// invisible. The assertion is the **contrast against the label's own backdrop**, which is the
     /// property that was broken, rather than either hex value: a literal black would satisfy "some

@@ -442,7 +442,11 @@ impl OrbitalPlatform {
                     let event = if is {
                         Event::mouse_press_with(0, 0, index as u32 + 1, entry.input.modifiers)
                     } else {
-                        Event::MouseRelease { pos: Point::new(0, 0), button: index as u32 + 1 }
+                        Event::MouseRelease {
+                            pos: Point::new(0, 0),
+                            button: index as u32 + 1,
+                            modifiers: entry.input.modifiers,
+                        }
                     };
                     pending.push(Pending::Key(window_widget, event));
                 }

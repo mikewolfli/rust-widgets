@@ -2948,7 +2948,7 @@ mod tests {
         let mut map = MapView::new(Rect::new(0, 0, 400, 300));
         // The first event lays the companions out.
         map.handle_event(&Event::mouse_press(10, 10, 1));
-        map.handle_event(&Event::mouse_release(10, 10, 1));
+        map.handle_event(&Event::mouse_release(10, 10, 1, 0));
         let dial = map.compass().base().geometry();
         let center = Point::new(dial.x + dial.width as i32 / 2, dial.y + dial.height as i32 / 2);
 
@@ -2977,7 +2977,7 @@ mod tests {
     fn a_disabled_compass_press_does_not_reset_north() {
         let mut map = MapView::new(Rect::new(0, 0, 400, 300));
         map.handle_event(&Event::mouse_press(10, 10, 1));
-        map.handle_event(&Event::mouse_release(10, 10, 1));
+        map.handle_event(&Event::mouse_release(10, 10, 1, 0));
         let dial = map.compass().base().geometry();
         let center = Point::new(dial.x + dial.width as i32 / 2, dial.y + dial.height as i32 / 2);
 
@@ -3357,7 +3357,7 @@ mod tests {
         // The first event places the companions; the strip is 96 px wide at the top-right, so the
         // `+` cell is the third of three 30 px buttons.
         map.handle_event(&Event::mouse_press(10, 10, 1));
-        map.handle_event(&Event::mouse_release(10, 10, 1));
+        map.handle_event(&Event::mouse_release(10, 10, 1, 0));
         map.set_zoom(4.0);
 
         map.handle_event(&Event::mouse_press(370, 12, 1));

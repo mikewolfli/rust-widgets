@@ -801,6 +801,11 @@ impl Draw for Roller {
         }
 
         context.pop_clip();
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 
@@ -1278,6 +1283,7 @@ mod tests {
         roller.handle_event(&Event::MouseRelease {
             pos: Point::new(x, center_y - item_h),
             button: 1,
+            modifiers: 0,
         });
         roller.handle_event(&Event::MouseMove { pos: Point::new(x, center_y - 4 * item_h) });
         assert_eq!(roller.selected_index(), Some(2), "a released drag must not stay armed");

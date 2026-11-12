@@ -282,7 +282,7 @@ pub fn get_control_backend() -> &'static dyn ControlBackend {
 /// reader of a runtime trace should be able to see *which* mechanism a build
 /// selected, and that answer must not require reading `#[cfg]` attributes.
 pub fn active_control_policy() -> &'static str {
-    "self-drawn"
+    "library-painted"
 }
 
 #[cfg(test)]
@@ -336,8 +336,8 @@ mod tests {
     fn active_control_policy_is_the_single_mechanism() {
         assert_eq!(
             active_control_policy(),
-            "self-drawn",
-            "the policy label must name the one mechanism that exists",
+            "library-painted",
+            "the policy label must name the one mechanism that exists in intent terms",
         );
     }
 

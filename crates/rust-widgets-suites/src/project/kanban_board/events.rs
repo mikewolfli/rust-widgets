@@ -103,7 +103,7 @@ impl EventHandler for KanbanBoard {
                     self.card_hovered.emit(id);
                 }
             }
-            Event::MouseRelease { pos, button } if *button == 1 && self.drag.is_some() => {
+            Event::MouseRelease { pos, button, .. } if *button == 1 && self.drag.is_some() => {
                 self.finish_card_drag(*pos);
             }
             Event::Wheel { delta, modifiers } => {

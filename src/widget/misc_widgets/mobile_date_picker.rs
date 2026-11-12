@@ -1257,7 +1257,11 @@ mod tests {
         assert_eq!(picker.year(), 2025);
 
         // A release ends the gesture: later motion does not keep stepping.
-        picker.handle_event(&Event::MouseRelease { pos: Point::new(180, 10), button: 1 });
+        picker.handle_event(&Event::MouseRelease {
+            pos: Point::new(180, 10),
+            button: 1,
+            modifiers: 0,
+        });
         picker.handle_event(&Event::MouseMove { pos: Point::new(180, 70 - 6 * row_height) });
         assert_eq!(picker.day(), after_press + 3);
     }

@@ -51,6 +51,14 @@ pub struct RowSpan {
 
 /// A styled run of a [`TextEdit`] document.
 ///
+/// # Same name, different model (R-26 / principle #49)
+///
+/// `rich_edit::TextSpan` has the same two fields but a **different [`CharFormat`]**: this one has
+/// `bold`/`italic`/`underline`/`color`, while the rich editor's adds strikeout, family and size.
+/// Sharing this type would force the rich editor to drop those attributes (or the plain editor to
+/// carry fields it never honours). `render::rich_text::TextSpan` is the drawing-layer span and is
+/// a different concept entirely.
+///
 /// The range is a byte range into the value, and the format applies to every character it
 /// covers. Spans are stored exactly as the caller gives them: they may overlap (a later span wins
 /// where it does) and they need not cover the whole document — anything outside a span keeps the

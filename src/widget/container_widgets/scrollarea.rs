@@ -2710,7 +2710,7 @@ mod tests {
         sa.set_content_size(Size::new(100, 400));
         sa.handle_event(&Event::MousePress { pos: Point::new(196, 5), button: 1, modifiers: 0 });
         sa.handle_event(&Event::MouseMove { pos: Point::new(196, 40) });
-        sa.handle_event(&Event::MouseRelease { pos: Point::new(196, 40), button: 1 });
+        sa.handle_event(&Event::MouseRelease { pos: Point::new(196, 40), button: 1, modifiers: 0 });
         assert!(sa.scroll_position().1 > 0, "dragging the thumb scrolls the content");
 
         let before = sa.scroll_position().1;

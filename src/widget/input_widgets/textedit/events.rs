@@ -334,7 +334,7 @@ impl EventHandler for TextEdit {
                 }
             }
             // A double click selects the word under the pointer.
-            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+            Event::MouseDoubleClick { pos, button, .. } if *button == 1 => {
                 self.focused = true;
                 let offset = self.offset_at_point(*pos);
                 let (start, end) = self.word_range_at(offset);
@@ -588,23 +588,12 @@ impl EventHandler for TextEdit {
                         self.select_with_modifiers(target, mods);
                     }
                     _ => {
-                        // Printable character. A control chord is not text: the catch-all used to
-                        // accept every key in the printable range regardless of the modifiers beside
-                        // it, so `Primary+B` was typed as a literal `b`.
+                        // Printable content arrives as `Event::TextInput` (W4-01).
                         //
-                        // The three modifiers are tested one at a time on purpose:
-                        // `Modifiers::contains` compares the *value* of the mask, so the combined
-                        // `contains(CTRL | ALT | META)` form is true only when all three are held.
-                        let chord = mods.contains(crate::shortcut::Modifiers::CTRL)
-                            || mods.contains(crate::shortcut::Modifiers::ALT)
-                            || mods.contains(crate::shortcut::Modifiers::META);
-                        if !chord {
-                            if let Some(ch) = char::from_u32(*key).filter(|c| !c.is_control()) {
-                                if ch.is_ascii_graphic() || ch == ' ' || ch == '\t' {
-                                    self.insert_char(ch);
-                                }
-                            }
-                        }
+                        // Every backend delivers a typed character as `TextInput`/`ImeCommit`,
+                        // and the committed-text arm routes it into `insert_str`. Taking the
+                        // printable key here as well inserted it twice on Windows, the one backend
+                        // that also forwards `WM_KEYDOWN` for printable virtual keys.
                     }
                 }
             }

@@ -598,7 +598,7 @@ impl EventHandler for CupertinoAlertDialog {
             return;
         }
         match event {
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1036,7 +1036,7 @@ mod tests {
         let mut cs = CupertinoSwitch::new(Rect::new(0, 0, 60, 30));
         let p = Point::new(10, 10);
         cs.handle_event(&Event::MousePress { pos: p, button: 1, modifiers: 0 });
-        cs.handle_event(&Event::MouseRelease { pos: p, button: 1 });
+        cs.handle_event(&Event::MouseRelease { pos: p, button: 1, modifiers: 0 });
         assert!(cs.inner().is_checked());
     }
 
@@ -1133,7 +1133,7 @@ mod tests {
             "and the far edge moves out by the stretch"
         );
 
-        cupertino.handle_event(&Event::MouseRelease { pos: centre, button: 1 });
+        cupertino.handle_event(&Event::MouseRelease { pos: centre, button: 1, modifiers: 0 });
         let released = cupertino.inner().thumb_rect(rect).expect("a roomy rect has a thumb");
         assert_eq!(released.width, resting.width, "releasing must restore the disc");
     }
@@ -1219,7 +1219,7 @@ mod tests {
         // A press on the action latches it, and a release over the same area confirms it. The
         // action no longer fires on the press itself (L-P10).
         sb.handle_event(&Event::MousePress { pos: Point::new(340, 80), button: 1, modifiers: 0 });
-        sb.handle_event(&Event::MouseRelease { pos: Point::new(340, 80), button: 1 });
+        sb.handle_event(&Event::MouseRelease { pos: Point::new(340, 80), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -1295,7 +1295,11 @@ mod tests {
         // divider_y = 50+200-48 = 202
         // Button area: y 202..250, x 40..360
         // Confirm is right half: x 200..360
-        dlg.handle_event(&Event::MouseRelease { pos: Point::new(300, 225), button: 1 });
+        dlg.handle_event(&Event::MouseRelease {
+            pos: Point::new(300, 225),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -1309,7 +1313,11 @@ mod tests {
         });
 
         // Click on cancel button area (left half of button row)
-        dlg.handle_event(&Event::MouseRelease { pos: Point::new(100, 225), button: 1 });
+        dlg.handle_event(&Event::MouseRelease {
+            pos: Point::new(100, 225),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -1327,7 +1335,7 @@ mod tests {
             f.store(true, Ordering::SeqCst);
         });
 
-        dlg.handle_event(&Event::MouseRelease { pos: Point::new(100, 0), button: 1 });
+        dlg.handle_event(&Event::MouseRelease { pos: Point::new(100, 0), button: 1, modifiers: 0 });
         assert!(!fired.load(Ordering::SeqCst), "a zero-height panel has no button row");
     }
 
@@ -1552,6 +1560,7 @@ mod tests {
         rail.handle_event(&crate::event::Event::MouseRelease {
             pos: Point::new(20, 80),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(rail.selected(), 1, "a press on the second destination selects it");
 
@@ -1559,6 +1568,7 @@ mod tests {
         rail.handle_event(&crate::event::Event::MouseRelease {
             pos: Point::new(200, 80),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(rail.selected(), 1, "a press past the strip's edge selects nothing");
     }

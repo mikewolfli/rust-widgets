@@ -47,6 +47,7 @@
 
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;
+#[cfg(all(feature = "wayland-native", not(alloc_frugal), unix_desktop))]
 use crate::event::EventLoop;
 use crate::platform::clipboard::RichClipboardBackend as _;
 use crate::platform::types::{
@@ -443,19 +444,22 @@ impl Platform for WaylandPlatform {
             wayland_display
         );
 
-        // Start EventLoop with native pump for Wayland dispatch.
-        // The EventLoop runs in a background thread and calls the pump
-        // on each iteration to dispatch pending native Wayland events.
-        // Meanwhile, this thread blocks waiting for the quit signal.
-        let mut event_loop = EventLoop::new();
-        #[cfg(all(feature = "wayland-native", not(alloc_frugal), unix_desktop))]
-        if let Some(pump) = create_event_loop_pump() {
-            event_loop.set_native_pump(pump);
-        }
-        event_loop.start();
-
+        // The native pump needs a periodic driver, and `EventLoop` is it: its background thread
+        // calls the pump on each iteration, and the pump dispatches the compositor's pending
+        // events and advances the frame itself (`dispatch_native_events`). The loop therefore
+        // carries **no widget events** and a `set_dispatch_fn` would have no producer: nothing
+        // posts to this loop's queue, which is why it is not wired (W4-31).
+        //
+        // It is created only where a native pump exists. A state-only build has no pump, so the
+        // loop's thread would park forever waiting for work that can never arrive; the frame loop
+        // below is the whole of that profile.
         #[cfg(all(feature = "wayland-native", not(alloc_frugal), unix_desktop))]
         {
+            let mut event_loop = EventLoop::new();
+            if let Some(pump) = create_event_loop_pump() {
+                event_loop.set_native_pump(pump);
+            }
+            event_loop.start();
             self.run_native_event_loop();
         }
 

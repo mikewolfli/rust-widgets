@@ -12,7 +12,7 @@ use crate::compat::{HashMap, Rc, RefCell};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
-use crate::render::{RenderCommand, RenderContext};
+use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{
     expect_bool, expect_horizontal_alignment, expect_usize, horizontal_alignment_to_str,
@@ -391,18 +391,14 @@ fn draw_item_list(
         if paint.branches_open && !item.children.is_empty() && item.enabled {
             let sub_x = row.x + row.width as i32 - PADDING - 8;
             let sub_y = row.y + row.height as i32 / 2 - 4;
-            context.execute_command(RenderCommand::DrawPath {
-                points: vec![
-                    Point::new(sub_x, sub_y),
-                    Point::new(sub_x, sub_y + 8),
-                    Point::new(sub_x + 5, sub_y + 4),
-                ]
-                .into(),
-                closed: true,
-                color: palette.disabled_text,
-                filled: true,
-                width: 1,
-            });
+            // A three-point array on the stack: the owning `DrawPath` command would allocate an
+            // `Arc<[Point]>` per submenu row per frame (T3-42).
+            let points = [
+                Point::new(sub_x, sub_y),
+                Point::new(sub_x, sub_y + 8),
+                Point::new(sub_x + 5, sub_y + 4),
+            ];
+            context.draw_path(&points, true, palette.disabled_text, true, 1);
         }
     }
 }

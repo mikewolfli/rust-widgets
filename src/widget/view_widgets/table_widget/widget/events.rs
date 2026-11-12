@@ -49,7 +49,7 @@ impl crate::event::EventHandler for TableWidget {
                     self.base.request_redraw();
                 }
             }
-            crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
+            crate::event::Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at_point(*pos) {
                     self.select_row(index);
                     self.row_activated.emit(index);

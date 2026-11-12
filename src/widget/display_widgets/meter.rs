@@ -1093,8 +1093,8 @@ impl Draw for Meter {
         // The pivot disc below reaches 4 px in every direction, so the spoke stops one
         // px short of the tracked ring and the disc's edge stays inside it.
         let needle_length = radius.saturating_sub(5).max(1);
-        let needle_x = center.x + (needle_length as f32 * value_angle.cos()) as i32;
-        let needle_y = center.y + (needle_length as f32 * value_angle.sin()) as i32;
+        let needle_x = center.x + (needle_length as f32 * value_angle.cos()).round() as i32;
+        let needle_y = center.y + (needle_length as f32 * value_angle.sin()).round() as i32;
         context.draw_line_stroke(center, Point::new(needle_x, needle_y), needle_color, 2);
 
         // Draw a small filled circle at the center as the needle pivot.
@@ -1709,6 +1709,7 @@ mod tests {
         meter.handle_event(&Event::MouseRelease {
             pos: Point::new(188, 100),
             button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0,
         });
         meter.handle_event(&Event::MouseMove { pos: Point::new(100, 188) });
         assert_eq!(meter.value(), 100, "a released meter ignores hover motion");

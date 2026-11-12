@@ -457,7 +457,10 @@ def main() -> int:
     out.append("# 控件图像总览 / Control gallery")
     out.append("")
     out.append(
-        f"本页共 **{len(names)}** 张控件快照名（每个两种外观，共 **{len(names) * 2}** 张 SVG）。\n"
+        f"本页共 **{len(names)}** 个控件（深/浅各一张，共 **{len(names) * 2}** 张 SVG）。\n"
+        f"另有 **{len(pairs)}** 组伴随合影（**{len(pairs) * 2}** 张）、"
+        f"**{len(extras)}** 种状态快照（各深浅两张，共 **{len(extras) * 2}** 张）"
+        f"以及 **2** 张图标雪碧图，磁盘合计 **{len(list(SNAPSHOTS.glob('*.svg')))}** 张 SVG。\n"
         "这些名字来自控件注册表（`factory.widget_names()`），每行是一个**规范名**（不含别名）。\n"
         f"快照名数多于 `WidgetKind` 的枚举数（**{widget_kind_count()}**），是因为多个控件可以共用一个 kind"
         "（例如九种图表都报告 `WidgetKind::Chart`），而不是因为别名。"
@@ -465,7 +468,7 @@ def main() -> int:
     if extras:
         out.append("")
         out.append(
-            f"此外还有 **{len(extras)}** 张**状态快照**（下表），它们不是额外的控件，"
+            f"此外还有 **{len(extras)}** 种**状态快照**（下表，各深浅两张），它们不是额外的控件，"
             "而是某个控件在用户可切换到的状态下的样子。"
         )
         out.append("")

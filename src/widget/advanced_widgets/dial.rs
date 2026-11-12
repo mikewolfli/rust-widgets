@@ -1127,7 +1127,7 @@ mod tests {
         d.handle_event(&Event::MousePress { pos: Point::new(32, 32), button: 1, modifiers: 0 });
         // value should not change; only signal emitted
         assert_eq!(d.value(), 0);
-        d.handle_event(&Event::MouseRelease { pos: Point::new(32, 32), button: 1 });
+        d.handle_event(&Event::MouseRelease { pos: Point::new(32, 32), button: 1, modifiers: 0 });
         assert_eq!(d.value(), 0);
     }
 
@@ -1263,7 +1263,7 @@ mod tests {
         let lower = d.value();
         assert!(lower < middle, "moving toward the sweep's start must lower the value");
 
-        d.handle_event(&Event::mouse_release(14, 66, 1));
+        d.handle_event(&Event::mouse_release(14, 66, 1, 0));
         assert!(!d.is_dragging());
         let after_release = d.value();
         d.handle_event(&Event::mouse_move(40, 10));
@@ -1322,7 +1322,7 @@ mod tests {
         // The same state through the drag entry point, which is where the panic would abort.
         d.handle_event(&Event::mouse_press(70, 40, 1));
         d.handle_event(&Event::mouse_move(20, 40));
-        d.handle_event(&Event::mouse_release(20, 40, 1));
+        d.handle_event(&Event::mouse_release(20, 40, 1, 0));
     }
 
     /// A drag snaps to the configured step, and the caller can turn that off.

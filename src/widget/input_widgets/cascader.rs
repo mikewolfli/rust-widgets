@@ -1980,7 +1980,13 @@ impl EventHandler for Cascader {
                 }
                 // First-letter search inside the current level's filtered rows, the same
                 // type-ahead the rest of the family has (I-14).
-                32..=126 => {
+                //
+                // A filterable cascader leaves printable keys to `Event::TextInput`, which
+                // appends them to the filter. Every backend delivers typing that way, so running
+                // type-ahead from the raw key as well would perform two actions for one
+                // keystroke on the one backend (Windows) that also forwards `WM_KEYDOWN`
+                // for printable virtual keys (W4-01).
+                32..=126 if !self.filterable => {
                     if let Some(ch) = char::from_u32(*key) {
                         let level = self.expanded_path.len().saturating_sub(1);
                         let now = Instant::now();

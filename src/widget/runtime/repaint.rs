@@ -758,8 +758,8 @@ pub fn repaint_mode(id: ObjectId) -> RepaintMode {
 /// picture — see [`crate::performance::DirtyRegionTracker::add_coalescing_beyond_capacity`].
 pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
     // Any damage submission is evidence that some surface's content changed, which is what the
-    // tree-frame cache compares against (see `render_frame_tree_cached`). Bumped even when this
-    // widget has no tracker, because a window-level cache is not the per-widget policy. The
+    // tree-frame cache compares against (see `render_frame_tree_cached_shared`). Bumped even when
+    // this widget has no tracker, because a window-level cache is not the per-widget policy. The
     // window-scoped bump (G-311) mirrors it: only this widget's window loses its cached frame.
     note_renderable_change();
     note_renderable_change_for(id);

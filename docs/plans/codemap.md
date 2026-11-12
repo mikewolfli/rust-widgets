@@ -1,8 +1,11 @@
 # rust-widgets Code Map
 
-> **Generated**: 2026-06-15 (Round 2 super-depth scan)
-> **Version**: 0.9.9
-> **Total Tests**: 3723 (all passing, 0 ignored)
+> **Generated**: 2026-11-12 (refreshed from `ls src/`, `Cargo.toml` and the test tree; the
+> 2026-06-15 map is historical)
+> **Version**: 4.2.0
+> **Branch**: main
+> **Total Tests**: approximately 11.5k `#[test]` attributes (see §7; run `cargo test` for the
+> current pass count)
 
 ---
 
@@ -67,7 +70,6 @@
 | `base.rs` | BaseWidget — shared state + signals for all widgets |
 | `capability.rs` | WidgetCapability, WidgetFactory, generic property read/write |
 | `draw.rs` | Draw trait (custom rendering) |
-| `image.rs` | Image struct + ImageFormat |
 | `kind.rs` | WidgetKind enum (231 variants) |
 | `mod.rs` | Re-exports + type aliases |
 | `runtime/` | Mounted-widget registry, tree painter, dispatch, focus, hit test |
@@ -92,7 +94,6 @@
 | `view_widgets/` | 8 | DataGrid, ImageGallery, ListView, PropertiesPanel, PropertyGrid, TableWidget, TreeTable, TreeView, VirtualList, VirtualTable |
 | `special_widgets/` | 21 | Breadcrumb, Canvas, ChartWidget, Chip, CodeEditor, ColorPicker, CommandPalette, DiffViewer, FreeformShapeWidget, GanttWidget, GridWidget, MapView, MarkdownEditor, MediaPlayer, NotificationCenter, SegmentedControl, Snackbar, SplitButton, TerminalView, TimelineWidget, ToastStack |
 | `advanced_widgets/` | 10 | Calendar, DateEdit, DateTimeEdit, Dial, KeySequenceEdit, PieMenu, RibbonBar, TabBar, TimeEdit |
-| `web_widgets/` | 8 | WebEngine, WebEngineView, WebEnginePage, WebEngineSettings, WebEngineDownloadItem, WebEngineCookieStore, WebEngineWebChannel, WebEngineFindTextResult, WebEngineNotification, WebEngineScriptDialog, WebEngineContextMenuRequest |
 | `cupertino/` | 6 | CupertinoAlertDialog, CupertinoSlider, CupertinoSwitch, CupertinoDatePicker, CupertinoNavigationBar, CupertinoSegmentedControl, MaterialNavigationRail, MaterialSnackbar |
 | `misc_widgets/` | 9 | Avatar, BarcodeScanner, BezierCurveEditor, DateRangePicker, MobileDatePicker, QRCode, SegmentedButton |
 
@@ -100,19 +101,16 @@
 | File/Module | Purpose |
 |-------------|---------|
 | `contract.rs` | Platform trait (full widget lifecycle + capability contracts) |
-| `types.rs` | PlatformCapabilities, WidgetTriggerKind, DropEvent, capability contracts |
+| `types/` | PlatformCapabilities, WidgetTriggerKind, DropEvent, capability contracts |
 | `state.rs` | BackendState<K> — thread-safe widget state model |
 | `stub.rs` | StubPlatform — in-memory mock for testing |
 | `runtime.rs` | Platform init/run/quit, auto-detect Linux/Wayland |
 | `clipboard.rs` | RichClipboardBackend trait, MockClipboard |
-| `clipboard_stubs.rs` | Platform clipboard backends (macos-legacy, objc2, win32, linux, wasm) |
+| `clipboard_native.rs` | Native clipboard backends (macos-legacy, objc2, win32, linux, wasm) |
 | `ime.rs` | ImeBridge trait, ImeComposition, MockImeBridge |
-| `ime_stubs.rs` | macOS ImeBridge, Windows ImeBridge (TSF) |
 | `ime_macos.rs` | Real macOS IME (NSTextInputContext) |
 | `ime_linux.rs` | Real Linux IME (IBus) |
 | `ime_windows.rs` | Real Windows IME (TSF) |
-| `detector.rs` | DeviceClass detection |
-| `virtual_keyboard.rs` | VirtualKeyboard controller |
 | `mobile.rs` | Mobile platform extensions |
 | `holographic.rs` | (Experimental) Holographic keyboard |
 | `tests.rs` | Platform consistency tests |
@@ -139,14 +137,13 @@
 | `core/` | RenderCommand, BlendMode, ShapedText, TextMetrics |
 | `backend/` | BackBuffer, SoftwareSurface, RenderContext, PaintBackend, BatchRenderer |
 | `pipeline/` | Visual command pipeline for all widget types |
-| `quality/` | Adaptive quality management |
 | `svg/` | SvgPaintBackend |
 | `gpu/` | GPU accelerated rendering (wgpu) |
-| `web/` | Web rendering types |
-| `text_cache.rs` | Glyph/texture cache |
+| `path/` | Path geometry shared by the software and SVG backends |
+| `present/` | Frame presentation sinks |
+| `text/` | Text shaping, glyph sources, rasterisation and coverage |
 | `text_shaper.rs` | SimpleTextShaper, ShapedGlyphRun |
 | `rich_text.rs` | RichText, TextSpan |
-| `text_overflow.rs` | TextClamp, TextOverflow |
 | `grapheme.rs` | GraphemeCluster, GraphemeProcessor |
 | `projection.rs` | Projector mode rendering |
 
@@ -204,6 +201,7 @@
 | Module | Purpose |
 |--------|---------|
 | `error/` | RwError, ErrorId, catch_panic, FFI safety |
+| `api/` | Crate-root re-export groups (`widgets`, `platform`, `signals`, `compat`) and the procedural host/control API that `lib.rs` re-exports |
 | `app/` | App lifecycle, AppConfig, WidgetHandle (typed handles) |
 | `action/` | Action, ActionManager, typed action types |
 | `asset/` | Asset management |
@@ -213,14 +211,13 @@
 | `compat.rs` | MiniVec, MiniString, Mutex, OnceLock, Arena — no_std bridge |
 | `control_backend/` | Native vs Custom paint routing |
 | `data_binding/` | Binding<T>, ObservableList<T>, Computed<T> |
-| `embedded/` | Embedded HAL abstractions |
+| `designer/` | In-process designer: Rust generator, artifacts, history (`full_widgets`) |
 | `gesture/` | Gesture recognizers (tap, swipe, pinch, rotate, fling) |
 | `gpu/` | GPU capability types |
 | `i18n/` | I18nManager, translation loading + hot-reload |
 | `image/` | Image decoder, encoder, EXIF, SVG, format detection |
 | `index/` | Index/search system |
 | `json/` | Declarative JSON → widget tree loader |
-| `memory/` | Pool allocator, arena allocator, stack allocator, MemoryMonitor |
 | `menu_config/` | Menu configuration |
 | `object/` | Object system (Object, ObjectId, PropertyValue) |
 | `pdf/` | PDF generation (document, page, annotation, form, security) |
@@ -230,10 +227,8 @@
 | `shortcut/` | ShortcutManager, ShortcutEntry |
 | `theme/` | ThemeManager, Theme types |
 | `undo/` | UndoStack, UndoCommand, grouped undo/redo |
-| `util/` | Utility functions |
 | `video/` | VideoEngine, decoder, frame, playback |
 | `view/` | Declarative-retained view layer: `Node`, `diff`, `Patch`, `apply`, `View`, `ViewEngine`. **Device profiles only** — absent on `mini`/`embedded` (BLUE18 rule #92) |
-| `web/` | Web engine, web view |
 | `wgpu_backend/` | WGPU initialization + surface management |
 
 ---
@@ -340,22 +335,22 @@ Axis 3: Capabilities (arbitrary composition)
 | AutoCompleteEdit | `widget::input_widgets::auto_complete_edit::AutoCompleteEdit` | struct |
 | TagInput | `widget::input_widgets::tag_input::TagInput` | struct |
 | MaskedEdit | `widget::input_widgets::masked_edit::MaskedEdit` | struct |
-| ... (155 more) | `view_widgets/*`, `special_widgets/*`, `dialog/*`, etc. | struct/alias |
+| ... (208 more) | `view_widgets/*`, `special_widgets/*`, `dialog/*`, etc. | struct/alias |
 
 ---
 
 ## 7. Test Map
 
-| Test File | Count | Type |
+Counts are `#[test]` attributes in the source tree, not test binaries: one function may
+carry several assertions, and the inline suite grows most weeks. Treat them as
+order-of-magnitude and run `cargo test` for the authoritative pass count.
+
+| Test location | Count | Type |
 |-----------|-------|------|
-| `[lib]` (inline `#[cfg(test)]`) | 3629 | Unit |
-| `tests/integration_test.rs` | 48 | Integration |
-| `tests/blue9_r1_api_symmetry_test.rs` | 7 | Symmetry |
-| `tests/blue9_r6_platform_capability_test.rs` | 7 | Platform |
-| `tests/snapshot_tests.rs` | 4 | Snapshot |
-| `tests/property_based_tests.rs` | 4 | Property |
-| Doc tests | 24 | Doc |
-| **Total** | **3723** | **All passing** |
+| `src/` (inline `#[cfg(test)]`) | ~11,000 | Unit |
+| `tests/` (75 files) | 393 | Integration, snapshot, property, symmetry, platform |
+| Doc tests | not counted here | Doc (run by `cargo test --doc`) |
+| **Approximate total** | **~11.5k** | `#[test]` attributes |
 
 ---
 
@@ -377,12 +372,12 @@ Rust API → extern "C" (C ABI)
 
 | Category | Count |
 |----------|-------|
-| Rust source files | 350+ |
+| Rust source files | 1,019 |
 | Widget kinds (`WidgetKind` variants) | 231 |
 | Layout managers | 14 |
 | Platform backends | 12 |
 | IME implementations | 4 |
 | Clipboard backends | 5 |
 | Gesture recognizers | 10 |
-| Test files | 6 (+ inline) |
+| Test files | 75 integration + inline |
 | Benchmark files | 5 |

@@ -112,6 +112,7 @@ fn install_canvas_input(canvas: &web_sys::HtmlCanvasElement, window_id: u64) {
                         x,
                         y,
                         crate::event::mouse_button::PRIMARY,
+                        0,
                     ),
                     _ => crate::event::Event::mouse_move(x, y),
                 };

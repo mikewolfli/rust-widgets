@@ -374,8 +374,8 @@ fn a_double_click_selection_survives_the_synthetic_motion() {
     // The real gesture, in the order the toolkit delivers it: press, release, then the
     // double-click event for the second press, then a motion at the same point.
     editor.handle_event(&Event::MousePress { pos: point, button: 1, modifiers: 0 });
-    editor.handle_event(&Event::MouseRelease { pos: point, button: 1 });
-    editor.handle_event(&Event::MouseDoubleClick { pos: point, button: 1 });
+    editor.handle_event(&Event::MouseRelease { pos: point, button: 1, modifiers: 0 });
+    editor.handle_event(&Event::MouseDoubleClick { pos: point, button: 1, modifiers: 0 });
     let selected = editor.selected_text();
     assert_eq!(selected.as_deref(), Some("main"), "the double click selects the word");
     editor.handle_event(&Event::MouseMove { pos: point });

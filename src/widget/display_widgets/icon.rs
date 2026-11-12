@@ -36,6 +36,16 @@ pub use rust_widgets_icons::{IconData, IconName};
 pub use rust_widgets_icons::UPSTREAM_ALIASES;
 pub use rust_widgets_icons::{designer_alias, is_designer_alias, DESIGNER_ALIASES};
 
+/// BT.601 luma — the single greyscale formula the disabled paths share.
+///
+/// The vector outline and the bitmap frame used to desaturate with two different rules (a channel
+/// mean and BT.601), so one colour had two "disabled" greys depending on whether the icon came
+/// from a path table or a picture. Both now call this function.
+#[cfg(any(feature = "icons", feature = "image"))]
+fn disabled_luma(r: u8, g: u8, b: u8) -> u8 {
+    ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
+}
+
 /// Draws `name`'s icon outline into `rect`, in `color`.
 ///
 /// # Why this is a free function and not a method on [`Icon`]
@@ -1315,12 +1325,13 @@ impl Icon {
 
     /// The muted colour a disabled icon paints in.
     ///
-    /// The grey is the mean of the resolved channels, which is the same desaturation the widget
-    /// has always used. When the control's style supplies a surface colour, the grey is composed
-    /// against it so the muted ink sits on the surface it is actually drawn over; without one, the
-    /// grey is used directly and the result is the historical disabled colour.
+    /// The grey is the BT.601 luma of the resolved channels — the same [`disabled_luma`] the
+    /// bitmap path applies — so a path-table icon and a picture cannot disagree about what
+    /// "disabled" looks like. When the control's style supplies a surface colour, the grey is
+    /// composed against it so the muted ink sits on the surface it is actually drawn over; without
+    /// one, the grey is used directly and the result is the historical disabled colour.
     fn disabled_tint(&self, base: Color) -> Color {
-        let grey = ((base.r as u16 + base.g as u16 + base.b as u16) / 3) as u8;
+        let grey = disabled_luma(base.r, base.g, base.b);
         let alpha = base.a / 2;
         let grey = Color::rgba(grey, grey, grey, base.a);
         let composed = match self.style().background_color {
@@ -1401,9 +1412,7 @@ impl Icon {
             self.frame_tint.extend_from_slice(pixels);
             if disabled {
                 for chunk in self.frame_tint.as_chunks_mut::<4>().0 {
-                    let luma =
-                        ((chunk[0] as u32 * 299 + chunk[1] as u32 * 587 + chunk[2] as u32 * 114)
-                            / 1000) as u8;
+                    let luma = disabled_luma(chunk[0], chunk[1], chunk[2]);
                     chunk[0] = luma;
                     chunk[1] = luma;
                     chunk[2] = luma;
@@ -2709,11 +2718,40 @@ mod tests {
         backend.frame_rgba().to_vec()
     }
 
+    /// Both disabled paths produce the same grey for a known colour.
+    ///
+    /// The vector outline desaturated with a channel mean while the bitmap path used BT.601, so
+    /// the same colour had two "disabled" greys depending on the icon's source. `disabled_luma` is
+    /// now the one formula, and the vector path is pinned through a rendered pixel.
+    #[test]
+    fn both_disabled_paths_share_one_greyscale() {
+        static BLOCK: IconData =
+            IconData { name: "solid-block", grid: 24, paths: &["M2-2H22V-22H2Z"] };
+
+        // BT.601: (200*299 + 100*587 + 50*114) / 1000 = 124.
+        let expected = 124u8;
+        assert_eq!(disabled_luma(200, 100, 50), expected, "the shared formula is BT.601 luma");
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon_source(IconSource::static_geometry(&BLOCK));
+        icon.set_color(Color::rgb(200, 100, 50));
+        icon.set_state(IconState::Disabled);
+        let pixels = render_icon_pixels(&mut icon, 24, 24);
+        let pixel = &pixels[(12 * 24 + 12) * 4..][..4];
+        assert_eq!(
+            &pixel[..3],
+            &[expected, expected, expected],
+            "the vector path uses the same grey the bitmap path does"
+        );
+    }
+
     /// A disabled icon is grey (all three channels equal) and its alpha is halved.
     ///
     /// Both spellings of "disabled" are checked: the explicit [`IconState::Disabled`] and the
     /// base widget's enabled flag. The two share one colour path, so they must produce the same
     /// pixels; the assertion is what keeps them from drifting apart.
+    ///
+    /// The grey itself is pinned separately by [`both_disabled_paths_share_one_greyscale`].
     #[test]
     fn disabled_state_greys_the_icon_and_halves_alpha() {
         static BLOCK: IconData =

@@ -801,7 +801,7 @@ impl Draw for KeySequenceEdit {
         //
         // The field was painted from four literals and read the theme nowhere: a
         // `rgb(255,255,255)` surface, a `rgb(150,150,150)` frame, a `rgb(180,180,180)` hint and a
-        // `rgb(0,0,0)` value, plus a fixed pale red for the recording state. On the dark appearance
+        // `rgb(0,0, 0)` value, plus a fixed pale red for the recording state. On the dark appearance
         // that is a **white field with black ink**, and the recording state is a fixed wash rather
         // than the semantic colour the appearance defines. All of them now come from the active
         // theme, with the literals kept only as the rung for a build that has no theme.
@@ -868,6 +868,11 @@ impl Draw for KeySequenceEdit {
             text_color,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 
@@ -1667,5 +1672,27 @@ mod tests {
         fired.store(false, Ordering::SeqCst);
         editor.stop_recording();
         assert!(fired.load(Ordering::SeqCst), "leaving recording repaints");
+    }
+
+    /// A keyboard-focused editor paints the ring Tab must show.
+    ///
+    /// # What this pins
+    ///
+    /// The field is a tab stop, but its draw had no focus visual at all (W4-05), so a keyboard
+    /// user could not see where Tab had landed. The ring is the only stroke that changes between
+    /// the resting and focused frames.
+    #[test]
+    fn a_keyboard_focused_editor_paints_a_focus_ring() {
+        let _guard = crate::style::theme_test_guard();
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 200, 30));
+
+        let resting = render_to_svg(&mut editor);
+        editor.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let focused = render_to_svg(&mut editor);
+        assert_ne!(resting, focused, "Tab focus must change the painted picture");
+
+        editor.handle_event(&Event::FocusLost);
+        let blurred = render_to_svg(&mut editor);
+        assert_eq!(resting, blurred, "losing focus restores the resting picture");
     }
 }

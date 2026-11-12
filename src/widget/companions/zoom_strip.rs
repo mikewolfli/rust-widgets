@@ -316,7 +316,7 @@ impl EventHandler for ZoomStrip {
         if !self.base.is_enabled() {
             return;
         }
-        let Event::MouseRelease { pos, button: 1 } = event else {
+        let Event::MouseRelease { pos, button: 1, .. } = event else {
             return;
         };
         let Some(index) = self.segment_at(*pos) else {
@@ -647,11 +647,19 @@ mod tests {
         let fits = record(&strip.fit_requested);
 
         // Four equal 60-pixel segments; the fourth is Fit.
-        strip.handle_event(&Event::MouseRelease { pos: Point::new(200, 10), button: 1 });
+        strip.handle_event(&Event::MouseRelease {
+            pos: Point::new(200, 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(values(&fits), vec![ZoomMode::FitWidth]);
 
         // A release outside the strip is ignored.
-        strip.handle_event(&Event::MouseRelease { pos: Point::new(400, 10), button: 1 });
+        strip.handle_event(&Event::MouseRelease {
+            pos: Point::new(400, 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(values(&fits).len(), 1);
     }
 

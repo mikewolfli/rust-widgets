@@ -418,7 +418,11 @@ impl Draw for Stepper {
         // A disabled control is a chrome state, so it reads a dimmed pair derived
         // from the resolved colours rather than a second literal grey.
         let bg_color = if !is_enabled { background.blend(&text_color, 0.06) } else { background };
-        let button_color = background.blend(&text_color, 0.08);
+        // A hovered stepper lifts its two buttons a step toward the ink, so the control answers
+        // the pointer even when the theme declares no `stepper:hover` fill. At rest the weight is
+        // the historical 0.08, so the default picture is unchanged.
+        let hovered = is_enabled && self.base.is_hovered();
+        let button_color = background.blend(&text_color, if hovered { 0.16 } else { 0.08 });
         let disabled_button = button_color.blend(&background, 0.6);
         // Derived from the stepper's own fill by the shared weight. It read
         // `text_color.blend(&background, 0.5)` -- the ink walked half-way to the surface it sits
@@ -517,6 +521,12 @@ impl EventHandler for Stepper {
             return;
         }
         match event {
+            // The buttons change their fill while the pointer is over the control, so the entry
+            // and exit transitions own a repaint (they only set the base flag otherwise).
+            Event::MouseEnter { .. } | Event::MouseLeave { .. } => {
+                self.base.handle_event(event);
+                self.base.request_redraw();
+            }
             Event::MousePress { pos, button, .. } => {
                 if *button != 1 {
                     return;
@@ -581,6 +591,27 @@ mod tests {
         let s = Stepper::new(Rect::new(0, 0, 120, 30));
         assert_eq!(s.value(), 0);
         assert_eq!(s.kind(), WidgetKind::Stepper);
+    }
+
+    /// Pointer entry and exit change what the stepper paints.
+    #[test]
+    fn hovering_changes_the_painted_buttons() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut s = Stepper::new(Rect::new(0, 0, 120, 30));
+        let rest = crate::widget::svg::render_to_svg(&mut s);
+
+        s.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+        assert!(s.base.is_hovered(), "MouseEnter sets the hover state");
+        let hovered = crate::widget::svg::render_to_svg(&mut s);
+        assert_ne!(rest, hovered, "a hovered stepper paints different button fills");
+
+        s.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
+        assert!(!s.base.is_hovered(), "MouseLeave clears the hover state");
+        assert_eq!(
+            crate::widget::svg::render_to_svg(&mut s),
+            rest,
+            "leaving restores the resting picture"
+        );
     }
 
     #[test]
@@ -845,7 +876,7 @@ mod tests {
         assert!(s.tick(100));
         assert_eq!(s.value(), 3, "subsequent repeats follow the interval");
 
-        s.handle_event(&Event::MouseRelease { pos, button: 1 });
+        s.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert!(!s.is_animating(), "the release ends the hold");
         assert!(!s.tick(500), "no timer is owed after release");
         assert_eq!(s.value(), 3);

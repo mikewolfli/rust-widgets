@@ -11,6 +11,7 @@
 use super::commands::WgpuDrawCommand;
 use super::types::{PixelRect, Rgba8};
 use crate::compat::VecDeque;
+use crate::core::Point;
 use crate::render::RenderCommand;
 
 /// Converts a render-layer rectangle into the backend's pixel rectangle.
@@ -121,6 +122,8 @@ pub fn bridge_render_commands_into(
                 text_scale,
                 &mut scratch.commands,
                 &mut scratch.origins,
+                &mut scratch.arc_points,
+                &mut scratch.arc_contours,
             );
             convert_commands(
                 out,
@@ -145,12 +148,21 @@ pub fn bridge_render_commands_into(
 struct ExpansionScratch {
     commands: Vec<RenderCommand>,
     origins: Vec<usize>,
+    /// Vertex buffer for one filled arc's fan, kept across arcs and frames (W4-20).
+    arc_points: Vec<Point>,
+    /// Contour ranges for that fan, kept across arcs and frames (W4-20).
+    arc_contours: Vec<(usize, usize)>,
 }
 
 impl ExpansionScratch {
     /// An empty scratch set. `const` so the thread-local below needs no lazy initialiser.
     const fn new() -> Self {
-        Self { commands: Vec::new(), origins: Vec::new() }
+        Self {
+            commands: Vec::new(),
+            origins: Vec::new(),
+            arc_points: Vec::new(),
+            arc_contours: Vec::new(),
+        }
     }
 }
 
@@ -660,6 +672,8 @@ fn expand_compound_commands(
     text_scale: f32,
     expanded: &mut Vec<RenderCommand>,
     origins: &mut Vec<usize>,
+    arc_points: &mut Vec<Point>,
+    arc_contours: &mut Vec<(usize, usize)>,
 ) {
     for (index, command) in commands.iter().enumerate() {
         let before = expanded.len();
@@ -682,7 +696,16 @@ fn expand_compound_commands(
                 color,
                 filled: true,
             } => {
-                push_filled_arc(*center, *radius, *start_angle, *end_angle, *color, expanded);
+                push_filled_arc(
+                    *center,
+                    *radius,
+                    *start_angle,
+                    *end_angle,
+                    *color,
+                    expanded,
+                    arc_points,
+                    arc_contours,
+                );
             }
             RenderCommand::DrawPath3 { a, b, c, closed, color, filled: false, width } => {
                 // The inline form expands to the same segment list as `DrawPath` below.
@@ -927,17 +950,20 @@ fn push_filled_arc(
     end_angle: f32,
     color: crate::core::Color,
     out: &mut Vec<RenderCommand>,
+    points: &mut Vec<Point>,
+    contours: &mut Vec<(usize, usize)>,
 ) {
-    use crate::core::Point;
     let (start, sweep) = crate::render::arc_helpers::normalized_arc_sweep(start_angle, end_angle);
     if sweep < 0.001 || radius == 0 {
         return;
     }
     let end = start + sweep;
     let full_turn = sweep >= core::f32::consts::TAU - 0.001;
-    // Sample straight into the vertex list: the previous form built an intermediate `Vec<Point>`
-    // and copied it into a second one (RD-02). The centre is the first vertex of the fan.
-    let mut points: Vec<Point> = Vec::with_capacity(32);
+    // Sample straight into the reused vertex list: the previous form built a fresh `Vec<Point>` per
+    // arc and then moved it into the command, which lost the buffer's capacity for the next arc
+    // (W4-20). The centre is the first vertex of the fan.
+    points.clear();
+    contours.clear();
     points.push(center);
     let mut first_sample: Option<Point> = None;
     let mut last_sample: Option<Point> = None;
@@ -960,8 +986,12 @@ fn push_filled_arc(
             }
         }
     }
-    let vertex_count = points.len();
-    let Ok(path) = crate::render::CompoundPath::new(points, vec![(0, vertex_count)]) else {
+    contours.push((0, points.len()));
+    // `from_slices` copies into the command's own `Arc`s while leaving the scratch vectors (and
+    // their capacity) reusable for the next arc; the produced geometry is byte-identical to the
+    // owned constructor's.
+    let Ok(path) = crate::render::CompoundPath::from_slices(points.as_slice(), contours.as_slice())
+    else {
         return;
     };
     out.push(RenderCommand::FillPathNonZero { path, color });

@@ -758,7 +758,7 @@ impl EventHandler for SwipeToDismiss {
                 // The touch path shares the mouse path's damping and velocity estimate (OV-06).
                 self.drag_to(pos.x as f32);
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button == 1 {
                     let offset = self.swipe_offset;
                     self.drag_origin_x = None;
@@ -1144,7 +1144,7 @@ mod tests {
         sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1, modifiers: 0 });
         sw.handle_event(&Event::MouseMove { pos: Point::new(160, 25) });
         assert!(sw.swipe_offset() < 0.0);
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(160, 25), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(160, 25), button: 1, modifiers: 0 });
         assert!(!sw.is_dismissed());
         assert!(sw.is_animating(), "the failed swipe returns over frames");
         while sw.tick(16) {}
@@ -1159,7 +1159,7 @@ mod tests {
         sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1, modifiers: 0 });
         // A large move in one frame is a flick even though the distance is under the threshold.
         sw.handle_event(&Event::MouseMove { pos: Point::new(120, 25) });
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(120, 25), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(120, 25), button: 1, modifiers: 0 });
         assert!(sw.is_dismissed(), "velocity commits a flick the distance alone would not");
     }
 
@@ -1204,7 +1204,11 @@ mod tests {
             row.handle_event(&Event::MouseMove { pos: Point::new(x as i32, 25) });
 
             let decision = background.gesture_decision(row.swipe_offset(), 0.0);
-            row.handle_event(&Event::MouseRelease { pos: Point::new(x as i32, 25), button: 1 });
+            row.handle_event(&Event::MouseRelease {
+                pos: Point::new(x as i32, 25),
+                button: 1,
+                modifiers: 0,
+            });
 
             assert_eq!(
                 decision == SwipeCommit::Commit,

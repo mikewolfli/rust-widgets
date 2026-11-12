@@ -1605,6 +1605,43 @@ impl FlexLayout {
         // S-47: clamp a negative `padding` before the device-scale cast so it can never reach
         // `2 * padding as u32` below.
         let scaled_padding = (self.padding.max(0) as f32 * scale).max(0.0).round() as i32;
+        // The gap between children is scaled with the device, matching `update_with_context`'s
+        // reading (the larger of the two scales). Both entry points run through this body, so the
+        // reading is stated once. The per-axis overrides are scaled too, or a `row_gap` would
+        // stay nominal on a HiDPI screen while `gap` grew.
+        let scaled_gap = (self.main_gap() as f32 * scale).round() as i32;
+
+        let content_rect = Rect::new(
+            rect.x.saturating_add(scaled_padding),
+            rect.y.saturating_add(scaled_padding),
+            rect.width.saturating_sub(2 * scaled_padding as u32),
+            rect.height.saturating_sub(2 * scaled_padding as u32),
+        );
+        if content_rect.width == 0 || content_rect.height == 0 {
+            return;
+        }
+
+        // A repeated arrangement of the same rectangle with the same children is the common
+        // case (measure, arrange, paint). The key covers the layout's fields, the rectangle,
+        // the device scale and every hint, so a hit can only be returned for identical input
+        // (REND-01). The check runs before `described`/`sizes` are built: on a hit the two
+        // per-item probe vectors must not be allocated at all (W4-18).
+        let key = self.flex_cache_key(
+            if apply_touch_floor { 2 } else { 1 },
+            rect,
+            scale,
+            Some(context.min_touch_size),
+            Some(children),
+        );
+        if let Some(placed) = self.cached_arrangement(key) {
+            for &(widget_id, child_rect) in placed.iter() {
+                if let Some(wid) = widget_id {
+                    out(wid, child_rect);
+                }
+            }
+            return;
+        }
+
         // Which entry belongs to which item, resolved once so the two are never indexed by
         // position into two lists that could disagree. An item with no widget id (a spacer) or
         // with no `ChildInfo` gets `None` and keeps whatever size the caller last handed in,
@@ -1634,42 +1671,6 @@ impl FlexLayout {
                 None => self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0)),
             })
             .collect();
-
-        // The gap between children is scaled with the device, matching `update_with_context`'s
-        // reading (the larger of the two scales). Both entry points run through this body, so the
-        // reading is stated once. The per-axis overrides are scaled too, or a `row_gap` would
-        // stay nominal on a HiDPI screen while `gap` grew.
-        let scaled_gap = (self.main_gap() as f32 * scale).round() as i32;
-
-        let content_rect = Rect::new(
-            rect.x.saturating_add(scaled_padding),
-            rect.y.saturating_add(scaled_padding),
-            rect.width.saturating_sub(2 * scaled_padding as u32),
-            rect.height.saturating_sub(2 * scaled_padding as u32),
-        );
-        if content_rect.width == 0 || content_rect.height == 0 {
-            return;
-        }
-
-        // A repeated arrangement of the same rectangle with the same children is the common
-        // case (measure, arrange, paint). The key covers the layout's fields, the rectangle,
-        // the device scale and every hint, so a hit can only be returned for identical input
-        // (REND-01).
-        let key = self.flex_cache_key(
-            if apply_touch_floor { 2 } else { 1 },
-            rect,
-            scale,
-            Some(context.min_touch_size),
-            Some(children),
-        );
-        if let Some(placed) = self.cached_arrangement(key) {
-            for &(widget_id, child_rect) in placed.iter() {
-                if let Some(wid) = widget_id {
-                    out(wid, child_rect);
-                }
-            }
-            return;
-        }
 
         let is_row = self.is_row();
         let (available_main, origin_main, cross_origin, available_cross) = if is_row {
@@ -1872,6 +1873,29 @@ impl FlexLayout {
         } else {
             origin_main + first_offset
         };
+        // A baseline row aligns every item's baseline at one cross coordinate; the tallest
+        // baseline decides the row's origin. This is the same computation
+        // `compute_cross_positions` runs for `Layout::update`, and it is stated here too because
+        // the `Baseline` arm below used to fall through to `FlexStart` (W4-03), so the same
+        // layout placed differently through `arrange` and through `update`.
+        let shared_baseline: Option<i32> = if is_row {
+            self.items
+                .iter()
+                .enumerate()
+                .filter(|(index, item)| {
+                    *index < sizes.len()
+                        && item.align_self.unwrap_or(self.align_items) == AlignItems::Baseline
+                })
+                .map(|(index, item)| {
+                    let size = sizes.get(index).copied().unwrap_or(Size::new(0, 0));
+                    item.baseline
+                        .unwrap_or_else(|| self.cross_extent_of(item, size, available_cross))
+                        as i32
+                })
+                .max()
+        } else {
+            None
+        };
         let mut placed: Vec<(Option<ObjectId>, Rect)> = Vec::with_capacity(sizes.len());
         for (index, item) in items.iter().enumerate().take(sizes.len()) {
             let (left, top, right, bottom) = inset(index);
@@ -1908,7 +1932,16 @@ impl FlexLayout {
                 AlignItems::FlexStart => (0, cross_len),
                 AlignItems::FlexEnd => (available_cross - cross_len, cross_len),
                 AlignItems::Center => ((available_cross - cross_len) / 2, cross_len),
-                AlignItems::Baseline => (0, cross_len),
+                AlignItems::Baseline => {
+                    if is_row {
+                        let baseline = item.baseline.unwrap_or(cross_len as u32) as i32;
+                        ((shared_baseline.unwrap_or(baseline) - baseline).max(0), cross_len)
+                    } else {
+                        // Only the row direction has baselines; a column treats `Baseline` as
+                        // the start, exactly as `compute_cross_positions` does.
+                        (0, cross_len)
+                    }
+                }
             };
             let cross_start = cross_start.max(0);
 
@@ -3809,5 +3842,49 @@ mod tests {
         ordered.update(Rect::new(0, 0, 100, 20), &mut |_, rect| rects.push(rect));
         assert_eq!(rects[0].width, 22, "the positional size follows the item it described");
         assert!(!ordered.set_item_order(99, 0));
+    }
+
+    /// The arrange path (what `Layout::arrange` and composites take) aligns baselines exactly as
+    /// `update` does; its `Baseline` arm used to fall through to `FlexStart` (W4-03).
+    #[test]
+    fn arrange_aligns_a_baseline_row_like_update_does() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::Baseline,
+            0,
+            0,
+        );
+        layout.items_mut().push(FlexItem {
+            widget_id: Some(1),
+            baseline: Some(10),
+            ..FlexItem::default()
+        });
+        layout.items_mut().push(FlexItem {
+            widget_id: Some(2),
+            baseline: Some(25),
+            ..FlexItem::default()
+        });
+        layout.set_child_sizes(vec![Size::new(50, 20), Size::new(40, 30)]);
+        let children =
+            vec![ChildInfo::new(1, Hints::fixed(50, 20)), ChildInfo::new(2, Hints::fixed(40, 30))];
+
+        let mut arranged = Vec::new();
+        layout.arrange(Rect::new(0, 0, 100, 60), &children, &mut |id, rect| {
+            arranged.push((id, rect));
+        });
+
+        assert_eq!(arranged[0].1.y, 15, "a shorter baseline is pushed down by the difference");
+        assert_eq!(arranged[1].1.y, 0, "the tallest baseline owns the row origin");
+
+        // The other entry point must return the same geometry for the same measurements.
+        let mut updated = Vec::new();
+        layout.update(Rect::new(0, 0, 100, 60), &mut |id, rect| updated.push((id, rect)));
+        assert_eq!(
+            arranged.iter().map(|(_, rect)| *rect).collect::<Vec<_>>(),
+            updated.iter().map(|(_, rect)| *rect).collect::<Vec<_>>(),
+            "arrange and update must agree about baseline alignment"
+        );
     }
 }

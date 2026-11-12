@@ -142,6 +142,10 @@ pub enum ColumnWidthMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EditTriggers(u8);
 
+// Deliberately not the inplace-editor/listbox `EditTriggers`: a grid cell edits on a double click
+// (1) or an Enter on the current cell (2), and it has no F2 arm. The names match; the flag
+// vocabularies do not (R-26, principle #51).
+
 impl EditTriggers {
     /// No gesture starts an edit.
     pub const NONE: Self = Self(0);

@@ -1106,7 +1106,7 @@ impl EventHandler for SplitButton {
                     self.close_menu();
                 }
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 if self.pressed_primary {
                     self.pressed_primary = false;
                     if self.hit_primary(*pos) {
@@ -1597,13 +1597,13 @@ mod tests {
 
         // Click arrow area to open menu.
         split.handle_event(&Event::mouse_press(172, 12, 1));
-        split.handle_event(&Event::mouse_release(172, 12, 1));
+        split.handle_event(&Event::mouse_release(172, 12, 1, 0));
         assert!(split.menu_open());
 
         // Click second row in menu.
         let menu_y = 28 + 24;
         split.handle_event(&Event::mouse_press(20, menu_y, 1));
-        split.handle_event(&Event::mouse_release(20, menu_y, 1));
+        split.handle_event(&Event::mouse_release(20, menu_y, 1, 0));
 
         assert_eq!(split.primary_action_index(), Some(1));
         assert!(!split.menu_open());
@@ -1751,7 +1751,11 @@ mod tests {
         assert!(!still_open, "the popup closes on the press that dismisses it");
 
         // The release lands on the sibling, but it never saw the press, so it cannot click.
-        dispatch_pointer_event(root, &Event::MouseRelease { pos: point, button: 1 }, point);
+        dispatch_pointer_event(
+            root,
+            &Event::MouseRelease { pos: point, button: 1, modifiers: 0 },
+            point,
+        );
         assert_eq!(
             clicks.load(Ordering::SeqCst),
             0,

@@ -266,33 +266,9 @@ pub(crate) fn render_frame_incremental_cow(
 ///
 /// Returns `None` under the same conditions as [`render_frame_tree`].
 ///
-/// # Migration note (G-108)
-///
-/// This **owned** form clones the whole frame that [`render_frame_tree_cached_shared`] already
-/// holds — a 4K frame is about 33 MB of duplication for pixels nobody touched. It is kept only
-/// for existing callers that need an owned `Vec<u8>`. **Every new call site must use
-/// [`render_frame_tree_cached_shared`]**, which answers a refcount increment on the unchanged
-/// path. The two are not renamed here so existing callers keep compiling; once the owned form has
-/// no callers it can be collapsed into the shared entry point without changing that entry point's
-/// name.
-pub fn render_frame_tree_cached(
-    id: ObjectId,
-    size: Size,
-    clear: crate::core::Color,
-) -> Option<Vec<u8>> {
-    let shared = render_frame_tree_cached_shared(id, size, clear)?;
-    Some(shared.as_ref().clone())
-}
-
-/// [`render_frame_tree_cached`] returning the frame the cache holds, **not** a copy of it.
-///
-/// The unchanged-epoch path is the reason this exists: a 4K frame is about 33 MB, and the owned
-/// form had to duplicate it to hand the caller a buffer whose pixels nobody had touched. The cache
-/// already stores an `Rc<Vec<u8>>`, so this form answers a refcount increment. A caller that
-/// presents the frame (or reads it as `&[u8]`) needs nothing more.
-///
-/// This is the **only recommended entry point for new callers** (G-108); the owned form exists
-/// for legacy call sites and copies the frame unconditionally.
+/// The frame is returned through the cache's shared handle, so the unchanged path is a refcount
+/// increment rather than a clone: a 4K frame is about 33 MB, and duplicating pixels nobody touched
+/// was the cost the owned form paid (G-108).
 pub fn render_frame_tree_cached_shared(
     id: ObjectId,
     size: Size,

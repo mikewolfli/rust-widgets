@@ -1248,6 +1248,17 @@ impl EventHandler for ShortcutEditor {
                     }
                 }
             }
+            Event::TextInput { text } | Event::ImeCommit { text }
+                if self.filter_focused && !self.is_capturing() =>
+            {
+                // W4-01: every backend delivers typed characters as committed text, so the
+                // filter buffer is fed here rather than from a raw key code.
+                for ch in text.chars().filter(|ch| !ch.is_control()) {
+                    self.filter_text.push(ch);
+                }
+                self.scroll_offset = 0;
+                self.base.request_redraw();
+            }
             Event::KeyPress { key, modifiers } => {
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 // I-112: a focused filter bar consumes printable input and Backspace.
@@ -1266,11 +1277,9 @@ impl EventHandler for ShortcutEditor {
                             self.base.request_redraw();
                         }
                         32..=126 => {
-                            if let Some(ch) = char::from_u32(*key) {
-                                self.filter_text.push(ch);
-                                self.scroll_offset = 0;
-                                self.base.request_redraw();
-                            }
+                            // The characters arrive as `Event::TextInput` (W4-01); a raw key
+                            // code is not a character on Windows, where `WM_KEYDOWN` reports
+                            // a virtual-key code instead.
                         }
                         _ => {}
                     }

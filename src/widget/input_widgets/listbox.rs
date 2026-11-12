@@ -154,9 +154,10 @@ pub struct ListBox {
     ///
     /// Memoised because a draw asks for it on every visible row; building a `Font` allocates its
     /// family `Arc` each time, which showed up as the only heap traffic in an unthemed
-    /// `list_box` frame (2.0 allocations/frame, measured). A style font still wins and is
-    /// returned directly, so the cache is only the fallback's.
-    row_font_cache: RefCell<Option<(u32, Font)>>,
+    /// `list_box` frame (2.0 allocations/frame, measured). The key carries the resolved base font
+    /// and the derived size, so a theme face change at the same point size cannot be answered from
+    /// a stale entry. A style font still wins and is returned directly.
+    row_font_cache: RefCell<Option<(Font, u32, Font)>>,
     /// The caption an empty list paints in its content box (RW-17 / UX6-05).
     #[cfg(full_widgets)]
     ///
@@ -305,6 +306,11 @@ pub enum ScrollToMode {
 /// That is the only shape that works when the host owns undo, validation and the commit target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditTriggers(u8);
+
+// Deliberately not the inplace-editor/data-grid `EditTriggers`: this control's rename gestures are
+// a double click (1) and F2 (2), with no single-click arm, while the other two carry different
+// flags (R-26, principle #51 — same name, different vocabulary, so a shared type would expose
+// flags this control cannot honour).
 
 impl EditTriggers {
     /// No gesture starts a rename.
@@ -1202,24 +1208,29 @@ impl ListBox {
     /// vertical margin so a descender is not clipped at the row's own edge.
     fn row_font(&self) -> Font {
         // Prefer the resolved theme/caller font when the style names one, so the list honours the
-        // theme body font and the user's text scale; otherwise keep the row-height-derived face
+        // theme body font and the user's text scale; otherwise keep the row-height-derived size
         // this control has always used (D09-STYLE-01). One method, so `draw`, the `font_size`
         // property and the hit tests all read the same font.
         if let Some(font) = self.style().font.as_ref() {
             return font.clone();
         }
         let size = (self.row_height() * 0.7).clamp(8.0, 32.0);
-        // The fallback is memoised on the size it was derived from: `Font::new` builds a family
-        // `Arc` (two allocations), and this method runs once per visible row per frame.
+        // The fallback is memoised on **the inputs the measurement reads** — the resolved face
+        // and the derived size — because `Font::new` builds a family `Arc` and this method runs
+        // once per visible row per frame. Keying on the size alone answered from a stale family
+        // when the theme's body face changed at the same point size.
         let key = size.to_bits();
+        let base = crate::widget::metrics::effective_font(self.style()).clone();
         let mut cache = self.row_font_cache.borrow_mut();
-        if let Some((cached_key, font)) = cache.as_ref() {
-            if *cached_key == key {
+        if let Some((cached_base, cached_key, font)) = cache.as_ref() {
+            if *cached_key == key && *cached_base == base {
                 return font.clone();
             }
         }
-        let font = Font::new("sans-serif", size, false, false);
-        *cache = Some((key, font.clone()));
+        // Scale the resolved face rather than naming `sans-serif`: the family, weight, italic and
+        // tracking all survive, so a themed body font reaches the rows at the auto-scaled size.
+        let font = base.with_size(size);
+        *cache = Some((base, key, font.clone()));
         font
     }
 
@@ -1829,7 +1840,7 @@ impl EventHandler for ListBox {
                     self.request_rows_repaint(&[previous]);
                 }
             }
-            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+            Event::MouseDoubleClick { pos, button, .. } if *button == 1 => {
                 // A double-click on a rename-enabled row asks the host for an editor instead of
                 // activating the row, so the two gestures do not fight over one click stream.
                 if self.edit_triggers.contains(EditTriggers::DOUBLE_CLICK) {
@@ -2247,6 +2258,35 @@ mod tests {
     use super::*;
     use crate::core::Rect;
 
+    /// The auto-scaled row face derives from the resolved UI font rather than a literal family.
+    ///
+    /// # What this pins
+    ///
+    /// The fallback built `Font::new("sans-serif", size, false, false)`, so a theme whose body face
+    /// is not `sans-serif` never reached the rows, and its weight/italic/tracking were dropped when
+    /// the size was auto-scaled.
+    #[test]
+    fn the_row_face_falls_back_to_the_resolved_ui_face() {
+        let list = ListBox::new(Rect::new(0, 0, 200, 100));
+        let font = list.row_font();
+        assert_eq!(
+            font.family(),
+            Font::default().family(),
+            "the fallback keeps the resolved UI family, not a hardcoded one"
+        );
+    }
+
+    /// A style-named face reaches the rows with its weight and italic style intact.
+    #[test]
+    fn the_row_face_honours_the_style_font() {
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 100));
+        list.base_mut().style_mut().font = Some(Font::with_weight("RowFace", 11.0, 600, true));
+        let font = list.row_font();
+        assert_eq!(font.family(), "RowFace");
+        assert_eq!(font.weight(), 600);
+        assert!(font.is_italic());
+    }
+
     #[cfg(full_widgets)]
     #[test]
     fn dragging_the_scroll_thumb_scrolls_without_selecting() {
@@ -2267,7 +2307,11 @@ mod tests {
             pos: Point::new(rail.x, content.y + content.height as i32 - 2),
         });
         assert!(list.scroll_offset() > 0, "dragging the thumb scrolls the list");
-        list.handle_event(&Event::MouseRelease { pos: Point::new(rail.x, 90), button: 1 });
+        list.handle_event(&Event::MouseRelease {
+            pos: Point::new(rail.x, 90),
+            button: 1,
+            modifiers: 0,
+        });
     }
 
     #[cfg(full_widgets)]
@@ -2824,7 +2868,7 @@ mod tests {
         assert_eq!(coordinator.on_event(&Event::mouse_press(10, 5, PRIMARY), viewport), None);
         assert_eq!(coordinator.on_event(&Event::mouse_move(10, 50), viewport), None);
         assert_eq!(
-            coordinator.on_event(&Event::mouse_release(10, 50, PRIMARY), viewport),
+            coordinator.on_event(&Event::mouse_release(10, 50, PRIMARY, 0), viewport),
             Some(DropEffect::Move)
         );
 
@@ -2867,7 +2911,7 @@ mod tests {
         assert_eq!(coordinator.on_event(&Event::mouse_press(10, 5, PRIMARY), viewport), None);
         assert_eq!(coordinator.on_event(&Event::mouse_move(310, 25), viewport), None);
         assert_eq!(
-            coordinator.on_event(&Event::mouse_release(310, 25, PRIMARY), viewport),
+            coordinator.on_event(&Event::mouse_release(310, 25, PRIMARY, 0), viewport),
             Some(DropEffect::Move)
         );
 
@@ -2910,7 +2954,7 @@ mod tests {
         let _ = coordinator.on_event(&Event::mouse_press(10, 5, PRIMARY), viewport);
         let _ = coordinator.on_event(&Event::mouse_move(10, 7), viewport);
         assert_eq!(
-            coordinator.on_event(&Event::mouse_release(10, 7, PRIMARY), viewport),
+            coordinator.on_event(&Event::mouse_release(10, 7, PRIMARY, 0), viewport),
             Some(DropEffect::None),
             "a gesture below the threshold is a click, not a drop"
         );
@@ -2958,7 +3002,7 @@ mod tests {
         let _ = coordinator.on_event(&Event::mouse_press(10, 10, PRIMARY), viewport);
         let _ = coordinator.on_event(&Event::mouse_move(210, 50), viewport);
         assert_eq!(
-            coordinator.on_event(&Event::mouse_release(210, 50, PRIMARY), viewport),
+            coordinator.on_event(&Event::mouse_release(210, 50, PRIMARY, 0), viewport),
             Some(DropEffect::Move),
             "a foreign text payload is inserted at the row under the pointer"
         );

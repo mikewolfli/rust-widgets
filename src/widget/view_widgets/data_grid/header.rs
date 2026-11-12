@@ -146,7 +146,17 @@ impl GridViewHeader {
         let x: i32 = (0..column).map(|index| self.section_width(index) as i32).sum();
         let width = self.section_width(column);
         let trimmed = width.min((rect.width as i32 - x).max(0) as u32);
-        (trimmed > 0).then(|| Rect::new(rect.x + x, rect.y, trimmed, rect.height))
+        if trimmed == 0 {
+            return None;
+        }
+        // In RTL the section order is mirrored inside the strip, so `section_at` and the resize
+        // handle read the same geometry the paint does (T3-17).
+        let x = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            rect.x + rect.width as i32 - x - trimmed as i32
+        } else {
+            rect.x + x
+        };
+        Some(Rect::new(x, rect.y, trimmed, rect.height))
     }
 
     /// The painted box of section `column`'s filter glyph, when it has one.
@@ -161,8 +171,14 @@ impl GridViewHeader {
         if section.width < HEADER_ICON_SIDE + 4 {
             return None;
         }
+        // The filter glyph sits on the section's trailing edge: right in LTR, left in RTL.
+        let x = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            section.x + 3
+        } else {
+            section.x + section.width as i32 - HEADER_ICON_SIDE as i32 - 3
+        };
         Some(Rect::new(
-            section.x + section.width as i32 - HEADER_ICON_SIDE as i32 - 3,
+            x,
             section.y + (section.height as i32 - HEADER_ICON_SIDE as i32) / 2,
             HEADER_ICON_SIDE,
             HEADER_ICON_SIDE,
@@ -214,7 +230,10 @@ impl GridViewHeader {
             .find(|column| self.section_rect(*column).is_some_and(|rect| rect.contains_point(pos)))
     }
 
-    /// The section whose right edge `pos` is on, when that section may be resized.
+    /// The section whose trailing edge `pos` is on, when that section may be resized.
+    ///
+    /// The trailing edge is the right one in LTR and the left one in RTL: a mirrored section is
+    /// anchored at its right edge, so only its left edge moves with the width (T3-17).
     pub(crate) fn resize_handle_at(&self, pos: Point) -> Option<usize> {
         let column = self.section_at(pos)?;
         let spec = self.columns.get(column)?;
@@ -222,8 +241,12 @@ impl GridViewHeader {
             return None;
         }
         let section = self.section_rect(column)?;
-        let right = section.x + section.width as i32;
-        ((pos.x - right).abs() <= HEADER_RESIZE_GRAB).then_some(column)
+        let edge = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+            section.x
+        } else {
+            section.x + section.width as i32
+        };
+        ((pos.x - edge).abs() <= HEADER_RESIZE_GRAB).then_some(column)
     }
 
     /// Sets one section's width, switching to interactive sizing.
@@ -380,7 +403,15 @@ impl crate::event::EventHandler for GridViewHeader {
             }
             Event::MouseMove { pos } => {
                 if let Some((column, press_x, start_width)) = self.resizing {
-                    let width = (start_width as i32 + (pos.x - press_x)).max(8) as u32;
+                    let delta = pos.x - press_x;
+                    // The RTL handle is the section's left (trailing) edge, so a rightward drag
+                    // narrows it; LTR keeps the additive form (T3-17).
+                    let delta = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+                        -delta
+                    } else {
+                        delta
+                    };
+                    let width = (start_width as i32 + delta).max(8) as u32;
                     if let Some(spec) = self.columns.get_mut(column) {
                         if spec.width != width {
                             spec.width = width;
@@ -465,12 +496,20 @@ impl Draw for GridViewHeader {
                 &spec.title,
                 (title_width as usize / 7).max(1),
             );
+            // RTL mirrors the strip, so the label sits against the section's right edge and the
+            // icon slots move to the left one. Both read the same `section_rect` as `section_at`.
+            let rtl = crate::widget::view_widgets::rtl_columns::is_rtl();
+            let (label_x, label_align) = if rtl {
+                (section.x + section.width as i32 - 4, HorizontalAlignment::Right)
+            } else {
+                (section.x + 4, HorizontalAlignment::Left)
+            };
             context.draw_text(
-                Point::new(section.x + 4, section.y + (section.height as i32 - 12) / 2),
+                Point::new(label_x, section.y + (section.height as i32 - 12) / 2),
                 &label,
                 font,
                 ink,
-                HorizontalAlignment::Left,
+                label_align,
             );
             if self.sort_indicator_visible {
                 if let Some(order) = self.sort_indicator(column) {
@@ -479,11 +518,13 @@ impl Draw for GridViewHeader {
                     } else {
                         crate::widget::IconName::ArrowUp
                     };
+                    let icon_x = if rtl {
+                        section.x + filter_slot + 3
+                    } else {
+                        section.x + section.width as i32 - filter_slot - HEADER_ICON_SIDE as i32 - 3
+                    };
                     let icon_rect = Rect::new(
-                        section.x + section.width as i32
-                            - filter_slot
-                            - HEADER_ICON_SIDE as i32
-                            - 3,
+                        icon_x,
                         section.y + (section.height as i32 - HEADER_ICON_SIDE as i32) / 2,
                         HEADER_ICON_SIDE,
                         HEADER_ICON_SIDE,
@@ -499,9 +540,10 @@ impl Draw for GridViewHeader {
                     crate::widget::IconName::Filter,
                 );
             }
+            let separator_x = if rtl { section.x } else { section.x + section.width as i32 - 1 };
             context.draw_line(
-                Point::new(section.x + section.width as i32 - 1, section.y),
-                Point::new(section.x + section.width as i32 - 1, section.y + section.height as i32),
+                Point::new(separator_x, section.y),
+                Point::new(separator_x, section.y + section.height as i32),
                 surface.blend(&ink, 0.12),
             );
         }

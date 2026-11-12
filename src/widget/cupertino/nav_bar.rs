@@ -887,7 +887,7 @@ impl EventHandler for CupertinoNavigationBar {
                 self.edge_drag_x = edge.contains_point(*pos).then_some(pos.x as f32);
             }
             Event::MouseMove { .. } => {}
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1045,7 +1045,7 @@ mod tests {
         });
 
         // Click on back button area
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 22), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 22), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -1067,7 +1067,7 @@ mod tests {
             f.store(true, Ordering::SeqCst);
         });
 
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 22), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 22), button: 1, modifiers: 0 });
         assert!(!fired.load(Ordering::SeqCst), "a disabled nav bar must not navigate");
     }
 
@@ -1083,7 +1083,7 @@ mod tests {
         });
 
         // Click where back button would be
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 22), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 22), button: 1, modifiers: 0 });
         assert!(!fired.load(Ordering::SeqCst));
     }
 
@@ -1141,7 +1141,11 @@ mod tests {
             f.store(*index, std::sync::atomic::Ordering::SeqCst);
         });
         // The trailing-most item is index zero and lives nearest the trailing edge.
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(360, 30), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(360, 30),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -1154,7 +1158,7 @@ mod tests {
             f.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         bar.handle_event(&Event::MousePress { pos: Point::new(4, 30), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(80, 30), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(80, 30), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 

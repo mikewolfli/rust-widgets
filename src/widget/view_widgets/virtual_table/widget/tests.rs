@@ -78,6 +78,22 @@ fn rtl_mirrors_the_cell_grid() {
     });
 }
 
+/// T3-16: the 2 px gap is on the visual left of a mirrored cell in both paint and hit test.
+#[test]
+fn the_rtl_gap_and_the_painted_cell_share_one_edge() {
+    let mut table = VirtualTable::new(Rect::new(0, 0, 240, 80));
+    table.set_data_source(Arc::new(StaticSource));
+    let rect = table.geometry();
+    crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+        // Columns are 120 px wide. Column 1's painted cell ends at x=118 and column 0's begins
+        // at x=120; the two pixels between them are the gap in both the paint and the hit test.
+        assert_eq!(table.column_at(rect.x + 117), Some(1));
+        assert_eq!(table.column_at(rect.x + 118), None);
+        assert_eq!(table.column_at(rect.x + 119), None);
+        assert_eq!(table.column_at(rect.x + 120), Some(0));
+    });
+}
+
 /// A menu request selects the cell under the pointer before it is emitted (C-9).
 #[test]
 fn a_menu_request_selects_the_cell_under_the_pointer() {
@@ -426,7 +442,7 @@ fn a_cells_box_is_a_function_of_its_own_indices() {
     table.set_row_height(40);
     let origin = table.geometry();
 
-    // (0,0) sits at the inset, and each step is exactly one stride.
+    // (0, 0) sits at the inset, and each step is exactly one stride.
     let first = table.cell_rect(origin, 0, 0);
     assert_eq!(first.x, origin.x + 2);
     assert_eq!(first.y, origin.y + 2);

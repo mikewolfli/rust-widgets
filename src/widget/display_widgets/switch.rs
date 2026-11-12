@@ -1086,7 +1086,7 @@ impl EventHandler for Switch {
                 self.travel.jump_to(travel);
                 self.request_frame_repaint(None);
             }
-            Event::MouseRelease { pos, button: 1 } if self.pressed => {
+            Event::MouseRelease { pos, button: 1, .. } if self.pressed => {
                 self.pressed = false;
                 let drag = self.drag.take();
                 // A disable between press and release takes the gesture out of play: the
@@ -1205,7 +1205,7 @@ mod tests {
         assert!(sw.is_pressed(), "the press arms the switch");
 
         sw.set_enabled(false);
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 15), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 15), button: 1, modifiers: 0 });
         assert!(!sw.is_checked(), "a disabled switch must not toggle on release");
         assert!(!sw.is_pressed(), "the latch is still cleared");
     }
@@ -1315,7 +1315,7 @@ mod tests {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
         let p = Point::new(10, 10);
         sw.handle_event(&Event::MousePress { pos: p, button: 1, modifiers: 0 });
-        sw.handle_event(&Event::MouseRelease { pos: p, button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: p, button: 1, modifiers: 0 });
         assert!(sw.is_checked());
     }
 
@@ -1327,10 +1327,14 @@ mod tests {
     #[test]
     fn switch_release_without_press_does_not_toggle() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!sw.is_checked(), "a release with no press must not toggle");
         // The original reproduction: a release nowhere near the control.
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(5000, 5000), button: 1 });
+        sw.handle_event(&Event::MouseRelease {
+            pos: Point::new(5000, 5000),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!sw.is_checked(), "a release far outside the geometry must not toggle");
     }
 
@@ -1343,7 +1347,7 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!sw.is_checked(), "a drag that began outside must not commit");
     }
 
@@ -1352,10 +1356,14 @@ mod tests {
     fn switch_press_inside_then_release_outside_cancels() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
         sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(500, 500), button: 1 });
+        sw.handle_event(&Event::MouseRelease {
+            pos: Point::new(500, 500),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!sw.is_checked());
         // The latch must also be clear, so the *next* stray release does not fire.
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!sw.is_checked(), "the cancelled press must not stay armed");
     }
 
@@ -1367,7 +1375,7 @@ mod tests {
         assert!(sw.is_pressed());
         sw.handle_event(&Event::FocusLost);
         assert!(!sw.is_pressed());
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!sw.is_checked());
     }
 
@@ -1813,7 +1821,11 @@ mod tests {
         let far_right = track.x + track.width as i32 - shape.thumb_inset as i32;
         sw.handle_event(&Event::MouseMove { pos: Point::new(far_right, grab.y) });
         assert!(sw.travel_progress() > 0.5, "the thumb follows the pointer across");
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(far_right, grab.y), button: 1 });
+        sw.handle_event(&Event::MouseRelease {
+            pos: Point::new(far_right, grab.y),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(sw.is_checked(), "releasing past the midpoint turns the switch on");
 
         // And the reverse journey turns it back off.
@@ -1822,7 +1834,11 @@ mod tests {
         sw.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
         let far_left = track.x + shape.thumb_inset as i32;
         sw.handle_event(&Event::MouseMove { pos: Point::new(far_left, grab.y) });
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(far_left, grab.y), button: 1 });
+        sw.handle_event(&Event::MouseRelease {
+            pos: Point::new(far_left, grab.y),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!sw.is_checked(), "releasing past the midpoint turns it back off");
     }
 
@@ -1835,7 +1851,7 @@ mod tests {
         let at = Point::new(thumb.x + thumb.width as i32 / 2, thumb.y + thumb.height as i32 / 2);
 
         sw.handle_event(&Event::MousePress { pos: at, button: 1, modifiers: 0 });
-        sw.handle_event(&Event::MouseRelease { pos: at, button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: at, button: 1, modifiers: 0 });
         assert!(sw.is_checked(), "a click on the thumb keeps the press-toggles gesture");
     }
 

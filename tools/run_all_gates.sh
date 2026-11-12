@@ -64,6 +64,11 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Derived from the suite on disk, not written by hand: these two numbers drifted
+# three times (T3-41, W4-33) because each was a literal in prose.
+GATE_COUNT="$(find tools -maxdepth 1 -name 'check_*.sh' | wc -l | tr -d ' ')"
+CARGO_GATE_COUNT="$(grep -l 'cargo' tools/check_*.sh | wc -l | tr -d ' ')"
+
 # shellcheck source=tools/lib_timeout.sh
 . "$ROOT_DIR/tools/lib_timeout.sh"
 
@@ -89,9 +94,10 @@ done
 
 # ── Toolchain guard ─────────────────────────────────────────────
 #
-# 33 of the 131 gates shell out to `cargo`. If the resolved `cargo` is a *different
-# toolchain* than the one this workspace's `target/` was built with, every one of
-# those 33 pays a **full rebuild of the crate** — which took a real run from 432 s
+# Gates that shell out to `cargo` (`CARGO_GATE_COUNT` below, derived from the suite on
+# disk) are the ones this guard protects. If the resolved `cargo` is a *different
+# toolchain* than the one this workspace's `target/` was built with, every one of them
+# pays a **full rebuild of the crate** — which took a real run from 432 s
 # to over 45 minutes and made it report `NOT-RUN` for the gates it never reached.
 #
 # That is a property of the *invocation*, not of the gates: it happens by putting
@@ -126,7 +132,8 @@ run_all_gates: refusing to run with a toolchain binary directly on PATH.
 
 \`cargo\` here is a toolchain's own binary rather than rustup's proxy, so this is not
 the toolchain the workspace's \`target/\` was built with. Every gate that shells out
-to \`cargo\` would pay a full rebuild: a 432 s sweep becomes the better part of an
+to \`cargo\` (${CARGO_GATE_COUNT} of ${GATE_COUNT}) would pay a full rebuild: a 432 s
+sweep becomes the better part of an
 hour and reports \`NOT-RUN\` for the gates it never reaches, which is
 indistinguishable from a wedge.
 
@@ -147,8 +154,9 @@ fi
 # # Why this is 900 rather than 1800
 #
 # The budget bounds a *hang*, and 30 minutes is long enough that a wedged gate
-# still makes the aggregate run feel stuck: 131 gates each allowed 15 minutes is
-# a 29-hour worst case, which is indistinguishable from a hang from the outside.
+# still makes the aggregate run feel stuck: every gate allowed 15 minutes is a
+# worst case measured in days, which is indistinguishable from a hang from the
+# outside.
 # The slowest gate measured on a warm cache is ~35 s and the slowest cold one is
 # ~4 minutes, so 900 s is still generous for a real gate while capping the
 # pathological case at 15 minutes and letting the run report `TIMEOUT` and move
@@ -175,8 +183,8 @@ GATE_BUDGET="${RW_GATE_TIMEOUT:-900}"
 # previous 2700 s the worst case — every gate cold — started reporting
 # `NOT-RUN` for gates it never reached, and a `NOT-RUN` gate is a piece of the
 # verification that did not happen. 3600 s keeps that list empty for a fully
-# cold run while still capping the pathological case (131 gates × the 900 s
-# per-gate bound would otherwise be a 14-hour worst case).
+# cold run while still capping the pathological case (the whole suite at the 900 s
+# per-gate bound would otherwise be a worst case measured in days).
 RUN_BUDGET="${RW_RUN_TIMEOUT:-3600}"
 
 # Gates that cannot run on this host by design (they need a specific toolchain or

@@ -754,36 +754,19 @@ impl ThemeManager {
     /// per-class override, which is the vocabulary it belongs to. A class that names a role
     /// (`primary`, `danger`) therefore still selects an override written for that class, without
     /// being asked to act as a control kind.
-    pub fn resolve_style_for(
-        &self,
-        kind_name: &str,
-        class_name: Option<&str>,
-        state: Option<WidgetState>,
-    ) -> WidgetStyle {
+    ///
+    /// # State-specific appearance
+    ///
+    /// This entry point resolves the **resting** appearance only. A caller that has the control's
+    /// interaction state resolves through [`Self::resolve_style_for_state`], which consults the
+    /// `"<kind>:<state>"` override.
+    ///
+    /// A `"<class>:<state>"` key (the `Button.primary:hover` form this method used to advertise)
+    /// has no production caller: every call site resolves a `(kind, class)` pair with no state in
+    /// hand, so that branch was unreachable. It was removed rather than left documented, because
+    /// a mechanism that cannot happen is a false promise to theme authors (W4-16).
+    pub fn resolve_style_for(&self, kind_name: &str, class_name: Option<&str>) -> WidgetStyle {
         let mut style = self.resolve_base_style_for(kind_name, class_name);
-        if let Some(state) = state {
-            // The state word comes from `WidgetState::state_suffix`, the crate's single spelling
-            // source (G-405), so a theme key and a CSS pseudo-class cannot name one state two
-            // ways.
-            // The state key is tried for the class first, then the kind, so a theme can
-            // describe either `Button.primary:hover` or a kind-wide `button:hover`.
-            let suffixes = match class_name {
-                Some(class) => [
-                    Some(format!("{class}:{}", state.state_suffix())),
-                    Some(format!("{kind_name}:{}", state.state_suffix())),
-                    None,
-                ],
-                None => [None, Some(format!("{kind_name}:{}", state.state_suffix())), None],
-            };
-            for key in suffixes.into_iter().flatten() {
-                if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key))
-                {
-                    let theme = self.current_theme();
-                    apply_token_as_child(&mut style, token, theme);
-                    break;
-                }
-            }
-        }
         self.apply_high_contrast(&mut style);
         style
     }
@@ -1882,7 +1865,7 @@ pub fn resolved_theme_style_for_shared(
     let style = {
         let manager = global_theme_manager();
         manager.current_theme()?;
-        Rc::new(manager.resolve_style_for(kind_name, class_name, None))
+        Rc::new(manager.resolve_style_for(kind_name, class_name))
     };
     // Re-read the revision: resolving may have initialised the registry, and the seeding
     // registers the dark preset, which bumps the revision. Storing the earlier value would

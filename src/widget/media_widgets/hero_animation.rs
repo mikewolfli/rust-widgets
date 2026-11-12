@@ -705,7 +705,7 @@ impl EventHandler for HeroAnimation {
         match event {
             // Starting or stopping on **release** keeps a press/release pair from toggling the
             // transition twice, which is what the paired arm did.
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.is_animating {
                         self.stop_animation();

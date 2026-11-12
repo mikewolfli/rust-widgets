@@ -600,7 +600,7 @@ mod tests {
         let refresh = count_units(&host.refresh_requested);
 
         host.set_state(ListState::Empty);
-        host.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1 });
+        host.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1, modifiers: 0 });
         assert_eq!(unit_count(&empty), 1);
         assert_eq!(unit_count(&refresh), 0);
 
@@ -609,11 +609,11 @@ mod tests {
 
         host.set_error("Offline");
         assert_eq!(host.state(), ListState::Error);
-        host.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1 });
+        host.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1, modifiers: 0 });
         assert_eq!(unit_count(&refresh), 1);
 
         host.set_state(ListState::Idle);
-        host.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1 });
+        host.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1, modifiers: 0 });
         assert_eq!(unit_count(&refresh), 1, "the idle surface has no action");
     }
 

@@ -706,26 +706,25 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
             let Some(local) = event_local_point(view, event) else { return };
             let origin = view_origin(view);
             let position = Point::new(origin.x + local.x, origin.y + local.y);
+            let modifiers = super::accelerator::map_modifiers(ns_event_modifier_flags(event));
             let translated = match phase {
-                MousePhase::Press => Event::mouse_press_with(
-                    position.x,
-                    position.y,
-                    1,
-                    super::accelerator::map_modifiers(ns_event_modifier_flags(event)),
-                ),
-                MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
+                MousePhase::Press => Event::mouse_press_with(position.x, position.y, 1, modifiers),
+                MousePhase::Release => Event::MouseRelease { pos: position, button: 1, modifiers },
                 MousePhase::Drag | MousePhase::Move => Event::MouseMove { pos: position },
                 MousePhase::SecondaryPress => Event::mouse_press_with(
                     position.x,
                     position.y,
                     crate::event::mouse_button::SECONDARY,
-                    super::accelerator::map_modifiers(ns_event_modifier_flags(event)),
+                    modifiers,
                 ),
                 MousePhase::SecondaryRelease => Event::MouseRelease {
                     pos: position,
                     button: crate::event::mouse_button::SECONDARY,
+                    modifiers,
                 },
-                MousePhase::DoubleClick => Event::mouse_double_click(position.x, position.y, 1),
+                MousePhase::DoubleClick => {
+                    Event::mouse_double_click(position.x, position.y, 1, modifiers)
+                }
             };
             // A hover move that stayed inside the same control changes nothing on screen.
             // It used to repaint the whole window anyway, which made pointer movement over a
@@ -1243,8 +1242,8 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, rect: NSRect) {
             let dirty_rows = dirty_row_range(rect, width, height);
 
             // A window's content view paints the window's own chrome **and every child**
-            // (`render_frame_tree_cached`), whereas a mounted surface is one widget in its own box
-            // (`render_frame_cached`). Without this branch the client area of every cocoa window
+            // (`render_frame_tree_cached_shared`), whereas a mounted surface is one widget in its
+            // own box (`render_frame_cached`). Without this branch the client area of every cocoa window
             // stayed blank: `create_window` installed a plain `NSView` and ordinary controls are
             // never mounted surfaces, so nothing ever drew them. This is the cocoa spelling of
             // the window painter Linux, Windows and the objc2 backend each already have
@@ -1253,7 +1252,8 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, rect: NSRect) {
             // See `docs/log/log-20261016-3.md` §11.
             let frame = if is_window_canvas(view) {
                 // The view stores the **host** id `create_window` returned, while
-                // `render_frame_tree_cached` looks the widget up by its **registry** id; translate here
+                // `render_frame_tree_cached_shared` looks the widget up by its **registry** id;
+                // translate here
                 // (the same boundary the objc2 backend translates at). No association yet means
                 // the window has not been adopted by a widget — a normal transient just after
                 // `create_window`, so it is a debug note, not an error.

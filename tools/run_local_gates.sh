@@ -30,6 +30,10 @@
 # Usage:
 #   tools/run_local_gates.sh            # run the uncovered set
 #   tools/run_local_gates.sh --list     # print the set and exit
+#
+# Budgets: RW_GATE_TIMEOUT (per gate, default 900 s) and RW_RUN_TIMEOUT
+# (whole sweep, default 2400 s). When the aggregate budget is exhausted the
+# remaining gates are listed as NOT RUN and the sweep exits 1.
 # ============================================================================
 set -u
 set -o pipefail
@@ -77,8 +81,19 @@ pass=0
 fail=0
 skip=0
 failed_names=()
+not_run=()
+# Aggregate budget (T3-15): per-gate `RW_GATE_TIMEOUT` bounds one hang, but 83 gates × 900 s can
+# outlive the CI job's 45-minute limit. Once this many seconds have elapsed, remaining gates are
+# recorded as not run and the sweep fails with the explicit left-over list, rather than being
+# killed by the job timeout with no diagnostics.
+RUN_BUDGET="${RW_RUN_TIMEOUT:-2400}"
+run_started=$SECONDS
 for gate in "${gates[@]}"; do
   name="$(basename "$gate")"
+  if [ $((SECONDS - run_started)) -ge "$RUN_BUDGET" ]; then
+    not_run+=("$name")
+    continue
+  fi
   printf '▶ %s\n' "$name"
   set +e
   rw_run_bounded "${RW_GATE_TIMEOUT:-900}" bash "$gate"
@@ -96,6 +111,10 @@ done
 
 echo
 echo "run_local_gates: ${#gates[@]} uncovered gate(s); PASS=$pass FAIL=$fail SKIP=$skip"
+if [ "${#not_run[@]}" -ne 0 ]; then
+  fail=$((fail + 1))
+  echo "  NOT RUN (aggregate budget ${RUN_BUDGET}s exhausted): ${not_run[*]}"
+fi
 if [ "$fail" -ne 0 ]; then
   printf '  failed: %s\n' "${failed_names[*]}"
   exit 1

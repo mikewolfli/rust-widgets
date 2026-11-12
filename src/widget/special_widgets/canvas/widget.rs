@@ -1656,7 +1656,7 @@ impl EventHandler for Canvas {
                     }
                 }
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 self.last_mouse_pos = *pos;
                 self.base.set_mouse_pressed(false);
                 let ended_pan = self.end_pan();
@@ -1671,7 +1671,7 @@ impl EventHandler for Canvas {
                 }
                 self.mouse_moved.emit(*pos);
             }
-            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+            Event::MouseDoubleClick { pos, button, .. } if *button == 1 => {
                 self.last_mouse_pos = *pos;
                 self.double_clicked.emit_at(*pos, *button);
             }
@@ -1857,7 +1857,11 @@ mod tests {
     #[test]
     fn canvas_double_click_emits_signal() {
         let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
-        canvas.handle_event(&Event::MouseDoubleClick { pos: Point::new(50, 50), button: 1 });
+        canvas.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(50, 50),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(canvas.last_mouse_pos(), Point::new(50, 50));
     }
 
@@ -2220,6 +2224,7 @@ mod tests {
         canvas.handle_event(&Event::MouseRelease {
             pos: Point::new(70, 60),
             button: mouse_button::MIDDLE,
+            modifiers: 0,
         });
         assert!(!canvas.is_panning());
 
@@ -2242,6 +2247,7 @@ mod tests {
         canvas.handle_event(&Event::MouseRelease {
             pos: Point::new(10, 10),
             button: mouse_button::PRIMARY,
+            modifiers: 0,
         });
         assert!(!canvas.is_panning());
 

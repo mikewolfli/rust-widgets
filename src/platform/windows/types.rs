@@ -286,10 +286,20 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             crate::platform::profile::notify_environment_changed();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
-        // The window moved to a monitor with a different DPI (G-604). The DPI-derived facts are
-        // cached like every other environment reading, so the same revision bump is what makes
-        // the next layout and glyph pass read the new scale instead of waiting for the 250 ms
-        // poll. The suggested rectangle in `lParam` is deliberately not applied here: the window
+        // The window moved to a monitor with a different DPI (G-604).
+        //
+        // What this actually does: `notify_environment_changed` bumps the process-wide
+        // environment revision, which drops every `EnvironmentFactCache` slot — including
+        // `DPI_SCALE_CACHE` — so the next `dpi_scale_factor()` call re-queries `LOGPIXELSX`
+        // instead of serving the stale reading for up to a second.
+        //
+        // What it does **not** do: the library has no per-monitor DPI propagation. `LayoutContext`
+        // keeps its `layout_scale` at `1.0`, and `publish_dpi_change_if_needed` is a host-facing
+        // helper rather than something this arm calls. A host that needs to re-layout at the new
+        // scale must read `dpi_scale_factor()` and re-apply its layout. Per-monitor DPI is
+        // therefore an explicit limitation, not a mechanism this comment can claim (T3-08).
+        //
+        // The suggested rectangle in `lParam` is deliberately not applied here: the window
         // manager already moved the window, and resizing from this arm would fight a host that
         // positions its own windows.
         WM_DPICHANGED => {
@@ -940,7 +950,7 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
             crate::event::Event::mouse_press_with(position.x, position.y, MOUSE_PRIMARY, modifiers)
         }
         MousePhase::Release => {
-            crate::event::Event::MouseRelease { pos: position, button: MOUSE_PRIMARY }
+            crate::event::Event::MouseRelease { pos: position, button: MOUSE_PRIMARY, modifiers }
         }
         MousePhase::Drag | MousePhase::Move => crate::event::Event::MouseMove { pos: position },
         MousePhase::SecondaryPress => crate::event::Event::mouse_press_with(
@@ -952,10 +962,14 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
         MousePhase::SecondaryRelease => crate::event::Event::MouseRelease {
             pos: position,
             button: crate::event::mouse_button::SECONDARY,
+            modifiers,
         },
-        MousePhase::DoubleClick => {
-            crate::event::Event::mouse_double_click(position.x, position.y, MOUSE_PRIMARY)
-        }
+        MousePhase::DoubleClick => crate::event::Event::mouse_double_click(
+            position.x,
+            position.y,
+            MOUSE_PRIMARY,
+            modifiers,
+        ),
     };
     let hover_before = if matches!(phase, MousePhase::Move) {
         crate::widget::runtime::hovered_widget()

@@ -565,6 +565,7 @@ impl ViewEngine {
             let removed = self.layout.clear_structure();
             report.widgets_removed += removed.len();
             report.removed_ids = removed;
+            Self::release_removed_controls(&report.removed_ids);
         }
         self.id_of_path.clear();
 
@@ -1073,6 +1074,7 @@ impl ViewEngine {
         // the view's path shape (feedback C-1). A pure `diff` report leaves `removed` empty: a
         // patch list describes, while nothing is destroyed until `apply` runs.
         report.removed = applied.removed_ids;
+        Self::release_removed_controls(&report.removed);
         if report.root_replaced {
             log::warn!(
                 "[view] the root's widget type changed; a patch batch cannot replace a root, \
@@ -1610,6 +1612,22 @@ impl ViewEngine {
         }
         reindex_children(next, &[], self.layout.root(), 0, &self.layout, &self.layers, &mut fresh);
         self.id_of_path = fresh;
+    }
+
+    /// Release the runtime registration and handle-layer callbacks of controls a batch removed.
+    ///
+    /// A creator is allowed to register the control it returns — `create_control_from_factory`
+    /// does — while `BoundJsonLayout` forgetting a node only releases the node's JSON wires.
+    /// Without this release the runtime registry and the handle callback tables kept every control
+    /// a declarative edit removed, so a hot-reload loop grew both tables without bound (T3-01).
+    /// `runtime::unregister` is a no-op for an id an injected creator never registered, and
+    /// `app::remove_callbacks` is equally tolerant, so the ordinary diff tests keep working.
+    fn release_removed_controls(ids: &[ObjectId]) {
+        for &id in ids {
+            crate::widget::runtime::unregister(id);
+            #[cfg(full_widgets)]
+            crate::app::remove_callbacks(id);
+        }
     }
 }
 

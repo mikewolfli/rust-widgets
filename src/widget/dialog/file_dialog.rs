@@ -1643,7 +1643,7 @@ impl EventHandler for FileDialog {
                     self.press_list_row(*pos, false);
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if self.list_rect().contains_point(*pos) {
                     self.press_list_row(*pos, true);
                 }

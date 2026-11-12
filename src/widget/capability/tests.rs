@@ -1886,6 +1886,7 @@ fn every_event_alias_reaches_the_signal_its_control_emits() {
         alert.handle_event(&Event::MouseRelease {
             pos: crate::core::Point::new(100, 225),
             button: 1,
+            modifiers: 0,
         });
     });
 

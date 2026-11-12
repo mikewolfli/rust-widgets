@@ -205,9 +205,20 @@ impl SubtitleBar {
         let changed = self.text_changed.clone();
         player.time_updated.connect_ref_scoped(&scope, move |time| {
             let next = cue_at(&shared_cues, *time).map(|cue| cue.text.clone()).unwrap_or_default();
-            let mut text = rust_widgets::compat::lock(&sink);
-            if *text != next {
-                *text = next;
+            // Release the caption lock before emitting: a synchronous subscriber that calls
+            // `current_caption()` would otherwise re-lock the same non-reentrant mutex and
+            // deadlock (T3-46). The redraw contract currently makes that safe by deferring, but
+            // the safety must not depend on a caller not reading the value it was just told about.
+            let changed_now = {
+                let mut text = rust_widgets::compat::lock(&sink);
+                if *text != next {
+                    *text = next;
+                    true
+                } else {
+                    false
+                }
+            };
+            if changed_now {
                 redraw.emit();
                 changed.emit();
             }

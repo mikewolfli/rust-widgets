@@ -23,7 +23,7 @@
 //! * Dates are compared and ordered by year, then month, then day.
 use super::calendar::Calendar;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler, FocusReason};
+use crate::event::{key_codes, Event, EventHandler, FocusReason};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
@@ -1840,22 +1840,22 @@ impl EventHandler for DateEdit {
                 // Escape closes the popup before any value navigation runs. Every other key
                 // belongs to the embedded calendar while it is open: arrows move its selection,
                 // Page Up/Down move its page, and Enter/Space commit.
-                if *key == 27 {
+                if *key == key_codes::ESCAPE {
                     self.close_calendar();
                 } else {
                     self.sync_calendar_page();
                     self.calendar.handle_event(event);
-                    if *key == 13 || *key == 32 {
+                    if *key == key_codes::ENTER || *key == key_codes::SPACE {
                         self.commit_calendar_selection();
                     }
                 }
             }
             Event::KeyPress { key, modifiers } => match *key {
                 // Escape closes an open grid first, before any value navigation runs.
-                27 if self.calendar_open => self.set_calendar_open(false),
+                key_codes::ESCAPE if self.calendar_open => self.set_calendar_open(false),
                 // Enter commits the edit. The open-popup path above commits a day selection and
                 // returns before reaching here, so this is the field-focused case.
-                13 => self.editing_finished.emit(),
+                key_codes::ENTER => self.editing_finished.emit(),
                 // Undo and redo are the platform primary chord: Control+Z/Y on
                 // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
                 // different binding and stays unbound here.
@@ -1865,7 +1865,7 @@ impl EventHandler for DateEdit {
                 _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
                     let _ = self.redo();
                 }
-                37 => {
+                key_codes::LEFT => {
                     // Left moves to the previous section once one is active; with no
                     // section the historical no-op is kept.
                     if let Some(section) = self.current_section {
@@ -1873,21 +1873,28 @@ impl EventHandler for DateEdit {
                         self.set_current_section(Some(previous));
                     }
                 }
-                39 => {
+                key_codes::RIGHT => {
                     if let Some(section) = self.current_section {
                         let next = section.next();
                         self.set_current_section(Some(next));
                     }
                 }
-                38 => self.step_current_section(1),  // Up arrow
-                40 => self.step_current_section(-1), // Down arrow
+                key_codes::UP => self.step_current_section(1), // Up arrow
+                key_codes::DOWN => self.step_current_section(-1), // Down arrow
                 48..=57 if self.current_section.is_some() => {
-                    if let Some(digit) = char::from_u32(*key) {
-                        self.type_digit(digit);
-                    }
+                    // Typed digits arrive as `Event::TextInput` (W4-01): every backend delivers a
+                    // printable character that way, and a raw key code is not a digit on Windows.
                 }
                 _ => { /* Other keys are not relevant */ }
             },
+            // Committed text from the platform: dropdown text entry takes digits through it.
+            Event::TextInput { text } | Event::ImeCommit { text }
+                if self.current_section.is_some() =>
+            {
+                for ch in text.chars().filter(|ch| ch.is_ascii_digit()) {
+                    self.type_digit(ch);
+                }
+            }
             // Focus leaving the field ends the edit, the same rule `DateTimeEdit` uses. The
             // base has already recorded the focus loss; this only announces the semantic fact.
             Event::FocusLost => self.editing_finished.emit(),

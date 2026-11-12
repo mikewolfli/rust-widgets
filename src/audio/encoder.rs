@@ -17,6 +17,12 @@ use super::ffmpeg_encode;
 /// WAV and raw PCM are always supported. Compressed formats (Mp3, Flac, Ogg,
 /// Aac, Opus) are encoded through FFmpeg and require the `video-codecs`
 /// feature; without it they return an explicit error.
+///
+/// # Reachability (G-228)
+///
+/// A **host-tool API** (exporting a recording, saving a synthesized clip). The player never
+/// encodes, so there is no in-library caller.
+///
 pub fn encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8>, String> {
     match format {
         AudioFormat::Wav => encode_wav(buffer),

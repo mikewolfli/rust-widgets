@@ -1586,7 +1586,7 @@ impl crate::event::EventHandler for ToggleButton {
                 // set for a later release.
                 self.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
             }
-            crate::event::Event::MouseRelease { pos, button }
+            crate::event::Event::MouseRelease { pos, button, .. }
             | crate::event::Event::PointerRelease { pos, button, .. }
                 if *button == 1 =>
             {
@@ -1837,7 +1837,7 @@ mod tests {
         assert!(!tb.is_pressed(), "leaving must clear the latch");
 
         // The stray release must not commit, and the latch must already be clear.
-        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1, modifiers: 0 });
         assert!(!tb.is_checked(), "a release after leaving must not toggle");
     }
 
@@ -1851,7 +1851,7 @@ mod tests {
             modifiers: 0,
         });
         assert!(!tb.is_pressed());
-        tb.handle_event(&Event::MouseRelease { pos: Point::new(20, 15), button: 1 });
+        tb.handle_event(&Event::MouseRelease { pos: Point::new(20, 15), button: 1, modifiers: 0 });
         assert!(!tb.is_checked(), "a drag that began outside must not commit");
     }
 
@@ -1861,7 +1861,7 @@ mod tests {
         let inside = Point::new(20, 15);
         let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
         tb.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
-        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1, modifiers: 0 });
         assert!(tb.is_checked());
     }
 
@@ -1873,7 +1873,7 @@ mod tests {
         tb.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
         tb.handle_event(&Event::FocusLost);
         assert!(!tb.is_pressed());
-        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1, modifiers: 0 });
         assert!(!tb.is_checked());
     }
 
@@ -1897,7 +1897,7 @@ mod tests {
         tb.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
         assert_eq!(tb.state(), ToggleButtonState::Pressed, "a held control is a state");
 
-        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1, modifiers: 0 });
         // The latch wins once it is set: "checked" is a persistent fact, and the hover it
         // happens to sit under is the *overlay* the draw path adds. Asserting the precedence
         // stops someone "fixing" the enum order later and silently breaking the property value.
@@ -2148,7 +2148,11 @@ mod tests {
             modifiers: 0,
         });
         assert!(!button.is_menu_open(), "a face press does not open the menu");
-        button.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        button.handle_event(&Event::MouseRelease {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(button.is_checked(), "the face toggles on release");
         assert!(!button.is_menu_open());
 
@@ -2299,7 +2303,11 @@ mod checked_visibility_tests {
             });
         }
         button.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
-        button.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
+        button.handle_event(&Event::MouseRelease {
+            pos: Point::new(5, 5),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(button.is_checked(), "the pointer activation toggles the latch");
         assert_eq!(
             clicks.load(Ordering::SeqCst),

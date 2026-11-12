@@ -242,7 +242,7 @@ fn pointer_gestures_select_lines_extend_and_move_text() {
     let mut editor = make();
     editor.set_text("first\nsecond\nthird");
     let point = point_at(&editor, TextPosition::new(1, 1));
-    editor.handle_event(&Event::MouseDoubleClick { pos: point, button: 1 });
+    editor.handle_event(&Event::MouseDoubleClick { pos: point, button: 1, modifiers: 0 });
     editor.handle_event(&Event::MousePress { pos: point, button: 1, modifiers: 0 });
     assert_eq!(
         editor.selected_text().as_deref(),
@@ -269,7 +269,7 @@ fn pointer_gestures_select_lines_extend_and_move_text() {
     let drop = point_at(&third, TextPosition::new(0, 7));
     third.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
     third.handle_event(&Event::MouseMove { pos: drop });
-    third.handle_event(&Event::MouseRelease { pos: drop, button: 1 });
+    third.handle_event(&Event::MouseRelease { pos: drop, button: 1, modifiers: 0 });
     assert_eq!(third.text(), " defabc");
 }
 
@@ -599,7 +599,7 @@ fn gutter_drag_and_double_click_select_and_fold() {
     let mut second = make();
     second.set_text("fn a() {\n    x;\n}");
     let line = gutter_point(&second, 0);
-    second.handle_event(&Event::MouseDoubleClick { pos: line, button: 1 });
+    second.handle_event(&Event::MouseDoubleClick { pos: line, button: 1, modifiers: 0 });
     assert!(second.is_line_folded(0), "a gutter double-click folds the block");
 }
 

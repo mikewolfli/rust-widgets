@@ -147,7 +147,6 @@ struct LastPress {
     /// Monotonic milliseconds since the loop's origin.
     at_ms: u64,
     button: u32,
-    modifiers: u32,
 }
 
 /// Judges mouse double-clicks with the gesture engine's timing.
@@ -179,12 +178,11 @@ impl DoubleClickTracker {
         target: ObjectId,
         pos: Point,
         button: u32,
-        modifiers: u32,
         now_ms: u64,
     ) -> bool {
         const PRIMARY: u32 = crate::event::mouse_button::PRIMARY;
         if button != PRIMARY {
-            self.last = Some(LastPress { target, pos, at_ms: now_ms, button, modifiers });
+            self.last = Some(LastPress { target, pos, at_ms: now_ms, button });
             return false;
         }
         let double = matches!(
@@ -195,11 +193,8 @@ impl DoubleClickTracker {
         );
         // A recognised pair consumes the record, so a third click starts a fresh run instead of
         // chaining into a second double-click (the classic triple-click bug).
-        self.last = if double {
-            None
-        } else {
-            Some(LastPress { target, pos, at_ms: now_ms, button, modifiers })
-        };
+        self.last =
+            if double { None } else { Some(LastPress { target, pos, at_ms: now_ms, button }) };
         double
     }
 
@@ -236,15 +231,6 @@ impl DoubleClickTracker {
                 agrees
             }
         }
-    }
-
-    /// The modifier bits carried by the most recent press, or `0` when none is recorded.
-    ///
-    /// Used when a host double-click is replayed as a single press: the platform's double-click
-    /// event does not carry modifiers, and the press that preceded it does, so the replay keeps
-    /// them instead of silently dropping a Shift/Ctrl click.
-    pub fn last_press_modifiers(&self) -> u32 {
-        self.last.map_or(0, |last| last.modifiers)
     }
 
     /// Drops the recorded press for `target` (the control is being released).
@@ -299,8 +285,8 @@ mod tests {
         with_timeout(400, || {
             let mut tracker = DoubleClickTracker::new();
             let p = Point::new(10, 10);
-            assert!(!tracker.observe_press(1, p, 1, 0, 0));
-            assert!(tracker.observe_press(1, p, 1, 0, 200));
+            assert!(!tracker.observe_press(1, p, 1, 0));
+            assert!(tracker.observe_press(1, p, 1, 200));
         });
     }
 
@@ -309,10 +295,10 @@ mod tests {
         with_timeout(400, || {
             let mut tracker = DoubleClickTracker::new();
             let p = Point::new(10, 10);
-            assert!(!tracker.observe_press(1, p, 1, 0, 0));
-            assert!(!tracker.observe_press(1, p, 1, 0, 401));
+            assert!(!tracker.observe_press(1, p, 1, 0));
+            assert!(!tracker.observe_press(1, p, 1, 401));
             // The late press re-arms the run, so a prompt follow-up is a double-click.
-            assert!(tracker.observe_press(1, p, 1, 0, 500));
+            assert!(tracker.observe_press(1, p, 1, 500));
         });
     }
 
@@ -320,8 +306,8 @@ mod tests {
     fn a_distant_second_press_is_not_a_double_click() {
         with_timeout(400, || {
             let mut tracker = DoubleClickTracker::new();
-            assert!(!tracker.observe_press(1, Point::new(0, 0), 1, 0, 0));
-            assert!(!tracker.observe_press(1, Point::new(500, 500), 1, 0, 100));
+            assert!(!tracker.observe_press(1, Point::new(0, 0), 1, 0));
+            assert!(!tracker.observe_press(1, Point::new(500, 500), 1, 100));
         });
     }
 
@@ -361,9 +347,9 @@ mod tests {
         with_timeout(400, || {
             let mut tracker = DoubleClickTracker::new();
             let p = Point::new(10, 10);
-            assert!(!tracker.observe_press(1, p, 1, 0, 0));
-            assert!(!tracker.observe_press(2, p, 1, 0, 100));
-            assert!(!tracker.observe_press(1, p, 1, 0, 200));
+            assert!(!tracker.observe_press(1, p, 1, 0));
+            assert!(!tracker.observe_press(2, p, 1, 100));
+            assert!(!tracker.observe_press(1, p, 1, 200));
         });
     }
 
@@ -372,8 +358,8 @@ mod tests {
         with_timeout(400, || {
             let mut tracker = DoubleClickTracker::new();
             let p = Point::new(10, 10);
-            assert!(!tracker.observe_press(1, p, 2, 0, 0));
-            assert!(!tracker.observe_press(1, p, 2, 0, 100));
+            assert!(!tracker.observe_press(1, p, 2, 0));
+            assert!(!tracker.observe_press(1, p, 2, 100));
         });
     }
 
@@ -382,7 +368,7 @@ mod tests {
         with_timeout(400, || {
             let mut tracker = DoubleClickTracker::new();
             let p = Point::new(10, 10);
-            assert!(!tracker.observe_press(1, p, 1, 0, 0));
+            assert!(!tracker.observe_press(1, p, 1, 0));
             assert!(tracker.accept_platform_double_click(1, p, 1, 200));
         });
     }
@@ -392,7 +378,7 @@ mod tests {
         with_timeout(400, || {
             let mut tracker = DoubleClickTracker::new();
             let p = Point::new(10, 10);
-            assert!(!tracker.observe_press(1, p, 1, 0, 0));
+            assert!(!tracker.observe_press(1, p, 1, 0));
             assert!(!tracker.accept_platform_double_click(1, p, 1, 900));
         });
     }
@@ -408,9 +394,9 @@ mod tests {
         with_timeout(400, || {
             let mut tracker = DoubleClickTracker::new();
             let p = Point::new(10, 10);
-            assert!(!tracker.observe_press(1, p, 1, 0, 0));
-            assert!(tracker.observe_press(1, p, 1, 0, 100));
-            assert!(!tracker.observe_press(1, p, 1, 0, 200));
+            assert!(!tracker.observe_press(1, p, 1, 0));
+            assert!(tracker.observe_press(1, p, 1, 100));
+            assert!(!tracker.observe_press(1, p, 1, 200));
         });
     }
 }

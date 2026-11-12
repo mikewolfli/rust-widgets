@@ -1499,7 +1499,7 @@ impl EventHandler for AutoCompleteEdit {
             // UX6-09: a double-click selects the word under the pointer, the same rule the
             // `LineEdit` family applies. The suggestion list is tested first: a double-click on a
             // row must not select text behind the popup.
-            Event::MouseDoubleClick { pos, button }
+            Event::MouseDoubleClick { pos, button, .. }
                 if *button == 1
                     && self.geometry().contains_point(*pos)
                     && !(self.show_dropdown && self.dropdown_rect().contains_point(*pos)) =>
@@ -1532,7 +1532,7 @@ impl EventHandler for AutoCompleteEdit {
                         // Enter commits explicitly, so `OnCommit` closes the list.
                         self.select_highlighted(true);
                     }
-                } else if *key == 9 {
+                } else if *key == key_codes::TAB {
                     // Tab accepts an inline completion; with no inline hint it accepts the
                     // highlighted row, which is the keyboard path a completer needs.
                     self.accept_highlighted();
@@ -1547,19 +1547,19 @@ impl EventHandler for AutoCompleteEdit {
                 } else if *key == key_codes::DOWN && *modifiers == 0 && self.show_dropdown {
                     // Down arrow
                     self.select_next();
-                } else if *key == 37 {
+                } else if *key == key_codes::LEFT {
                     let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
                         .contains(crate::shortcut::Modifiers::SHIFT);
                     self.move_caret(-1, shift);
-                } else if *key == 39 {
+                } else if *key == key_codes::RIGHT {
                     let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
                         .contains(crate::shortcut::Modifiers::SHIFT);
                     self.move_caret(1, shift);
-                } else if *key == 36 {
+                } else if *key == key_codes::HOME {
                     self.set_cursor_position(0);
-                } else if *key == 35 {
+                } else if *key == key_codes::END {
                     self.set_cursor_position(self.text.len());
-                } else if *key == 127 {
+                } else if *key == key_codes::DELETE_ASCII {
                     let (start, end) = self.selection_range().unwrap_or_else(|| {
                         (
                             self.cursor,
@@ -1579,12 +1579,10 @@ impl EventHandler for AutoCompleteEdit {
                     let _ = self.undo();
                 } else if primary_shortcut_pressed(*key, *modifiers, Key::Y) {
                     let _ = self.redo();
-                } else if *key >= 32 && *key <= 126 {
-                    // Printable ASCII — append through the shared committed-text entry point so the
-                    // keyboard path and the platform's `TextInput` path stay in lockstep.
-                    if let Some(c) = char::from_u32(*key) {
-                        self.append_committed_text(&c.to_string());
-                    }
+                } else if *key >= key_codes::SPACE && *key <= 126 {
+                    // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01) and
+                    // the committed arm appends it through the same entry point; accepting the
+                    // raw key as well would type every character twice on Windows.
                 } else if *key == key_codes::BACKSPACE {
                     // Backspace removes the selection, or the character before the caret.
                     let (start, end) = self.selection_range().unwrap_or_else(|| {
@@ -1952,7 +1950,7 @@ mod tests {
 
         edit.set_text("helo");
         edit.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
-        edit.handle_event(&Event::KeyPress { key: 108, modifiers: 0 });
+        edit.handle_event(&Event::text_input("l"));
         assert_eq!(edit.text(), "hello");
         assert_eq!(edit.cursor_position(), 4);
     }
@@ -1975,7 +1973,11 @@ mod tests {
     fn a_double_click_selects_the_word_under_the_pointer() {
         let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 32));
         edit.set_text("alpha beta");
-        edit.handle_event(&Event::MouseDoubleClick { pos: Point::new(2, 16), button: 1 });
+        edit.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(2, 16),
+            button: 1,
+            modifiers: 0,
+        });
         let (start, end) = edit.selection_range().expect("a double-click must select a word");
         assert_eq!(&edit.text()[start..end], "alpha");
     }

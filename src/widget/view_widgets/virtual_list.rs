@@ -1737,7 +1737,7 @@ mod tests {
             Some(row),
             "the highlighted row must be the row a click selects"
         );
-        list.handle_event(&Event::mouse_release(4, 22, 1));
+        list.handle_event(&Event::mouse_release(4, 22, 1, 0));
 
         // A point past the last row is over nothing, on both readings.
         let below = Point::new(4, 1000);
@@ -1785,7 +1785,7 @@ mod tests {
         assert_eq!(coordinator.on_event(&Event::mouse_press(10, 5, PRIMARY), viewport), None);
         assert_eq!(coordinator.on_event(&Event::mouse_move(10, 50), viewport), None);
         assert_eq!(
-            coordinator.on_event(&Event::mouse_release(10, 50, PRIMARY), viewport),
+            coordinator.on_event(&Event::mouse_release(10, 50, PRIMARY, 0), viewport),
             Some(DropEffect::Move)
         );
 

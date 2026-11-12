@@ -31,11 +31,12 @@
 ///
 /// `not(alloc_frugal)` alone is **not** enough. `alloc_frugal` is about the allocator, and
 /// it is false for `mini`/`embedded` — but those profiles have no colour model at all, so
-/// `crate::theme` does not exist and naming it fails to compile. The condition that
-/// actually matches the module is `full_widgets`, which is what `apply_active_theme` itself
-/// is gated on and what `build.rs` defines for "a device profile *and* a full widget set".
-/// Copying the neighbouring `#[cfg]` without checking it against the module is exactly the
-/// drift principle #47 exists to prevent.
+/// `crate::theme` does not exist and naming it fails to compile. `apply_active_theme` is
+/// gated on `all(not(alloc_frugal), widgets_unstripped)` (see `apply.rs`); this public
+/// entry point additionally requires a device profile, so its gate is `full_widgets`,
+/// which `build.rs` defines as "a device profile *and* a full widget set". Copying the
+/// neighbouring `#[cfg]` without checking it against the module is exactly the drift
+/// principle #47 exists to prevent.
 #[cfg(full_widgets)]
 pub fn apply_theme_to_widget(widget: &mut dyn crate::widget::Widget) -> bool {
     // `apply_active_theme` already handles "no active theme" by returning without styling,

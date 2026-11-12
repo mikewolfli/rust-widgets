@@ -12,13 +12,13 @@
 //!
 //! # What is offered
 //!
-//! Only geometry and paint primitives. A window manager owns the real title bar on a decorated
-//! window; these helpers exist for the borderless case, where the application owns those pixels
-//! and has to draw them itself. The layout is derived once and shared by the paint path and the
-//! close-button hit test, so a button cannot be painted where it cannot be clicked.
+//! Only geometry and its colour data. The caller owns the paint commands, so a window manager
+//! owns the real title bar on a decorated window; these helpers exist for the borderless case,
+//! where the application owns those pixels and has to draw them itself. The layout is derived
+//! once and shared by the paint path and the close-button hit test, so a button cannot be
+//! painted where it cannot be clicked.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
-use crate::render::RenderContext;
+use crate::core::{Color, Rect};
 
 /// The rectangles of a self-drawn title bar and its three window buttons.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,44 +92,12 @@ impl WindowChromeGeometry {
             _ => Color::rgba(39, 201, 63, 255),
         }
     }
-
-    /// Paints the title strip, its three buttons and the window title.
-    ///
-    /// `ink` is the title's colour and `surface` the strip's fill; both come from the caller so
-    /// this helper does not take a second opinion on the window's appearance.
-    pub fn paint(&self, context: &mut RenderContext, surface: Color, ink: Color, title: &str) {
-        context.fill_rect(self.title_bar, surface);
-        for index in 0..3 {
-            let button = match index {
-                0 => self.close,
-                1 => self.minimize,
-                _ => self.maximize,
-            };
-            if button.width == 0 {
-                // No room in a tiny window; a zero-sized box must not paint a dot at its origin.
-                continue;
-            }
-            let radius = (button.width / 2).max(1);
-            let center = Point::new(button.x + radius as i32, button.y + radius as i32);
-            context.fill_circle_aa(center, radius, Self::button_color(index));
-        }
-        if !title.is_empty() {
-            let font =
-                crate::widget::metrics::role_font(&crate::style::WidgetStyle::default(), 13.0);
-            context.draw_text_fitted_ellipsis(
-                context.text_line(self.title_bar, &font),
-                title,
-                &font,
-                ink,
-                HorizontalAlignment::Center,
-            );
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
 
     #[test]
     fn the_three_buttons_sit_inside_the_title_bar() {

@@ -1431,7 +1431,11 @@ impl GridTableWidget {
                 // belongs on the right in an RTL table, and every consumer of this cache
                 // (paint, hit test, resize handles) then speaks visual coordinates.
                 let visual_x = if crate::widget::view_widgets::rtl_columns::is_rtl() {
-                    build_extent - x - width
+                    crate::widget::view_widgets::rtl_columns::mirror_span(
+                        x,
+                        width as u32,
+                        Rect::new(0, 0, build_extent as u32, 0),
+                    )
                 } else {
                     x
                 };
@@ -2377,7 +2381,7 @@ impl EventHandler for GridTableWidget {
                 }
             }
 
-            Event::MouseDoubleClick { pos, button: _ } => {
+            Event::MouseDoubleClick { pos, .. } => {
                 if let Some((row, col)) = self.cell_at_point(*pos) {
                     self.cell_double_clicked.emit((row, col));
                     if self.edit_triggers.contains(TableEditTriggers::DOUBLE_CLICKED) {
@@ -2392,6 +2396,13 @@ impl EventHandler for GridTableWidget {
                 // Column resize dragging
                 if let Some(col) = self.resizing_column {
                     let delta = pos.x - self.resize_start_x;
+                    // The RTL handle is the column's left (trailing) edge, so a rightward drag
+                    // narrows the column; LTR keeps the additive form (T3-05).
+                    let delta = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+                        -delta
+                    } else {
+                        delta
+                    };
                     let new_width = (self.resize_start_width as i32 + delta)
                         .max(self.min_column_width as i32)
                         as u32;
@@ -2424,7 +2435,7 @@ impl EventHandler for GridTableWidget {
                 }
             }
 
-            Event::MouseRelease { pos: _, button: _ } if self.resizing_column.is_some() => {
+            Event::MouseRelease { .. } if self.resizing_column.is_some() => {
                 self.resizing_column = None;
             }
 
@@ -2910,6 +2921,45 @@ mod tests {
         assert!(none.is_none());
     }
 
+    /// T3-05: in RTL the handle is the column's trailing (left) edge and a rightward drag narrows.
+    #[test]
+    fn an_rtl_resize_drag_grabs_the_trailing_edge_and_narrows_when_dragged_right() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 400));
+        tbl.set_data_source(Arc::new(TestSource { rows: 5, cols: 5 }));
+        tbl.ensure_column_widths(5);
+        tbl.column_widths[0] = 100;
+        tbl.update_visibility();
+        let rect = tbl.geometry();
+        let rnw = tbl.row_number_width as i32;
+        let data_width = rect.width as i32 - rnw;
+        let y = rect.y + tbl.header_height as i32 / 2;
+        crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+            // Column 0 is right-aligned, so its movable edge is the left one.
+            let trailing = rect.x + rnw + data_width - 100;
+            let point = Point::new(trailing, y);
+            assert_eq!(tbl.resize_handle_at_point(point), Some(0));
+            assert_eq!(
+                tbl.resize_handle_at_point(Point::new(rect.x + rect.width as i32 - 1, y)),
+                None,
+                "the fixed right edge is not a handle in RTL"
+            );
+
+            tbl.handle_event(&Event::MousePress { pos: point, button: 1, modifiers: 0 });
+            assert_eq!(tbl.resizing_column, Some(0));
+            tbl.handle_event(&Event::MouseMove { pos: Point::new(trailing + 20, y) });
+            assert_eq!(
+                tbl.column_width(0),
+                80,
+                "dragging right moves the trailing edge left, narrowing the column"
+            );
+            tbl.handle_event(&Event::MouseRelease {
+                pos: Point::new(trailing + 20, y),
+                button: 1,
+                modifiers: 0,
+            });
+        });
+    }
+
     /// The `§B.9` judgement for this control: widening a column must move everything that follows it.
     ///
     /// # Why this is the criterion and not "the widths are stored"
@@ -3145,7 +3195,11 @@ mod tests {
                 *slot = Some(*cell);
             }
         });
-        tbl.handle_event(&Event::MouseDoubleClick { pos: Point::new(200, 80), button: 1 });
+        tbl.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(200, 80),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(
             edited.lock().map(|slot| slot.is_some()).unwrap_or(false),
             "a double-click requests an edit"
@@ -3271,7 +3325,11 @@ mod tests {
 
         assert_eq!(tbl.edit_triggers(), TableEditTriggers::ALL);
         tbl.set_edit_triggers(TableEditTriggers::NONE);
-        tbl.handle_event(&Event::MouseDoubleClick { pos: Point::new(60, 40), button: 1 });
+        tbl.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(60, 40),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(
             edits.lock().map(|guard| guard.is_empty()).unwrap_or(false),
             "NONE suppresses the edit request"
@@ -3294,7 +3352,11 @@ mod tests {
             1,
             "Enter edits when enabled"
         );
-        tbl.handle_event(&Event::MouseDoubleClick { pos: Point::new(60, 40), button: 1 });
+        tbl.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(60, 40),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(
             edits.lock().map(|guard| guard.len()).unwrap_or(0),
             1,
@@ -3536,7 +3598,7 @@ mod tests {
         tbl.resizing_column = Some(1);
         tbl.hovered_row = Some(2);
         tbl.base.set_enabled(false);
-        tbl.handle_event(&Event::MouseRelease { pos: Point::new(0, 0), button: 1 });
+        tbl.handle_event(&Event::MouseRelease { pos: Point::new(0, 0), button: 1, modifiers: 0 });
         assert!(tbl.resizing_column.is_none(), "a disabled control cannot stay in resize mode");
         assert!(tbl.hovered_row.is_none());
     }

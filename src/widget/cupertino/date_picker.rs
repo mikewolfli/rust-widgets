@@ -965,7 +965,7 @@ impl Draw for CupertinoDatePicker {
         // The selected row's ink is therefore chosen against the surface it is really painted
         // on — the band composited over the wheel — and not against `accent`. Choosing it from
         // the accent (and then blending 80% of the way back to the accent) made the label and
-        // its backdrop the same hue at the same lightness: `rgb(204,122,0)` on the light
+        // its backdrop the same hue at the same lightness: `rgb(204,122, 0)` on the light
         // theme's `rgb(243,222,192)` band measured 2.52:1. `Color::blend` is the same alpha
         // composite the renderer performs, so this predicts the painted colour exactly.
         let band_alpha = 50.0 / 255.0;
@@ -1622,7 +1622,11 @@ mod tests {
             modifiers: 0,
         });
         picker.handle_event(&Event::MouseMove { pos: Point::new(20, 130) });
-        picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 130), button: 1 });
+        picker.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, 130),
+            button: 1,
+            modifiers: 0,
+        });
         // The release only *starts* the coast (CB-001); the steps it owes land on the following
         // frames, so the drag is observed after one of them.
         picker.tick(16);
@@ -1685,7 +1689,11 @@ mod tests {
         // A fast upward flick: two whole rows in one sample, i.e. four rows per nominal frame.
         picker.handle_event(&Event::MouseMove { pos: Point::new(20, 16) });
         let after_move = picker.selected_date().0;
-        picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 16), button: 1 });
+        picker.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, 16),
+            button: 1,
+            modifiers: 0,
+        });
 
         assert_eq!(
             picker.selected_date().0,
@@ -1726,7 +1734,11 @@ mod tests {
             modifiers: 0,
         });
         picker.handle_event(&Event::MouseMove { pos: Point::new(20, 70) });
-        picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 70), button: 1 });
+        picker.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, 70),
+            button: 1,
+            modifiers: 0,
+        });
         let released = picker.selected_date().0;
         for _ in 0..20 {
             picker.tick(16);
@@ -1744,7 +1756,11 @@ mod tests {
             modifiers: 0,
         });
         picker.handle_event(&Event::MouseMove { pos: Point::new(20, 16) });
-        picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 16), button: 1 });
+        picker.handle_event(&Event::MouseRelease {
+            pos: Point::new(20, 16),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(picker.is_animating(), "the flick is coasting");
 
         // The press steps the tapped row once and cancels the coast.

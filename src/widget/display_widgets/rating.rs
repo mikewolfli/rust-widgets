@@ -784,7 +784,7 @@ impl EventHandler for Rating {
                 self.clear_hover_preview();
                 self.request_frame_repaint(None);
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1073,7 +1073,11 @@ mod tests {
         assert_eq!(mid_y, 20, "the row is centred in the 40 px control");
         // Star 0: [32..56), Star 1: [60..84), Star 2: [88..112), Star 3: [116..140)
         // Press the 3rd star (index 2 => rating 3)
-        r.handle_event(&Event::MouseRelease { pos: Point::new(100, mid_y), button: 1 });
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(100, mid_y),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(r.rating(), 3);
     }
 
@@ -1084,7 +1088,11 @@ mod tests {
         let row = r.star_row();
         let mid_y = row.y + row.height as i32 / 2;
         // Click on the 3rd star again (index 2 => rating 3) should set rating back to 2
-        r.handle_event(&Event::MouseRelease { pos: Point::new(100, mid_y), button: 1 });
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(100, mid_y),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(r.rating(), 2);
     }
 
@@ -1115,12 +1123,17 @@ mod tests {
         assert_eq!(row.height, dimensions::RATING_ROW_HEIGHT);
         assert!(row.y > 0, "the row is centred, so it does not touch the control's top edge");
         // Above the row, still well inside the control.
-        r.handle_event(&Event::MouseRelease { pos: Point::new(120, row.y - 1), button: 1 });
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(120, row.y - 1),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(r.rating(), 0, "a press above the stars must not rate");
         // Below the row, still well inside the control.
         r.handle_event(&Event::MouseRelease {
             pos: Point::new(120, row.y + row.height as i32),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(r.rating(), 0, "a press below the stars must not rate");
     }
@@ -1162,7 +1175,11 @@ mod tests {
         // The dropped stars are not clickable either, so ink and hit test stay one set.
         let row = r.star_row();
         let mid_y = row.y + row.height as i32 / 2;
-        r.handle_event(&Event::MouseRelease { pos: Point::new(56, mid_y), button: 1 });
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(56, mid_y),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(r.rating() <= 2, "a dropped star cannot be selected, got {}", r.rating());
     }
 
@@ -1227,7 +1244,11 @@ mod tests {
     fn rating_mouse_release_also_sets_rating() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
-        r.handle_event(&Event::MouseRelease { pos: Point::new(40, mid_y), button: 1 });
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(40, mid_y),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(r.rating(), 1);
     }
 
@@ -1382,7 +1403,11 @@ mod tests {
         let first = r.star_cell(0).expect("the first star fits");
         r.handle_event(&Event::MouseMove { pos: Point::new(first.x + 2, mid_y) });
         assert_eq!(r.hover_preview(), None, "a read-only control previews nothing");
-        r.handle_event(&Event::MouseRelease { pos: Point::new(first.x + 2, mid_y), button: 1 });
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(first.x + 2, mid_y),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(r.rating(), 2, "and nothing is committed");
         r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
         assert_eq!(r.rating(), 2, "the keyboard is ignored too");
@@ -1409,6 +1434,7 @@ mod tests {
         r.handle_event(&Event::MouseRelease {
             pos: Point::new(third.x + (third.width as i32 / 4), mid_y),
             button: 1,
+            modifiers: 0,
         });
         assert!((r.rating_exact() - 2.5).abs() < 1e-6, "got {}", r.rating_exact());
 
@@ -1416,6 +1442,7 @@ mod tests {
         r.handle_event(&Event::MouseRelease {
             pos: Point::new(third.x + (third.width as i32 * 3 / 4), mid_y),
             button: 1,
+            modifiers: 0,
         });
         assert!((r.rating_exact() - 3.0).abs() < 1e-6, "got {}", r.rating_exact());
     }

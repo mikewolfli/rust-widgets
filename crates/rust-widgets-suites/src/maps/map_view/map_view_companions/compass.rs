@@ -223,6 +223,7 @@ impl Draw for Compass {
                 ink,
             );
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

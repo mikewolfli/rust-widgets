@@ -879,7 +879,7 @@ mod tests {
         assert_ne!(hovered, pressed, "a press paints its own state");
 
         cw.handle_event(&Event::mouse_leave(100, 100));
-        cw.handle_event(&Event::mouse_release(100, 100, 1));
+        cw.handle_event(&Event::mouse_release(100, 100, 1, 0));
         let released = crate::widget::svg::render_to_svg(&mut cw);
         assert_eq!(released, idle, "leaving and releasing restores the idle drawing");
     }

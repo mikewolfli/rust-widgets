@@ -818,8 +818,8 @@ mod tests {
         let _guard = theme_test_guard();
         let manager = global_theme_manager();
 
-        let by_kind = manager.resolve_style_for("Button", None, None);
-        let with_class = manager.resolve_style_for("Button", Some("primary"), None);
+        let by_kind = manager.resolve_style_for("Button", None);
+        let with_class = manager.resolve_style_for("Button", Some("primary"));
 
         // The role default is what the kind gives; the class must not change it into Surface.
         assert_eq!(
@@ -840,8 +840,8 @@ mod tests {
         // lands on the **same role as any unknown kind**, not about which colour that role happens
         // to resolve to. Hardcoding the colour made the test fail the moment the role's fill was
         // corrected — a false alarm about the wrong thing.
-        let as_kind = manager.resolve_style_for("primary", None, None);
-        let unknown_kind = manager.resolve_style_for("SomeThirdPartyWidget", None, None);
+        let as_kind = manager.resolve_style_for("primary", None);
+        let unknown_kind = manager.resolve_style_for("SomeThirdPartyWidget", None);
         assert_eq!(
             as_kind.background_color, unknown_kind.background_color,
             "the regression this test pins: 'primary' is not a control kind, so it resolves as \
@@ -873,7 +873,7 @@ mod tests {
         manager.register_theme(theme);
         assert!(manager.set_theme("default"));
 
-        let styled = manager.resolve_style_for("Button", Some("primary"), None);
+        let styled = manager.resolve_style_for("Button", Some("primary"));
         assert_eq!(
             styled.background_color,
             Some(Color::rgb(1, 2, 3)),
@@ -904,7 +904,7 @@ mod tests {
         let manager = global_theme_manager();
         // A kind the role table does not name: the pure `Surface` case, which is what a card, a
         // panel and a container all are.
-        let container = manager.resolve_style_for("SomeThirdPartyContainer", None, None);
+        let container = manager.resolve_style_for("SomeThirdPartyContainer", None);
         let Some(fill) = container.background_color else {
             panic!("a surface role must resolve a fill; a container with none cannot be seen")
         };
@@ -992,8 +992,8 @@ mod tests {
     ///
     /// Asserted through `resolve_style_for_state`, which is the **production** path
     /// (`apply_active_theme` → this → `resolve_base_style`): the class/role override layers live
-    /// on that path, so asserting on `resolve_style_for(.., None, ..)` would measure a different
-    /// function and miss the preset override entirely.
+    /// on that path, so asserting on the resting `resolve_style_for(.., None)` would measure a
+    /// different function and miss the preset override entirely.
     ///
     /// `button` is the interesting case because the role table gives it a bevel — so this also
     /// proves the flat preset's override is what removes it.

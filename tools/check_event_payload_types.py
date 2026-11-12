@@ -34,6 +34,7 @@ row and requires the gate to fail, which is the reverse-injection check BLUE19's
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import sys
@@ -44,6 +45,166 @@ sys.path.insert(0, str(REPO / "tools"))
 import derive_event_payloads as derive  # noqa: E402  (path set up above)
 
 TABLE = REPO / "src/widget/capability/event_payloads.rs"
+SCHEMA = REPO / "docs/capability_schema.json"
+
+# The tokens the capability document uses. A token outside these sets is a row the designer
+# cannot type, which is exactly what the readiness table must surface rather than count as ready.
+KNOWN_KINDS = {
+    "bool",
+    "int",
+    "uint",
+    "float",
+    "number",
+    "string",
+    "enum",
+    "color",
+    "rect",
+    "icon-spec",
+    "records",
+    "string-list",
+    "number-list",
+    "color-list",
+}
+KNOWN_SHAPES = {
+    "scalar",
+    "optional",
+    "list",
+    "tuple2",
+    "tuple3",
+    "tuple4",
+    "optional_tuple2",
+    "mixed",
+}
+KNOWN_SIGNATURES = {"none", "value", "composite"}
+DIMENSIONS = ("controls", "properties", "events", "commands")
+
+
+def readiness_table() -> str:
+    """The four-dimensional designer-readiness table (principle #100).
+
+    # What the three counts mean
+
+    * **typed** — the row carries the type metadata a designer needs: a palette category for a
+      control, a value kind for a property, a payload/shape declaration for an event, a parameter
+      signature for a command.
+    * **wireable** — the row can be an endpoint of a designer wire: a control with at least one
+      event or command, a readable or writable property, a typed event, a typed command.
+    * **inexpressible** — the row is missing the metadata that would let the designer represent it;
+      every such row is listed with its reason below the table.
+
+    The document read here is the committed capability schema, produced by the same
+    `all_capability_manifests_json` API the rest of the designer tooling uses. Reading it keeps this
+    table from growing a second registry (principle #101), and the sort orders make the output a
+    pure function of that document.
+    """
+    if not SCHEMA.exists():
+        return (
+            f"designer readiness: {SCHEMA.relative_to(REPO)} is missing; run "
+            "`cargo run --example export_capability_schema`"
+        )
+
+    manifests = json.loads(SCHEMA.read_text())
+    typed = {dimension: 0 for dimension in DIMENSIONS}
+    total = {dimension: 0 for dimension in DIMENSIONS}
+    wireable = {dimension: 0 for dimension in DIMENSIONS}
+    inexpressible: list[tuple[str, str, str]] = []
+
+    for manifest in sorted(manifests, key=lambda row: row.get("control", "")):
+        control = manifest.get("control", "")
+        events = manifest.get("events", [])
+        commands = manifest.get("commands", [])
+
+        total["controls"] += 1
+        if control and manifest.get("category"):
+            typed["controls"] += 1
+        else:
+            inexpressible.append(
+                ("controls", control or "<unnamed>", "no designer category token")
+            )
+        if events or commands:
+            wireable["controls"] += 1
+
+        for prop in manifest.get("properties", []):
+            name = prop.get("name", "<unnamed>")
+            kind = prop.get("kind")
+            total["properties"] += 1
+            if kind in KNOWN_KINDS:
+                typed["properties"] += 1
+                if prop.get("readable") or prop.get("writable"):
+                    wireable["properties"] += 1
+            else:
+                inexpressible.append(
+                    ("properties", f"{control}.{name}", f"unknown value kind `{kind}`")
+                )
+
+        for event in events:
+            name = event.get("name", "<unnamed>")
+            payload = event.get("payload")
+            shape = event.get("shape")
+            total["events"] += 1
+            if payload is None and shape is None:
+                typed["events"] += 1
+                wireable["events"] += 1
+            elif payload in KNOWN_KINDS and shape in KNOWN_SHAPES:
+                typed["events"] += 1
+                wireable["events"] += 1
+            else:
+                inexpressible.append(
+                    (
+                        "events",
+                        f"{control}.{name}",
+                        f"payload/shape `{payload}`/`{shape}` is not a declared pair",
+                    )
+                )
+
+        for command in commands:
+            name = command.get("name", "<unnamed>")
+            signature = command.get("signature")
+            total["commands"] += 1
+            if signature == "none":
+                typed["commands"] += 1
+                wireable["commands"] += 1
+            elif signature == "value" and command.get("kind") in KNOWN_KINDS:
+                typed["commands"] += 1
+                wireable["commands"] += 1
+            elif signature == "composite" and (
+                command.get("element") in KNOWN_KINDS or command.get("arity") is not None
+            ):
+                typed["commands"] += 1
+                wireable["commands"] += 1
+            else:
+                inexpressible.append(
+                    (
+                        "commands",
+                        f"{control}.{name}",
+                        f"signature `{signature}` has no declared parameter type",
+                    )
+                )
+
+    dimension_order = {dimension: index for index, dimension in enumerate(DIMENSIONS)}
+    inexpressible.sort(key=lambda row: (dimension_order[row[0]], row[1], row[2]))
+
+    lines = [
+        f"designer readiness (principle #100, from {SCHEMA.relative_to(REPO)}):",
+        f"  {'dimension':<12}{'total':>8}{'typed':>8}{'wireable':>10}{'inexpressible':>15}",
+    ]
+    for dimension in DIMENSIONS:
+        lost = sum(1 for row in inexpressible if row[0] == dimension)
+        lines.append(
+            f"  {dimension:<12}{total[dimension]:>8}{typed[dimension]:>8}"
+            f"{wireable[dimension]:>10}{lost:>15}"
+        )
+    lines.append(
+        "  typed = declared type metadata; wireable = usable as a wire endpoint; "
+        "inexpressible = no representation, listed below"
+    )
+    if inexpressible:
+        lines.append("  inexpressible entries:")
+        for dimension, subject, reason in inexpressible:
+            lines.append(f"    - {dimension} {subject}: {reason}")
+    else:
+        lines.append("  inexpressible entries: none")
+    return "\n".join(lines)
 
 # Shared conversion helpers whose return carrier is fixed. `event_signal_dyn` arms use them so
 # the same point/colour/rect encoding is not restated per control; the delivery check reads the
@@ -375,6 +536,9 @@ def main() -> int:
 
     print(f"published events checked: {checked}")
     print(f"controls covered: {len(published)}")
+    print()
+    print(readiness_table())
+    print()
 
     # ── Delivery: the carrier `event_signal_dyn` produces must match the declared kind ──
     #

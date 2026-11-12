@@ -793,7 +793,11 @@ fn scrolling_keyboard_and_edit_triggers_are_wired() {
             *slot = Some(*cell);
         }
     });
-    table.handle_event(&Event::MouseDoubleClick { pos: Point::new(20, 40), button: 1 });
+    table.handle_event(&Event::MouseDoubleClick {
+        pos: Point::new(20, 40),
+        button: 1,
+        modifiers: 0,
+    });
     assert!(
         requested.lock().map(|slot| slot.is_some()).unwrap_or(false),
         "a double-click requests an edit"

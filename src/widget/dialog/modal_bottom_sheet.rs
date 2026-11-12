@@ -697,7 +697,7 @@ impl EventHandler for ModalBottomSheet {
                 // `end_drag` was unreachable from a real event sequence.
                 self.drag_to(pos.y);
             }
-            Event::MouseRelease { pos: _, button } => {
+            Event::MouseRelease { pos: _, button, .. } => {
                 if *button == 1 && self.is_dragging {
                     self.end_drag();
                 }
@@ -945,6 +945,7 @@ mod tests {
         sheet.handle_event(&Event::MouseRelease {
             pos: Point::new(rect.x + 50, press_y + 160),
             button: 1,
+            modifiers: 0,
         });
         assert!(!sheet.is_visible(), "a long downward drag must dismiss the sheet");
         assert!(dismissed.load(Ordering::SeqCst));
@@ -967,6 +968,7 @@ mod tests {
         sheet.handle_event(&Event::MouseRelease {
             pos: Point::new(rect.x + 50, press_y + 10),
             button: 1,
+            modifiers: 0,
         });
 
         assert!(sheet.is_visible(), "a 10px drag must not dismiss");

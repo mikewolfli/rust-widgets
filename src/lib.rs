@@ -993,6 +993,14 @@ mod compat_path_tests {
         let _: fn(crate::core::ObjectId) -> bool = crate::unmount_custom_widget;
         let _: fn(crate::core::ObjectId) -> bool = crate::request_custom_repaint;
         let _: fn() -> bool = crate::supports_custom_widgets;
+        // The two `alloc_frugal`-gated spellings the first pass of this test missed (T3-51).
+        // `notify_native_redraw` is a unit-returning forward in the deprecated module (it was
+        // never re-exported at the crate root); `native_handle` is the crate-root alias.
+        #[cfg(not(alloc_frugal))]
+        let _: fn(crate::core::ObjectId, Option<crate::core::Rect>) =
+            crate::deprecated::notify_native_redraw;
+        #[cfg(not(alloc_frugal))]
+        let _: fn(crate::core::ObjectId) -> Option<usize> = crate::native_handle;
     }
 
     /// The deprecated forwards must reach the same function, not a stale copy.

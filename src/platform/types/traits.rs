@@ -2439,6 +2439,31 @@ pub trait Platform: Send + Sync {
         0
     }
     /// Set plain text clipboard content.
+    ///
+    /// # What `true` means depends on the backend
+    ///
+    /// This is a synchronous call, so a backend whose system write is asynchronous cannot answer
+    /// with the final result. `true` therefore means "the backend accepted the write", with a
+    /// weaker guarantee on the backends that cannot block:
+    ///
+    /// * **Windows, Wayland, Linux (GDK), macOS, iOS, Harmony:** the system clipboard operation
+    ///   reported success. A host that cannot perform the write (no GDK display, an off-main-thread
+    ///   AppKit call) falls back to the in-process record and reports that fallback instead of
+    ///   claiming a system write.
+    /// * **Android (`android-jni`):** the system write succeeded when the JNI bridge is ready. A
+    ///   refused write answers `false`; when the bridge has not finished the VM/`Activity`
+    ///   handshake the in-process record is updated instead.
+    /// * **WASM (browser):** the write was **initiated** and the synchronous mirror was updated.
+    ///   The returned promise can still be rejected later (no permission, lost user activation);
+    ///   that rejection is logged, not returned. A `true` here does **not** mean the system
+    ///   clipboard holds the text. [`Self::get_clipboard_text`] on this backend reads the mirror.
+    /// * **Stub and other record-backed backends:** the in-process record was updated; there is no
+    ///   system clipboard to write to.
+    ///
+    /// There is no separate write-result query: the asynchronous outcome is not retained, so a
+    /// caller that needs the system clipboard to be authoritative must read it through the
+    /// platform's own API (or use [`Self::clipboard_text`], which answers from the host where the
+    /// backend has one).
     fn set_clipboard_text(&self, _text: &str) -> bool {
         false
     }

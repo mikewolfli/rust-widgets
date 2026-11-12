@@ -45,9 +45,25 @@ Every item below still compiles and emits a `#[deprecated]` warning naming its r
 | `LineEdit` `insert_text` | `insert_str` |
 | `TextArea` `insert` | `insert_char` |
 
+### `ThemeManager::resolve_style_for` lost its `state` argument (W4-16)
+
+The third argument had no production caller that supplied a state, and the
+`"<class>:<state>"` override it could select is already served by
+`ThemeManager::resolve_style_for_state`. A caller that passed `Some(state)` calls
+`resolve_style_for_state(class_name, Some(state))`; a caller that passed `None` drops the
+argument.
+
+### `MouseRelease` / `MouseDoubleClick` carry modifiers (W4-29)
+
+Both variants gained `modifiers: u32`, matching `MousePress`. `Event::mouse_release` and
+`Event::mouse_double_click` take the value as their last argument; a struct literal must supply
+it. Because the payload now carries the fact, `DoubleClickTracker::observe_press` lost its
+`modifiers` argument and `last_press_modifiers` was removed — the tracker's own callers read the
+value from the event instead.
+
 ### Event spellings renamed in 4.2 (DX-10)
 
-`on_` is a listener-method prefix in other toolkits, not an event name. Four published names lost it.
+`on_` is a listener-method prefix in other toolkits, not an event name. Twelve published names lost it.
 The **event** is unchanged and the old spelling still binds — it is recorded in `EVENT_ALIASES` and
 `event_signal_dyn` keeps answering it — so only Rust code that names the signal **field** has to
 change:
@@ -69,10 +85,6 @@ change:
 A document, a designer manifest or a language binding that still subscribes to `on_line_crossed`
 (and so on) keeps working: `connect_event` resolves the alias to the published row before the
 signal is looked up.
-
----
-
----
 
 # 4.0.x → 4.1.0: the runtime tree is the only composition mechanism
 

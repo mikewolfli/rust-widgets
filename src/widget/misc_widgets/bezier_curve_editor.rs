@@ -52,7 +52,7 @@ struct CubicSegment {
 }
 
 impl CubicSegment {
-    /// The editor's historical ease-in-out curve: one segment from `(0,0)` to `(1,1)`.
+    /// The editor's historical ease-in-out curve: one segment from `(0, 0)` to `(1,1)`.
     fn default_ease() -> Self {
         Self {
             p0: (0.0, 0.0),
@@ -1164,7 +1164,7 @@ impl EventHandler for BezierCurveEditor {
                     }
                 }
             }
-            Event::MouseRelease { pos: _, button } => {
+            Event::MouseRelease { pos: _, button, .. } => {
                 if *button == 1 && self.dragging.is_some() {
                     self.dragging = None;
                     self.base.set_mouse_pressed(false);
@@ -1258,7 +1258,7 @@ mod tests {
 
     #[test]
     fn bezier_cubic_bezier_static() {
-        // Linear curve: endpoints (0,0) and (1,1), control points on the line.
+        // Linear curve: endpoints (0, 0) and (1,1), control points on the line.
         let (x, y) =
             BezierCurveEditor::cubic_bezier(0.5, (0.0, 0.0), (0.5, 0.5), (0.5, 0.5), (1.0, 1.0));
         assert!((x - 0.5).abs() < 0.01);
@@ -1268,7 +1268,7 @@ mod tests {
     #[test]
     fn bezier_sample_at() {
         let editor = default_editor();
-        // At t=0, we should be at (0,0).
+        // At t=0, we should be at (0, 0).
         let (x0, y0) = editor.sample_at(0.0);
         assert!((x0 - 0.0).abs() < 0.01);
         assert!((y0 - 0.0).abs() < 0.01);
@@ -1381,7 +1381,7 @@ mod tests {
         assert!((cy - 0.5).abs() < 0.02);
 
         // Release.
-        editor.handle_event(&Event::MouseRelease { pos: new_pixel, button: 1 });
+        editor.handle_event(&Event::MouseRelease { pos: new_pixel, button: 1, modifiers: 0 });
         assert!(!editor.base.is_mouse_pressed());
     }
 
@@ -1622,7 +1622,7 @@ mod tests {
         editor.handle_event(&Event::MousePress { pos: start, button: 1, modifiers: 0 });
         editor.handle_event(&Event::MouseMove { pos: end });
         assert!(!editor.can_undo(), "the gesture is not history until it commits");
-        editor.handle_event(&Event::MouseRelease { pos: end, button: 1 });
+        editor.handle_event(&Event::MouseRelease { pos: end, button: 1, modifiers: 0 });
         assert!(editor.can_undo(), "the release commits one step");
 
         let dragged = editor.segment_control_points(0).expect("one segment");
@@ -1681,7 +1681,7 @@ mod tests {
 
         let handle = editor.curve_to_pixel(0.25, 0.1);
         editor.handle_event(&Event::MousePress { pos: handle, button: 1, modifiers: 0 });
-        editor.handle_event(&Event::MouseRelease { pos: handle, button: 1 });
+        editor.handle_event(&Event::MouseRelease { pos: handle, button: 1, modifiers: 0 });
         assert!(!editor.can_undo(), "a press with no motion is not an edit");
 
         assert!(!editor.add_point(0.0));

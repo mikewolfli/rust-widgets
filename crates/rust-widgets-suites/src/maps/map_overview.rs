@@ -595,7 +595,7 @@ mod tests {
             &[
                 Event::mouse_press(101, 51, 1),
                 Event::MouseMove { pos: Point::new(51, 26) },
-                Event::mouse_release(51, 26, 1),
+                Event::mouse_release(51, 26, 1, 0),
             ],
         );
 

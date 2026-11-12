@@ -468,6 +468,10 @@ fn deliver_event(
                 ancestors,
                 event,
                 &mut |node, ev, _phase| {
+                    // The phase is not passed to the host closure: the published
+                    // `EventDispatchFn` shape is `Fn(ObjectId, &Event)`. A host that needs to
+                    // tell capture from bubble asks `event::current_dispatch_phase()` from
+                    // inside its handler instead (W4-04).
                     current.set(node);
                     dispatch(node, ev);
                 },
@@ -1104,17 +1108,17 @@ impl EventLoop {
                                     target,
                                     *pos,
                                     *button,
-                                    *modifiers,
                                     monotonic_ms(gesture_epoch),
                                 ) {
-                                    synthesized_double_click =
-                                        Some(Event::mouse_double_click(pos.x, pos.y, *button));
+                                    synthesized_double_click = Some(Event::mouse_double_click(
+                                        pos.x, pos.y, *button, *modifiers,
+                                    ));
                                 }
                                 // Deliver the host's spelling; the alias was only canonicalised
                                 // for the rules above (W-001).
                                 event
                             }
-                            Event::MouseDoubleClick { pos, button } => {
+                            Event::MouseDoubleClick { pos, button, modifiers } => {
                                 if lock(double_click_ref).accept_platform_double_click(
                                     target,
                                     *pos,
@@ -1126,11 +1130,12 @@ impl EventLoop {
                                     // Outside the unified interval: this is a single click whose
                                     // host-side detector fired too early or too late. Replaying
                                     // it as a press is what keeps the click from being lost, and
-                                    // it keeps the modifiers the original press carried.
+                                    // the double-click's own payload keeps the modifiers it was
+                                    // produced under.
                                     single_click_replay = Event::MousePress {
                                         pos: *pos,
                                         button: *button,
-                                        modifiers: lock(double_click_ref).last_press_modifiers(),
+                                        modifiers: *modifiers,
                                     };
                                     &single_click_replay
                                 }
@@ -1387,7 +1392,16 @@ impl EventLoop {
     /// This remains the synchronous counterpart of the threaded loop's dispatch in every
     /// other respect: it honours the same animation-frame contract (a cancelled frame is
     /// discarded before dispatch and its cancellation entry is consumed, exactly as the
-    /// threaded loop does) and routes touch through the same gesture path.
+    /// threaded loop does).
+    ///
+    /// # Gestures in this profile
+    ///
+    /// It does **not** route touch through a gesture engine, because the gesture registry is
+    /// compiled only for `all(feature = "touch", not(alloc_frugal))` and this pump exists only in
+    /// the allocation-frugal profiles. A `mini`/`embedded` build with `touch` therefore delivers
+    /// raw `Touch*` events and recognises no gestures; a host that needs them must do so itself.
+    /// The earlier wording claimed parity with the threaded loop, which this profile has never
+    /// had (W4-30).
     #[cfg(alloc_frugal)]
     pub fn pump_once(&mut self) -> bool {
         if !self.is_running() {
@@ -1496,24 +1510,20 @@ impl EventLoop {
         let single_click_replay: Event;
         let delivery: &Event = match canonical {
             Event::MousePress { pos, button, modifiers } => {
-                if lock(&self.double_click).observe_press(target, *pos, *button, *modifiers, now_ms)
-                {
+                if lock(&self.double_click).observe_press(target, *pos, *button, now_ms) {
                     synthesized_double_click =
-                        Some(Event::mouse_double_click(pos.x, pos.y, *button));
+                        Some(Event::mouse_double_click(pos.x, pos.y, *button, *modifiers));
                 }
                 &event
             }
-            Event::MouseDoubleClick { pos, button } => {
+            Event::MouseDoubleClick { pos, button, modifiers } => {
                 if lock(&self.double_click)
                     .accept_platform_double_click(target, *pos, *button, now_ms)
                 {
                     &event
                 } else {
-                    single_click_replay = Event::MousePress {
-                        pos: *pos,
-                        button: *button,
-                        modifiers: lock(&self.double_click).last_press_modifiers(),
-                    };
+                    single_click_replay =
+                        Event::MousePress { pos: *pos, button: *button, modifiers: *modifiers };
                     &single_click_replay
                 }
             }
@@ -1911,7 +1921,7 @@ mod tests {
         // RW-95: a mouse stream reaches the engine too, so long-press and pan are not
         // touchscreen-only gestures.
         assert!(feeds_the_gesture_engine(&Event::mouse_press(1, 1, 1)));
-        assert!(feeds_the_gesture_engine(&Event::mouse_release(1, 1, 1)));
+        assert!(feeds_the_gesture_engine(&Event::mouse_release(1, 1, 1, 0)));
         assert!(feeds_the_gesture_engine(&Event::MouseMove { pos: Point::new(1, 1) }));
     }
 
@@ -1936,7 +1946,8 @@ mod tests {
             "a 50 px mouse drag must reach the pan recogniser, got {produced:?}"
         );
 
-        let end = mouse_gesture_input(&Event::mouse_release(50, 0, 1)).expect("release translates");
+        let end =
+            mouse_gesture_input(&Event::mouse_release(50, 0, 1, 0)).expect("release translates");
         let ended = registry.process(1, &end, 20);
         // RW-95: the release finishes the pan. A recogniser may report the final drag or a
         // terminal event; what must not happen is a different gesture class being synthesised.

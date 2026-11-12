@@ -21,7 +21,7 @@
 use core::fmt::Write as _;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
@@ -1357,7 +1357,7 @@ impl EventHandler for DateTimeEdit {
                 // Escape closes the popup before any value navigation runs. Every other key
                 // belongs to the embedded calendar while it is open: arrows move its selection,
                 // Page Up/Down move its page, and Enter/Space commit.
-                if *key == 27 {
+                if *key == key_codes::ESCAPE {
                     // Escape is one of the three ways an edit ends (see `editing_finished`); it
                     // used to close the grid silently and leave a host waiting for the commit.
                     self.close_calendar();
@@ -1365,7 +1365,7 @@ impl EventHandler for DateTimeEdit {
                 } else {
                     self.sync_calendar_page();
                     self.calendar.handle_event(event);
-                    if *key == 13 || *key == 32 {
+                    if *key == key_codes::ENTER || *key == key_codes::SPACE {
                         self.commit_calendar_selection();
                     }
                 }
@@ -1373,8 +1373,8 @@ impl EventHandler for DateTimeEdit {
             Event::KeyPress { key, modifiers } => match *key {
                 // Escape ends the edit. The open-grid case was handled by the arm above, which now
                 // emits too.
-                27 => self.editing_finished.emit(),
-                13 => {
+                key_codes::ESCAPE => self.editing_finished.emit(),
+                key_codes::ENTER => {
                     // Enter commits the edited value, which is where a field's edit ends.
                     self.editing_finished.emit();
                 }
@@ -1387,27 +1387,33 @@ impl EventHandler for DateTimeEdit {
                 _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
                     let _ = self.redo();
                 }
-                38 => self.step_current_section(1),
-                40 => self.step_current_section(-1),
-                37 => {
+                key_codes::UP => self.step_current_section(1),
+                key_codes::DOWN => self.step_current_section(-1),
+                key_codes::LEFT => {
                     if let Some(section) = self.current_section {
                         let previous = section.previous();
                         self.set_current_section(Some(previous));
                     }
                 }
-                39 => {
+                key_codes::RIGHT => {
                     if let Some(section) = self.current_section {
                         let next = section.next();
                         self.set_current_section(Some(next));
                     }
                 }
                 48..=57 if self.current_section.is_some() => {
-                    if let Some(digit) = char::from_u32(*key) {
-                        self.type_digit(digit);
-                    }
+                    // Typed digits arrive as `Event::TextInput` (W4-01); a raw key code is not a
+                    // digit on Windows.
                 }
                 _ => { /* Other keys are not relevant */ }
             },
+            Event::TextInput { text } | Event::ImeCommit { text }
+                if self.current_section.is_some() =>
+            {
+                for ch in text.chars().filter(|ch| ch.is_ascii_digit()) {
+                    self.type_digit(ch);
+                }
+            }
             _ => { /* Other events are not relevant */ }
         }
     }

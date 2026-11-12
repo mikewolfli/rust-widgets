@@ -259,7 +259,15 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     // frame is owed. The frame after a resume uses a zero delta so the background gap is not
     // replayed as one enormous step.
     let suspended = animation_suspended();
-    let delta_ms = if take_resume_reset() { 0 } else { delta_ms };
+    // One clamp for every producer of a frame delta (the native loop, `rw_pump_frame`, and any
+    // host calling this directly). A u32 from a C ABI can exceed the animation clock's own cap,
+    // and `CursorBlink::tick` adds the delta to a u32 phase, so an unclamped value could both
+    // skip an animation's visible half and overflow the cursor phase (T3-22).
+    let delta_ms = if take_resume_reset() {
+        0
+    } else {
+        delta_ms.min(crate::style::animation::MAX_FRAME_DELTA_MS)
+    };
 
     // The decode counters, read before anything else in the frame so this frame's share is exactly
     // the work done between here and the reading below -- and not whatever a previous frame left.

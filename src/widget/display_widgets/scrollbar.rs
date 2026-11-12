@@ -1273,7 +1273,7 @@ impl EventHandler for ScrollBar {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.press_at(*pos);
             }
-            Event::MouseRelease { pos: _, button } if *button == 1 => {
+            Event::MouseRelease { pos: _, button, .. } if *button == 1 => {
                 self.end_drag();
             }
             // Touch has no translated press/release here: contact starts the same gesture as a
@@ -2384,7 +2384,7 @@ mod tests {
         assert_eq!(bar.value(), 60, "a trough click beyond the thumb pages down");
 
         // The page step, not the distance to the pointer, is what moved it.
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(160, 8), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(160, 8), button: 1, modifiers: 0 });
         bar.handle_event(&Event::MousePress { pos: Point::new(30, 8), button: 1, modifiers: 0 });
         assert_eq!(bar.value(), 50, "a trough click before the thumb pages up");
     }
@@ -2406,7 +2406,7 @@ mod tests {
         assert!(bar.tick(SCROLLBAR_ARROW_REPEAT_INTERVAL_MS * 3), "the repeat continues");
         assert_eq!(bar.value(), 45, "three intervals are three more steps");
 
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1, modifiers: 0 });
         assert!(!bar.is_animating(), "a released arrow stops repeating");
         bar.tick(SCROLLBAR_ARROW_REPEAT_INTERVAL_MS * 3);
         assert_eq!(bar.value(), 45, "and no step lands after the release");
@@ -2432,7 +2432,11 @@ mod tests {
         bar.handle_event(&Event::MouseMove { pos: Point::new(grab.x + 20, 8) });
         bar.tick(16);
 
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(grab.x + 20, 8), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(grab.x + 20, 8),
+            button: 1,
+            modifiers: 0,
+        });
         let released_at = bar.value();
         assert!(bar.is_animating(), "a flicked thumb owes glide frames");
 

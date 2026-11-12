@@ -67,7 +67,7 @@
 //! gestures, it never takes one away.
 
 use crate::core::{Color, HorizontalAlignment, Orientation, Point, Rect, ScrollPhysics, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::object::ObjectId;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1321,6 +1321,11 @@ impl Draw for Carousel {
         if self.indicator_drawn() {
             self.draw_indicator(context, rect, &theme);
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 
@@ -1811,7 +1816,7 @@ impl EventHandler for Carousel {
                 }
                 DragState::Idle => {}
             },
-            Event::MouseRelease { pos, button } if *button == 1 => {
+            Event::MouseRelease { pos, button, .. } if *button == 1 => {
                 let previous_drag = self.drag;
                 self.drag = DragState::Idle;
 
@@ -1875,8 +1880,8 @@ impl EventHandler for Carousel {
                 if self.base.focus_reason().is_some() =>
             {
                 match *key {
-                    37 => self.previous(), // Left arrow
-                    39 => self.next(),     // Right arrow
+                    key_codes::LEFT => self.previous(), // Left arrow
+                    key_codes::RIGHT => self.next(),    // Right arrow
                     _ => {
                         self.base.handle_event(event);
                     }
@@ -2260,11 +2265,11 @@ mod tests {
     fn carousel_mouse_press_navigates() {
         let mut c = default_carousel();
         // Click left half → previous (but at 0, so stays)
-        c.handle_event(&Event::MouseRelease { pos: Point::new(50, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(50, 100), button: 1, modifiers: 0 });
         assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         // Click right half → next
-        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1, modifiers: 0 });
         assert_eq!(c.selected_index().unwrap_or(0), 1);
     }
 
@@ -2286,7 +2291,7 @@ mod tests {
         c.set_enabled(false);
 
         // The event that would page when enabled.
-        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1, modifiers: 0 });
         assert_eq!(
             c.selected_index().unwrap_or(0),
             0,
@@ -2304,7 +2309,7 @@ mod tests {
         // Swipe, the third paging path.
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(200, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(200, 100), button: 1, modifiers: 0 });
         assert_eq!(
             c.selected_index().unwrap_or(0),
             0,
@@ -2440,7 +2445,7 @@ mod tests {
         // Press at x=280, drag left well past 50% of the 300px width, release.
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1, modifiers: 0 });
 
         assert_eq!(
             c.selected_index().unwrap_or(0),
@@ -2456,7 +2461,7 @@ mod tests {
 
         c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(200, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(200, 100), button: 1, modifiers: 0 });
 
         assert_eq!(c.selected_index().unwrap_or(0), 1, "a rightward swipe must go back one page");
     }
@@ -2467,7 +2472,7 @@ mod tests {
         // 20px of travel on a 300px control is under the 18% (54px) threshold.
         c.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(80, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(80, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(80, 100), button: 1, modifiers: 0 });
 
         // Release at x=80 is in the left half, so the click rule applies and the
         // control is already at page 0 — the point is that the *swipe* did not fire.
@@ -2483,7 +2488,7 @@ mod tests {
         // Swiping right at page 0 would go to -1, which must be refused.
         c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(250, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1, modifiers: 0 });
         assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
@@ -2496,7 +2501,7 @@ mod tests {
         // Swiping left from the last page wraps to the first.
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1, modifiers: 0 });
         assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
@@ -2504,7 +2509,7 @@ mod tests {
     fn carousel_mousedown_then_mouseup_is_a_click_not_a_drag() {
         let mut c = default_carousel();
         c.handle_event(&Event::MousePress { pos: Point::new(250, 100), button: 1, modifiers: 0 });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1, modifiers: 0 });
         assert_eq!(
             c.selected_index().unwrap_or(0),
             1,
@@ -2681,7 +2686,11 @@ mod tests {
         // which is past the distance threshold — so this also asserts the documented
         // distance rule still pages, whatever the speed happens to be.
         c.handle_event(&Event::MouseMove { pos: Point::new(280 - 66, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(280 - 66, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease {
+            pos: Point::new(280 - 66, 100),
+            button: 1,
+            modifiers: 0,
+        });
 
         assert_eq!(c.selected_index().unwrap_or(0), 1, "a 66px leftward drag must page forward");
     }
@@ -2700,13 +2709,13 @@ mod tests {
         let mut c = default_carousel();
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(220, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(220, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(220, 100), button: 1, modifiers: 0 });
         assert_eq!(c.selected_index().unwrap_or(0), 1);
 
         // And the same gesture backwards.
         c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(80, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(80, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(80, 100), button: 1, modifiers: 0 });
         assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
@@ -3114,7 +3123,7 @@ mod tests {
         c.set_rubber_band(true);
         c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
-        c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1 });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1, modifiers: 0 });
         assert_eq!(c.selected_index().unwrap_or(0), 0, "page 0 cannot move backwards");
         assert!(c.settle_offset().abs() > 0.0, "the release keeps the damped offset");
         assert!(c.is_animating());
@@ -3355,5 +3364,26 @@ mod tests {
             1,
             "the press reaches the page painted under the pointer"
         );
+    }
+
+    /// A keyboard-focused carousel paints the ring Tab must show.
+    ///
+    /// # What this pins
+    ///
+    /// The arrows page only while the control holds focus, so the tab landing has to be visible;
+    /// the ring is the only stroke that changes between the resting and focused frames (W4-05).
+    #[test]
+    fn a_keyboard_focused_carousel_paints_a_focus_ring() {
+        let _guard = crate::style::theme_test_guard();
+        let mut carousel = default_carousel();
+
+        let resting = crate::widget::svg::render_to_svg(&mut carousel);
+        carousel.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        let focused = crate::widget::svg::render_to_svg(&mut carousel);
+        assert_ne!(resting, focused, "Tab focus must change the painted picture");
+
+        carousel.handle_event(&Event::FocusLost);
+        let blurred = crate::widget::svg::render_to_svg(&mut carousel);
+        assert_eq!(resting, blurred, "losing focus restores the resting picture");
     }
 }

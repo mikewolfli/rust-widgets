@@ -186,11 +186,59 @@ impl MjpegDecoder {
     }
 
     /// Decode just the dimensions from a JPEG frame without full decoding.
+    ///
+    /// Reads the SOF segment directly. It used to run a complete `decode()` for the dimensions and
+    /// then the caller decoded the same frame again, which doubled the work on the open path
+    /// (T3-13).
     fn decode_dimensions(jpeg_data: &[u8]) -> Option<(u32, u32)> {
-        let mut decoder = JpegDecoder::new(std::io::Cursor::new(jpeg_data));
-        decoder.decode().ok()?;
-        let info = decoder.info()?;
-        Some((info.width as u32, info.height as u32))
+        Self::parse_dimensions(jpeg_data).map(|(width, height)| (width as u32, height as u32))
+    }
+
+    /// Reads a JPEG's declared size from its SOF segment, without allocating pixels.
+    ///
+    /// SOF markers are `FFC0..FFC3`, `FFC5..FFC7`, `FFC9..FFCB` and `FFCD..FFCF`; each carries
+    /// `length(2) precision(1) height(2) width(2)`. Returning `None` for anything malformed lets
+    /// the caller fall back to the decoder's own answer, while a hostile size is refused by
+    /// [`Self::frame_capacity`] **before** `jpeg-decoder` allocates for it (T3-13).
+    fn parse_dimensions(jpeg_data: &[u8]) -> Option<(usize, usize)> {
+        let mut i = 0usize;
+        while i + 1 < jpeg_data.len() {
+            if jpeg_data[i] != 0xFF {
+                i += 1;
+                continue;
+            }
+            let marker = jpeg_data[i + 1];
+            // Standalone markers carry no length field.
+            if marker == 0x01 || marker == 0xD8 || (0xD0..=0xD9).contains(&marker) {
+                i += 2;
+                continue;
+            }
+            // Start of scan: no metadata after it is needed, and its payload is entropy data.
+            if marker == 0xDA {
+                return None;
+            }
+            if i + 4 > jpeg_data.len() {
+                return None;
+            }
+            let length = u16::from_be_bytes([jpeg_data[i + 2], jpeg_data[i + 3]]) as usize;
+            if length < 2 {
+                return None;
+            }
+            let is_sof = matches!(
+                marker,
+                0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF
+            );
+            if is_sof {
+                if length < 7 || i + 9 > jpeg_data.len() {
+                    return None;
+                }
+                let height = u16::from_be_bytes([jpeg_data[i + 5], jpeg_data[i + 6]]) as usize;
+                let width = u16::from_be_bytes([jpeg_data[i + 7], jpeg_data[i + 8]]) as usize;
+                return Some((width, height));
+            }
+            i = i.saturating_add(2).saturating_add(length);
+        }
+        None
     }
 
     /// The largest dimension this decoder accepts on either axis: 16384.
@@ -233,6 +281,13 @@ impl MjpegDecoder {
     /// resolution mid-stream, and `decode_frame` is the only place that knows the
     /// real size of the frame it just decoded (N-S-55).
     fn decode_frame(jpeg_data: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+        // Refuse an impossible declared size before `jpeg-decoder` allocates for it. The old
+        // order decoded first (allocating by the header: 65535² RGB is roughly 12 GiB) and only
+        // checked `frame_capacity` afterwards, which guarded the RGBA conversion but not the
+        // decode itself (T3-13).
+        if let Some((width, height)) = Self::parse_dimensions(jpeg_data) {
+            Self::frame_capacity(width, height)?;
+        }
         let mut decoder = JpegDecoder::new(std::io::Cursor::new(jpeg_data));
         let pixels = decoder.decode().map_err(|e| {
             format!(
@@ -479,6 +534,32 @@ mod tests {
         assert!(MjpegDecoder::frame_capacity(16_385, 1).is_err());
         assert!(MjpegDecoder::frame_capacity(0, 1).is_err());
         assert!(MjpegDecoder::frame_capacity(1, 0).is_err());
+    }
+
+    /// T3-13: the declared size is read from the SOF before any pixel allocation.
+    #[test]
+    fn mjpeg_dimensions_come_from_the_sof_segment() {
+        let mut data = vec![0xFF, 0xD8]; // SOI
+        data.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]); // SOF0, length 17, 8-bit
+        data.extend_from_slice(&[0x01, 0x40]); // height = 320
+        data.extend_from_slice(&[0x02, 0x80]); // width = 640
+        data.extend_from_slice(&[0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+        assert_eq!(MjpegDecoder::parse_dimensions(&data), Some((640, 320)));
+        assert_eq!(MjpegDecoder::decode_dimensions(&data), Some((640, 320)));
+    }
+
+    /// A hostile SOF is refused before `decode()` can allocate by it.
+    #[test]
+    fn mjpeg_declared_size_is_checked_before_decoding() {
+        let mut data = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08];
+        data.extend_from_slice(&[0xFF, 0xFF]); // height = 65535
+        data.extend_from_slice(&[0xFF, 0xFF]); // width = 65535
+        data.extend_from_slice(&[0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+        assert_eq!(MjpegDecoder::parse_dimensions(&data), Some((65_535, 65_535)));
+        assert!(MjpegDecoder::frame_capacity(65_535, 65_535).is_err());
+        // `decode_frame` must refuse it from the header, before jpeg-decoder allocates.
+        let error = MjpegDecoder::decode_frame(&data).expect_err("a hostile size must be refused");
+        assert!(error.contains("exceeds the supported maximum"), "unexpected error: {error}");
     }
 
     #[test]

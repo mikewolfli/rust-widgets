@@ -204,7 +204,8 @@ fn freeform_shape_clicked_signal_emits_on_click() {
     shape.handle_event(&press);
 
     // Release inside shape
-    let release = crate::event::Event::MouseRelease { pos: Point::new(100, 100), button: 1 };
+    let release =
+        crate::event::Event::MouseRelease { pos: Point::new(100, 100), button: 1, modifiers: 0 };
     shape.handle_event(&release);
 
     let got = *count.lock().unwrap();
@@ -227,7 +228,8 @@ fn freeform_shape_click_outside_no_signal() {
         crate::event::Event::MousePress { pos: Point::new(999, 999), button: 1, modifiers: 0 };
     shape.handle_event(&press);
 
-    let release = crate::event::Event::MouseRelease { pos: Point::new(999, 999), button: 1 };
+    let release =
+        crate::event::Event::MouseRelease { pos: Point::new(999, 999), button: 1, modifiers: 0 };
     shape.handle_event(&release);
 
     let got = *count.lock().unwrap();
@@ -274,7 +276,8 @@ fn freeform_shape_pressed_signal_emits_on_press() {
     shape.handle_event(&press);
 
     // Release
-    let release = crate::event::Event::MouseRelease { pos: Point::new(100, 100), button: 1 };
+    let release =
+        crate::event::Event::MouseRelease { pos: Point::new(100, 100), button: 1, modifiers: 0 };
     shape.handle_event(&release);
 
     let got = states.lock().ok().map(|g| g.clone()).unwrap_or_default();
@@ -298,7 +301,8 @@ fn freeform_shape_disabled_ignores_events() {
         crate::event::Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 };
     shape.handle_event(&press);
 
-    let release = crate::event::Event::MouseRelease { pos: Point::new(100, 100), button: 1 };
+    let release =
+        crate::event::Event::MouseRelease { pos: Point::new(100, 100), button: 1, modifiers: 0 };
     shape.handle_event(&release);
 
     let got = *count.lock().unwrap();
@@ -441,7 +445,11 @@ fn dragging_the_body_moves_the_shape_and_is_undoable() {
     shape.handle_event(&crate::event::Event::MouseMove { pos: Point::new(70, 80) });
     assert_eq!(shape.geometry().x, 20);
     assert_eq!(shape.geometry().y, 30);
-    shape.handle_event(&crate::event::Event::MouseRelease { pos: Point::new(70, 80), button: 1 });
+    shape.handle_event(&crate::event::Event::MouseRelease {
+        pos: Point::new(70, 80),
+        button: 1,
+        modifiers: 0,
+    });
 
     assert!(!moves.lock().unwrap().is_empty(), "a move must be reported");
     assert!(shape.can_undo());
@@ -539,6 +547,7 @@ fn dragging_a_vertex_updates_the_polygon() {
     shape.handle_event(&crate::event::Event::MouseRelease {
         pos: Point::new(start.x + 20, start.y + 20),
         button: 1,
+        modifiers: 0,
     });
 
     let events = changed.lock().unwrap();

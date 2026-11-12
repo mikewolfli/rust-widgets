@@ -2118,7 +2118,7 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeDispatchPointerEvent
     let point = crate::core::Point::new(logical_x, logical_y);
     let event = match code {
         1 => crate::event::Event::mouse_press(logical_x, logical_y, button as u32),
-        2 => crate::event::Event::mouse_release(logical_x, logical_y, button as u32),
+        2 => crate::event::Event::mouse_release(logical_x, logical_y, button as u32, 0),
         3 => crate::event::Event::mouse_move(logical_x, logical_y),
         4 => crate::event::Event::MouseEnter { pos: point },
         5 => crate::event::Event::MouseLeave { pos: point },

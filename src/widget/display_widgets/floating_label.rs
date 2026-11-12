@@ -115,14 +115,6 @@ pub struct FloatingLabel {
     /// recompute the blends. The cache compares the caller style's colour fields and the shared
     /// style handles, so the derivation happens once per theme change.
     chrome_cache: crate::compat::RefCell<Option<FloatingLabelChromeCache>>,
-    /// Whether the host has delivered committed text for this widget.
-    ///
-    /// The printable-key path is a fallback for hosts that report typing only as key
-    /// codes. Once `TextInput` or `ImeCommit` has arrived, the backend is speaking the
-    /// committed-text protocol, and accepting the raw key as well would insert the
-    /// character twice — or insert a key code that a non-Latin layout never meant as
-    /// that character.
-    text_input_seen: bool,
     /// The uncommitted IME composition drawn inline after the value (WC6-03).
     ///
     /// Held apart from `text` so `text_changed` never fires for a word the user has not
@@ -168,7 +160,6 @@ impl FloatingLabel {
             travel: crate::style::PropertyDriver::at(0.0, crate::style::MotionSlot::Fast),
             text_changed: Signal1::new(),
             chrome_cache: crate::compat::RefCell::new(None),
-            text_input_seen: false,
             preedit: String::new(),
         }
     }
@@ -889,18 +880,6 @@ impl EventHandler for FloatingLabel {
                 } else if *key == KEYCODE_ENTER {
                     // Enter — lose focus
                     self.set_focused(false);
-                } else if *key >= 32 && *key <= 126 {
-                    // Printable ASCII — append to text.
-                    //
-                    // This is the fallback for a host that reports typing only as key
-                    // codes. A host that delivers `TextInput`/`ImeCommit` has already
-                    // inserted the character, so the raw key must not be applied again.
-                    if self.is_focused() && !self.text_input_seen {
-                        let c = char::from_u32(*key).unwrap_or(' ');
-                        // Edited in place; `set_text` would clone the whole value first.
-                        self.text.push(c);
-                        self.commit_text_change();
-                    }
                 } else if *key == KEYCODE_BACKSPACE {
                     // Backspace
                     if self.is_focused() && !self.text.is_empty() {
@@ -916,7 +895,6 @@ impl EventHandler for FloatingLabel {
             // same user action from this control's point of view, and neither is
             // derivable from a raw key code.
             Event::TextInput { text } | Event::ImeCommit { text } => {
-                self.text_input_seen = true;
                 // A commit ends the composition; the input method may deliver it before its
                 // `preedit_end`, and a stale preview would otherwise sit beside the value.
                 self.preedit.clear();
@@ -1103,11 +1081,11 @@ mod tests {
         fl.set_focused(true);
 
         // Type 'A'
-        fl.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        fl.handle_event(&Event::TextInput { text: "A".to_string() });
         assert_eq!(fl.text(), "A");
 
         // Type 'B'
-        fl.handle_event(&Event::KeyPress { key: 66, modifiers: 0 });
+        fl.handle_event(&Event::TextInput { text: "B".to_string() });
         assert_eq!(fl.text(), "AB");
 
         // Backspace
@@ -1115,21 +1093,18 @@ mod tests {
         assert_eq!(fl.text(), "A");
     }
 
-    /// Platform text input inserts characters, and disables the raw-key fallback.
-    ///
-    /// A backend that sends `TextInput` has already resolved the layout, so applying
-    /// the ASCII key code as well would double-insert the character.
+    /// A raw key code is never content, so a Windows-style pair types one character (W4-01).
     #[test]
-    fn floating_label_text_input_inserts_and_suppresses_the_key_fallback() {
+    fn floating_label_text_input_is_the_only_content_path() {
         let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
         fl.set_focused(true);
 
         fl.handle_event(&Event::TextInput { text: "A".to_string() });
         assert_eq!(fl.text(), "A");
 
-        // The same character as a raw key is ignored after a `TextInput`.
+        // The same character as a raw key adds nothing.
         fl.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
-        assert_eq!(fl.text(), "A", "the key fallback must not duplicate committed text");
+        assert_eq!(fl.text(), "A", "a raw key must not duplicate committed text");
 
         // Non-ASCII text has no key-code spelling at all; the committed path carries it.
         fl.handle_event(&Event::TextInput { text: "é".to_string() });

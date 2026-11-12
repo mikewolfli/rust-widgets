@@ -2,6 +2,7 @@
 
 use crate::compat::Vec;
 use crate::core::{Color, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_draw_bridge;
 use crate::impl_widget_property_hooks;
@@ -175,7 +176,7 @@ impl EventHandler for Swatch {
                     }
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some(index) = self.index_at(*pos) {
                     self.set_selected_index(index);
                     self.activate_selected();
@@ -206,7 +207,7 @@ impl EventHandler for Swatch {
                     }
                     return;
                 }
-                if *key == 13 || *key == 32 {
+                if *key == key_codes::ENTER || *key == key_codes::SPACE {
                     self.activate_selected();
                 }
             }

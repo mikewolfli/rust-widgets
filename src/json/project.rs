@@ -67,9 +67,11 @@ pub struct ProjectNode {
     pub children: Vec<usize>,
     /// How many of [`Self::children`] came from the node's direct `children` array.
     ///
-    /// The rest came from `layout.children` and are the members its layout places. The count is
-    /// taken from **accepted** children, so an entry the parser rejected cannot shift a direct
-    /// child into the layout (RW-117). A node with no `layout` has this equal to the child count.
+    /// The rest came from `layout.children`, or from a declared container content table
+    /// (`pages`/`sections`/`panes`), and are the members its layout or container places. The count
+    /// is taken from **accepted** children, so an entry the parser rejected cannot shift a direct
+    /// child into the layout (RW-117). A node with no `layout` and no content table has this equal
+    /// to the child count.
     pub direct_children: usize,
     /// The registry command this node references, when it declares `action_id`.
     ///
@@ -114,6 +116,29 @@ impl ProjectNode {
             .iter()
             .filter(|(_, value)| {
                 matches!(value, Value::Array(items) if items.iter().all(Value::is_object))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// List properties: arrays whose elements are all scalars, in document order.
+    ///
+    /// # Why these are a third bucket
+    ///
+    /// [`Self::scalar_properties`] excludes every array and [`Self::record_properties`] selects only
+    /// arrays of objects, so a declared `StringList`/`NumberList`/`ColorList` (`"items": ["a"],
+    /// "data": [1, 2], "colors": ["#ff0000"]`) fell into *neither* bucket and disappeared without a
+    /// report. The generator emits these through the property's declared kind, so the carrier has to
+    /// be available separately from both scalars and records.
+    ///
+    /// The empty array belongs here as well: it has no element to contradict a list shape, and the
+    /// record path uses the same empty-array convention, so the caller's declared kind decides which
+    /// of the two owns it.
+    pub fn list_properties(&self) -> Vec<(String, Value)> {
+        self.properties
+            .iter()
+            .filter(|(_, value)| {
+                matches!(value, Value::Array(items) if items.iter().all(|item| !item.is_object()))
             })
             .cloned()
             .collect()
@@ -492,14 +517,26 @@ fn collect_preorder(
     //
     // The loader reads both, so a generator that read only one would generate a different tree from
     // the one the running program shows — the disagreement T-24 exists to detect.
-    let mut child_arrays: Vec<(&Value, bool)> = Vec::new();
+    //
+    // A container may also keep its content in a **side table**: a wizard's `pages`, an accordion's
+    // `sections`, a splitter's `panes`. The loader routes those through the control's own methods
+    // (`route_container_content`), which a generator cannot call; carrying the same entries as child
+    // nodes is what keeps mode 2's tree from being the empty container the document did not ask for.
+    // The entries use the same `{ "<type>": { .. } }` shape as `children`; a carousel or adaptive
+    // scaffold page additionally names an `index`, which is slot metadata rather than a node.
+    let mut child_arrays: Vec<(&Value, bool, bool)> = Vec::new();
     if let Some(direct) = obj.get("children") {
-        child_arrays.push((direct, true));
+        child_arrays.push((direct, true, false));
     }
     if let Some(layout_children) =
         obj.get("layout").and_then(|l| l.as_object()).and_then(|l| l.get("children"))
     {
-        child_arrays.push((layout_children, false));
+        child_arrays.push((layout_children, false, false));
+    }
+    for key in CONTENT_CHILD_KEYS {
+        if let Some(content) = obj.get(*key) {
+            child_arrays.push((content, false, true));
+        }
     }
 
     // A single running index across both child sources. `children` and `layout.children` are two
@@ -510,7 +547,7 @@ fn collect_preorder(
     // path globally unique and stable for a given document.
     let mut child_index = 0usize;
     let mut direct_children = 0usize;
-    for (child_array, direct) in child_arrays {
+    for (child_array, direct, is_content) in child_arrays {
         let Some(child_values) = child_array.as_array() else {
             continue;
         };
@@ -518,10 +555,9 @@ fn collect_preorder(
             let Some(child_obj) = child.as_object() else {
                 continue;
             };
-            if child_obj.len() != 1 {
+            let Some((child_widget, child_body)) = node_entry(child_obj, is_content) else {
                 continue;
-            }
-            let (child_widget, child_body) = child_obj.iter().next().expect("checked len == 1");
+            };
             path.push(child_index);
             let before = nodes.len();
             collect_preorder(&child_widget.to_lowercase(), child_body, path, depth + 1, nodes)?;
@@ -536,6 +572,29 @@ fn collect_preorder(
     nodes[own_index].children = children;
     nodes[own_index].direct_children = direct_children;
     Ok(())
+}
+
+/// Container content keys whose array entries are widget nodes.
+///
+/// These are the loader's `route_container_content` side tables whose entries use the node wrapper
+/// shape (`{ "label": { .. } }`): a wizard's pages, an accordion's sections and a splitter's panes.
+/// `menus` is deliberately absent — its entries are menu descriptors with `title`/`items`, not widget
+/// wrappers — and `slot` is a scalar selector on a child rather than an array, so neither can become
+/// a child node without inventing a control the document never named.
+const CONTENT_CHILD_KEYS: &[&str] = &["pages", "sections", "panes"];
+
+/// The single widget wrapper inside a node entry.
+///
+/// `children` and `layout.children` entries are exactly one key. A carousel or adaptive-scaffold
+/// page entry adds a scalar `index` beside the wrapper, so a content entry is allowed that one
+/// metadata key and must still hold exactly one widget.
+fn node_entry(
+    obj: &serde_json::Map<String, Value>,
+    allow_index: bool,
+) -> Option<(&String, &Value)> {
+    let mut entries = obj.iter().filter(|(key, _)| !(allow_index && key.as_str() == "index"));
+    let (widget, body) = entries.next()?;
+    entries.next().is_none().then_some((widget, body))
 }
 
 /// Parses the project's `actions` section.
@@ -590,7 +649,9 @@ fn key_from_path(path: &[usize]) -> String {
 fn collect_properties(obj: &serde_json::Map<String, Value>) -> Vec<(String, Value)> {
     let mut out: Vec<(String, Value)> = Vec::new();
     for (key, value) in obj {
-        if matches!(key.as_str(), "id" | "children" | "action_id" | "actions") {
+        if matches!(key.as_str(), "id" | "children" | "action_id" | "actions")
+            || CONTENT_CHILD_KEYS.contains(&key.as_str())
+        {
             continue;
         }
         if crate::json::is_marker_key(key) || key == crate::json::EVENTS_KEY {
@@ -795,6 +856,64 @@ mod tests {
         let empty = r#"{"chip":{"items":[],"layout":{"type":"vbox"}}}"#;
         let project = JsonProject::parse(empty).expect("valid");
         assert_eq!(project.root().expect("a root").record_properties().len(), 1);
+    }
+
+    /// A scalar array is a list property, so the generator can emit it through its declared kind.
+    #[test]
+    fn an_array_of_scalars_is_a_list_property() {
+        let json = r#"{"combobox":{"items":["One","Two"]}}"#;
+        let project = JsonProject::parse(json).expect("valid");
+        let root = project.root().expect("a root");
+        let lists = root.list_properties();
+        assert_eq!(lists.len(), 1, "the string array is reported: {lists:?}");
+        assert_eq!(lists[0].0, "items");
+        // The three buckets stay disjoint for a non-empty array.
+        assert!(!root.scalar_properties().iter().any(|(name, _)| name == "items"));
+        assert!(root.record_properties().is_empty());
+
+        let numbers = r#"{"sparkline":{"data":[1,2.5]}}"#;
+        let project = JsonProject::parse(numbers).expect("valid");
+        let lists = project.root().expect("a root").list_properties();
+        assert_eq!(lists.len(), 1, "the number array is reported: {lists:?}");
+        assert_eq!(lists[0].0, "data");
+    }
+
+    /// A container content table contributes its entries as child nodes.
+    ///
+    /// The loader routes `pages`/`sections`/`panes` through the container's own methods; a generator
+    /// that ignored them emitted the empty container, which is the cross-mode disagreement T-24
+    /// exists to catch.
+    #[test]
+    fn container_content_tables_contribute_child_nodes() {
+        let json = r#"{"wizard_dialog":{"pages":[
+            {"label":{"id":"p1","text":"One"}},
+            {"button":{"id":"p2","text":"Two"}}
+        ],"sections":[{"label":{"id":"s1","title":"One"}}],
+        "panes":[{"slider":{"id":"pane1","value":5}}]}}"#;
+        let project = JsonProject::parse(json).expect("valid document");
+        let widgets: Vec<&str> = project.walk().map(|node| node.widget.as_str()).collect();
+        assert_eq!(
+            widgets,
+            vec!["wizard_dialog", "label", "button", "label", "slider"],
+            "every content entry must become a node"
+        );
+        assert_eq!(project.root().unwrap().children.len(), 4);
+        assert_eq!(
+            project.root().unwrap().direct_children,
+            0,
+            "content entries are not direct `children`"
+        );
+    }
+
+    /// A content entry may name its slot with an `index`, which is metadata rather than a node type.
+    #[test]
+    fn an_indexed_content_page_still_yields_its_widget_node() {
+        let json = r#"{"carousel":{"pages":[
+            {"index":2,"label":{"id":"page-two","text":"Two"}}
+        ]}}"#;
+        let project = JsonProject::parse(json).expect("valid document");
+        let widgets: Vec<&str> = project.walk().map(|node| node.widget.as_str()).collect();
+        assert_eq!(widgets, vec!["carousel", "label"]);
     }
 
     #[test]

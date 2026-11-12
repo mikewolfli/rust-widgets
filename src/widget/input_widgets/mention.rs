@@ -1602,7 +1602,7 @@ impl EventHandler for Mention {
             // UX6-09: a double-click selects the word under the pointer, the same rule the
             // `LineEdit` family applies. The suggestion popup keeps its own press arm; a
             // double-click on a row must not select text behind it.
-            Event::MouseDoubleClick { pos, button }
+            Event::MouseDoubleClick { pos, button, .. }
                 if *button == 1 && self.geometry().contains_point(*pos) =>
             {
                 let index = self.byte_index_at_x(pos.x);
@@ -2379,7 +2379,7 @@ mod tests {
     fn a_double_click_selects_the_word_under_the_pointer() {
         let mut m = mention();
         m.set_text("alpha beta");
-        m.handle_event(&Event::MouseDoubleClick { pos: Point::new(2, 8), button: 1 });
+        m.handle_event(&Event::MouseDoubleClick { pos: Point::new(2, 8), button: 1, modifiers: 0 });
         let (start, end) = m.selection_range().expect("a double-click must select a word");
         assert_eq!(&m.text()[start..end], "alpha");
     }
@@ -2390,7 +2390,7 @@ mod tests {
         m.set_text("hello world");
         m.handle_event(&Event::MousePress { pos: Point::new(9, 8), button: 1, modifiers: 0 });
         m.handle_event(&Event::MouseMove { pos: Point::new(70, 8) });
-        m.handle_event(&Event::MouseRelease { pos: Point::new(70, 8), button: 1 });
+        m.handle_event(&Event::MouseRelease { pos: Point::new(70, 8), button: 1, modifiers: 0 });
         let (start, end) = m.selection_range().expect("a drag must select");
         assert!(end > start);
         assert!(m.text()[start..end].starts_with("hello"));

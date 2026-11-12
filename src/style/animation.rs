@@ -166,7 +166,7 @@ impl EasingFunction {
     }
 }
 
-/// Evaluates the Y of a cubic Bézier with `(0,0)` and `(1,1)` endpoints.
+/// Evaluates the Y of a cubic Bézier with `(0, 0)` and `(1,1)` endpoints.
 ///
 /// `x(u)` is monotonic when both X control points are in `0.0..=1.0`, which
 /// [`EasingFunction::cubic_bezier`] guarantees. The solver therefore bisects `u` until
@@ -1652,9 +1652,12 @@ impl SpringAnimation {
     ///
     /// Mass scales the acceleration (`a = F / m`), so a larger value slows every
     /// response. It must not be zero: the acceleration divides by it, so a zero
-    /// mass yields a non-finite step.
+    /// mass yields a non-finite step. A zero, negative or non-finite value is
+    /// replaced by `1.0` (the default) rather than stored, because the defect it would
+    /// cause — a spring that never settles and requests a repaint forever — is not one a
+    /// caller can observe until the UI has already hung (T3-21).
     pub fn with_mass(mut self, m: f32) -> Self {
-        self.mass = m;
+        self.mass = if m.is_finite() && m > 0.0 { m } else { 1.0 };
         self
     }
     /// Returns a copy with the current velocity set to `v`, in units per second.
@@ -1716,7 +1719,12 @@ impl SpringAnimation {
         let displacement = self.current_value - self.to_value;
         let spring_force = -self.stiffness * displacement;
         let damping_force = -self.damping * self.velocity;
-        let acceleration = (spring_force + damping_force) / self.mass;
+        // Defence in depth for a mass written past the builder (a deserialised or
+        // externally constructed spring): dividing by zero or a non-finite value would leave
+        // `velocity`/`current_value` as `NaN`, which never satisfies the settle test below
+        // (T3-21).
+        let mass = if self.mass.is_finite() && self.mass > 0.0 { self.mass } else { 1.0 };
+        let acceleration = (spring_force + damping_force) / mass;
         self.velocity += acceleration * dt_secs;
         self.current_value += self.velocity * dt_secs;
         // Check if settled
@@ -2488,7 +2496,10 @@ pub fn tick_default_animation_clock(delta_ms: u32) -> bool {
 
 #[cfg(test)]
 mod property_driver_tests {
-    use super::{MotionCurve, MotionSlot, PropertyDriver, SpringPreset, Transition};
+    use super::{
+        MotionCurve, MotionSlot, PropertyDriver, SpringAnimation, SpringPreset, Transition,
+    };
+    use crate::compat::Duration;
     use crate::style::environment::{
         install_environment, uninstall_environment, DefaultEnvironment, EnvironmentProvider,
     };
@@ -2680,6 +2691,25 @@ mod property_driver_tests {
                 uninstall_environment();
             }
         }
+    }
+
+    /// T3-21: a zero mass cannot produce a non-finite spring step.
+    #[test]
+    fn a_zero_mass_spring_still_settles() {
+        let mut spring = SpringAnimation::new(0.0, 1.0).with_mass(0.0);
+        spring.start();
+        for _ in 0..1_000 {
+            spring.update(Duration::from_millis(16));
+            assert!(
+                spring.current_value().is_finite(),
+                "a zero mass must not make the value non-finite"
+            );
+            if !spring.is_running() {
+                break;
+            }
+        }
+        assert!(!spring.is_running(), "the spring settles instead of requesting frames forever");
+        assert_eq!(spring.current_value(), 1.0);
     }
 
     /// Every spring preset reaches the target, and stops asking for frames when it does.

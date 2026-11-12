@@ -558,7 +558,7 @@ impl EventHandler for CupertinoSegmentedControl {
         // `grabbed` set after every successful click (the release never reached the base).
         self.base.handle_event(event);
         match event {
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 // A disabled control must not change its selection. Without this the
                 // `set_enabled(false)` API had no effect on this widget at all: the
                 // click was still accepted and `value_changed` still fired.
@@ -681,7 +681,7 @@ mod tests {
 
         // Click on segment 1 (x ~100-199)
         // seg_w = 300/3 = 100, segment 1 is at x 100-199
-        sc.handle_event(&Event::MouseRelease { pos: Point::new(150, 16), button: 1 });
+        sc.handle_event(&Event::MouseRelease { pos: Point::new(150, 16), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
         assert_eq!(*last_index.lock().unwrap(), 1);
     }
@@ -698,7 +698,7 @@ mod tests {
         });
 
         // Click on segment 0 (which is already selected)
-        sc.handle_event(&Event::MouseRelease { pos: Point::new(50, 16), button: 1 });
+        sc.handle_event(&Event::MouseRelease { pos: Point::new(50, 16), button: 1, modifiers: 0 });
         assert!(!fired.load(Ordering::SeqCst));
     }
 
@@ -731,7 +731,7 @@ mod tests {
 
         // Segment 1 (x 150-299) is not the selected one, so an enabled control would
         // have changed selection here.
-        sc.handle_event(&Event::MouseRelease { pos: Point::new(200, 16), button: 1 });
+        sc.handle_event(&Event::MouseRelease { pos: Point::new(200, 16), button: 1, modifiers: 0 });
 
         assert!(!fired.load(Ordering::SeqCst), "a disabled control must not emit");
         assert_eq!(

@@ -964,6 +964,12 @@ impl Widget for TabView {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    /// Reachable by keyboard: the Ctrl+PageDown/PageUp and Ctrl+Tab switching below is gated on
+    /// focus, and `TabView`'s kind is not in `wants_keyboard_focus`, so without this override the
+    /// documented navigation can never run (W4-06).
+    fn is_focusable(&self) -> bool {
+        true
+    }
     /// The navigable tab strip scrolls under the wheel (C2-D0).
     fn accepts_wheel(&self) -> bool {
         true
@@ -1391,7 +1397,7 @@ impl EventHandler for TabView {
                 }
             }
             Event::MouseMove { pos } => self.move_pointer(*pos),
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button == 1 {
                     self.end_pointer_release(*pos);
                 }
@@ -2005,7 +2011,7 @@ mod tests {
         let start = Point::new(rect.x + rect.width as i32 - 30, rect.y + 20);
         tv.handle_event(&Event::MousePress { pos: start, button: 1, modifiers: 0 });
         let end = Point::new(start.x - (rect.width as i32 / 2), start.y);
-        tv.handle_event(&Event::MouseRelease { pos: end, button: 1 });
+        tv.handle_event(&Event::MouseRelease { pos: end, button: 1, modifiers: 0 });
         assert_eq!(tv.selected_index(), Some(1));
     }
 
@@ -2025,7 +2031,7 @@ mod tests {
         let close = tv.close_box(first).expect("closable tabs offer a close box");
         let pos = Point::new(close.x + 2, close.y + 2);
         tv.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
-        tv.handle_event(&Event::MouseRelease { pos, button: 1 });
+        tv.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -2104,5 +2110,30 @@ mod tests {
         );
 
         crate::widget::runtime::unregister(id);
+    }
+
+    /// Tab lands on the view and Ctrl+PageDown switches the page.
+    ///
+    /// # What this pins
+    ///
+    /// The documented keyboard navigation is gated on `focus_reason().is_some()`, but the control
+    /// did not override `is_focusable` and its kind is not in `wants_keyboard_focus`, so no router
+    /// could ever grant that focus: the feature was unreachable dead code (W4-06).
+    #[test]
+    fn tab_focus_then_ctrl_page_down_switches_the_page() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+        assert!(tv.is_focusable(), "the view must join the tab order");
+
+        // What the focus router delivers when Tab lands here.
+        tv.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert_eq!(tv.selected_index(), Some(0));
+
+        tv.handle_event(&Event::KeyPress {
+            key: crate::event::key_codes::PAGE_DOWN,
+            modifiers: crate::shortcut::Modifiers::CTRL.bits() as u32,
+        });
+        assert_eq!(tv.selected_index(), Some(1), "Ctrl+PageDown advances the page");
     }
 }

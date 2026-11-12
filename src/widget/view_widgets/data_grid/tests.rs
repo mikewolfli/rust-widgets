@@ -330,10 +330,31 @@ fn header_resize_emits_the_new_width() {
 
     header.handle_event(&Event::mouse_press(99, 10, 1));
     header.handle_event(&Event::mouse_move(139, 10));
-    header.handle_event(&Event::mouse_release(139, 10, 1));
+    header.handle_event(&Event::mouse_release(139, 10, 1, 0));
 
     assert_eq!(header.section_width(0), 140);
     assert_eq!(*resized.lock().expect("resized lock"), vec![(0, 140)]);
+}
+
+/// T3-17: the standalone header mirrors its sections and reads the same rects in hit tests.
+#[test]
+fn an_rtl_header_mirrors_its_sections_and_resize_edges() {
+    let mut header = GridViewHeader::new(Rect::new(0, 0, 300, 28));
+    header.set_columns(vec![
+        ColumnSpec::new("Name", 100).with_resizable(true),
+        ColumnSpec::new("Size", 100).with_resizable(true),
+    ]);
+    header.set_resize_mode(ColumnWidthMode::Interactive);
+    crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+        assert_eq!(header.section_rect(0), Some(Rect::new(200, 0, 100, 28)));
+        assert_eq!(header.section_at(Point::new(250, 10)), Some(0));
+        assert_eq!(header.resize_handle_at(Point::new(200, 10)), Some(0));
+        assert_eq!(
+            header.resize_handle_at(Point::new(299, 10)),
+            None,
+            "the fixed right edge is not a handle in RTL"
+        );
+    });
 }
 
 #[test]

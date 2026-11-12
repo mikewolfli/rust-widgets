@@ -33,6 +33,13 @@ use super::input_companions::{FormatAction, FormatToolbar, FORMAT_TOOLBAR_HEIGHT
 /// The range is a byte range into the value and the format applies to every character it covers.
 /// Spans may overlap (a later span wins) and need not cover the whole document.
 #[derive(Debug, Clone, PartialEq)]
+/// A styled run of a rich-editor document.
+///
+/// # Same name, different model (R-26 / principle #49)
+///
+/// `textedit::model::TextSpan` has the same shape with a smaller `CharFormat`; this one adds
+/// strikeout and font family/size overrides. The two are deliberately separate rather than one
+/// shared type carrying attributes a plain editor cannot honour.
 pub struct TextSpan {
     /// The byte range the format applies to.
     pub range: core::ops::Range<usize>,
@@ -2018,7 +2025,7 @@ impl crate::event::EventHandler for RichEdit {
                     self.extend_caret = index;
                 }
             }
-            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
+            crate::event::Event::MouseRelease { pos: _, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
                 self.dragging_selection = false;
             }
@@ -2238,28 +2245,6 @@ impl crate::event::EventHandler for RichEdit {
                     86 if primary => {
                         // Primary+V: paste at the caret.
                         self.paste_from_clipboard();
-                    }
-                    _ if *key >= 32
-                        && *key <= 126
-                        && !mods.contains(crate::shortcut::Modifiers::CTRL)
-                        && !mods.contains(crate::shortcut::Modifiers::ALT)
-                        && !mods.contains(crate::shortcut::Modifiers::META) =>
-                    {
-                        // Printable ASCII — insert at the caret through the shared entry point, so
-                        // the keyboard and the platform's committed-text path cannot drift.
-                        //
-                        // A control chord is not content (IN2-01): the three modifiers are tested
-                        // one at a time because `Modifiers::contains` compares the *value* of the
-                        // mask, so a combined `CTRL | ALT | META` test would be true only when all
-                        // three were held at once. Without the gate, an unbound Ctrl+B/Ctrl+F typed
-                        // `B`/`F`, and the two redo spellings above typed `Z`/`z`.
-                        //
-                        // The case comes from SHIFT, not from the CTRL bit: with the chord gate in
-                        // place, SHIFT is the only remaining modifier that changes a character's
-                        // case, and reading CTRL here uppercased nothing while SHIFT was held.
-                        let c = char::from_u32(*key).unwrap_or(' ');
-                        let c = if shift { c.to_ascii_uppercase() } else { c };
-                        self.insert_committed_text(&c.to_string());
                     }
                     _ => {}
                 }
@@ -2789,17 +2774,17 @@ mod tests {
     #[test]
     fn an_unfocused_editor_ignores_the_keyboard() {
         let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
-        re.handle_event(&crate::event::Event::key_press(97, 0)); // 'a'
+        re.handle_event(&crate::event::Event::text_input("a")); // 'a'
         assert!(re.text().is_empty(), "an unfocused editor must not take the keystroke");
 
         re.handle_event(&crate::event::Event::FocusGained {
             reason: crate::event::FocusReason::Programmatic,
         });
-        re.handle_event(&crate::event::Event::key_press(97, 0));
+        re.handle_event(&crate::event::Event::text_input("a"));
         assert_eq!(re.text(), "a", "once focused it does");
 
         re.handle_event(&crate::event::Event::FocusLost);
-        re.handle_event(&crate::event::Event::key_press(98, 0)); // 'b'
+        re.handle_event(&crate::event::Event::text_input("b")); // 'b'
         assert_eq!(re.text(), "a", "and losing focus takes the keyboard away again");
     }
 
@@ -2808,7 +2793,7 @@ mod tests {
     fn a_press_focuses_the_editor() {
         let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
         re.handle_event(&crate::event::Event::mouse_press(6, 6, 1));
-        re.handle_event(&crate::event::Event::key_press(97, 0)); // 'a'
+        re.handle_event(&crate::event::Event::text_input("a")); // 'a'
         assert_eq!(re.text(), "a", "the press made the editor own the keyboard");
     }
 
@@ -2910,6 +2895,7 @@ mod tests {
         re.handle_event(&crate::event::Event::MouseRelease {
             pos: crate::core::Point::new(60, 12),
             button: 1,
+            modifiers: 0,
         });
         let (start, end) = re.selection().expect("a drag must select");
         assert!(end > start, "the swept range must have width: {start}..{end}");

@@ -955,7 +955,11 @@ mod tests {
         popup.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
         assert_eq!(popup.geometry(), Rect::new(0, 0, 160, 100));
 
-        popup.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        popup.handle_event(&Event::MouseRelease {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!popup.is_dragging());
     }
 
@@ -1028,6 +1032,7 @@ mod tests {
         popup.handle_event(&Event::MouseRelease {
             pos: Point::new(grip.x + 32, grip.y + 22),
             button: 1,
+            modifiers: 0,
         });
         assert!(!popup.is_resizing());
 

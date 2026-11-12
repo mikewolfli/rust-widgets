@@ -2024,6 +2024,7 @@ impl Draw for CandlestickChart {
             self.draw_overlay_legend(context, &area);
         }
         self.draw_crosshair(context, &area);
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

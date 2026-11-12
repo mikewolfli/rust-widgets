@@ -306,6 +306,7 @@ pub(crate) static PROGRAMMATIC_ONLY_SETTERS: &[ProgrammaticSetter] = &[
     ProgrammaticSetter { name: "set_full_model_projection", reason: "B: injects a callback/registry/handle; no property carrier" },
     ProgrammaticSetter { name: "set_geometry", reason: "B: property `geometry` is read-only, so there is no write route to publish" },
     ProgrammaticSetter { name: "set_goto_text", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
+    ProgrammaticSetter { name: "set_grid_color", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_grid_enabled", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_grid_size", reason: "C: composite payload; write the scalar parts through their own properties" },
     ProgrammaticSetter { name: "set_group_by_day", reason: "B: scalar state with no property carrier yet (A-class backlog)" },

@@ -73,10 +73,13 @@ pub struct FAB {
     /// The offset and the radius reservation used to be the literal `3.0`; a host on a dense
     /// background can now ask for a deeper or shallower drop without replacing the control.
     elevation: f32,
-    /// The cached extended-label face, keyed by its size (G-A02).
-    label_font_cache: Option<(u32, Font)>,
-    /// The cached icon-text face, keyed by its size (G-A02).
-    icon_font_cache: Option<(u32, Font)>,
+    /// The cached extended-label face: the resolved base font and the derived size.
+    ///
+    /// The key carries both, so a theme face change at the same point size cannot be answered from
+    /// a stale entry; the face itself is the resolved one rather than a literal `sans-serif`.
+    label_font_cache: Option<(Font, u32, Font)>,
+    /// The cached icon-text face, keyed like [`Self::label_font_cache`].
+    icon_font_cache: Option<(Font, u32, Font)>,
     /// An optional speed dial opened by this button (OV-009).
     ///
     /// A slot rather than a hard dependency: a FAB with no dial is exactly the control it was,
@@ -380,7 +383,7 @@ impl Widget for FAB {
             // draw's `radius * 0.5` floors at 14), so the hint and the ink agree on a
             // proportional face instead of only on a monospace one.
             Some(label) => {
-                let font = Font::new("sans-serif", 14.0, false, false);
+                let font = crate::widget::metrics::effective_font(self.style()).with_size(14.0);
                 edge + 16 + crate::widget::metrics::estimate_text_width(label, &font, 1.0)
             }
             None => edge,
@@ -590,12 +593,17 @@ impl Draw for FAB {
             context.fill_rounded_rect(capsule, radius, fill_color);
             let font_size = (radius as f32 * 0.5).max(14.0);
             let bits = font_size.to_bits();
-            if self.label_font_cache.as_ref().is_none_or(|(key, _)| *key != bits) {
-                self.label_font_cache =
-                    Some((bits, Font::new("sans-serif", font_size, false, false)));
+            let base = crate::widget::metrics::effective_font(style).clone();
+            if self
+                .label_font_cache
+                .as_ref()
+                .is_none_or(|(cached_base, key, _)| *key != bits || *cached_base != base)
+            {
+                let scaled = base.with_size(font_size);
+                self.label_font_cache = Some((base, bits, scaled));
             }
             let font =
-                self.label_font_cache.as_ref().map(|(_, font)| font.clone()).unwrap_or_default();
+                self.label_font_cache.as_ref().map(|(_, _, font)| font.clone()).unwrap_or_default();
             let label_band = Rect::new(
                 capsule.x + radius as i32,
                 context.text_line(capsule, &font).y,
@@ -634,12 +642,17 @@ impl Draw for FAB {
                 (radius as f32 * 0.7).max(16.0)
             };
             let bits = font_size.to_bits();
-            if self.icon_font_cache.as_ref().is_none_or(|(key, _)| *key != bits) {
-                self.icon_font_cache =
-                    Some((bits, Font::new("sans-serif", font_size, false, false)));
+            let base = crate::widget::metrics::effective_font(style).clone();
+            if self
+                .icon_font_cache
+                .as_ref()
+                .is_none_or(|(cached_base, key, _)| *key != bits || *cached_base != base)
+            {
+                let scaled = base.with_size(font_size);
+                self.icon_font_cache = Some((base, bits, scaled));
             }
             let font =
-                self.icon_font_cache.as_ref().map(|(_, font)| font.clone()).unwrap_or_default();
+                self.icon_font_cache.as_ref().map(|(_, _, font)| font.clone()).unwrap_or_default();
 
             let metrics = crate::widget::base_widgets::measure_cache::measure_text(
                 context,
@@ -734,7 +747,7 @@ impl EventHandler for FAB {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button == crate::event::mouse_button::PRIMARY && self.base.is_pressed() {
                     self.base.set_pressed(false);
                     self.sync_press_driver();
@@ -938,7 +951,7 @@ mod tests {
         assert!(fab.base.is_pressed());
         assert!(!clicked.load(Ordering::SeqCst));
 
-        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
+        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(!fab.base.is_pressed());
         assert!(clicked.load(Ordering::SeqCst));
     }
@@ -971,7 +984,7 @@ mod tests {
         fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(!fab.base.is_pressed());
 
-        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
+        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(!clicked.load(Ordering::SeqCst));
     }
 
@@ -1017,7 +1030,7 @@ mod tests {
         fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(fab.base.is_pressed());
 
-        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
+        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(!fab.base.is_pressed());
     }
 
@@ -1041,7 +1054,7 @@ mod tests {
         fab.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
         assert!(fab.is_animating(), "a press starts a movement");
         assert!(fab.tick(16));
-        fab.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
+        fab.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1, modifiers: 0 });
         while fab.tick(16) {}
         assert!(!fab.is_animating());
     }
@@ -1074,11 +1087,25 @@ mod tests {
             56 + 16
                 + crate::widget::metrics::estimate_text_width(
                     "WWW",
-                    &Font::new("sans-serif", 14.0, false, false),
+                    &crate::widget::metrics::effective_font(fab.style()).with_size(14.0),
                     1.0,
                 ),
             "the hint reports the measured advance"
         );
+    }
+
+    /// The label face is the resolved font at the derived size, not a literal `sans-serif`.
+    #[test]
+    fn the_label_face_uses_the_resolved_font_family() {
+        let mut fab = FAB::new(Rect::new(0, 0, 120, 56));
+        fab.base_mut().style_mut().font = Some(Font::with_weight("FabFace", 18.0, 600, false));
+        fab.set_extended_label(Some("OK"));
+        let _ = render_to_svg(&mut fab);
+        let (base, _, painted) =
+            fab.label_font_cache.as_ref().expect("a draw seeds the label face cache");
+        assert_eq!(base.family(), "FabFace", "the base is the resolved theme face");
+        assert_eq!(painted.family(), "FabFace");
+        assert_eq!(painted.weight(), 600, "the derived face keeps the resolved weight");
     }
 
     /// Hover is a visible state on the button, not only a theme-table lookup (OV-003).
@@ -1103,7 +1130,7 @@ mod tests {
         assert!(fab.speed_dial().is_some());
 
         fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1, modifiers: 0 });
-        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
+        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(
             fab.speed_dial().is_some_and(|dial| dial.is_expanded()),
             "a completed click opens the dial"
@@ -1150,7 +1177,7 @@ mod tests {
 
         let center = fab.geometry().center();
         fab.handle_event(&Event::MousePress { pos: center, button: 1, modifiers: 0 });
-        fab.handle_event(&Event::MouseRelease { pos: center, button: 1 });
+        fab.handle_event(&Event::MouseRelease { pos: center, button: 1, modifiers: 0 });
         assert!(!clicked.load(Ordering::SeqCst), "a button that is off screen is not a hit target");
 
         fab.set_hide_on_scroll(false);

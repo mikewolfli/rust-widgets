@@ -1445,7 +1445,12 @@ impl Platform for LinuxPlatform {
                 let is_double = event.button() == 1
                     && press_double_click.borrow_mut().register(event.time(), x, y);
                 let translated = if is_double {
-                    crate::event::Event::mouse_double_click(point.x, point.y, 1)
+                    crate::event::Event::mouse_double_click(
+                        point.x,
+                        point.y,
+                        1,
+                        crate::platform::linux::canvas::modifier_state_bits(event.state()),
+                    )
                 } else {
                     crate::event::Event::mouse_press_with(
                         point.x,
@@ -1480,7 +1485,13 @@ impl Platform for LinuxPlatform {
                 expedite_frame_heartbeat();
                 if crate::widget::runtime::dispatch_pointer_event(
                     window_widget,
-                    &crate::event::Event::MouseRelease { pos: point, button: 1 },
+                    &crate::event::Event::MouseRelease {
+                        pos: point,
+                        button: 1,
+                        modifiers: crate::platform::linux::canvas::modifier_state_bits(
+                            event.state(),
+                        ),
+                    },
                     point,
                 ) {
                     widget.queue_draw();

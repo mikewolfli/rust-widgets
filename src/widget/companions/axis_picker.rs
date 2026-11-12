@@ -301,7 +301,7 @@ impl EventHandler for AxisPicker {
         if !self.base.is_enabled() {
             return;
         }
-        let Event::MouseRelease { pos, button: 1 } = event else {
+        let Event::MouseRelease { pos, button: 1, .. } = event else {
             return;
         };
         let Some(index) = self.series_at(*pos) else {
@@ -593,7 +593,11 @@ mod tests {
         assert_eq!(picker.assignment(0), Some(AxisEdge::Left));
 
         // Two 48-pixel rows; the first row covers y 0..47.
-        picker.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        picker.handle_event(&Event::MouseRelease {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(picker.assignment(0), Some(AxisEdge::Right));
         assert_eq!(picker.assignment(1), Some(AxisEdge::Left));
     }

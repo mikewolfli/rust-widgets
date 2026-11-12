@@ -334,7 +334,19 @@ pub struct GenerationReport {
     /// absence let the generator emit *no* wires at all while reporting a clean run.
     pub wires_emitted: usize,
     /// Things resolved at generation time rather than emitted as calls, with the reason.
+    ///
+    /// This list is for **benign** routing: a value that reached the generated program through a
+    /// different carrier (a style role, the loader-owned geometry route, the root's own geometry).
+    /// A declared value that is **not** carried anywhere belongs in [`Self::value_loss`] instead —
+    /// the two used to share this list, which made a lost page look as harmless as a routed style.
     pub resolved_at_generation: Vec<String>,
+    /// Declared values the generated program does not carry, each with a reason.
+    ///
+    /// Separate from [`Self::resolved_at_generation`] because this is real loss, not routing: the
+    /// document asked for the value and the emitted program has nothing that represents it. It is
+    /// part of [`Self::is_clean`] so a run that dropped a value cannot read as a clean result
+    /// (principle #12).
+    pub value_loss: Vec<GenerationGap>,
     /// Nodes or names the generator refused, each with a reason.
     pub unsupported: Vec<GenerationGap>,
     /// Containers whose child count exceeds the target's capacity.
@@ -473,6 +485,7 @@ impl GenerationReport {
     /// Whether anything needs a human's attention.
     pub fn is_clean(&self) -> bool {
         self.unsupported.is_empty()
+            && self.value_loss.is_empty()
             && self.capacity_overflow.is_empty()
             && self.cross_profile_caveats.is_empty()
     }
@@ -480,13 +493,14 @@ impl GenerationReport {
     /// A one-line summary a designer can show without reading the whole report.
     pub fn summary(&self) -> String {
         format!(
-            "{} nodes, {} properties, {} wires, {} resolved at generation time, {} unsupported, \
-             {} over capacity, {} cross-profile caveats, {} icon tokens reachable, {} node \
-             anchors, {} layout issues",
+            "{} nodes, {} properties, {} wires, {} resolved at generation time, {} values lost, \
+             {} unsupported, {} over capacity, {} cross-profile caveats, {} icon tokens reachable, \
+             {} node anchors, {} layout issues",
             self.nodes_emitted,
             self.properties_emitted,
             self.wires_emitted,
             self.resolved_at_generation.len(),
+            self.value_loss.len(),
             self.unsupported.len(),
             self.capacity_overflow.len(),
             self.cross_profile_caveats.len(),
@@ -1324,19 +1338,37 @@ fn emit_node(
     // schema decides, and a shape the control cannot take is *reported* rather than dropped.
     for (name, value) in node.record_properties() {
         let Some(schema) = declared_property_schema(factory, &node.widget, &name) else {
-            report.resolved_at_generation.push(format!(
-                "`{name}` on {} is not a property of the control, so its value is not emitted",
-                node_label(path, &node.widget)
-            ));
+            // An array of objects under a key no control declares is structurally lost by this
+            // emitter: unlike the scalar loader-owned keys there is no generated-tree route that
+            // carries it (`menus` and a tool box's `items` are the live cases). File it as loss.
+            report.value_loss.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is not a property of the control, so its value is not emitted",
+                    node_label(path, &node.widget)
+                ),
+            });
             continue;
         };
+        // An empty array is claimed by both shape tests. When the declaration is a list kind, the
+        // list loop is the one that can emit it, so the record loop leaves it alone rather than
+        // mis-reporting it as "not a record list".
+        if is_list_kind(schema.value_kind) && value.as_array().is_some_and(|items| items.is_empty())
+        {
+            continue;
+        }
         if schema.value_kind != crate::widget::capability::PropertyValueKind::Records {
-            report.resolved_at_generation.push(format!(
-                "`{name}` on {} is declared `{}`, not a record list, so its array value is not \
-                 emitted",
-                node_label(path, &node.widget),
-                crate::widget::capability::value_kind_token(schema.value_kind)
-            ));
+            report.value_loss.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is declared `{}`, not a record list, so its array value is not \
+                     emitted",
+                    node_label(path, &node.widget),
+                    crate::widget::capability::value_kind_token(schema.value_kind)
+                ),
+            });
             continue;
         }
         let row_schema =
@@ -1400,15 +1432,122 @@ fn emit_node(
         report.properties_emitted += 1;
     }
 
+    // List properties (`StringList`/`NumberList`/`ColorList`), which neither the scalar loop nor
+    // the record loop can carry.
+    //
+    // # Why the declared kind decides
+    //
+    // The JSON shape alone cannot tell a list from a record list, and it says nothing at all about
+    // whether the control publishes the key. The declared kind is what makes `"items": ["a"]` a
+    // `Tuple` of strings for a combo box, while an array under a key no control declares is reported
+    // rather than turned into a write the router would refuse. A list kind the document cannot
+    // satisfy is refused with its reason, never silently dropped.
+    for (name, value) in node.list_properties() {
+        let Some(schema) = declared_property_schema(factory, &node.widget, &name) else {
+            if crate::json::is_loader_owned_key(&name) {
+                // The loader's own path carries it (a combo box's `items` is also construction-time
+                // data), so this is routing rather than loss.
+                report.resolved_at_generation.push(format!(
+                    "`{name}` on {} is applied through the loader-owned route, not a property write",
+                    node_label(path, &node.widget)
+                ));
+            } else {
+                report.value_loss.push(GenerationGap {
+                    path: path.to_vec(),
+                    widget: node.widget.clone(),
+                    reason: format!(
+                        "`{name}` on {} is not a property of the control, so its list value is not \
+                         emitted",
+                        node_label(path, &node.widget)
+                    ),
+                });
+            }
+            continue;
+        };
+        if !is_list_kind(schema.value_kind) {
+            // An empty array is also the record list's empty value; the record loop owns that case.
+            // Any other array under a non-list kind is a value this emitter cannot express.
+            if schema.value_kind != crate::widget::capability::PropertyValueKind::Records {
+                report.value_loss.push(GenerationGap {
+                    path: path.to_vec(),
+                    widget: node.widget.clone(),
+                    reason: format!(
+                        "`{name}` on {} is declared `{}`, not a list, so its array value is not \
+                         emitted",
+                        node_label(path, &node.widget),
+                        crate::widget::capability::value_kind_token(schema.value_kind)
+                    ),
+                });
+            }
+            continue;
+        }
+        let Some(decoded) = crate::json::to_capability_value(&value, Some(schema.value_kind))
+        else {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is not emitted: the array does not hold elements the declared \
+                     `{}` accepts",
+                    node_label(path, &node.widget),
+                    crate::widget::capability::value_kind_token(schema.value_kind)
+                ),
+            });
+            continue;
+        };
+        let Some(expr) = capability_value_tuple_expr(&decoded) else {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is not emitted: its declared `{}` has no generated list spelling",
+                    node_label(path, &node.widget),
+                    crate::widget::capability::value_kind_token(schema.value_kind)
+                ),
+            });
+            continue;
+        };
+        // The same pre-check the scalar and record loops run, through the same validator.
+        if let Err(violation) =
+            crate::widget::capability::validate_property_value(&name, &schema, &decoded)
+        {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is not emitted: {violation}",
+                    node_label(path, &node.widget)
+                ),
+            });
+            continue;
+        }
+        push_fmt(&mut line, format_args!(".prop({}, {expr})", quote(&name)));
+        report.properties_emitted += 1;
+    }
+
     // Object-valued `icon_source` properties are emitted only when their declared schema says
     // IconSpec. Built-ins are directly constructible; resource IDs require an apply context and
     // must not be mistaken for filesystem paths by generated Rust.
     for (name, value) in node.icon_spec_properties() {
         let Some(schema) = declared_property_schema(factory, &node.widget, &name) else {
-            report.resolved_at_generation.push(format!(
-                "`{name}` on {} is not a property of the control, so its object value is not emitted",
-                node_label(path, &node.widget)
-            ));
+            if crate::json::is_loader_owned_key(&name) {
+                // `layout` and the other loader-owned objects are consumed by a dedicated path, so
+                // they are routing, not loss. Only a key nothing carries is value loss.
+                report.resolved_at_generation.push(format!(
+                    "`{name}` on {} is applied through the loader-owned route, not a property write",
+                    node_label(path, &node.widget)
+                ));
+            } else {
+                report.value_loss.push(GenerationGap {
+                    path: path.to_vec(),
+                    widget: node.widget.clone(),
+                    reason: format!(
+                        "`{name}` on {} is not a property of the control, so its object value is not \
+                         emitted",
+                        node_label(path, &node.widget)
+                    ),
+                });
+            }
             continue;
         };
         if schema.value_kind != crate::widget::capability::PropertyValueKind::IconSpec {
@@ -2099,7 +2238,7 @@ fn child_extent(node: &ProjectNode) -> u32 {
 
 /// The cell a node declares, or `None` when it declares no cell key.
 ///
-/// `None` is deliberately distinct from "cell (0,0), span 1×1": the first means
+/// `None` is deliberately distinct from "cell (0, 0), span 1×1": the first means
 /// "auto-place me", the second means "the document named this exact cell". Folding them
 /// together would turn every unannotated child into an explicit placement at the origin.
 fn child_cell(node: &ProjectNode) -> Option<crate::json::ChildPlacement> {
@@ -2580,10 +2719,68 @@ fn capability_value_expr(value: &Value) -> String {
     if let Some(s) = value.as_str() {
         return format!("CapabilityValue::String(String::from({}))", quote(s));
     }
-    // A null, array or object. `Null` is the honest answer for the first; for the last two the node
-    // is reported as unsupported by the caller, because a stringified object would be *accepted* by
-    // the property setter and produce a control nothing like the document asked for.
+    // A null returns `Null`, which is its own honest carrier. Arrays and objects no longer reach
+    // this function: the record, list and icon-spec loops emit their declared carriers before the
+    // scalar spelling is asked for, so stringifying one here would be a silent second answer.
     String::from("CapabilityValue::Null")
+}
+
+/// Whether `kind` is one of the positional list kinds carried as a `Tuple`.
+fn is_list_kind(kind: crate::widget::capability::PropertyValueKind) -> bool {
+    use crate::widget::capability::PropertyValueKind;
+    matches!(
+        kind,
+        PropertyValueKind::StringList
+            | PropertyValueKind::NumberList
+            | PropertyValueKind::ColorList
+    )
+}
+
+/// The Rust expression for a `Tuple` of scalar values, or `None` when the value is not one.
+///
+/// The list loop obtains the `CapabilityValue` through the loader's own JSON conversion (the same
+/// one mode 1 uses), so the two modes cannot disagree about what a declared list contains. This
+/// function only turns that value into source text; it deliberately refuses a non-scalar element
+/// rather than stringifying it.
+fn capability_value_tuple_expr(
+    value: &crate::widget::capability::CapabilityValue,
+) -> Option<String> {
+    use crate::widget::capability::CapabilityValue;
+    let CapabilityValue::Tuple(items) = value else {
+        return None;
+    };
+    let mut out = String::from("CapabilityValue::Tuple(vec![");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&capability_scalar_expr(item)?);
+    }
+    out.push_str("])");
+    Some(out)
+}
+
+/// The Rust expression for one scalar [`CapabilityValue`], or `None` for a compound value.
+fn capability_scalar_expr(value: &crate::widget::capability::CapabilityValue) -> Option<String> {
+    use crate::widget::capability::CapabilityValue;
+    match value {
+        CapabilityValue::Null => Some(String::from("CapabilityValue::Null")),
+        CapabilityValue::Bool(inner) => Some(format!("CapabilityValue::Bool({inner})")),
+        CapabilityValue::Int(inner) => Some(format!("CapabilityValue::Int({inner})")),
+        CapabilityValue::UInt(inner) => Some(format!("CapabilityValue::UInt({inner})")),
+        CapabilityValue::Float(inner) => Some(format!("CapabilityValue::Float({inner:?})")),
+        CapabilityValue::String(inner) => {
+            Some(format!("CapabilityValue::String(String::from({}))", quote(inner)))
+        }
+        CapabilityValue::Color(color) => Some(format!(
+            "CapabilityValue::Color(rust_widgets::core::Color::rgba({}, {}, {}, {}))",
+            color.r, color.g, color.b, color.a
+        )),
+        CapabilityValue::Rect(_)
+        | CapabilityValue::IconSpec(_)
+        | CapabilityValue::Records(_)
+        | CapabilityValue::Tuple(_) => None,
+    }
 }
 
 /// The Rust expression for a JSON array of objects as a record list, or `None` for any other shape.
@@ -2819,6 +3016,13 @@ fn assemble(
         source.push_str("//\n// resolved at generation time (not calls in this file):\n");
         for item in &report.resolved_at_generation {
             let _ = writeln!(source, "//   - {item}");
+        }
+    }
+    if !report.value_loss.is_empty() {
+        source
+            .push_str("//\n// VALUE LOST — declared in the document, not carried by this file:\n");
+        for gap in &report.value_loss {
+            let _ = writeln!(source, "//   - path {:?} `{}`: {}", gap.path, gap.widget, gap.reason);
         }
     }
     if !report.unsupported.is_empty() {
@@ -3951,12 +4155,115 @@ mod tests {
     fn a_report_is_clean_only_when_nothing_needs_attention() {
         let mut report = GenerationReport::default();
         assert!(report.is_clean());
+        report.value_loss.push(GenerationGap {
+            path: Vec::new(),
+            widget: String::from("x"),
+            reason: String::from("value not carried"),
+        });
+        assert!(!report.is_clean(), "a lost value is not a clean run");
+        let mut report = GenerationReport::default();
         report.unsupported.push(GenerationGap {
             path: Vec::new(),
             widget: String::from("x"),
             reason: String::from("nope"),
         });
         assert!(!report.is_clean());
+    }
+
+    /// W4-07: a declared `StringList`/`NumberList`/`ColorList` reaches the generated program.
+    ///
+    /// The value is obtained through the loader's own JSON conversion, so the emitted tuple carries
+    /// the same elements mode 1 writes. Leaving the loop out dropped all three kinds silently.
+    #[test]
+    fn list_properties_are_emitted_with_their_declared_kind() {
+        const DOCUMENT: &str = r##"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "combo_box": { "id": "c", "items": ["One", "Two"] } },
+            { "sparkline": { "id": "s", "data": [1, 2.5] } },
+            { "swatch": { "id": "w", "colors": ["#ff0000", "#00ff00"] } }
+          ] } }
+        }"##;
+        let generated = generate(&GenerationRequest {
+            json: String::from(DOCUMENT),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_lists"),
+        })
+        .expect("the document generates");
+
+        for needle in [
+            ".prop(\"items\", CapabilityValue::Tuple(vec![",
+            ".prop(\"data\", CapabilityValue::Tuple(vec![",
+            ".prop(\"colors\", CapabilityValue::Tuple(vec![",
+            "CapabilityValue::String(String::from(\"One\"))",
+            "CapabilityValue::Float(2.5)",
+            "CapabilityValue::Color(rust_widgets::core::Color::rgba(255, 0, 0, 255))",
+        ] {
+            assert!(
+                generated.source.contains(needle),
+                "the emitted list must contain `{needle}`:\n{}",
+                generated.source
+            );
+        }
+        assert!(generated.report.unsupported.is_empty(), "{:?}", generated.report);
+        assert!(generated.report.value_loss.is_empty(), "{:?}", generated.report.value_loss);
+
+        // A declared list whose elements the kind cannot accept is refused, not dropped.
+        const REFUSED: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "combo_box": { "id": "c", "items": [1, 2] } }
+          ] } }
+        }"#;
+        let refused = generate(&GenerationRequest {
+            json: String::from(REFUSED),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_refused_list"),
+        })
+        .expect("the document still generates with the gap listed");
+        assert!(
+            refused.report.unsupported.iter().any(|gap| gap.reason.contains("`items`")),
+            "the refused list must be named: {:?}",
+            refused.report.unsupported
+        );
+        assert!(
+            !refused.source.contains(".prop(\"items\""),
+            "a list the declared kind refuses must not be emitted:\n{}",
+            refused.source
+        );
+    }
+
+    /// W4-23: a declared value the emitter cannot carry is *loss*, not benign routing.
+    #[test]
+    fn an_unemittable_declared_value_is_reported_as_value_loss() {
+        const DOCUMENT: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "button": { "id": "b", "text": "B", "blobs": [1, 2] } }
+          ] } }
+        }"#;
+        let generated = generate(&GenerationRequest {
+            json: String::from(DOCUMENT),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_loss"),
+        })
+        .expect("the document still generates");
+
+        assert!(
+            generated.report.value_loss.iter().any(|gap| gap.reason.contains("`blobs`")),
+            "the lost list must be named in the value-loss bucket: {:?}",
+            generated.report
+        );
+        assert!(
+            !generated.report.resolved_at_generation.iter().any(|line| line.contains("`blobs`")),
+            "real loss must not be filed as benign routing: {:?}",
+            generated.report.resolved_at_generation
+        );
+        assert!(!generated.report.is_clean(), "a lost value is not a clean run");
+        assert!(generated.source.contains("VALUE LOST"), "the header must state the loss");
     }
 
     #[test]

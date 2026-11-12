@@ -2860,6 +2860,7 @@ mod tests {
         dialog.handle_event(&Event::MouseRelease {
             pos: Point::new(rect.x + 2, rect.y + 2),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(dialog.pressed, None);
     }

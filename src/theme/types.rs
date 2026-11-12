@@ -440,7 +440,17 @@ impl WidgetRole {
             | "datetimeedit"
             | "inplaceeditor"
             | "shortcuteditor"
-            | "coloreditor" => Self::Input,
+            | "coloreditor"
+            // Reader-facing pane bodies. These three were absent from the table, so they
+            // classified as `Surface` and each `draw` forked its own blend to escape being the
+            // window fill. Classifying them as field interiors makes the theme supply the tone
+            // and leaves the caller's colour as the only override (T3-48).
+            | "terminal_view"
+            | "terminalview"
+            | "quote_board"
+            | "quoteboard"
+            | "web_engine_view"
+            | "webengineview" => Self::Input,
             // Value indicators in the accent colour.
             "slider" | "rangeslider" | "progressbar" | "progresscircle" | "activityindicator"
             | "meter" | "lcdprogress" | "sparkline" => Self::Accent,

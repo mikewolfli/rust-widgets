@@ -21,6 +21,36 @@ use super::fills::{
 };
 use super::text::draw_text_cpu_rgba8;
 use crate::render::BlendMode;
+use crate::render::BoxBlurScratch;
+
+/// Per-thread buffers reused by [`rasterize_draw_commands_into_rgba8`] (W4-19).
+///
+/// The clip stack and the blur scratch grow to the largest frame/region and then stay allocated, so
+/// a repeated frame does not rebuild them per command. This is the same pattern as the RD-02
+/// expansion scratch (`wgpu_backend::bridge::EXPANSION`): the buffer belongs to the thread, and the
+/// entry point clears it before use.
+struct WalkScratch {
+    /// Nested clip regions, pushed by `PushClip` and popped by `PopClip`.
+    clip_stack: Vec<PixelRect>,
+    /// Row/column/copy staging for the shared box-blur kernel.
+    blur: BoxBlurScratch,
+}
+
+impl WalkScratch {
+    /// An empty scratch set. `const` so the thread-local below needs no lazy initialiser.
+    const fn new() -> Self {
+        Self {
+            clip_stack: Vec::new(),
+            blur: BoxBlurScratch { row: Vec::new(), col: Vec::new(), copy: Vec::new() },
+        }
+    }
+}
+
+thread_local! {
+    /// Reused across frames by [`rasterize_draw_commands_into_rgba8`] (W4-19).
+    static WALK_SCRATCH: core::cell::RefCell<WalkScratch> =
+        const { core::cell::RefCell::new(WalkScratch::new()) };
+}
 
 /// Byte length of a `width × height` RGBA8 frame, with the overflow and 4 GiB bound checks shared
 /// by both entry points (N-S-66).
@@ -109,13 +139,20 @@ pub fn rasterize_draw_commands_into_rgba8(
     // `clip` field, so this is what `PushClip` accumulates into and what each command's own
     // field is intersected against below — keeping it here is what makes nested clipping
     // work. There is no translation state: the GPU stream has no `Translate` variant.
-    let mut clip_stack: Vec<PixelRect> = Vec::new();
-    let mut current_clip: Option<PixelRect> = None;
-    // Sticky blend mode, set by `SetBlendMode` and applied by every later command. Starts
-    // `Normal` — a plain source-over write, so existing streams are unchanged.
-    let mut blend = BlendMode::Normal;
+    //
+    // Both buffers are thread-local scratch (W4-19): they keep their capacity across frames, and
+    // `clear` is what makes the previous frame's entries unobservable. The whole loop runs inside
+    // `with` because a `RefMut` cannot outlive the thread-local borrow it came from.
+    WALK_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        let WalkScratch { clip_stack, blur } = &mut *scratch;
+        clip_stack.clear();
+        let mut current_clip: Option<PixelRect> = None;
+        // Sticky blend mode, set by `SetBlendMode` and applied by every later command. Starts
+        // `Normal` — a plain source-over write, so existing streams are unchanged.
+        let mut blend = BlendMode::Normal;
 
-    for (index, command) in commands.iter().enumerate() {
+        for (index, command) in commands.iter().enumerate() {
         match command {
             WgpuDrawCommand::PushClip { rect } => {
                 // Intersect rather than replace: a nested clip can only shrink the visible
@@ -237,7 +274,8 @@ pub fn rasterize_draw_commands_into_rgba8(
             }
             WgpuDrawCommand::BlurRegion { rect, radius, clip } => {
                 // The reference blurs `rect ∩ clip ∩ framebuffer` with its own kernel; the shared
-                // helper is that kernel, so the CPU parity path cannot drift from it.
+                // helper is that kernel, so the CPU parity path cannot drift from it. Its three
+                // staging vectors come from the thread-local scratch and grow once (W4-19).
                 let radius = (*radius).min(100);
                 if radius == 0 || rect.width == 0 || rect.height == 0 {
                     continue;
@@ -245,11 +283,6 @@ pub fn rasterize_draw_commands_into_rgba8(
                 let Some(region) = effective_clip(framebuffer, *rect, combine(clip, current_clip))
                 else {
                     continue;
-                };
-                let mut scratch = crate::render::BoxBlurScratch {
-                    row: Vec::new(),
-                    col: Vec::new(),
-                    copy: Vec::new(),
                 };
                 crate::render::box_blur_region(
                     &mut *pixels,
@@ -262,7 +295,7 @@ pub fn rasterize_draw_commands_into_rgba8(
                         region.height as usize,
                     ),
                     radius as usize,
-                    &mut scratch,
+                    blur,
                 );
             }
             WgpuDrawCommand::DrawImageScaled {
@@ -722,7 +755,8 @@ pub fn rasterize_draw_commands_into_rgba8(
             }
         }
     }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Owning wrapper around [`rasterize_draw_commands_into_rgba8`].
@@ -1264,7 +1298,7 @@ mod tests {
             clip: None,
         };
 
-        // Unblurred: offset by (4,4), so (5,5) is inside it and (0,0) is not.
+        // Unblurred: offset by (4,4), so (5,5) is inside it and (0, 0) is not.
         let sharp = rasterize_draw_commands_rgba8(
             20,
             20,

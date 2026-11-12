@@ -333,8 +333,13 @@ fn i18n_manager_plural_forms() {
                 "message": "items",
                 "plural": {
                     "1": "item",
-                    "2": "items",
-                    "5": "many items"
+                    "5": "items"
+                }
+            },
+            "no_other": {
+                "message": "fallback",
+                "plural": {
+                    "1": "one"
                 }
             },
             "simple": {
@@ -346,16 +351,51 @@ fn i18n_manager_plural_forms() {
     manager.load_translations(file_path.to_str().unwrap()).unwrap();
     manager.set_language("en");
 
-    // Exact plural match
+    // Plural keys are CLDR category numbers, so English selects `one` for 1 and `other` for
+    // every other integer; the raw counts 0, 2, 3 and 5 therefore all read key 5.
     assert_eq!(manager.translate_with_context("item", None, 1), "item");
-    assert_eq!(manager.translate_with_context("item", None, 2), "items");
-    assert_eq!(manager.translate_with_context("item", None, 5), "many items");
-    // Plural count without a match falls back to message
-    assert_eq!(manager.translate_with_context("item", None, 3), "items");
     assert_eq!(manager.translate_with_context("item", None, 0), "items");
+    assert_eq!(manager.translate_with_context("item", None, 2), "items");
+    assert_eq!(manager.translate_with_context("item", None, 5), "items");
+    // A category the file does not provide falls back to the singular message.
+    assert_eq!(manager.translate_with_context("no_other", None, 2), "fallback");
     // Key without plural always returns message
     assert_eq!(manager.translate_with_context("simple", None, 1), "simple");
     assert_eq!(manager.translate_with_context("simple", None, 99), "simple");
+}
+
+/// The lookup must ask for the CLDR category key, not the raw quantity (W4-17).
+///
+/// 0, 1, 2 and 5 are chosen so that the old raw-count lookup would have hit four different keys:
+/// the assertion that 0, 2 and 5 read the `other` entry (key 5) and 1 reads `one` (key 1) is only
+/// true when the category mapping runs. Key 2 is present but must never be selected for English,
+/// which proves the lookup is not falling back to `plural.get(&count)`.
+#[test]
+fn plural_lookup_uses_the_category_key_not_the_raw_count() {
+    let mut manager = I18nManager::new();
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    let json = r#"{
+        "language": "en",
+        "translations": {
+            "item": {
+                "message": "items",
+                "plural": {
+                    "1": "one item",
+                    "2": "two items (never selected for English)",
+                    "5": "other items"
+                }
+            }
+        }
+    }"#;
+    fs::write(&file_path, json).unwrap();
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+    manager.set_language("en");
+
+    assert_eq!(manager.translate_with_context("item", None, 0), "other items");
+    assert_eq!(manager.translate_with_context("item", None, 1), "one item");
+    assert_eq!(manager.translate_with_context("item", None, 2), "other items");
+    assert_eq!(manager.translate_with_context("item", None, 5), "other items");
 }
 
 #[test]
@@ -513,7 +553,7 @@ fn tr_macro_basic() {
             "greeting": {"message": "Hello"},
             "item_count": {
                 "message": "items",
-                "plural": {"1": "item", "2": "items"}
+                "plural": {"1": "item", "5": "items"}
             },
             "formal_greet": {
                 "message": "Good day",
@@ -559,7 +599,7 @@ fn test_i18n_manager_translate_with_context_count_only() {
                 "message": "items",
                 "plural": {
                     "1": "1 item",
-                    "2": "{count} items"
+                    "5": "{count} items"
                 }
             }
         }
@@ -569,8 +609,8 @@ fn test_i18n_manager_translate_with_context_count_only() {
     manager.set_language("en");
     assert_eq!(manager.translate_with_context("item", None, 1), "1 item");
     assert_eq!(manager.translate_with_context("item", None, 2), "{count} items");
-    assert_eq!(manager.translate_with_context("item", None, 0), "items");
-    assert_eq!(manager.translate_with_context("item", None, 100), "items");
+    assert_eq!(manager.translate_with_context("item", None, 0), "{count} items");
+    assert_eq!(manager.translate_with_context("item", None, 100), "{count} items");
 }
 
 #[test]

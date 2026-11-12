@@ -1839,7 +1839,7 @@ impl EventHandler for GridWidget {
                     self.cell_clicked.emit(cell);
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 // Double-click is the reachable edit gesture when the control is editable; with
                 // editing off it stays an ordinary pair of presses (SP-115).
                 if self.editable {
@@ -1849,7 +1849,7 @@ impl EventHandler for GridWidget {
                     }
                 }
             }
-            Event::MouseRelease { pos: _, button: 1 } => {
+            Event::MouseRelease { pos: _, button: 1, .. } => {
                 self.base.set_mouse_pressed(false);
             }
             Event::MouseLeave { .. } => {
@@ -2267,7 +2267,7 @@ mod tests {
     #[test]
     fn in_place_editing_is_opt_in_and_commits_the_buffer() {
         let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 100), 2, 2);
-        grid.handle_event(&Event::mouse_double_click(10, 10, 1));
+        grid.handle_event(&Event::mouse_double_click(10, 10, 1, 0));
         assert_eq!(grid.editing_cell(), None, "a read-only grid must not start an edit");
         assert!(!grid.begin_edit(0, 0));
 
@@ -2280,7 +2280,7 @@ mod tests {
         });
 
         grid.set_editable(true);
-        grid.handle_event(&Event::mouse_double_click(10, 10, 1));
+        grid.handle_event(&Event::mouse_double_click(10, 10, 1, 0));
         assert_eq!(grid.editing_cell(), Some((0, 0)));
         grid.handle_event(&Event::text_input("Hello"));
         grid.handle_event(&Event::key_press(13, 0));

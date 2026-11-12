@@ -66,9 +66,17 @@ fn assert_disabled_is_visible(name: &str, w: u32, h: u32) {
 fn the_controls_that_draw_without_content_show_their_disabled_state() {
     // These paint their own chrome from factory defaults; `sample_fill` has no arm for them,
     // and that is fine — the paint under test is already there.
-    for (name, w, h) in
-        [("color_well", 120u32, 64u32), ("pagination", 240, 40), ("swatch", 160, 96)]
-    {
+    for (name, w, h) in [
+        ("color_well", 120u32, 64u32),
+        ("pagination", 240, 40),
+        ("swatch", 160, 96),
+        // T3-40: the four controls the U3-03 roster gained after this probe was written. Their
+        // draw shows chrome even without sample content, so the ink assertion is meaningful here.
+        ("roller", 120, 160),
+        ("date_edit", 240, 40),
+        ("time_edit", 160, 40),
+        ("date_time_edit", 240, 40),
+    ] {
         assert_disabled_is_visible(name, w, h);
     }
 }

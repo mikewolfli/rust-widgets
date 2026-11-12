@@ -35,8 +35,9 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/platform/types/values.rs:204`
-//! (`compile_target_shortcut_style`) and the shortcut formatting it feeds. 15 files reference it.
+//! **State:** Production callers: `src/action/app.rs:21` (the host-owned action router bridge).
+//! No framework service pumps events: `ShortcutManager` is host-owned by design, and a stripped
+//! build therefore pays nothing for it.
 mod manager;
 /// Window-scoped key routing ahead of the focused control (C-10').
 ///

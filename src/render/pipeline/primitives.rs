@@ -2140,6 +2140,14 @@ thread_local! {
         core::cell::RefCell::new(crate::render::text::GlyphAtlas::new());
     /// The last real frame number the atlas' epoch was advanced for (G-020).
     static TEXT_GLYPH_ATLAS_FRAME: core::cell::Cell<u64> = const { core::cell::Cell::new(u64::MAX) };
+    /// The face generation the atlas' contents belong to.
+    ///
+    /// A face registered at runtime replaces the bytes behind a family name, so every slot
+    /// rasterised before the change is stale even though its key did not move. Comparing this
+    /// snapshot against `font_assets::face_generation` drops the atlas on the first draw after a
+    /// registration, exactly as the wgpu coverage texture keys on the same counter (W4-02).
+    static TEXT_GLYPH_ATLAS_GENERATION: core::cell::Cell<u32> =
+        const { core::cell::Cell::new(u32::MAX) };
 }
 
 /// Paints `ch` from the thread's glyph atlas when the atlas reproduces the request byte for byte.
@@ -2205,8 +2213,22 @@ fn blend_glyph_from_atlas(
             true
         }
     });
+    // A registration or clear since the last draw invalidates every resident glyph; see
+    // `TEXT_GLYPH_ATLAS_GENERATION`.
+    let generation = crate::render::text::font_assets::face_generation();
+    let clear_atlas = TEXT_GLYPH_ATLAS_GENERATION.with(|last| {
+        if last.get() == generation {
+            false
+        } else {
+            last.set(generation);
+            true
+        }
+    });
     let slot = TEXT_GLYPH_ATLAS.with(|atlas| match atlas.try_borrow_mut() {
         Ok(mut atlas) => {
+            if clear_atlas {
+                atlas.clear();
+            }
             if advance_epoch {
                 atlas.begin_frame();
             }

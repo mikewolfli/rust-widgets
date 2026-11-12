@@ -153,7 +153,7 @@ pub(crate) fn mount_canvas(
                 event.position().1,
             );
         let translated = if is_double {
-            Event::mouse_double_click(absolute.x, absolute.y, 1)
+            Event::mouse_double_click(absolute.x, absolute.y, 1, modifier_state_bits(event.state()))
         } else {
             // The press carries the modifier state GTK reports, so a Shift/Ctrl click
             // reaches the widget as a modifier click rather than as a plain one.
@@ -188,7 +188,11 @@ pub(crate) fn mount_canvas(
         let absolute = Point::new(origin.x + position.x, origin.y + position.y);
         let delivered = forward_pointer_to_platform(
             id,
-            &Event::MouseRelease { pos: absolute, button: 1 },
+            &Event::MouseRelease {
+                pos: absolute,
+                button: 1,
+                modifiers: modifier_state_bits(event.state()),
+            },
             absolute,
         );
         if delivered {

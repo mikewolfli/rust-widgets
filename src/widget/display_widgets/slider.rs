@@ -6,7 +6,7 @@ use core::fmt::Write as _;
 
 use crate::compat::{Arc, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Orientation, Point, Rect, Size};
-use crate::event::{wheel::WheelScroll, Event, EventHandler};
+use crate::event::{key_codes, wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
@@ -1543,7 +1543,7 @@ impl EventHandler for Slider {
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
-            Event::MouseRelease { pos: _, button } if *button == 1 => {
+            Event::MouseRelease { pos: _, button, .. } if *button == 1 => {
                 // Paired with `slider_pressed`: the control's own press tracking decides when this
                 // fires. Without the guard a release that began on another control and landed here
                 // announced a release with no press.
@@ -1617,7 +1617,7 @@ impl EventHandler for Slider {
                         _ => SliderAction::SliderSingleStepAdd,
                     };
                 match *key {
-                    37 => {
+                    key_codes::LEFT => {
                         // Left arrow (or up arrow for vertical)
                         if self.orientation == Orientation::Vertical {
                             self.trigger_action(SliderAction::SliderSingleStepSub);
@@ -1625,7 +1625,7 @@ impl EventHandler for Slider {
                             self.trigger_action(step(-1));
                         }
                     }
-                    38 => {
+                    key_codes::UP => {
                         // Up arrow (or right arrow for horizontal)
                         if self.orientation == Orientation::Vertical {
                             self.trigger_action(SliderAction::SliderSingleStepAdd);
@@ -1633,7 +1633,7 @@ impl EventHandler for Slider {
                             self.trigger_action(step(1));
                         }
                     }
-                    39 => {
+                    key_codes::RIGHT => {
                         // Right arrow (or down arrow for vertical)
                         if self.orientation == Orientation::Vertical {
                             self.trigger_action(SliderAction::SliderSingleStepAdd);
@@ -1641,7 +1641,7 @@ impl EventHandler for Slider {
                             self.trigger_action(step(1));
                         }
                     }
-                    40 => {
+                    key_codes::DOWN => {
                         // Down arrow (or left arrow for horizontal)
                         if self.orientation == Orientation::Vertical {
                             self.trigger_action(SliderAction::SliderSingleStepSub);
@@ -1649,19 +1649,19 @@ impl EventHandler for Slider {
                             self.trigger_action(step(-1));
                         }
                     }
-                    33 => {
+                    key_codes::PAGE_UP => {
                         // Page up
                         self.trigger_action(SliderAction::SliderPageStepSub);
                     }
-                    34 => {
+                    key_codes::PAGE_DOWN => {
                         // Page down
                         self.trigger_action(SliderAction::SliderPageStepAdd);
                     }
-                    36 => {
+                    key_codes::HOME => {
                         // Home
                         self.trigger_action(SliderAction::SliderToMinimum);
                     }
-                    35 => {
+                    key_codes::END => {
                         // End
                         self.trigger_action(SliderAction::SliderToMaximum);
                     }
@@ -2513,12 +2513,12 @@ mod tests {
         let point =
             Point::new(handle.x + handle.width as i32 / 2, handle.y + handle.height as i32 / 2);
         s.handle_event(&Event::mouse_press(point.x, point.y, 1));
-        s.handle_event(&Event::mouse_release(point.x, point.y, 1));
+        s.handle_event(&Event::mouse_release(point.x, point.y, 1, 0));
         assert_eq!(released.load(Ordering::SeqCst), 1);
 
         // A release with no press on this control is not a handle release: the runtime routes by
         // hit test, so a press that began elsewhere can end here.
-        s.handle_event(&Event::mouse_release(point.x, point.y, 1));
+        s.handle_event(&Event::mouse_release(point.x, point.y, 1, 0));
         assert_eq!(released.load(Ordering::SeqCst), 1, "an unpaired release announces nothing");
     }
 
@@ -2731,7 +2731,7 @@ mod tests {
         s.set_track_click(SliderTrackClick::Jump);
         s.base.set_geometry(Rect::new(0, 0, 200, 30));
         s.handle_event(&Event::mouse_press(80, 15, 1));
-        s.handle_event(&Event::mouse_release(80, 15, 1));
+        s.handle_event(&Event::mouse_release(80, 15, 1, 0));
         // On release, if !tracking, set_value is called with slider_position.
         //
         // The expected value is `(80 - inset) / travel * 100` = `72 / 184 * 100` = 39.1 -> 39. It
@@ -3006,7 +3006,7 @@ mod tests {
 
         // Releasing returns to the hover strength rather than dropping straight to nothing — the
         // pointer is still over the control, and that is still a state.
-        s.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        s.handle_event(&Event::MouseRelease { pos: inside, button: 1, modifiers: 0 });
         assert_eq!(
             halo_colour(&mut s),
             Some(hovered),

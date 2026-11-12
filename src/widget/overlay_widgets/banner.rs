@@ -782,7 +782,7 @@ impl EventHandler for Banner {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 let target = self.pressed_target.take();
                 self.base.set_pressed(false);
                 self.base.request_redraw();
@@ -1233,7 +1233,7 @@ mod tests {
             banner.dismiss_action_rect().expect("a dismissible banner offers a dismiss area");
 
         banner.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 1));
-        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 1, 0));
         assert!(banner.is_dismissed());
     }
 
@@ -1249,7 +1249,7 @@ mod tests {
 
         banner.handle_event(&Event::mouse_press(action.x + 2, action.y + 2, 1));
         assert!(banner.base.is_pressed(), "the press arms the affordance");
-        banner.handle_event(&Event::mouse_release(dismiss.x + 2, dismiss.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(dismiss.x + 2, dismiss.y + 2, 1, 0));
         assert!(
             seen.lock().expect("signal sink poisoned").is_empty(),
             "a release over a different control must not fire the pressed action"
@@ -1259,7 +1259,7 @@ mod tests {
 
         // A press released over the same action is still the commit path.
         banner.handle_event(&Event::mouse_press(action.x + 2, action.y + 2, 1));
-        banner.handle_event(&Event::mouse_release(action.x + 2, action.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(action.x + 2, action.y + 2, 1, 0));
         assert_eq!(seen.lock().expect("signal sink poisoned").as_slice(), ["Retry".to_string()]);
     }
 
@@ -1315,7 +1315,7 @@ mod tests {
 
         let rect = banner.action_rect(0).expect("action 0 has a rect");
         banner.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 1));
-        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 1, 0));
 
         let got = seen.lock().expect("signal sink poisoned").clone();
         assert_eq!(got, vec!["Retry".to_string()]);
@@ -1365,7 +1365,7 @@ mod tests {
         assert_ne!(rect, second, "two actions must not share a hit area");
 
         banner.handle_event(&Event::mouse_press(second.x + 2, second.y + 2, 1));
-        banner.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 1, 0));
         let got = seen.lock().expect("signal sink poisoned").clone();
         assert_eq!(got, vec!["Second".to_string()]);
         assert_eq!(banner.action_rect(3), None, "there is no fourth action");
@@ -1386,9 +1386,9 @@ mod tests {
         banner.dismiss();
 
         banner.handle_event(&Event::mouse_press(action.x + 2, action.y + 2, 1));
-        banner.handle_event(&Event::mouse_release(action.x + 2, action.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(action.x + 2, action.y + 2, 1, 0));
         banner.handle_event(&Event::mouse_press(dismiss.x + 2, dismiss.y + 2, 1));
-        banner.handle_event(&Event::mouse_release(dismiss.x + 2, dismiss.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(dismiss.x + 2, dismiss.y + 2, 1, 0));
 
         assert!(banner.is_dismissed());
         assert!(
@@ -1425,7 +1425,7 @@ mod tests {
         let count = dismiss_sink(&mut banner);
 
         banner.handle_event(&Event::mouse_press(4, 24, 1));
-        banner.handle_event(&Event::mouse_release(4, 24, 1));
+        banner.handle_event(&Event::mouse_release(4, 24, 1, 0));
 
         assert!(!banner.is_dismissed(), "clicking the message is not a dismissal");
         assert!(seen.lock().expect("signal sink poisoned").is_empty());
@@ -1440,7 +1440,7 @@ mod tests {
         let rect = banner.dismiss_action_rect().expect("a dismiss area exists");
 
         banner.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 3));
-        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 3));
+        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 3, 0));
         assert!(!banner.is_dismissed());
     }
 

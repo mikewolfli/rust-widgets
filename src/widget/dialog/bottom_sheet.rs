@@ -930,6 +930,7 @@ mod tests {
         sheet.handle_event(&Event::MouseRelease {
             pos: Point::new(grab.x, grab.y + 120),
             button: 1,
+            modifiers: 0,
         });
         assert!(!sheet.is_open(), "a drag past a third of the panel dismisses");
         assert!(!sheet.is_dragging());
@@ -944,8 +945,11 @@ mod tests {
         let grab = Point::new(handle.x + 2, handle.y + 2);
         sheet.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
         sheet.handle_event(&Event::MouseMove { pos: Point::new(grab.x, grab.y + 10) });
-        sheet
-            .handle_event(&Event::MouseRelease { pos: Point::new(grab.x, grab.y + 10), button: 1 });
+        sheet.handle_event(&Event::MouseRelease {
+            pos: Point::new(grab.x, grab.y + 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(sheet.is_open());
         assert_eq!(sheet.drag_offset(), 0.0);
     }

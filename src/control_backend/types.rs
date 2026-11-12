@@ -13,9 +13,15 @@ use alloc::collections::VecDeque;
 /// diagnostics and tests report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlBackendKind {
-    /// Backend that wraps platform-provided primitives where they exist.
+    /// Diagnostics name for the backend that wraps platform-provided primitives.
+    ///
+    /// **Not a host-facing choice** (principle #52): the widget-facing API never asks which
+    /// mechanism paints a control. The variant survives because runtime traces and tests report
+    /// it; new code should not branch on it.
     Native,
-    /// Backend that paints every control on a surface it owns.
+    /// Diagnostics name for the backend that paints every control on a surface it owns.
+    ///
+    /// See [`Self::Native`] for why the mechanism words remain in this internal taxonomy.
     Custom,
 }
 /// Policy answer for a widget kind's creation route.

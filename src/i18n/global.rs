@@ -473,6 +473,15 @@ pub fn get_manager() -> MutexGuard<'static, Option<I18nManager>> {
     crate::compat::lock(&GLOBAL_I18N)
 }
 /// Check and reload all modified translation files
+///
+/// # Reachability
+///
+/// No in-crate caller uses this form: the frame pump calls
+/// [`crate::i18n::pump_hot_reload`], which drains the watcher's channel without re-reading every
+/// translation file. It is kept as the **synchronous, host-driven** alternative for an embedder
+/// that has no frame pump and wants the reload events returned directly instead of queued. It is
+/// deliberately not wired into the per-frame path: `check_and_reload` re-fingerprints every
+/// registered file, which is too expensive to run once per frame.
 pub fn check_and_reload_all() -> Vec<crate::i18n::types::ReloadEvent> {
     let mut guard = get_manager();
     if let Some(ref mut manager) = *guard {

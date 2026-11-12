@@ -109,6 +109,29 @@ def pascal_to_snake(name: str) -> str:
 # `check_control_rendering.sh` uses for its census.
 REACHABILITY_FEATURES = "desktop,code-editor,markdown-editor,builtin-languages"
 
+# Wall-clock bound for each `cargo` invocation (principle #58). The gate makes two:
+# the example's own tests and the reachability report. A cold build can take a few
+# minutes, so 900 s leaves headroom while still capping a lock wait or a spin.
+CARGO_TIMEOUT_SECONDS = 900
+
+
+def run_cargo(args: list[str]) -> subprocess.CompletedProcess:
+    """Run `cargo` under the gate's wall-clock bound (principle #58)."""
+    try:
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=CARGO_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"cargo {args[1]} exceeded the {CARGO_TIMEOUT_SECONDS}s bound; "
+            "the gate cannot report a result",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
 
 def run_example_self_checks() -> None:
     """Run the reachability example's own tests before trusting its report.
@@ -124,7 +147,7 @@ def run_example_self_checks() -> None:
     Running them here closes that hole: `cargo run` above would still have produced
     a well-formed report, just one that described 171 kinds while the enum had 174.
     """
-    result = subprocess.run(
+    result = run_cargo(
         [
             "cargo",
             "test",
@@ -135,8 +158,6 @@ def run_example_self_checks() -> None:
             "--example",
             "widget_reachability",
         ],
-        capture_output=True,
-        text=True,
     )
     if result.returncode != 0:
         print(
@@ -157,7 +178,7 @@ def load_reachability() -> dict:
     the gate compiles once. That keeps the source of truth the same code path the
     library uses at runtime.
     """
-    result = subprocess.run(
+    result = run_cargo(
         [
             "cargo",
             "run",
@@ -168,8 +189,6 @@ def load_reachability() -> dict:
             "--example",
             "widget_reachability",
         ],
-        capture_output=True,
-        text=True,
     )
     if result.returncode != 0:
         print("Failed to run the widget_reachability example:", file=sys.stderr)

@@ -1087,6 +1087,11 @@ impl Draw for Splitter {
                 }
             }
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 impl crate::event::EventHandler for Splitter {
@@ -1151,7 +1156,7 @@ impl crate::event::EventHandler for Splitter {
                     self.base.request_redraw();
                 }
             }
-            crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
+            crate::event::Event::MouseDoubleClick { pos, button: 1, .. } => {
                 let coordinate = match self.orientation() {
                     Orientation::Horizontal => pos.x,
                     Orientation::Vertical => pos.y,
@@ -1634,7 +1639,7 @@ mod tests {
         sp.handle_event(&crate::event::Event::mouse_press(divider_x(&sp), 100, 1));
         assert!(sp.is_dragging_handle(), "pressing the divider opens a drag session");
 
-        sp.handle_event(&crate::event::Event::mouse_release(50, 100, 1));
+        sp.handle_event(&crate::event::Event::mouse_release(50, 100, 1, 0));
         assert!(!sp.is_dragging_handle(), "releasing closes it");
     }
 
@@ -1702,7 +1707,7 @@ mod tests {
         );
 
         // And releasing normalises them, so a later read is a real fraction.
-        sp.handle_event(&crate::event::Event::mouse_release(divider + 500, 100, 1));
+        sp.handle_event(&crate::event::Event::mouse_release(divider + 500, 100, 1, 0));
         let first = sp.ratio(0).expect("ratio 0");
         let second = sp.ratio(1).expect("ratio 1");
         assert!(
@@ -1793,6 +1798,7 @@ mod tests {
         sp.handle_event(&crate::event::Event::MouseDoubleClick {
             pos: crate::core::Point::new(divider, 50),
             button: 1,
+            modifiers: 0,
         });
         assert!((sp.ratio(0).expect("ratio") - 0.5).abs() < 1e-6);
     }

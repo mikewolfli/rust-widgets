@@ -58,6 +58,26 @@ pub enum Propagation {
 thread_local! {
     /// Set by a handler through [`consume_event`], read and cleared by the router.
     static CONSUMED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    /// The phase of the delivery currently in progress (W4-04).
+    static CURRENT_PHASE: core::cell::Cell<DispatchPhase> =
+        const { core::cell::Cell::new(DispatchPhase::Target) };
+}
+
+/// The phase of the delivery currently in progress.
+///
+/// The public handler shape is `Fn(ObjectId, &Event)`, so a handler cannot receive the phase as
+/// an argument. This accessor is how it asks instead: during a [`route_event`] delivery it
+/// reports [`DispatchPhase::Capture`], [`DispatchPhase::Target`] or [`DispatchPhase::Bubble`], and
+/// outside any delivery it reports the last phase (or [`DispatchPhase::Target`] before the first
+/// route). Without it the module's documented "a handler that wants to intercept checks the
+/// capture phase" promise could not be implemented by a host at all (W4-04).
+///
+/// # Deprecated scope
+///
+/// The value is per-thread and valid only while a handler is running: a handler that spawns work
+/// and reads this later sees whatever route ran last on its thread.
+pub fn current_dispatch_phase() -> DispatchPhase {
+    CURRENT_PHASE.try_with(|cell| cell.get()).unwrap_or(DispatchPhase::Target)
 }
 
 /// Marks the current event as handled, so the router stops travelling up or down the chain.
@@ -89,6 +109,11 @@ pub fn reset_consumed() {
     let _ = CONSUMED.try_with(|cell| cell.set(false));
 }
 
+/// Records the phase the router is about to deliver.
+fn set_phase(phase: DispatchPhase) {
+    let _ = CURRENT_PHASE.try_with(|cell| cell.set(phase));
+}
+
 /// Delivers `event` through capture, target and bubble, stopping wherever a handler consumes it.
 ///
 /// `ancestors` is ordered **root first** (the outermost ancestor at index 0), so the capture
@@ -118,6 +143,7 @@ pub fn route_event(
     // Capture: outermost first, so a modal at the root can intercept before a child sees the
     // event at all.
     for &ancestor in ancestors.iter() {
+        set_phase(DispatchPhase::Capture);
         handler(ancestor, event, DispatchPhase::Capture);
         if take_consumed() {
             return Propagation::Consumed;
@@ -125,6 +151,7 @@ pub fn route_event(
     }
 
     // Target.
+    set_phase(DispatchPhase::Target);
     handler(target, event, DispatchPhase::Target);
     if take_consumed() {
         return Propagation::Consumed;
@@ -133,6 +160,7 @@ pub fn route_event(
     // Bubble: nearest ancestor first, which is the order a control's own default handler
     // expects when it delegates to its container.
     for &ancestor in ancestors.iter().rev() {
+        set_phase(DispatchPhase::Bubble);
         handler(ancestor, event, DispatchPhase::Bubble);
         if take_consumed() {
             return Propagation::Consumed;
@@ -233,6 +261,31 @@ mod tests {
                 (3, DispatchPhase::Target),
                 (2, DispatchPhase::Bubble),
                 (1, DispatchPhase::Bubble),
+            ]
+        );
+    }
+
+    /// The phase passed to the handler is also readable from inside a plain
+    /// `Fn(ObjectId, &Event)` handler, which is the only shape a host can install (W4-04).
+    #[test]
+    fn the_current_phase_is_readable_from_a_phase_less_handler() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&seen);
+        route_event(3, &[1, 2], &Event::Paint, &mut |_node, _event, phase| {
+            log.borrow_mut().push((phase, current_dispatch_phase()));
+        });
+
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                (DispatchPhase::Capture, DispatchPhase::Capture),
+                (DispatchPhase::Capture, DispatchPhase::Capture),
+                (DispatchPhase::Target, DispatchPhase::Target),
+                (DispatchPhase::Bubble, DispatchPhase::Bubble),
+                (DispatchPhase::Bubble, DispatchPhase::Bubble),
             ]
         );
     }

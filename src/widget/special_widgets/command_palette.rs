@@ -4,7 +4,7 @@
 //! CommandPalette productivity widget.
 
 use crate::compat::HashMap;
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -257,11 +257,6 @@ pub struct CommandPalette {
     base: BaseWidget,
     entries: Vec<CommandEntry>,
     query: String,
-    /// Whether a committed text event has been seen.
-    ///
-    /// A host that reports both a key code and committed text delivers one keystroke twice; once
-    /// the text form has arrived the key-code fallback must stop or every character doubles.
-    text_input_seen: bool,
     filtered_indices: Vec<usize>,
     highlighted_index: Option<usize>,
     /// The first filtered row drawn; keeps the highlight reachable past the visible rows.
@@ -281,6 +276,14 @@ pub struct CommandPalette {
     /// The paint used to `format!` the title and lower-case it twice per row per frame to find
     /// the highlight (SP-P72); both are computed when the result set is refreshed.
     rows: Vec<RowPresentation>,
+    /// Cumulative advances of each entry's painted text, parallel to `display_texts` (W4-27).
+    ///
+    /// Filled lazily on the paint path because the table depends on the face and the device
+    /// scale, which only the render context knows. Once filled it is kept per entry, like the
+    /// text cache, so a repeated frame reads two prefix advances instead of allocating two
+    /// substrings and shaping them again. Interior mutability keeps the lookup callable while
+    /// the paint loop holds the borrowed display-slot table.
+    row_advances: core::cell::RefCell<Vec<Option<RowAdvance>>>,
     /// The painted text of every entry, rebuilt only when the entry list changes (SP-116).
     display_texts: Vec<String>,
     /// The ASCII characters each entry contains, as a 128-bit mask (SP-116).
@@ -327,7 +330,6 @@ impl CommandPalette {
             base: BaseWidget::new(WidgetKind::ListView, geometry, "CommandPalette"),
             entries: Vec::new(),
             query: String::new(),
-            text_input_seen: false,
             filtered_indices: Vec::new(),
             highlighted_index: None,
             scroll_offset: 0,
@@ -337,6 +339,7 @@ impl CommandPalette {
             slots: Vec::new(),
             rows: Vec::new(),
             display_texts: Vec::new(),
+            row_advances: core::cell::RefCell::new(Vec::new()),
             entry_masks: Vec::new(),
             contiguous_scores: Vec::new(),
             fuzzy_scores: Vec::new(),
@@ -444,8 +447,54 @@ impl CommandPalette {
             texts.push(text);
             masks.push(mask);
         }
+        let mut advances = self.row_advances.borrow_mut();
+        advances.clear();
+        advances.resize_with(texts.len(), || None);
+        drop(advances);
         self.display_texts = texts;
         self.entry_masks = masks;
+    }
+
+    /// The cached advance table for one entry's painted text, built on first use (W4-27).
+    ///
+    /// `widths[i]` is the advance of the first `i` characters, so the match highlight reads
+    /// `widths[offset]` and `widths[offset + count]` instead of building two substrings and
+    /// shaping them every frame. The table is keyed by the text, the face and the device scale —
+    /// the three inputs the measurement depends on — and the row index is its slot, matching
+    /// `display_texts`.
+    fn row_advance<'a>(
+        cache: &'a core::cell::RefCell<Vec<Option<RowAdvance>>>,
+        context: &RenderContext,
+        entry_index: usize,
+        text: &str,
+        font: &Font,
+    ) -> core::cell::Ref<'a, RowAdvance> {
+        let dpi_bits = context.dpi_scale().to_bits();
+        {
+            let mut entries = cache.borrow_mut();
+            let stale = entries.get(entry_index).is_none_or(|entry| {
+                entry.as_ref().is_none_or(|advance| {
+                    advance.text != text || advance.font != *font || advance.dpi_bits != dpi_bits
+                })
+            });
+            if stale {
+                let mut widths = Vec::with_capacity(text.chars().count() + 1);
+                widths.push(0);
+                for (start, ch) in text.char_indices() {
+                    let end = start + ch.len_utf8();
+                    widths.push(context.measure_text(&text[..end], font).width as i32);
+                }
+                let advance =
+                    RowAdvance { text: text.to_string(), font: font.clone(), dpi_bits, widths };
+                if entries.len() <= entry_index {
+                    entries.resize_with(entry_index + 1, || None);
+                }
+                entries[entry_index] = Some(advance);
+            }
+        }
+        core::cell::Ref::map(cache.borrow(), |entries| {
+            entries[entry_index].as_ref().expect("the advance table was just filled")
+        })
     }
 
     /// Returns all command entries.
@@ -917,18 +966,6 @@ impl CommandPalette {
         }
     }
 
-    fn append_query_char(&mut self, key: u32) {
-        if let Some(ch) = char::from_u32(key) {
-            if ch.is_ascii_graphic() || ch == ' ' {
-                self.query.push(ch);
-                self.rebuild_prompt_buffer();
-                self.refresh_filter();
-                self.query_changed.emit(self.query.clone());
-                self.base.request_redraw();
-            }
-        }
-    }
-
     fn backspace_query(&mut self) {
         if self.query.pop().is_some() {
             self.rebuild_prompt_buffer();
@@ -999,6 +1036,22 @@ struct RowPresentation {
     entry_index: Option<usize>,
     /// The matched run as `(character offset, character count)`, for the highlight box.
     highlight: Option<(usize, usize)>,
+}
+
+/// The cumulative advances of one entry's painted text (W4-27).
+///
+/// `widths[i]` is the advance of the first `i` characters, so a matched run's start and width are
+/// two array reads. The stored text, face and scale are what the next frame compares against to
+/// decide whether the table is still valid.
+struct RowAdvance {
+    /// The text the table describes.
+    text: String,
+    /// The face it was measured with.
+    font: Font,
+    /// Device scale the measurement ran at, as bits.
+    dpi_bits: u32,
+    /// Advance after each character boundary; `widths[0] == 0`.
+    widths: Vec<i32>,
 }
 
 /// Scores a scattered subsequence match, or `None` when `query` is not a subsequence.
@@ -1231,7 +1284,7 @@ impl EventHandler for CommandPalette {
             Event::MousePress { pos, button: 1, .. } => {
                 self.pick_at_position(*pos);
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 self.pick_at_position(*pos);
                 let _ = self.activate_highlighted();
             }
@@ -1258,25 +1311,14 @@ impl EventHandler for CommandPalette {
                         self.move_highlight(-1);
                     }
                     _ => {
-                        // Printable ASCII is the fallback for a host that reports only key codes;
-                        // committed text wins once it has arrived, so a Windows-style pair
-                        // (`WM_KEYDOWN` + `WM_CHAR`) cannot double every character. A chord that
-                        // carries the primary accelerator or Alt is a command, not typing: without
-                        // this gate `Ctrl+C` typed a `C` into the query on a host that had not
-                        // delivered any `TextInput` yet.
-                        let altered = primary
-                            || crate::shortcut::Modifiers::from_event_bits(*modifiers)
-                                .contains(crate::shortcut::Modifiers::ALT);
-                        if !self.text_input_seen && !altered {
-                            self.append_query_char(*key);
-                        }
+                        // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01) and
+                        // the committed-text arm appends it. Accepting the raw key as well typed
+                        // every character twice on Windows, the one backend that also forwards
+                        // `WM_KEYDOWN` for printable virtual keys.
                     }
                 }
             }
-            Event::TextInput { text } | Event::ImeCommit { text } => {
-                self.text_input_seen = true;
-                self.push_text(text)
-            }
+            Event::TextInput { text } | Event::ImeCommit { text } => self.push_text(text),
             Event::ImePreedit { .. } => {}
             Event::Wheel { delta, .. } if delta.y != 0 => {
                 let max = self.filtered_indices.len().saturating_sub(1);
@@ -1473,18 +1515,21 @@ impl Draw for CommandPalette {
                 // Match highlight: a tinted box behind the matched run, measured with the same
                 // font the row is drawn in so it lands on the glyphs rather than near them.
                 if let Some((offset, count)) = presentation.highlight {
-                    let start_x = band.x
-                        + context
-                            .measure_text(&text.chars().take(offset).collect::<String>(), font)
-                            .width as i32;
-                    let width = context
-                        .measure_text(
-                            &text.chars().skip(offset).take(count).collect::<String>(),
-                            font,
-                        )
-                        .width;
-                    context
-                        .fill_rect(Rect::new(start_x, y, width.max(1), self.row_height), highlight);
+                    // Read the cached prefix advances rather than measuring two freshly built
+                    // substrings (W4-27). The table is filled on the first frame a row is
+                    // painted and then reused until the text, face or scale changes.
+                    let advance =
+                        Self::row_advance(&self.row_advances, context, entry_index, text, font);
+                    let char_count = advance.widths.len().saturating_sub(1);
+                    let start_char = offset.min(char_count);
+                    let end_char = start_char.saturating_add(count).min(char_count);
+                    let start_advance = advance.widths[start_char];
+                    let width = advance.widths[end_char] - start_advance;
+                    let start_x = band.x + start_advance;
+                    context.fill_rect(
+                        Rect::new(start_x, y, width.max(1) as u32, self.row_height),
+                        highlight,
+                    );
                 }
                 if let Some(shortcut) = trailing_text {
                     let key_box = Rect::new(
@@ -1595,26 +1640,23 @@ mod tests {
         assert_eq!(palette.filtered_count(), 1);
     }
 
-    /// A host that reports both a key code and committed text types one character.
+    /// A typed character reaches the query through committed text, once.
     ///
     /// # What this pins
     ///
-    /// Every unclaimed key code was appended as a character *and* the committed text was, so a
-    /// Windows-style pair typed `Aa` for one `a` keystroke.
+    /// Every unclaimed key code used to be appended as a character *and* the committed text was,
+    /// so a Windows-style pair typed `Aa` for one `a` keystroke (W4-01). The key arm no longer
+    /// types at all: the committed-text event is the single path.
     #[test]
-    fn committed_text_supersedes_the_key_code_fallback() {
+    fn committed_text_types_the_query_once() {
         let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
         palette.set_entries(sample_entries());
         palette.handle_event(&crate::event::Event::KeyPress { key: 65, modifiers: 0 });
-        assert_eq!(palette.query(), "A", "a code-only host still types");
+        assert_eq!(palette.query(), "", "a raw key code is not content");
         palette.handle_event(&crate::event::Event::TextInput { text: "a".to_string() });
-        assert_eq!(palette.query(), "Aa", "the committed text is applied once");
+        assert_eq!(palette.query(), "a", "the committed text is applied once");
         palette.handle_event(&crate::event::Event::KeyPress { key: 66, modifiers: 0 });
-        assert_eq!(
-            palette.query(),
-            "Aa",
-            "once text events are arriving the code fallback is silent"
-        );
+        assert_eq!(palette.query(), "a", "a following key code adds nothing");
     }
 
     #[test]
@@ -1658,8 +1700,8 @@ mod tests {
         let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
         palette.set_entries(sample_entries());
 
-        palette.handle_event(&Event::key_press('s' as u32, 0));
-        palette.handle_event(&Event::key_press('a' as u32, 0));
+        palette.handle_event(&Event::text_input("s"));
+        palette.handle_event(&Event::text_input("a"));
         assert_eq!(palette.query(), "sa");
         assert_eq!(palette.filtered_count(), 1);
 
@@ -2051,8 +2093,9 @@ mod tests {
     ///
     /// # What this pins
     ///
-    /// The key-code fallback appended any code it did not recognise, ignoring the modifiers, so
-    /// on a host that had not delivered a `TextInput` yet `Ctrl+C` typed a `C` into the query.
+    /// The key arm used to append any code it did not recognise, ignoring the modifiers, so on a
+    /// host that had not delivered a `TextInput` yet `Ctrl+C` typed a `C` into the query. The arm
+    /// now types nothing at all (W4-01); content arrives only through committed text.
     #[test]
     fn a_primary_chord_does_not_type_into_the_query() {
         let mut palette = CommandPalette::new(Rect::new(0, 0, 400, 300));
@@ -2067,8 +2110,10 @@ mod tests {
         });
         assert_eq!(palette.query(), "", "a command chord must not type into the query");
 
-        // A bare letter still types: the fallback exists for hosts that report only key codes.
         palette.handle_event(&Event::KeyPress { key: 67, modifiers: 0 });
-        assert!(!palette.query().is_empty(), "a plain letter still reaches the query");
+        assert_eq!(palette.query(), "", "a bare key code is not content either");
+
+        palette.handle_event(&Event::TextInput { text: "c".to_string() });
+        assert_eq!(palette.query(), "c", "committed text reaches the query");
     }
 }

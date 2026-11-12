@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(
             run(&[
                 Event::MousePress { pos: inside, button: 1, modifiers: 0 },
-                Event::MouseRelease { pos: inside, button: 1 },
+                Event::MouseRelease { pos: inside, button: 1, modifiers: 0 },
             ]),
             1
         );
@@ -699,19 +699,19 @@ mod tests {
         assert_eq!(
             run(&[
                 Event::MousePress { pos: inside, button: 1, modifiers: 0 },
-                Event::MouseRelease { pos: outside, button: 1 },
+                Event::MouseRelease { pos: outside, button: 1, modifiers: 0 },
             ]),
             0
         );
         // A release with no press is not an activation either.
-        assert_eq!(run(&[Event::MouseRelease { pos: inside, button: 1 }]), 0);
+        assert_eq!(run(&[Event::MouseRelease { pos: inside, button: 1, modifiers: 0 }]), 0);
         // Dragging off and back restores the armed state.
         assert_eq!(
             run(&[
                 Event::MousePress { pos: inside, button: 1, modifiers: 0 },
                 Event::MouseMove { pos: outside },
                 Event::MouseMove { pos: inside },
-                Event::MouseRelease { pos: inside, button: 1 },
+                Event::MouseRelease { pos: inside, button: 1, modifiers: 0 },
             ]),
             1
         );
@@ -720,7 +720,7 @@ mod tests {
             run(&[
                 Event::MousePress { pos: inside, button: 1, modifiers: 0 },
                 Event::FocusLost,
-                Event::MouseRelease { pos: inside, button: 1 },
+                Event::MouseRelease { pos: inside, button: 1, modifiers: 0 },
             ]),
             0
         );

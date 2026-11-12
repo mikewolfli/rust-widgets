@@ -1078,8 +1078,15 @@ impl EventHandler for Dropdown {
             Event::KeyPress { key, modifiers: _ } => {
                 if !self.expanded {
                     // Up / Down / Home / End / Enter / Space open the list.
-                    if matches!(*key, key_codes::UP | key_codes::DOWN | 36 | 35 | 13 | 32)
-                        && !self.items.is_empty()
+                    if matches!(
+                        *key,
+                        key_codes::UP
+                            | key_codes::DOWN
+                            | key_codes::HOME
+                            | key_codes::END
+                            | key_codes::ENTER
+                            | key_codes::SPACE
+                    ) && !self.items.is_empty()
                     {
                         self.set_expanded(true);
                     }
@@ -1093,19 +1100,19 @@ impl EventHandler for Dropdown {
                 match *key {
                     // The arrows, paging and Home/End skip disabled rows: a row that cannot be
                     // chosen is not a navigation target either.
-                    38 => {
+                    key_codes::UP => {
                         let from = self.marked_row();
                         if let Some(target) = self.neighbour_enabled(from, false) {
                             self.move_highlight(target);
                         }
                     }
-                    40 => {
+                    key_codes::DOWN => {
                         let from = self.marked_row();
                         if let Some(target) = self.neighbour_enabled(from, true) {
                             self.move_highlight(target);
                         }
                     }
-                    33 => {
+                    key_codes::PAGE_UP => {
                         // Page Up: the nearest enabled row at or before one page up.
                         let from = self.marked_row();
                         let floor = from.saturating_sub(page);
@@ -1115,7 +1122,7 @@ impl EventHandler for Dropdown {
                             self.move_highlight(target);
                         }
                     }
-                    34 => {
+                    key_codes::PAGE_DOWN => {
                         // Page Down: the nearest enabled row at or before one page down.
                         let from = self.marked_row();
                         let ceiling = (from + page).min(self.items.len().saturating_sub(1));
@@ -1125,7 +1132,7 @@ impl EventHandler for Dropdown {
                             self.move_highlight(target);
                         }
                     }
-                    36 => {
+                    key_codes::HOME => {
                         // Home: the first enabled row.
                         if let Some(target) =
                             (0..self.items.len()).find(|&index| self.is_item_enabled(index))
@@ -1133,7 +1140,7 @@ impl EventHandler for Dropdown {
                             self.move_highlight(target);
                         }
                     }
-                    35 => {
+                    key_codes::END => {
                         // End: the last enabled row.
                         if let Some(target) =
                             (0..self.items.len()).rev().find(|&index| self.is_item_enabled(index))
@@ -1141,7 +1148,7 @@ impl EventHandler for Dropdown {
                             self.move_highlight(target);
                         }
                     }
-                    13 => {
+                    key_codes::ENTER => {
                         // Enter commits the marked row, then closes. Activation is what the user
                         // chose; the selection only changes here.
                         let target = self.marked_row();
@@ -1151,7 +1158,7 @@ impl EventHandler for Dropdown {
                         }
                         self.set_expanded(false);
                     }
-                    27 => {
+                    key_codes::ESCAPE => {
                         // Escape — cancel: drop the mark and restore the selection the list opened
                         // with, then collapse (I-10).
                         self.type_ahead.clear();
@@ -1161,7 +1168,7 @@ impl EventHandler for Dropdown {
                         }
                         self.set_expanded(false);
                     }
-                    32..=126 => {
+                    key_codes::SPACE..=126 => {
                         // First-letter selection, wrapping from the current row.
                         if let Some(ch) = char::from_u32(*key) {
                             // A prefix older than the shared timeout no longer describes what the

@@ -270,7 +270,7 @@ PY
 | `check_setter_census.sh` | check_setter_census.sh — RW-44 (BLUE30 §1.3 step 4) |
 | `check_single_creation_mechanism.sh` | check_single_creation_mechanism.sh — BLUE15 #55/#56 gate |
 | `check_single_frame_driver.sh` | check_single_frame_driver.sh — BLUE24 §1 criterion 6 |
-| `check_source_structure.sh` | check_source_structure.sh — principles #8 (mod.rs is a façade) and #9 (2000 lines) |
+| `check_source_structure.sh` | check_source_structure.sh — principles #8 (mod.rs is a façade) and #9 (5000 lines) |
 | `check_spacing_is_not_sibling_layout.sh` | check_spacing_is_not_sibling_layout.sh — BLUE22 §6.7 (BLUE22 §E.3, gate of 5) |
 | `check_state_source_is_the_base.sh` | check_state_source_is_the_base.sh -- BLUE23 §2.2 (gate of 5) |
 | `check_status_docs_name_real_types.py` | A backend's `status.md` may not claim native objects the backend's source does not name. |

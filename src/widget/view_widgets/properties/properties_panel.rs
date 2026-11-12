@@ -2060,7 +2060,7 @@ impl EventHandler for PropertiesPanel {
                     }
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 // A disabled panel must not edit values either: the second press of a double
                 // click is delivered separately, but this arm is what toggles a `Bool` and what
                 // opens the by-type editors, so it needs its own gate.
@@ -2620,6 +2620,7 @@ mod tests {
         panel.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(VALUE_COL_LEFT + 4, bool_row.y + bool_row.height as i32 / 2),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(
             panel.get_property_value("Enabled"),
@@ -2935,7 +2936,7 @@ mod tests {
         panel.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
         assert_eq!(panel.editing_entry(), None, "a single click only focuses with this trigger");
 
-        panel.handle_event(&Event::MouseDoubleClick { pos, button: 1 });
+        panel.handle_event(&Event::MouseDoubleClick { pos, button: 1, modifiers: 0 });
         assert_eq!(panel.editing_entry(), Some(0), "a double click opens the editor");
     }
 

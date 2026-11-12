@@ -2098,13 +2098,13 @@ impl EventHandler for Calendar {
             // embedded in a page must not consume the arrows of whatever the user is editing.
             Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
                 match *key {
-                    37 => {
+                    crate::event::key_codes::LEFT => {
                         // Left arrow
                         if let Some(prev_day) = self.selected_date.pred_opt() {
                             self.select_from_user(prev_day);
                         }
                     }
-                    38 => {
+                    crate::event::key_codes::UP => {
                         // Up arrow
                         if let Some(prev_week) =
                             self.selected_date.checked_sub_signed(chrono::TimeDelta::days(7))
@@ -2112,13 +2112,13 @@ impl EventHandler for Calendar {
                             self.select_from_user(prev_week);
                         }
                     }
-                    39 => {
+                    crate::event::key_codes::RIGHT => {
                         // Right arrow
                         if let Some(next_day) = self.selected_date.succ_opt() {
                             self.select_from_user(next_day);
                         }
                     }
-                    40 => {
+                    crate::event::key_codes::DOWN => {
                         // Down arrow
                         if let Some(next_week) =
                             self.selected_date.checked_add_signed(chrono::TimeDelta::days(7))
@@ -2126,19 +2126,19 @@ impl EventHandler for Calendar {
                             self.select_from_user(next_week);
                         }
                     }
-                    33 => {
+                    crate::event::key_codes::PAGE_UP => {
                         // Page up — previous month
                         self.show_previous_month();
                     }
-                    34 => {
+                    crate::event::key_codes::PAGE_DOWN => {
                         // Page down — next month
                         self.show_next_month();
                     }
-                    36 => {
+                    crate::event::key_codes::HOME => {
                         // Home
                         self.show_today();
                     }
-                    13 | 32 => {
+                    crate::event::key_codes::ENTER | crate::event::key_codes::SPACE => {
                         // Enter / Space commits the current selection: the reference toolkit's `activated`.
                         self.activated.emit(self.selected_date);
                     }
@@ -3180,7 +3180,7 @@ mod tests {
             }
         }
         let point = target.expect("the 12th is in the displayed March grid");
-        cal.handle_event(&Event::MouseDoubleClick { pos: point, button: 1 });
+        cal.handle_event(&Event::MouseDoubleClick { pos: point, button: 1, modifiers: 0 });
         let activated = seen.lock().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(
             activated,

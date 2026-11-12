@@ -600,7 +600,7 @@ impl EventHandler for MacWindowChrome {
             }
             // The control the pointer went down on, if any. The request fires only when the
             // release lands on that same control; releasing elsewhere cancels the press.
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 if let Some(pressed) = self.pressed.take() {
                     if self.button_at(*pos) == Some(pressed) {
                         self.request(pressed);
@@ -702,7 +702,7 @@ mod tests {
             let rect = bar.button_rect(control).expect("the control is shown");
             // The request is emitted on release over the same control (MW-23).
             bar.handle_event(&Event::MousePress { pos: rect.center(), button: 1, modifiers: 0 });
-            bar.handle_event(&Event::MouseRelease { pos: rect.center(), button: 1 });
+            bar.handle_event(&Event::MouseRelease { pos: rect.center(), button: 1, modifiers: 0 });
         }
         assert_eq!(closes.load(Ordering::SeqCst), 1);
         assert_eq!(minimizes.load(Ordering::SeqCst), 1);
@@ -878,7 +878,11 @@ mod tests {
         bar.zoom_requested.connect(move || {
             z.fetch_add(1, Ordering::SeqCst);
         });
-        bar.handle_event(&Event::MouseDoubleClick { pos: Point::new(250, 14), button: 1 });
+        bar.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(250, 14),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(zooms.load(Ordering::SeqCst), 1);
     }
 }

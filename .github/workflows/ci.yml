@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: Rust check (${{ matrix.os }})
@@ -78,7 +82,7 @@ jobs:
           chmod +x tools/check_profiles.sh
           ./tools/check_profiles.sh
 
-      # N2-02: 131 `check_*.sh` gates existed, but only the ones a workflow named were
+      # N2-02: 135 `check_*.sh` gates existed, but only the ones a workflow named were
       # actually run by CI. `run_local_gates.sh` computes the uncovered remainder from the
       # workflow/gate text and runs it under the same per-gate bound as the local runner,
       # so a gate cannot sit red on `main` while every PR stays green.

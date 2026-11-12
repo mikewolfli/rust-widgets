@@ -203,6 +203,15 @@ pub enum Event {
         pos: Point,
         /// Which button was double-clicked; see [`mouse_button`].
         button: u32,
+        /// Keyboard modifiers held during the double-click, using the same convention as
+        /// [`Event::KeyPress`].
+        ///
+        /// # Why a double-click carries this
+        ///
+        /// A double-click is a press pair, and the press that starts it already carries the
+        /// modifier state; dropping it here would make an extended-selection double-click
+        /// indistinguishable from a plain one. `0` means no modifier held.
+        modifiers: u32,
     },
     /// Pointer/button release.
     ///
@@ -213,6 +222,17 @@ pub enum Event {
         pos: Point,
         /// Which button was released; see [`mouse_button`].
         button: u32,
+        /// Keyboard modifiers held during the release, using the same convention as
+        /// [`Event::KeyPress`].
+        ///
+        /// # Why a release carries this
+        ///
+        /// A release that ends a range-select drag must know whether `Shift`/`Ctrl` is still
+        /// held: the press that started the drag carried the modifier state, but the user may
+        /// have released or pressed a modifier while dragging. Without the field on the event
+        /// the ending handler had no way to ask, so it had to remember the press's state and
+        /// iterate from a stale value. `0` means no modifier held.
+        modifiers: u32,
     },
     /// Pointer entered widget bounds.
     MouseEnter {
@@ -562,6 +582,8 @@ impl Event {
             Self::MousePress { modifiers, .. }
             | Self::KeyPress { modifiers, .. }
             | Self::KeyRelease { modifiers, .. }
+            | Self::MouseRelease { modifiers, .. }
+            | Self::MouseDoubleClick { modifiers, .. }
             | Self::Wheel { modifiers, .. } => *modifiers,
             _ => 0,
         }
@@ -594,12 +616,18 @@ impl Event {
         matches!(self, Self::KeyPress { .. }) && crate::event::key_repeat::is_dispatch_repeat()
     }
     /// Creates a mouse release event.
-    pub fn mouse_release(x: i32, y: i32, button: u32) -> Self {
-        Self::MouseRelease { pos: Point::new(x, y), button }
+    ///
+    /// `modifiers` uses the same convention as [`Event::mouse_press_with`]; pass `0` when no
+    /// modifier is held.
+    pub fn mouse_release(x: i32, y: i32, button: u32, modifiers: u32) -> Self {
+        Self::MouseRelease { pos: Point::new(x, y), button, modifiers }
     }
     /// Creates a mouse double-click event.
-    pub fn mouse_double_click(x: i32, y: i32, button: u32) -> Self {
-        Self::MouseDoubleClick { pos: Point::new(x, y), button }
+    ///
+    /// `modifiers` uses the same convention as [`Event::mouse_press_with`]; pass `0` when no
+    /// modifier is held.
+    pub fn mouse_double_click(x: i32, y: i32, button: u32, modifiers: u32) -> Self {
+        Self::MouseDoubleClick { pos: Point::new(x, y), button, modifiers }
     }
     /// Creates a mouse move event.
     pub fn mouse_move(x: i32, y: i32) -> Self {
@@ -920,7 +948,7 @@ impl Event {
     pub fn into_canonical(self) -> Self {
         match self {
             Self::MouseDown((pos, button)) => Self::MousePress { pos, button, modifiers: 0 },
-            Self::MouseUp((pos, button)) => Self::MouseRelease { pos, button },
+            Self::MouseUp((pos, button)) => Self::MouseRelease { pos, button, modifiers: 0 },
             Self::MouseMoveLegacy((pos, _device)) => Self::MouseMove { pos },
             Self::KeyDown((key, modifiers)) => Self::KeyPress { key, modifiers },
             Self::KeyUp((key, modifiers)) => Self::KeyRelease { key, modifiers },
@@ -1027,6 +1055,44 @@ mod tests {
         assert_eq!(e.gesture_class(), None);
     }
 
+    /// W4-29 (principle #95): a press, the release that ends it, and the double-click that
+    /// starts the next gesture carry the modifier bits in the same field, under the same
+    /// convention, and the constructors round-trip the value they are given.
+    #[test]
+    fn pointer_payloads_carry_modifiers_symmetrically() {
+        let shift = u32::from(crate::shortcut::Modifiers::SHIFT.bits());
+        let press = Event::MousePress { pos: Point::new(10, 20), button: 1, modifiers: shift };
+        assert_eq!(press.modifiers(), shift);
+        assert_eq!(Event::mouse_release(10, 20, 1, shift).modifiers(), shift);
+        assert_eq!(Event::mouse_double_click(10, 20, 1, shift).modifiers(), shift);
+        assert_eq!(
+            Event::mouse_release(10, 20, 1, shift).modifiers_typed(),
+            crate::shortcut::Modifiers::SHIFT,
+            "a release reads back through the same typed conversion as a press"
+        );
+        // `0` is the plain gesture for every one of them.
+        assert_eq!(Event::mouse_press(10, 20, 1).modifiers(), 0);
+        assert_eq!(Event::mouse_release(10, 20, 1, 0).modifiers(), 0);
+        assert_eq!(Event::mouse_double_click(10, 20, 1, 0).modifiers(), 0);
+
+        match Event::mouse_release(3, 4, 1, shift) {
+            Event::MouseRelease { pos, button, modifiers } => {
+                assert_eq!(pos, Point::new(3, 4));
+                assert_eq!(button, 1);
+                assert_eq!(modifiers, shift);
+            }
+            other => panic!("expected MouseRelease, got {other:?}"),
+        }
+        match Event::mouse_double_click(5, 6, 2, shift) {
+            Event::MouseDoubleClick { pos, button, modifiers } => {
+                assert_eq!(pos, Point::new(5, 6));
+                assert_eq!(button, 2);
+                assert_eq!(modifiers, shift);
+            }
+            other => panic!("expected MouseDoubleClick, got {other:?}"),
+        }
+    }
+
     /// W-001: every legacy spelling forwards to the modern variant, and a modern event is
     /// returned unchanged (so the canonical call costs nothing on the normal path).
     #[test]
@@ -1038,7 +1104,7 @@ mod tests {
         ));
         assert!(matches!(
             Event::MouseUp((p, 1)).into_canonical(),
-            Event::MouseRelease { pos, button: 1 } if pos == p
+            Event::MouseRelease { pos, button: 1, .. } if pos == p
         ));
         assert!(matches!(
             Event::MouseMoveLegacy((p, 7)).into_canonical(),

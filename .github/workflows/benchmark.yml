@@ -1,5 +1,12 @@
 name: Benchmarks
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   benchmark:
     name: Performance benchmarks
@@ -14,10 +21,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run benchmarks (event, layout, signal)
-        run: cargo bench --bench event_bench --bench layout_bench --bench signal_bench -- --quick
-
-      - name: Run benchmark script (all 5 benches)
+      # One runner: `benches/run_benchmarks.sh` executes all nine registered benchmarks.
+      # A separate `cargo bench` step here used to run event/layout/signal a second time, and the
+      # step name said "all 5" while the script ran nine (N2-04).
+      - name: Run benchmark script (all 9 benches)
         run: bash benches/run_benchmarks.sh
 
       - name: Upload benchmark summary

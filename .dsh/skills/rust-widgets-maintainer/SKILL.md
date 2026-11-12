@@ -9,7 +9,7 @@ metadata:
 
 # rust-widgets maintainer
 
-`rust-widgets` is a dependency-light Rust GUI library with around 242 controls,
+`rust-widgets` is a dependency-light Rust GUI library with around 242 names in the control registry,
 several platform backends, a JSON layout loader, a designer, a source-code
 editor, a designer CLI, and optional companion crates. Work is governed by
 `docs/plans/principle.md`; read it before touching code.

@@ -20,6 +20,8 @@ use super::resources::{
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Builds this device's hardware-adaptive manager from the facts `wgpu` reported for it.
 ///
@@ -54,6 +56,22 @@ impl WgpuRenderer {
         queue: wgpu::Queue,
         adapter_info: wgpu::AdapterInfo,
     ) -> Result<Self, String> {
+        // A lost device or an uncaptured validation error must be observable rather than a panic:
+        // wgpu's default uncaptured-error behaviour aborts the caller, but every public entry point
+        // here returns `Result<_, String>`. Both callbacks flip one flag the frame path checks, so
+        // a driver reset (laptop GPU power switch, VM migration) surfaces as an `Err` (T3-07).
+        let device_lost = Arc::new(AtomicBool::new(false));
+        let uncaptured_lost = Arc::clone(&device_lost);
+        device.on_uncaptured_error(Arc::new(move |error| {
+            log::error!("[wgpu] uncaptured device error: {error}");
+            uncaptured_lost.store(true, Ordering::SeqCst);
+        }));
+        let lost_callback = Arc::clone(&device_lost);
+        device.set_device_lost_callback(move |reason, message| {
+            log::error!("[wgpu] device lost: {reason:?}: {message}");
+            lost_callback.store(true, Ordering::SeqCst);
+        });
+
         // ── Create shader modules ──
         let clear_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("clear_vs"),
@@ -1523,6 +1541,7 @@ impl WgpuRenderer {
             commands_frame: CpuFrame::new(),
             gpu: gpu_manager(&adapter_info)?,
             adapter_info,
+            device_lost,
         })
     }
 }

@@ -1538,7 +1538,7 @@ impl EventHandler for ImageGallery {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 // Full screen shows an image; with none selected there is nothing to show, and
                 // the emit used to name index 0 of an empty list.
                 if self.current_image().is_none() {
@@ -1712,7 +1712,7 @@ mod tests {
 
         let preview = g.preview_rect();
         let stage = Point::new(preview.x + 2, preview.y + 2);
-        g.handle_event(&Event::MouseDoubleClick { pos: stage, button: 1 });
+        g.handle_event(&Event::MouseDoubleClick { pos: stage, button: 1, modifiers: 0 });
         g.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         g.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
         assert!(
@@ -1721,7 +1721,7 @@ mod tests {
         );
 
         g.add_image("/images/photo.jpg", Some("Photo"));
-        g.handle_event(&Event::MouseDoubleClick { pos: stage, button: 1 });
+        g.handle_event(&Event::MouseDoubleClick { pos: stage, button: 1, modifiers: 0 });
         assert_eq!(*requested.lock().expect("lock"), vec![0]);
     }
 
@@ -2119,6 +2119,7 @@ mod tests {
         g.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(preview.x + 2, preview.y + 2),
             button: 1,
+            modifiers: 0,
         });
         assert!(fullscreen.lock().map(|slot| slot.is_some()).unwrap_or(false));
 

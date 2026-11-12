@@ -126,6 +126,10 @@ impl SurfaceHandle {
     /// Returns `false` when it was already unmounted.
     pub fn unmount(&self) -> bool {
         let removed = crate::unmount_surface(self.id);
+        // The imperative close path (`api::control::close_widget`) and the control backend's
+        // `destroy_widget` both clear the app-side callback tables; this surface path only
+        // unregistered the widget, leaving one entry and its closures per unmount (T3-24).
+        crate::app::remove_callbacks(self.id);
         crate::widget::runtime::unregister(self.id);
         removed
     }

@@ -366,7 +366,7 @@ impl ChapterListPanel {
         let scope = ConnectionScope::new();
         let active_sink = Arc::clone(&active_mirror);
         let redraw = self.base.redraw_requested_signal().clone();
-        player.on_chapter_entered.connect_ref_scoped(&scope, move |index| {
+        player.chapter_entered.connect_ref_scoped(&scope, move |index| {
             *lock(&active_sink) = Some(*index);
             redraw.emit();
         });

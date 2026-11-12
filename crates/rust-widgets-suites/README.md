@@ -11,12 +11,12 @@ constructors, so adding one never edits another.
 | `form` (default) | `form_widgets` | 2 | `form`, `form_set` |
 | `webview` | `webview` | 3 | `web_engine_view`, `web_find_bar`, `web_history_panel` |
 | `finance` | `finance` | 6 | `candlestick_chart`, `volume_chart`, `depth_chart`, `indicator_chart`, `order_book`, `quote_board` |
-| `maps` | `maps` | 7 | `map_view`, `map_overview`, `map_attribution`, `tile_loader`, `zoom_control`, `scale_bar`, `compass` |
+| `maps` | `maps` | 8 | `map_view`, `map_overview`, `map_attribution`, `tile_loader`, `zoom_control`, `scale_bar`, `compass`, `map_marker_detail` |
 | `project` | `project` | 7 | `gantt_widget`, `gantt_task_grid`, `timeline_axis`, `dependency_editor`, `kanban_board`, `kanban_card_view`, `kanban_column_header` |
 | `devtools` | `devtools` | 4 | `terminal_view`, `terminal_find_bar`, `diff_viewer`, `diff_file_list` |
 | `media-playback` | `media_playback` | 10 | `video_player`, `lottie_widget`, `rive_widget`, `audio_visualizer`, `camera_preview`, `chapter_list_panel`, `media_player`, `media_transport_bar`, `media_scrubber`, `subtitle_bar` |
 
-That is **39 controls in 7 groups**. The web family that used to be the separate
+That is **40 controls in 7 groups**. The web family that used to be the separate
 `rust-widgets-webview` crate is the `webview` group; its optional `js-engine` and `web-http`
 features moved here with it.
 

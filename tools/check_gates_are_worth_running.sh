@@ -56,7 +56,7 @@ CEILING_SECS=3600   # 60 minutes — raised from 2700 when `check_android_runtim
                     # emulator boot + JNI probe, 86 s cold) joined the suite; see the budget
                     # comment in `run_all_gates.sh`. BLUE24 §9.2 criterion 2.
 
-echo "[1/3] every gate is reachable from the runner"
+echo "[1/4] every gate is reachable from the runner"
 if [ ! -f "$RUNNER" ]; then
     echo "  FAIL  $RUNNER is missing; there is no single entry point for the suite"
     exit 1
@@ -79,7 +79,7 @@ if [ "$gate_count" -eq 0 ]; then
 fi
 echo "  PASS  $gate_count gates, all reached by the runner's glob"
 
-echo "[2/3] the whole-run budget fits the ceiling"
+echo "[2/4] the whole-run budget fits the ceiling"
 # Read the default run budget out of the runner so this gate and the runner cannot
 # disagree about it. The literal default is what a plain invocation uses.
 run_budget="$(grep -oE 'RUN_BUDGET="\$\{RW_RUN_TIMEOUT:-[0-9]+\}"' "$RUNNER" \
@@ -97,7 +97,7 @@ if [ "$run_budget" -gt "$CEILING_SECS" ]; then
 fi
 echo "  PASS  run budget ${run_budget}s <= ${CEILING_SECS}s ceiling"
 
-echo "[3/3] every gate has reverse-injection evidence"
+echo "[3/4] every gate has reverse-injection evidence"
 if [ ! -f "$INJECTION" ]; then
     echo "  FAIL  $INJECTION is missing"
     echo "        Without it, no gate's ability to fail is on record."
@@ -130,6 +130,27 @@ pending="$(grep -cE '^\| .* \| — \| — \|' "$INJECTION" || true)"
 echo "  PASS  all $gate_count gates are named in the record"
 echo "  NOTE  ${pending} gate(s) named but not yet injected (an honest backlog, not a pass):"
 grep -E '^\| .* \| — \| — \|' "$INJECTION" | sed -e 's/^| /          - /' -e 's/ | — | — |$//' || true
+
+echo "[4/4] every gate named in the record still exists"
+# The forward direction above catches a gate with no row. This direction catches the
+# opposite drift: a row that names a gate which was renamed or deleted. Such a row reads
+# as evidence but describes a gate that cannot be run, so it must not count.
+recorded_gates="$(grep -oE '^\| `check_[A-Za-z0-9_.-]+\.sh`' "$INJECTION" \
+    | sed -e 's/^| `//' -e 's/`$//' | sort -u)"
+missing_gates=""
+for recorded in $recorded_gates; do
+    if [ ! -f "tools/$recorded" ]; then
+        missing_gates="${missing_gates}${recorded}
+"
+    fi
+done
+if [ -n "$missing_gates" ]; then
+    echo "  FAIL  these recorded gates are not on disk:"
+    printf '%s' "$missing_gates" | sed 's/^/          /'
+    echo "        A row for a gate that cannot run is not evidence; delete it."
+    exit 1
+fi
+echo "  PASS  every recorded .sh gate exists in tools/"
 
 echo
 echo "check_gates_are_worth_running: OK"

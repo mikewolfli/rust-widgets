@@ -3154,7 +3154,7 @@ impl crate::event::EventHandler for TreeView {
                     self.base.request_redraw();
                 }
             }
-            crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
+            crate::event::Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some(index) = self.node_at(*pos) {
                     // Both activation signals and the same gesture's `selection_changed` speak the
                     // **visible** row space; emitting the model index here made one gesture name two
@@ -3982,6 +3982,7 @@ mod tests {
         view.handle_event(&Event::MouseDoubleClick {
             pos: crate::core::Point::new(row.x + 4, row.y + row.height as i32 / 2),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(*activated.lock().expect("the test slot locks"), vec![1]);
         assert_eq!(*doubled.lock().expect("the test slot locks"), vec![1]);

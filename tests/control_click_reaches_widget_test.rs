@@ -69,7 +69,7 @@ fn a_click_reaches_the_control_under_the_pointer() {
     // The callback itself runs on release for a button.
     let release = rust_widgets::widget::runtime::dispatch_pointer_event(
         root,
-        &Event::MouseRelease { pos: centre, button: 1 },
+        &Event::MouseRelease { pos: centre, button: 1, modifiers: 0 },
         centre,
     );
     assert!(release, "a release at the button's centre must be delivered");
@@ -91,7 +91,7 @@ fn a_click_reaches_the_control_under_the_pointer() {
     );
     rust_widgets::widget::runtime::dispatch_pointer_event(
         root,
-        &Event::MouseRelease { pos: empty, button: 1 },
+        &Event::MouseRelease { pos: empty, button: 1, modifiers: 0 },
         empty,
     );
     assert_eq!(

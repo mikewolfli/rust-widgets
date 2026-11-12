@@ -2562,7 +2562,7 @@ impl EventHandler for ComboBox {
                     // Up/Down move the *highlight* while the list is open, which is what makes the list
                     // navigable without a pointer. With the list closed they keep the old behaviour of
                     // stepping the value, because a closed field has no highlight to move.
-                    38 => {
+                    crate::event::key_codes::UP => {
                         if self.open {
                             if self.move_hover(-1) {
                                 self.base.request_redraw();
@@ -2577,7 +2577,7 @@ impl EventHandler for ComboBox {
                             self.activated.emit(self.items.len() - 1);
                         }
                     }
-                    40 => {
+                    crate::event::key_codes::DOWN => {
                         if self.open {
                             if self.move_hover(1) {
                                 self.base.request_redraw();
@@ -2596,7 +2596,7 @@ impl EventHandler for ComboBox {
                             self.activated.emit(first);
                         }
                     }
-                    13 => {
+                    crate::event::key_codes::ENTER => {
                         // Enter takes the highlighted row when the list is open, and re-activates the
                         // current one when it is closed -- two different commitments, so the open arm
                         // does not fall through to the closed one and emit `activated` twice.
@@ -2630,7 +2630,7 @@ impl EventHandler for ComboBox {
                     }
                     // Escape closes an open list without committing, which is the one way out that does
                     // not change the value.
-                    27 => {
+                    crate::event::key_codes::ESCAPE => {
                         if self.open {
                             self.set_open(false);
                         }
@@ -2639,24 +2639,24 @@ impl EventHandler for ComboBox {
                     // does what a click on the field does. The empty-list guard is in the match arm's own
                     // condition rather than nested inside it, which is also what keeps the two spellings
                     // of "can this list be opened" from drifting.
-                    32 | 113 if !self.items.is_empty() => {
+                    crate::event::key_codes::SPACE | 113 if !self.items.is_empty() => {
                         self.toggle_open();
                     }
                     // Page keys move the highlight by a windowful while open, and jump to the
                     // ends with Home/End.
-                    33 if self.open => {
+                    crate::event::key_codes::PAGE_UP if self.open => {
                         let page = self.visible_item_count() as isize;
                         if self.move_hover(-page) {
                             self.base.request_redraw();
                         }
                     }
-                    34 if self.open => {
+                    crate::event::key_codes::PAGE_DOWN if self.open => {
                         let page = self.visible_item_count() as isize;
                         if self.move_hover(page) {
                             self.base.request_redraw();
                         }
                     }
-                    36 if self.open => {
+                    crate::event::key_codes::HOME if self.open => {
                         let first =
                             (0..self.items.len()).find(|&index| self.is_item_enabled(index));
                         if let Some(index) = first {
@@ -2665,7 +2665,7 @@ impl EventHandler for ComboBox {
                             self.base.request_redraw();
                         }
                     }
-                    35 if self.open => {
+                    crate::event::key_codes::END if self.open => {
                         let last =
                             (0..self.items.len()).rev().find(|&index| self.is_item_enabled(index));
                         if let Some(index) = last {

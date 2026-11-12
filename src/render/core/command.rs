@@ -40,6 +40,21 @@ impl CompoundPath {
         Ok(Self { points: points.into(), contours: contours.into() })
     }
 
+    /// Creates a compound path by copying already-packed geometry into its own storage.
+    ///
+    /// The borrowed form exists so a hot path can build the geometry in a reusable scratch buffer
+    /// and hand it here without moving the buffer into the command, which would lose its capacity
+    /// and force a fresh allocation on the next call (W4-20). The constructed path owns exactly the
+    /// bytes [`CompoundPath::new`] would have produced from equivalent vectors.
+    #[cfg(feature = "gpu-wgpu")]
+    pub(crate) fn from_slices(
+        points: &[Point],
+        contours: &[(usize, usize)],
+    ) -> Result<Self, CompoundPathError> {
+        Self::validate_ranges(points.len(), contours)?;
+        Ok(Self { points: Arc::from(points), contours: Arc::from(contours) })
+    }
+
     /// Checks contour ranges without taking ownership of the geometry.
     pub(crate) fn validate_ranges(
         points_len: usize,

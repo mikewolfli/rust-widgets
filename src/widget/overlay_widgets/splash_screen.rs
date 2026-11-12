@@ -580,7 +580,7 @@ impl EventHandler for SplashScreen {
                 // Arm the press; the release is what commits (OV-001).
                 self.skip_armed = true;
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 if self.skip_armed {
                     self.skip_armed = false;
                     if self.is_over_skip(*pos) {
@@ -958,11 +958,16 @@ mod tests {
         splash.handle_event(&Event::MouseRelease {
             pos: Point::new(skip.x + skip.width as i32 / 2, skip.y + skip.height as i32 / 2),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(seen.lock().expect("lock").as_slice(), ["Booting"]);
 
         splash.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
-        splash.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
+        splash.handle_event(&Event::MouseRelease {
+            pos: Point::new(5, 5),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(seen.lock().expect("lock").len(), 1, "a click away from Skip is ignored");
     }
 
@@ -983,7 +988,11 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        splash.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
+        splash.handle_event(&Event::MouseRelease {
+            pos: Point::new(5, 5),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(
             seen.lock().expect("lock").is_empty(),
             "a release away from the affordance cancels the skip"

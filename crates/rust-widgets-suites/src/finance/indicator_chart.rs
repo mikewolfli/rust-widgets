@@ -1073,6 +1073,7 @@ impl Draw for IndicatorChart {
         // The values are kept so a caller can read them without recomputing.
         self.last_values = series.into_iter().map(|pane| pane.values).collect();
         self.values_valid = true;
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

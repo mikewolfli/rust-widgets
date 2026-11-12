@@ -58,6 +58,13 @@ impl Default for TextStyle {
 }
 
 /// A span of text with a specific style.
+///
+/// # Same name, different layer (R-26 / principle #49)
+///
+/// This is the **render-layer** span: owned text plus a [`TextStyle`], consumed by
+/// [`RichText`]. `textedit::model::TextSpan` and `rich_edit::TextSpan` are **document-model**
+/// spans instead: a byte range into a value plus a `CharFormat`. They are not copies of this one
+/// and cannot be merged without giving the renderer an editor's range semantics.
 #[derive(Debug, Clone)]
 pub struct TextSpan {
     /// The text content of this span.

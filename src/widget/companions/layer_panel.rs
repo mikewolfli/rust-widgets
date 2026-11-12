@@ -429,7 +429,7 @@ impl EventHandler for LayerPanel {
                 }
                 let _ = self.select_layer(entry.id);
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 if let Some(from) = self.reorder_from.take() {
                     let to = self.row_at(*pos).map(|row| self.entries[row].id);
                     if let Some(to) = to {
@@ -439,7 +439,7 @@ impl EventHandler for LayerPanel {
                     }
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some(row) = self.row_at(*pos) {
                     let entry = &self.entries[row];
                     self.renaming = Some((entry.id, entry.name.clone()));
@@ -855,7 +855,7 @@ mod tests {
         });
         // The handle column starts after the checkbox column.
         panel.handle_event(&Event::mouse_press(24, 11, 1));
-        panel.handle_event(&Event::mouse_release(24, 33, 1));
+        panel.handle_event(&Event::mouse_release(24, 33, 1, 0));
         assert_eq!(*reordered.lock().expect("reordered lock"), vec![(1, 2)]);
     }
 
@@ -869,7 +869,7 @@ mod tests {
                 guard.push((*value).clone());
             }
         });
-        panel.handle_event(&Event::mouse_double_click(100, 11, 1));
+        panel.handle_event(&Event::mouse_double_click(100, 11, 1, 0));
         // Clearing the prefilled name and typing a new one.
         for _ in 0.."background".len() {
             panel.handle_event(&Event::key_press(8, 0));

@@ -146,6 +146,23 @@ pub(crate) fn run_due_on_loop_thread() {
     run_due(queued);
 }
 
+/// Drops every queued item, returning how many were dropped.
+///
+/// Called on the loop thread when a quit is honoured. `QUEUE` is process-wide, so without this a
+/// work item scheduled for a session that is ending ran in the **next** loop in the same process —
+/// a host that restarts its loop saw the previous session's heartbeat fire against the new one
+/// (T3-49). The mid-session rule is therefore: a quit empties the queue; work queued after the
+/// quit (before the next loop starts) is still honoured by that loop.
+pub(crate) fn clear_on_loop_thread() -> usize {
+    let Some(queued) = QUEUE.get() else {
+        return 0;
+    };
+    let mut guard = lock(queued);
+    let dropped = guard.len();
+    guard.clear();
+    dropped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

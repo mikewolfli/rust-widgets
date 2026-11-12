@@ -396,6 +396,12 @@ impl App {
         })
         .unwrap_or(false);
         if !adopted {
+            // The window was created above, and `new_window` also attached its OS host. Returning
+            // here without teardown leaked both the OS window and its `WINDOW_STATES` entry on
+            // every refused adoption (T3-10). This is the same destruction the control backend's
+            // `destroy_widget` performs: drop the platform host first, then the callback tables
+            // and the runtime registration.
+            crate::control_backend::get_control_backend().destroy_widget(window_id);
             return None;
         }
         // The dock family announces the move through its own signal; other controls simply
@@ -511,21 +517,52 @@ pub fn clear_application_event_listeners() {
     lock.lock().unwrap_or_else(|error| error.into_inner()).clear();
 }
 
+/// Restores the listener list if dispatch unwinds.
+///
+/// `publish_application_event` takes the listeners out of the mutex before invoking them; without
+/// this guard a listener that panics drops the local `Vec` and the global slot stays empty, so
+/// every later event reaches nobody (T3-23). The same shape `ClickCallGuard` already uses for the
+/// per-widget callback tables.
+struct ListenerRestore<'a> {
+    lock: &'a Mutex<ApplicationListeners>,
+    listeners: Option<ApplicationListeners>,
+}
+
+impl Drop for ListenerRestore<'_> {
+    fn drop(&mut self) {
+        if let Some(listeners) = self.listeners.take() {
+            let mut guard = self.lock.lock().unwrap_or_else(|error| error.into_inner());
+            // Preserve anyone who subscribed while the panicking listener was running.
+            let mut registered = core::mem::take(&mut *guard);
+            let mut restored = listeners;
+            restored.append(&mut registered);
+            *guard = restored;
+        }
+    }
+}
+
 /// Publishes `event` to every current application-level listener, returning how many ran.
 ///
 /// The listener set is taken out of the lock before dispatch, so a listener may subscribe (or
 /// clear) without deadlocking. Listeners registered during dispatch are appended after the ones
-/// that already ran, so a later event reaches every subscriber exactly once.
+/// that already ran, so a later event reaches every subscriber exactly once. A listener that
+/// panics restores the set before unwinding (T3-23).
 pub fn publish_application_event(event: &ApplicationEvent) -> usize {
     let lock = APPLICATION_LISTENERS.get_or_init(|| Mutex::new(Vec::new()));
-    let mut listeners = {
+    let listeners = {
         let mut guard = lock.lock().unwrap_or_else(|error| error.into_inner());
         core::mem::take(&mut *guard)
     };
     let count = listeners.len();
-    for listener in listeners.iter_mut() {
-        listener(event);
+    let mut restore = ListenerRestore { lock, listeners: Some(listeners) };
+    {
+        let listeners = restore.listeners.as_mut().expect("the set was just installed");
+        for listener in listeners.iter_mut() {
+            listener(event);
+        }
     }
+    let mut listeners = restore.listeners.take().expect("the set is still installed");
+    drop(restore);
     let mut guard = lock.lock().unwrap_or_else(|error| error.into_inner());
     let registered_during_dispatch = core::mem::take(&mut *guard);
     listeners.extend(registered_during_dispatch);
@@ -538,6 +575,14 @@ static LAST_DPI_SCALE: OnceLock<Mutex<Option<f32>>> = OnceLock::new();
 
 /// Compares the platform's current DPI scale factor with the last one and publishes a
 /// [`ApplicationEvent::DpiChanged`] when it changed (APP-012).
+///
+/// # Reachability
+///
+/// This is a **host-facing helper**, not a library-internal pump: the library does not call it on
+/// a timer, and no backend invokes it from its DPI-change arm. A host that owns its event loop and
+/// wants `DpiChanged` delivery calls it after a native scale change (or on its own poll). Per-monitor
+/// DPI propagation into `LayoutContext` is not implemented; see the `WM_DPICHANGED` arm in
+/// `platform/windows/types.rs` (T3-08).
 ///
 /// The first call records the baseline and publishes nothing: there is no previous value to have
 /// changed from, and reporting an initial "change" would make every application receive one event
@@ -644,8 +689,11 @@ fn trace_runtime_route(stage: &str) {
 mod tests {
     use super::*;
     use crate::app::lifecycle::LifecycleEvent;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
+
+    /// Serialises the tests that take the process-wide listener list out of its slot.
+    static APPLICATION_EVENT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A startup callback that re-registers a startup callback must not deadlock.
     ///
@@ -768,8 +816,7 @@ mod tests {
     /// APP-012: application-level facts reach every subscriber without a widget id.
     #[test]
     fn application_events_reach_every_subscriber() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = APPLICATION_EVENT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         clear_application_event_listeners();
 
         let seen = Arc::new(AtomicU32::new(0));
@@ -797,6 +844,43 @@ mod tests {
         assert!(
             publish_dpi_change_if_needed().is_none(),
             "an unchanged DPI scale must not fabricate a change event"
+        );
+
+        clear_application_event_listeners();
+    }
+
+    /// T3-23: one panicking listener must not unsubscribe everyone else.
+    #[test]
+    fn a_panicking_listener_does_not_drop_every_subscriber() {
+        let _guard = APPLICATION_EVENT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        clear_application_event_listeners();
+
+        let panicked = Arc::new(AtomicBool::new(false));
+        let first = Arc::clone(&panicked);
+        subscribe_application_events(move |_event| {
+            if !first.swap(true, Ordering::SeqCst) {
+                panic!("probe listener panics on its first event");
+            }
+        });
+        let seen = Arc::new(AtomicU32::new(0));
+        let second = Arc::clone(&seen);
+        subscribe_application_events(move |_event| {
+            second.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let event =
+            ApplicationEvent::ClipboardChanged { text: crate::compat::String::from("panic probe") };
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            publish_application_event(&event);
+        }));
+        assert!(unwind.is_err(), "the probe listener must have panicked");
+
+        let delivered = publish_application_event(&event);
+        assert_eq!(delivered, 2, "both listeners are still subscribed after the panic");
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            1,
+            "the surviving listener receives the next event"
         );
 
         clear_application_event_listeners();

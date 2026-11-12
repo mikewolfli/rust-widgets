@@ -1212,7 +1212,7 @@ impl EventHandler for DockWidget {
                     self.base.set_mouse_pressed(true);
                 }
             }
-            Event::MouseRelease { pos: _, button } if *button == 1 => {
+            Event::MouseRelease { pos: _, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
                 if let Some(hint) = self.dock_hint.take() {
                     // Commit exactly the preview the user was shown: the rect is derived from the
@@ -3168,7 +3168,7 @@ mod tests {
         let title_pos = Point::new(50, 10);
         dw.handle_event(&Event::MousePress { pos: title_pos, button: 1, modifiers: 0 });
         assert!(dw.base().is_mouse_pressed());
-        dw.handle_event(&Event::MouseRelease { pos: Point::new(60, 20), button: 1 });
+        dw.handle_event(&Event::MouseRelease { pos: Point::new(60, 20), button: 1, modifiers: 0 });
         assert!(!dw.base().is_mouse_pressed(), "mouse release should clear mouse_pressed");
     }
 
@@ -3520,7 +3520,7 @@ mod tests {
         let preview = dw.snap_preview_rect().expect("preview");
         assert_eq!(preview, Rect::new(0, 0, 200, 400));
 
-        dw.handle_event(&Event::MouseRelease { pos: Point::new(6, 200), button: 1 });
+        dw.handle_event(&Event::MouseRelease { pos: Point::new(6, 200), button: 1, modifiers: 0 });
         assert_eq!(dw.dock_location(), DockWidgetArea::LeftDockWidgetArea, "the hint is applied");
         assert_eq!(dw.geometry(), preview, "the committed rect is the previewed rect");
         assert_eq!(dw.dock_hint(), None, "a committed drag leaves no hint behind");

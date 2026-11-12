@@ -397,7 +397,7 @@ mod tests {
         let mut div = Divider::new(Rect::new(0, 0, 100, 10));
         // Events should not panic/crash.
         div.handle_event(&Event::MousePress { pos: Point::new(10, 5), button: 1, modifiers: 0 });
-        div.handle_event(&Event::MouseRelease { pos: Point::new(10, 5), button: 1 });
+        div.handle_event(&Event::MouseRelease { pos: Point::new(10, 5), button: 1, modifiers: 0 });
         // State remains unchanged (no interactive behavior).
         assert!(!div.is_vertical());
     }

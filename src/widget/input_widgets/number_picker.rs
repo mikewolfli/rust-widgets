@@ -709,7 +709,7 @@ impl EventHandler for NumberPicker {
             }
             // A click on the upper half steps down, the lower half steps up —
             // matching the direction a drag would take.
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 let centre = self.geometry().y + (self.geometry().height as i32) / 2;
                 let rows = if pos.y < centre { -1 } else { 1 };
                 let _ = self.scroll_rows_visual(rows);
@@ -719,19 +719,12 @@ impl EventHandler for NumberPicker {
             // whatever the user is editing.
             Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
                 match *key {
-                    // Typed value entry: digits, a sign and a decimal point build a buffer, Enter
-                    // commits it and Escape abandons it. Before this arm the picker was
+                    // Typed value entry: digits, a sign and a decimal point build a buffer,
+                    // Enter commits it and Escape abandons it. Before this arm the picker was
                     // scroll-only, so a large jump took dozens of notches.
-                    48..=57 | 45 | 46 if self.entering || matches!(*key, 48..=57 | 45) => {
-                        if let Some(ch) = char::from_u32(*key) {
-                            if !self.entering {
-                                self.entering = true;
-                                self.entry_buffer.clear();
-                            }
-                            self.entry_buffer.push(ch);
-                            self.base.request_redraw();
-                        }
-                    }
+                    //
+                    // The characters themselves arrive as `Event::TextInput` below (W4-01); this
+                    // key path owns only the non-text keys.
                     8 if self.entering => {
                         self.entry_buffer.pop();
                         if self.entry_buffer.is_empty() {
@@ -773,6 +766,27 @@ impl EventHandler for NumberPicker {
                     36 => self.set_value(self.minimum),
                     35 => self.set_value(self.maximum),
                     _ => {}
+                }
+            }
+            // Committed text from the platform (W4-01). Every backend delivers a typed
+            // character as `TextInput`/`ImeCommit`, so the numeric entry buffer is fed here
+            // rather than from the key code, which is not a character on Windows.
+            Event::TextInput { text } | Event::ImeCommit { text }
+                if self.base.focus_reason().is_some() =>
+            {
+                let mut changed = false;
+                for ch in text.chars() {
+                    if ch.is_ascii_digit() || ch == '-' || ch == '.' {
+                        if !self.entering {
+                            self.entering = true;
+                            self.entry_buffer.clear();
+                        }
+                        self.entry_buffer.push(ch);
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.base.request_redraw();
                 }
             }
             Event::Wheel { delta, modifiers } => {
@@ -1190,7 +1204,7 @@ mod tests {
         picker.handle_event(&Event::mouse_move(10, 42));
         assert_eq!(picker.value(), 50, "no drift after a round trip");
 
-        picker.handle_event(&Event::mouse_release(10, 42, 1));
+        picker.handle_event(&Event::mouse_release(10, 42, 1, 0));
         // After release, a move must not keep changing the value.
         picker.handle_event(&Event::mouse_move(10, 0));
         assert_eq!(picker.value(), 50, "a move outside a drag is ignored");
@@ -1334,14 +1348,14 @@ mod tests {
         let mut picker = picker();
         picker.set_range(0, 1_000);
         picker.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
-        for key in [49u32, 50, 51] {
-            picker.handle_event(&Event::KeyPress { key, modifiers: 0 });
+        for ch in ['1', '2', '3'] {
+            picker.handle_event(&Event::text_input(ch.to_string()));
         }
         assert_eq!(picker.value(), 0, "the value changes only on commit");
         picker.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
         assert_eq!(picker.value(), 123);
 
-        picker.handle_event(&Event::KeyPress { key: 57, modifiers: 0 });
+        picker.handle_event(&Event::text_input("9"));
         picker.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
         assert_eq!(picker.value(), 123, "Escape abandons the entry");
     }
@@ -1356,7 +1370,7 @@ mod tests {
         picker.handle_event(&Event::MouseMove {
             pos: Point::new(start.x, start.y - picker.row_height() as i32 - 6),
         });
-        picker.handle_event(&Event::MouseRelease { pos: start, button: 1 });
+        picker.handle_event(&Event::MouseRelease { pos: start, button: 1, modifiers: 0 });
         assert!(picker.is_settling());
         assert!(picker.tick(16));
         let mut frames = 0;

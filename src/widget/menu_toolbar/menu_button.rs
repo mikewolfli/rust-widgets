@@ -2182,7 +2182,7 @@ mod tests {
         mb.set_popup_delay_ms(500);
         mb.handle_event(&Event::mouse_press(10, 10, 1));
         assert!(mb.is_press_pending());
-        mb.handle_event(&Event::mouse_release(10, 10, 1));
+        mb.handle_event(&Event::mouse_release(10, 10, 1, 0));
         assert!(!mb.is_press_pending());
         mb.tick(1000);
         assert!(!mb.is_menu_open());

@@ -1972,7 +1972,7 @@ impl crate::event::EventHandler for ListView {
                     crate::shortcut::Modifiers::from_event_bits(*modifiers),
                 );
             }
-            crate::event::Event::MouseRelease { pos, button: 1 } => {
+            crate::event::Event::MouseRelease { pos, button: 1, .. } => {
                 if let Some(from) = self.drag_row.take() {
                     if let Some(to) = self.row_at_point(*pos) {
                         if from != to {
@@ -1997,7 +1997,7 @@ impl crate::event::EventHandler for ListView {
                     self.base.request_redraw();
                 }
             }
-            crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
+            crate::event::Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at_point(*pos) {
                     self.select_row(index);
                     self.row_activated.emit(index);
@@ -2020,11 +2020,25 @@ impl crate::event::EventHandler for ListView {
                 // 37..=40), so they are excluded explicitly; a modifier chord is a command, not
                 // a character.
                 let key_modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
-                let navigation_key = matches!(*key, 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 46);
+                let navigation_key = matches!(
+                    *key,
+                    crate::event::key_codes::PAGE_UP
+                        | crate::event::key_codes::PAGE_DOWN
+                        | crate::event::key_codes::END
+                        | crate::event::key_codes::HOME
+                        | crate::event::key_codes::LEFT
+                        | crate::event::key_codes::UP
+                        | crate::event::key_codes::RIGHT
+                        | crate::event::key_codes::DOWN
+                        | crate::event::key_codes::DELETE
+                );
                 let command_chord = key_modifiers.contains(crate::shortcut::Modifiers::CTRL)
                     || key_modifiers.contains(crate::shortcut::Modifiers::META)
                     || key_modifiers.contains(crate::shortcut::Modifiers::ALT);
-                if (32..=126).contains(key) && !navigation_key && !command_chord {
+                if (crate::event::key_codes::SPACE..=126).contains(key)
+                    && !navigation_key
+                    && !command_chord
+                {
                     if let Some(character) = char::from_u32(*key) {
                         self.type_ahead(character);
                     }
@@ -2647,6 +2661,7 @@ mod tests {
             view.handle_event(&crate::event::Event::MouseDoubleClick {
                 pos: crate::core::Point::new(rect.x + 2, rect.y + 2),
                 button: 1,
+                modifiers: 0,
             });
             assert!(activated.lock().map(|slot| slot.is_some()).unwrap_or(false));
         }
@@ -2684,6 +2699,7 @@ mod tests {
         view.handle_event(&crate::event::Event::MouseRelease {
             pos: crate::core::Point::new(second.x + 2, second.y + 2),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(moved.lock().map(|slot| *slot).unwrap_or(None), Some((0, 1)));
     }

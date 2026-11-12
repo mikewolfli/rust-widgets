@@ -1146,6 +1146,7 @@ impl Draw for OrderBookWidget {
                 HorizontalAlignment::Center,
             );
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

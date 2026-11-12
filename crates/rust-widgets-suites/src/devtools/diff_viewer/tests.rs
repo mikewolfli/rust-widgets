@@ -447,7 +447,7 @@ fn file_list_reports_selection_and_activation() {
     assert!(list.select_file("src/b.rs"));
     assert!(!list.select_file("src/missing.rs"), "an unknown path is refused");
     let row = list.row_rect(1).expect("row 1 is visible");
-    list.handle_event(&Event::mouse_double_click(row.x + 4, row.y + 4, 1));
+    list.handle_event(&Event::mouse_double_click(row.x + 4, row.y + 4, 1, 0));
 
     assert_eq!(list.selected_path(), Some("src/b.rs"));
     assert_eq!(
@@ -679,7 +679,7 @@ fn file_list_extended_drag_selects_a_range_until_release() {
     list.handle_event(&Event::mouse_move(row3.x + 4, row3.y + 4));
     assert_eq!(list.selected_paths(), vec!["b.rs", "c.rs", "d.rs"], "the drag extends");
 
-    list.handle_event(&Event::mouse_release(row3.x + 4, row3.y + 4, 1));
+    list.handle_event(&Event::mouse_release(row3.x + 4, row3.y + 4, 1, 0));
     list.handle_event(&Event::mouse_move(row0.x + 4, row0.y + 4));
     assert_eq!(
         list.selected_paths(),

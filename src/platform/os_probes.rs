@@ -110,17 +110,45 @@ fn is_on_battery_uncached() -> bool {
 /// resident. `VmSize` is the denominator, so a process that has mapped a large
 /// file reports a low figure — that is the intended reading, and why this is a
 /// *utilization* rather than a "memory pressure" metric.
+///
+/// A failed read is cached for the same [`MEMORY_SAMPLE_TTL`] as a measured one: a
+/// host without `/proc` would otherwise re-open the file on every call, and the
+/// answer cannot change within the window. The negative result therefore costs one
+/// file read per second, not one per call.
 pub fn process_memory_utilization() -> Option<f32> {
-    static CACHE: OnceLock<Mutex<Option<(Instant, f32)>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<Option<(Instant, Option<f32>)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
+    cached_memory_utilization(cache, read_memory_utilization)
+}
+
+/// The body of [`process_memory_utilization`], with the probe source as a parameter.
+///
+/// Splitting the read out lets a test count how often the source is consulted; production
+/// always passes [`read_memory_utilization`], so there is still one reading point.
+fn cached_memory_utilization(
+    cache: &Mutex<Option<(Instant, Option<f32>)>>,
+    read: impl Fn() -> Option<f32>,
+) -> Option<f32> {
     if let Ok(guard) = cache.lock() {
         if let Some((sampled_at, value)) = *guard {
             if sampled_at.elapsed() < MEMORY_SAMPLE_TTL {
-                return Some(value);
+                return value;
             }
         }
     }
 
+    let value = read();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((Instant::now(), value));
+    }
+    value
+}
+
+/// Reads and parses `/proc/self/status` into an RSS/VmSize ratio.
+///
+/// `None` means the file could not be read, or it had no usable `VmSize` — both are
+/// facts about the host, not a transient error, so the caller caches the answer.
+fn read_memory_utilization() -> Option<f32> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let mut vmrss_kb: u64 = 0;
     let mut vmsize_kb: u64 = 0;
@@ -134,11 +162,7 @@ pub fn process_memory_utilization() -> Option<f32> {
     if vmsize_kb == 0 {
         return None;
     }
-    let value = (vmrss_kb as f32 / vmsize_kb as f32).clamp(0.0, 1.0);
-    if let Ok(mut guard) = cache.lock() {
-        *guard = Some((Instant::now(), value));
-    }
-    Some(value)
+    Some((vmrss_kb as f32 / vmsize_kb as f32).clamp(0.0, 1.0))
 }
 
 /// CPU utilization is **not** reliably measurable from a one-shot `/proc/self/status` read, so this
@@ -442,6 +466,29 @@ mod tests {
         }
         // `is_on_battery` has no invariant to assert beyond not panicking.
         let _ = is_on_battery();
+    }
+
+    /// A failed read must be served from the cache, not retried, on the second call.
+    ///
+    /// A host without `/proc/self/status` used to re-open the file on every call because the
+    /// failure returned before the cache write. The reader is injected so the test can count
+    /// calls and does not depend on the host having `/proc`.
+    #[test]
+    fn a_failed_memory_sample_is_served_from_the_cache() {
+        let cache: Mutex<Option<(Instant, Option<f32>)>> = Mutex::new(None);
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let read = || {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        };
+
+        assert_eq!(cached_memory_utilization(&cache, read), None);
+        assert_eq!(cached_memory_utilization(&cache, read), None);
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a cached failure must not re-read the probe source within the TTL"
+        );
     }
 
     /// The spooler must have finished reading the job file before this returns.

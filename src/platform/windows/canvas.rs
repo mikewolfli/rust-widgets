@@ -781,9 +781,11 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
             crate::event::mouse_button::PRIMARY,
             modifiers,
         ),
-        MousePhase::Release => {
-            Event::MouseRelease { pos: position, button: crate::event::mouse_button::PRIMARY }
-        }
+        MousePhase::Release => Event::MouseRelease {
+            pos: position,
+            button: crate::event::mouse_button::PRIMARY,
+            modifiers,
+        },
         MousePhase::Drag | MousePhase::Move => Event::MouseMove { pos: position },
         MousePhase::SecondaryPress => Event::mouse_press_with(
             position.x,
@@ -791,12 +793,17 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
             crate::event::mouse_button::SECONDARY,
             modifiers,
         ),
-        MousePhase::SecondaryRelease => {
-            Event::MouseRelease { pos: position, button: crate::event::mouse_button::SECONDARY }
-        }
-        MousePhase::DoubleClick => {
-            Event::mouse_double_click(position.x, position.y, crate::event::mouse_button::PRIMARY)
-        }
+        MousePhase::SecondaryRelease => Event::MouseRelease {
+            pos: position,
+            button: crate::event::mouse_button::SECONDARY,
+            modifiers,
+        },
+        MousePhase::DoubleClick => Event::mouse_double_click(
+            position.x,
+            position.y,
+            crate::event::mouse_button::PRIMARY,
+            modifiers,
+        ),
     };
     let hover_before = if matches!(phase, MousePhase::Move) {
         crate::widget::runtime::hovered_widget()

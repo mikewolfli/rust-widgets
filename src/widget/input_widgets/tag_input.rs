@@ -1739,7 +1739,7 @@ impl EventHandler for TagInput {
                     self.set_focused(true);
                 }
             }
-            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+            Event::MouseDoubleClick { pos, button, .. } if *button == 1 => {
                 // Double-clicking a chip edits it: its text returns to the input buffer.
                 if let Some(index) = self.hit_tag_index(*pos) {
                     self.begin_edit_tag(index);
@@ -1772,7 +1772,7 @@ impl EventHandler for TagInput {
                     }
                 }
             }
-            Event::MouseRelease { pos, button } if *button == 1 => {
+            Event::MouseRelease { pos, button, .. } if *button == 1 => {
                 self.drag_indicator = None;
                 if let Some(from) = self.dragging_tag.take() {
                     if let Some(to) = self.hit_tag_index(*pos) {
@@ -1941,20 +1941,32 @@ impl EventHandler for TagInput {
                         self.set_focused(false);
                     }
                     _ => {
-                        // Character input
-                        if let Some(ch) = char::from_u32(*key) {
-                            if ch.is_ascii_graphic() || ch == ' ' {
-                                self.push_input_text(&ch.to_string());
-                                self.refresh_suggestions();
-                            }
-                        }
+                        // Printable content arrives as `Event::TextInput` (W4-01), which the
+                        // committed-text arm below pushes into the input. Taking the printable key
+                        // here as well inserted it twice on Windows, the one backend that also
+                        // forwards `WM_KEYDOWN` for printable virtual keys.
                     }
                 }
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 if self.focused {
                     self.preedit.clear();
-                    self.push_input_text(text);
+                    // A comma is a tag separator on every delivery path. The key arm above
+                    // handles the key code, and a platform that reports the character as
+                    // `TextInput` must create the same tag rather than typing a literal comma
+                    // into the buffer (W4-01).
+                    if text.contains(',') {
+                        for (index, part) in text.split(',').enumerate() {
+                            if index > 0 {
+                                self.commit_input();
+                            }
+                            if !part.is_empty() {
+                                self.push_input_text(part);
+                            }
+                        }
+                    } else {
+                        self.push_input_text(text);
+                    }
                     self.refresh_suggestions();
                 }
             }
@@ -2135,8 +2147,8 @@ mod tests {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         ti.set_focused(true);
 
-        ti.handle_event(&Event::KeyPress { key: 104, modifiers: 0 }); // 'h'
-        ti.handle_event(&Event::KeyPress { key: 105, modifiers: 0 }); // 'i'
+        ti.handle_event(&Event::text_input("h")); // 'h'
+        ti.handle_event(&Event::text_input("i")); // 'i'
         assert_eq!(ti.input_buffer, "hi");
     }
 
@@ -2145,10 +2157,10 @@ mod tests {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         ti.set_focused(true);
 
-        ti.handle_event(&Event::KeyPress { key: 114, modifiers: 0 }); // 'r'
-        ti.handle_event(&Event::KeyPress { key: 117, modifiers: 0 }); // 'u'
-        ti.handle_event(&Event::KeyPress { key: 115, modifiers: 0 }); // 's'
-        ti.handle_event(&Event::KeyPress { key: 116, modifiers: 0 }); // 't'
+        ti.handle_event(&Event::text_input("r")); // 'r'
+        ti.handle_event(&Event::text_input("u")); // 'u'
+        ti.handle_event(&Event::text_input("s")); // 's'
+        ti.handle_event(&Event::text_input("t")); // 't'
         ti.handle_event(&Event::KeyPress { key: 13, modifiers: 0 }); // Enter
 
         assert_eq!(ti.tags(), &["rust"]);
@@ -2160,9 +2172,9 @@ mod tests {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         ti.set_focused(true);
 
-        ti.handle_event(&Event::KeyPress { key: 103, modifiers: 0 }); // 'g'
-        ti.handle_event(&Event::KeyPress { key: 111, modifiers: 0 }); // 'o'
-        ti.handle_event(&Event::KeyPress { key: 44, modifiers: 0 }); // Comma
+        ti.handle_event(&Event::text_input("g")); // 'g'
+        ti.handle_event(&Event::text_input("o")); // 'o'
+        ti.handle_event(&Event::text_input(",")); // Comma
 
         assert_eq!(ti.tags(), &["go"]);
         assert!(ti.input_buffer.is_empty());
@@ -2174,8 +2186,8 @@ mod tests {
         ti.set_focused(true);
 
         // Type "ab" then backspace removes 'b'
-        ti.handle_event(&Event::KeyPress { key: 97, modifiers: 0 }); // 'a'
-        ti.handle_event(&Event::KeyPress { key: 98, modifiers: 0 }); // 'b'
+        ti.handle_event(&Event::text_input("a")); // 'a'
+        ti.handle_event(&Event::text_input("b")); // 'b'
         ti.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // Backspace
         assert_eq!(ti.input_buffer, "a");
 
@@ -2382,10 +2394,10 @@ mod tests {
             }
         });
 
-        ti.handle_event(&Event::KeyPress { key: 99, modifiers: 0 }); // 'c'
-        ti.handle_event(&Event::KeyPress { key: 111, modifiers: 0 }); // 'o'
-        ti.handle_event(&Event::KeyPress { key: 100, modifiers: 0 }); // 'd'
-        ti.handle_event(&Event::KeyPress { key: 101, modifiers: 0 }); // 'e'
+        ti.handle_event(&Event::text_input("c")); // 'c'
+        ti.handle_event(&Event::text_input("o")); // 'o'
+        ti.handle_event(&Event::text_input("d")); // 'd'
+        ti.handle_event(&Event::text_input("e")); // 'e'
         ti.handle_event(&Event::KeyPress { key: 13, modifiers: 0 }); // Enter
 
         assert_eq!(*captured.lock().unwrap(), Some(vec!["code".to_string()]));
@@ -2396,9 +2408,9 @@ mod tests {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         ti.set_focused(true);
 
-        ti.handle_event(&Event::KeyPress { key: 112, modifiers: 0 }); // 'p'
-        ti.handle_event(&Event::KeyPress { key: 101, modifiers: 0 }); // 'e'
-        ti.handle_event(&Event::KeyPress { key: 110, modifiers: 0 }); // 'n'
+        ti.handle_event(&Event::text_input("p")); // 'p'
+        ti.handle_event(&Event::text_input("e")); // 'e'
+        ti.handle_event(&Event::text_input("n")); // 'n'
 
         // Focus lost — should commit pending input
         ti.handle_event(&Event::FocusLost);
@@ -2411,12 +2423,12 @@ mod tests {
     fn the_input_caret_edits_inside_the_buffer() {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         ti.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
-        for key in [114u32, 115] {
-            ti.handle_event(&Event::KeyPress { key, modifiers: 0 });
+        for ch in ["r", "s"] {
+            ti.handle_event(&Event::text_input(ch));
         }
         assert_eq!(ti.input_cursor_position(), 2);
         ti.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
-        ti.handle_event(&Event::KeyPress { key: 117, modifiers: 0 }); // 'u'
+        ti.handle_event(&Event::text_input("u")); // 'u'
         ti.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
         assert_eq!(ti.tags(), &["rus"]);
     }
@@ -2439,7 +2451,7 @@ mod tests {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         ti.set_suggestions(vec!["rust".to_string(), "ruby".to_string()]);
         ti.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
-        ti.handle_event(&Event::KeyPress { key: 114, modifiers: 0 });
+        ti.handle_event(&Event::text_input("r"));
         ti.handle_event(&Event::KeyPress { key: 9, modifiers: 0 });
         assert_eq!(ti.suggestions().len(), 2);
         assert_eq!(ti.input_selection(), Some((0, 4)));
@@ -2477,7 +2489,7 @@ mod tests {
         ti.handle_event(&Event::KeyPress { key: 86, modifiers: primary_modifier_event_bits() });
         assert_eq!(ti.tags(), &["alpha", "beta", "gamma"]);
 
-        ti.handle_event(&Event::KeyPress { key: 120, modifiers: 0 });
+        ti.handle_event(&Event::text_input("x"));
         assert_eq!(ti.input_buffer, "x");
         ti.handle_event(&Event::KeyPress { key: 67, modifiers: primary_modifier_event_bits() });
         assert_eq!(crate::get_clipboard_text(), "x");

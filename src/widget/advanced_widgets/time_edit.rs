@@ -1427,12 +1427,18 @@ impl EventHandler for TimeEdit {
                     }
                 }
                 48..=57 if self.current_section.is_some() => {
-                    if let Some(digit) = char::from_u32(*key) {
-                        self.type_digit(digit);
-                    }
+                    // Typed digits arrive as `Event::TextInput` (W4-01); a raw key code is not a
+                    // digit on Windows.
                 }
                 _ => { /* Other keys are not relevant */ }
             },
+            Event::TextInput { text } | Event::ImeCommit { text }
+                if self.current_section.is_some() =>
+            {
+                for ch in text.chars().filter(|ch| ch.is_ascii_digit()) {
+                    self.type_digit(ch);
+                }
+            }
             // Focus leaving the field ends the edit, the same rule `DateTimeEdit` uses.
             Event::FocusLost => self.editing_finished.emit(),
             _ => { /* Other events are not relevant */ }

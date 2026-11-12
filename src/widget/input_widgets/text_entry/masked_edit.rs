@@ -29,7 +29,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
-use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
+use crate::widget::text_utils::byte_index_of_char;
 use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -52,6 +52,41 @@ fn mask_font() -> &'static Font {
 /// by **this** number: it used to derive `font.size() * 3 / 5` (7 px at the 13 px face), so from
 /// the eighth character on a click landed one cell to the left of the glyph under the pointer.
 const MASK_CELL_WIDTH: i32 = 8;
+
+/// The advance of a caret in a value the line renderer paints, honouring bidi reordering.
+///
+/// # Why only the unmasked branch needs this
+///
+/// A masked field paints one glyph per segment at a fixed cell ([`MASK_CELL_WIDTH`]), in display
+/// order, so the renderer never reorders it and the display-space caret is already the visual
+/// position. The unmasked fallback draws its raw value through the line renderer, which does
+/// reorder a right-to-left run — there the logical prefix width puts the caret at the opposite
+/// end (UX6-02).
+fn visual_raw_advance(text: &str, font: &Font, byte: usize) -> i32 {
+    // The all-LTR value is the steady state: no ranges, no levels, no ordering, no allocation.
+    if !crate::render::text::bidi::has_rtl_char(text) {
+        return estimate_text_width(&text[..byte], font, 1.0) as i32;
+    }
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut advances: Vec<f32> = Vec::new();
+    for (start, ch) in text.char_indices() {
+        let end = start + ch.len_utf8();
+        ranges.push((start, end));
+        advances.push(estimate_text_width(&text[start..end], font, 1.0) as f32);
+    }
+    if ranges.is_empty() {
+        return 0;
+    }
+    let levels = crate::render::text::line::line_bidi_levels(text, &ranges, font, 1.0);
+    crate::render::text::bidi::caret_visual_advance_from_levels(
+        levels.as_ref(),
+        &ranges,
+        &advances,
+        byte,
+    )
+    .map(|x| x.round() as i32)
+    .unwrap_or_else(|| estimate_text_width(&text[..byte], font, 1.0) as i32)
+}
 
 /// Where the run of segments begins inside the field, in pixels.
 ///
@@ -1020,18 +1055,18 @@ impl MaskedEdit {
         let field = self.field_rect();
         let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
         let alignment = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let caret_byte =
+            byte_index_of_char(&self.raw_text, self.display_to_raw_index(self.cursor_pos));
         let caret_x = if self.mask.is_empty() {
-            let prefix_len = self.cursor_pos.min(self.raw_text.len());
-            let prefix = &self.raw_text[..floor_char_boundary(&self.raw_text, prefix_len)];
-            field.x + padding + estimate_text_width(prefix, mask_font(), 1.0) as i32
+            // No mask: the value is one line through the renderer, so its caret follows the
+            // painted (visual) order.
+            field.x + padding + visual_raw_advance(&self.raw_text, mask_font(), caret_byte)
         } else {
             field.x
                 + padding
                 + mask_start_shift(field, padding, self.segments.len(), alignment)
                 + self.cursor_pos as i32 * MASK_CELL_WIDTH
         };
-        let caret_byte =
-            byte_index_of_char(&self.raw_text, self.display_to_raw_index(self.cursor_pos));
         InputMethodQuery {
             caret_rect: Rect::new(caret_x, field.y + 2, 1, field.height.saturating_sub(4).max(1)),
             caret_byte: Some(caret_byte),
@@ -1626,7 +1661,7 @@ impl EventHandler for MaskedEdit {
             // the raw value. An unfocused field ignores it, matching the key path below.
             // A double click selects the input run under the pointer; the mask's literals are the
             // run boundaries, so a formatted value selects one group at a time.
-            Event::MouseDoubleClick { pos, button }
+            Event::MouseDoubleClick { pos, button, .. }
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
                 self.focused = true;
@@ -1768,21 +1803,9 @@ impl EventHandler for MaskedEdit {
                         self.select_with_modifiers(self.segments.len(), mods);
                     }
                     _ => {
-                        // Printable character. A control chord is not text: `Primary+B` used to be
-                        // inserted as a literal `b`, because the catch-all accepted every
-                        // printable key regardless of the modifiers beside it.
-                        //
-                        // The three modifiers are tested one at a time on purpose:
-                        // `Modifiers::contains` compares the *value* of the mask, so the combined
-                        // `contains(CTRL | ALT | META)` form is true only when all three are held.
-                        let chord = mods.contains(crate::shortcut::Modifiers::CTRL)
-                            || mods.contains(crate::shortcut::Modifiers::ALT)
-                            || mods.contains(crate::shortcut::Modifiers::META);
-                        if !chord && *key >= 32 && *key < 127 {
-                            if let Some(ch) = char::from_u32(*key) {
-                                self.insert_char(ch);
-                            }
-                        }
+                        // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01)
+                        // and the committed arm feeds the mask. Taking the raw key as well
+                        // inserted every character twice on Windows.
                     }
                 }
             }
@@ -2390,7 +2413,7 @@ mod tests {
         me.select_with_modifiers(4, crate::shortcut::Modifiers::SHIFT);
         assert_eq!(me.selection_raw_range(), Some((0, 3)));
 
-        me.handle_event(&Event::key_press(57, 0)); // '9'
+        me.handle_event(&Event::text_input("9")); // '9'
         assert_eq!(me.raw_text(), "91234567", "the selected digits were consumed");
         assert_eq!(me.selection_range(), None, "and the range it described is gone");
         // The mask is re-applied to the shorter raw value, so the tail reverts to placeholders.
@@ -2427,7 +2450,7 @@ mod tests {
             assert!(me.raw_text().is_empty(), "{name}+5 must not be typed");
         }
         // The same key with no modifier is content, so the guard did not disable typing.
-        me.handle_event(&Event::key_press(53, 0));
+        me.handle_event(&Event::text_input("5"));
         assert_eq!(me.raw_text(), "5");
     }
 
@@ -2696,6 +2719,7 @@ mod tests {
         edit.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(x, edit.field_rect().y + 4),
             button: 1,
+            modifiers: 0,
         });
         let (start, end) = edit.selection_range().expect("a double click must select");
         assert_eq!((start, end), (1, 4), "the literals bound the run");
@@ -2787,5 +2811,30 @@ mod tests {
         });
         assert!(me.focused, "a press on the drawn field focuses it");
         assert!(me.tick(16), "the press starts the caret blink, so a frame is owed");
+    }
+
+    /// UX6-02 for the unmasked fallback: its one-line value reorders, so the caret does too.
+    ///
+    /// A masked field paints one glyph per fixed cell in display order, which the renderer never
+    /// reorders; the unmasked fallback draws the raw value as a line, so a right-to-left value
+    /// there must place logical offset 0 at the row's visual right end.
+    #[cfg(feature = "text-bidi")]
+    #[test]
+    fn an_rtl_unmasked_value_places_the_caret_at_its_visual_end() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 48));
+        // No mask: this is the branch that paints the value through the line renderer.
+        me.set_text("\u{05d0}\u{05d1}\u{05d2} abc");
+        assert_eq!(me.cursor_pos, 0, "an unmasked value opens with the caret at its start");
+        let field = me.field_rect();
+        let caret = me
+            .input_method_query()
+            .expect("an editable field reports an insertion point")
+            .caret_rect
+            .x;
+        let origin = field.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+        assert!(
+            caret > origin,
+            "logical offset 0 is the visual right end of an RTL value: {caret} vs {origin}"
+        );
     }
 }

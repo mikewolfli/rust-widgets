@@ -14,6 +14,11 @@
 >
 > **Status column.** `✔` = verified in this round or a recorded earlier round; `—` = not yet
 > injected. A `—` is an honest gap, not a pass.
+>
+> **Coverage is checked in both directions.** `tools/check_gates_are_worth_running.sh` fails when a
+> `tools/check_*.sh` gate has no row here **and** when a row names a gate that is not on disk. A
+> stale row describes a gate that cannot be run, so it is not evidence; delete it rather than
+> leaving a phantom entry. The number of `—` rows, not a hand-maintained total, is the backlog.
 
 ## Designer generator / registry agreement round (2026-09-30)
 
@@ -188,7 +193,7 @@
 | gate | injected | reported |
 |---|---|---|
 | `check_apple_thread_safety.sh` | removed the main-thread guard: renamed `objc2::MainThreadMarker::new()` → `new_unchecked()` in `src/platform/macos_objc2/platform_impl.rs` | `❌ src/platform/macos_objc2/platform_impl.rs: expected >=1 MainThreadMarker guard, found 0` / `check_apple_thread_safety: FAILED with 1 issue(s)` |
-| `check_empty_is_not_answered.sh`-style note: `check_error_messages.py` | added a vague message: `return Err("operation failed".to_string());` at the top of `ffmpeg_encode` in `src/audio/ffmpeg_encoder.rs`. **This file is a REPORT, not a gate — it always exits 0** (its own docstring says so), so the observable change is a delta in reported output | baseline `Scanned 147 error message(s)… 43 do not satisfy` → injected `Scanned 148 … 44 do not satisfy`, with the new row `src/audio/ffmpeg_encoder.rs (2)` / `228: operation failed` / `      -> does not name the input; does not state the expected form` (exit 0 both runs) |
+| `check_error_messages.py` | added a vague message: `return Err("operation failed".to_string());` at the top of `ffmpeg_encode` in `src/audio/ffmpeg_encoder.rs`. **This file is a REPORT, not a gate — it always exits 0** (its own docstring says so), so the observable change is a delta in reported output | baseline `Scanned 147 error message(s)… 43 do not satisfy` → injected `Scanned 148 … 44 do not satisfy`, with the new row `src/audio/ffmpeg_encoder.rs (2)` / `228: operation failed` / `      -> does not name the input; does not state the expected form` (exit 0 both runs) |
 | `check_locking.sh` | introduced a blocking primitive into widget state: added `use std::sync::Mutex as WidgetMutex;` to `src/widget/a11y_submit.rs` | `FAIL: 1 synchronisation primitive(s) in widget state:` / `  src/widget/a11y_submit.rs:47: use std::sync::Mutex as WidgetMutex;` |
 | `check_platform_create_coverage.sh` | declared a factory with no capability: added `fn create_zzzprobe_widget(&self, …, width: u32, height: u32) -> ObjectId;` to `src/platform/types.rs` | `UNRESOLVED (1): ['zzzprobe_widget']` / `zzzprobe_widget              UNRESOLVED` / `check_platform_create_coverage: FAILED` |
 | `check_routing_match_is_exhaustive.sh` | added a wildcard arm to the routing match: `_ => ControlRoutePreference::CustomRequired,` in `route_is_library_painted` (`src/control_backend/routing.rs`) | `finding: route_is_library_painted has 1 wildcard arm(s). …` / `matches=1 wildcards=1 findings=1` / `The routing decision no longer fails the build for an unrouted WidgetKind.` |
@@ -245,8 +250,6 @@
 | `check_profiles.sh` | ✅ see "BLUE25 C-wave 5" | ✅ |
 | `check_behavior_matrix.sh` | ✅ see "BLUE25 C-wave 6" | ✅ |
 | `check_android_cross.sh` | ✅ see "BLUE25 C-wave 5" | ✅ |
-| `check_no_blanket_allow.sh` | — (removed 2026-09-28: no such file in `tools/`) | — |
-| `check_docs.sh` | — (removed 2026-09-28: no such file in `tools/`) | — |
 | `check_locking.sh` | — (now injected — see "BLUE25 C-wave 8") | — |
 | `check_error_messages.py` | — (a report, not a gate — see "BLUE25 C-wave 8") | — |
 | `check_theme_fixtures.sh` | — (now injected — see "BLUE25 C-wave 8") | — |
@@ -618,3 +621,35 @@ put their arms under `check_event_payload_types.sh` for the first time, which fo
 carrier mismatches (`badge.count_changed` delivered `Int` for a declared `UInt`;
 `key_sequence_editor.key_sequence_changed` delivered the compatibility tuple for a declared scalar
 string). Both arms were fixed; the second has a regression test.
+
+## Suite control count (2026-11-12)
+
+T3-03/T3-52: the maps group gained `map_marker_detail` (8 controls) while the suites and both root
+READMEs still said 7/39. `check_suite_control_count.sh` derives each group's count from its install
+table's array length and compares it with the documents, so the table cannot drift from the code.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_suite_control_count.sh` | changed the suites README total from `**40 controls in 7 groups**` to `**39 controls in 7 groups**` | `FAIL suites README total says 39, install registers 40` / `suite control count: FAILED (1 finding(s))` |
+| `check_suite_control_count.sh` (`--inject=form`) | the gate's own self-check pretends the form install table gained a row while every document stayed put | `FAIL suites README says 2 for \`form\`, install registers 3` / `FAIL suites README total says 40, install registers 41` / `FAIL README.md suites total says 40, install registers 41` / `FAIL README.zh-CN.md suites total says 40, install registers 41` / `suite control count: FAILED (4 finding(s))` |
+| `check_suite_control_count.sh` (`--inject=no_such_group`) | names a group the gate does not scan | `--inject=no_such_group: not a scanned group` / exit 2 |
+
+The `--inject` mode exists so the check's ability to fail is exercised on every run instead of
+depending on a hand edit to the tree. The per-group comparison is not separately injected: it reads
+the same install tables that produce the total, so a per-group mismatch is the same code path with a
+smaller left-hand side.
+
+## Strengthened positive assertions (2026-11-12) — W4-36
+
+Both gates had a positive assertion that a comment or a call site could satisfy. The injections
+below remove only the **real code shape** and leave those distractors in place, so they prove the
+new anchors fail for the right reason.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_apple_thread_safety.sh` | renamed the only code-line `setFrame:` selector to `setFrameX:` in `src/platform/macos/canvas.rs`; the five comment occurrences of `setFrame:` stayed put | `❌ src/platform/macos/canvas.rs: expected a setFrame: call for the surface view` / `check_apple_thread_safety: FAILED with 1 issue(s)` / exit 1 (restored: `✅ check_apple_thread_safety: all Apple native FFI guards present`) |
+| `check_platform_docs_truthfulness.sh` | renamed the Linux `fn set_window_state` declaration to `set_window_state_renamed`, leaving its `self.state.set_window_state(..)` call sites and doc prose intact | `FAIL: src/platform/linux/platform_impl.rs: does not declare set_window_state` / `RESULT: FAIL` (restored: `RESULT: PASS`) |
+
+Before the change, the first injection still satisfied `grep -q 'setFrame:'` (five comment lines),
+and the second still satisfied the bare-token `grep -q set_window_state` (the call sites), which is
+the failure mode principle #106 names.

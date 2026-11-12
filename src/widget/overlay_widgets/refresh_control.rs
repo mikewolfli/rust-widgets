@@ -824,7 +824,7 @@ impl EventHandler for RefreshControl {
                     self.update_pull(delta);
                 }
             }
-            Event::MouseRelease { pos: _, button } => {
+            Event::MouseRelease { pos: _, button, .. } => {
                 if *button == 1 {
                     self.drag_origin_y = None;
                     self.end_pull();
@@ -906,7 +906,11 @@ mod tests {
         rc.handle_event(&Event::MouseMove { pos: Point::new(100, 110) });
         assert_eq!(rc.pull_distance(), 90.0);
 
-        rc.handle_event(&Event::MouseRelease { pos: Point::new(100, 110), button: 1 });
+        rc.handle_event(&Event::MouseRelease {
+            pos: Point::new(100, 110),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(rc.refresh_state(), RefreshState::Triggered);
         assert!(rc.is_refreshing());
         assert!(captured.load(Ordering::SeqCst));
@@ -921,7 +925,11 @@ mod tests {
         rc.handle_event(&Event::MouseMove { pos: Point::new(100, 120) });
         assert_eq!(rc.pull_distance(), 0.0);
 
-        rc.handle_event(&Event::MouseRelease { pos: Point::new(100, 120), button: 1 });
+        rc.handle_event(&Event::MouseRelease {
+            pos: Point::new(100, 120),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(rc.refresh_state(), RefreshState::Idle);
         assert!(!rc.is_refreshing());
     }
@@ -1343,7 +1351,11 @@ mod tests {
         assert_eq!(content.y, 0, "the content starts at the top edge");
         assert!(content.height < 400, "and ends above the open indicator band");
 
-        control.handle_event(&Event::MouseRelease { pos: Point::new(100, 230), button: 1 });
+        control.handle_event(&Event::MouseRelease {
+            pos: Point::new(100, 230),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(control.is_refreshing());
         assert!(triggered.load(Ordering::SeqCst));
     }
@@ -1360,7 +1372,11 @@ mod tests {
         });
         control.handle_event(&Event::MouseMove { pos: Point::new(100, 180) });
         assert_eq!(control.pull_distance(), 0.0);
-        control.handle_event(&Event::MouseRelease { pos: Point::new(100, 180), button: 1 });
+        control.handle_event(&Event::MouseRelease {
+            pos: Point::new(100, 180),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!control.is_refreshing());
     }
 }

@@ -1933,7 +1933,7 @@ impl EventHandler for QueryBuilder {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 if let Some(from) = self.drag_row.take() {
                     if let Some(to) = self.row_at(*pos) {
                         if from != to {
@@ -2875,6 +2875,7 @@ mod tests {
         b.handle_event(&Event::MouseRelease {
             pos: Point::new(second.x + 20, second.y + 2),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(
             changes.load(std::sync::atomic::Ordering::SeqCst),

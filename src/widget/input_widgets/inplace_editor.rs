@@ -29,6 +29,15 @@ use std::rc::Rc;
 /// The default is [`Self::DOUBLE_CLICK`], which is the gesture this control shipped with; the
 /// other flags exist so a grid cell can opt into single-click or F2 editing without a new widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The gestures that can start an in-place edit.
+///
+/// # Why this is not the listbox/data-grid `EditTriggers` (R-26, principle #51)
+///
+/// The three names collide but their **bit layouts and vocabularies differ**, so they are not
+/// copies: this one has `SINGLE_CLICK`/`DOUBLE_CLICK`/`F2` (1/2/4) and defaults to a double click;
+/// `listbox::EditTriggers` has `DOUBLE_CLICK`/`F2` (1/2) and defaults to both; the data grid's has
+/// `DOUBLE_CLICKED`/`EDIT_KEY` (1/2) and defaults to none. Sharing one type would force each
+/// control to carry flags it cannot honour.
 pub struct EditTriggers(u8);
 
 impl EditTriggers {
@@ -1076,7 +1085,7 @@ impl EventHandler for InplaceEditor {
             return;
         }
         match event {
-            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+            Event::MouseDoubleClick { pos, button, .. } if *button == 1 => {
                 // Entering edit mode needs the double-click to land on the editor.
                 // Discarding the position meant a double-click anywhere in the window
                 // put this control into edit mode with no way for the user to cancel it.
@@ -1195,13 +1204,10 @@ impl EventHandler for InplaceEditor {
                         self.move_caret(self.text.chars().count(), shift);
                     }
                     _ => {
-                        // Printable characters
-                        if let Some(c) = char::from_u32(*key) {
-                            if c.is_alphanumeric() || c.is_whitespace() || c.is_ascii_punctuation()
-                            {
-                                self.insert_committed_text(&c.to_string());
-                            }
-                        }
+                        // Printable content arrives as `Event::TextInput` (W4-01), which the
+                        // committed-text arm routes into `insert_committed_text`. Taking the
+                        // printable key here as well inserted it twice on Windows, the one backend
+                        // that also forwards `WM_KEYDOWN` for printable virtual keys.
                     }
                 }
             }
@@ -1387,7 +1393,11 @@ mod tests {
     #[test]
     fn inplace_editor_double_click_starts_edit() {
         let mut ie = InplaceEditor::new("Hello", Rect::new(0, 0, 200, 30));
-        ie.handle_event(&Event::MouseDoubleClick { pos: Point::new(50, 15), button: 1 });
+        ie.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(50, 15),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(ie.is_editing());
     }
 
@@ -1426,6 +1436,7 @@ mod tests {
         ie.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
             button: 1,
+            modifiers: 0,
         });
         assert!(ie.is_editing(), "a double-click on the drawn field starts an edit");
 
@@ -1433,6 +1444,7 @@ mod tests {
         ie.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(field.x + 10, field.y + field.height as i32 + 40),
             button: 1,
+            modifiers: 0,
         });
         assert!(!ie.is_editing(), "a double-click below the drawn field must not");
     }
@@ -1650,7 +1662,11 @@ mod tests {
 
         let mut never = InplaceEditor::new("value", rect);
         never.set_edit_triggers(EditTriggers::NONE);
-        never.handle_event(&Event::MouseDoubleClick { pos: Point::new(10, 10), button: 1 });
+        never.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!never.is_editing(), "NONE must refuse the default gesture too");
     }
 

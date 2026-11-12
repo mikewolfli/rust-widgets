@@ -147,6 +147,11 @@ pub struct WgpuRenderer {
     /// What `wgpu` reported for the selected adapter, kept so [`GpuRenderer::vendor_info`] can
     /// answer with the real device name instead of a constant (G-232).
     pub(crate) adapter_info: wgpu::AdapterInfo,
+    /// Set when wgpu reports a lost device or an uncaptured error.
+    ///
+    /// The public entry points return `Result<_, String>`; without this flag their next
+    /// `write_buffer`/`submit` would panic the host instead of reporting the loss (T3-07).
+    pub(crate) device_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Hardware-adaptive GPU management for this device (issue-20261104 RD-04).
     ///
     /// Built from the adapter facts `wgpu` already reported for the device above, so it runs **no**
@@ -391,6 +396,26 @@ impl WgpuRenderer {
         cache.target.as_ref().map(|target| target.view.clone())
     }
 
+    /// Whether wgpu has reported a lost device or an uncaptured error on this device.
+    ///
+    /// Once set, the GPU path cannot continue for this renderer; callers should stop using it
+    /// and fall back to the CPU rasteriser for the rest of the session.
+    pub fn device_is_lost(&self) -> bool {
+        self.device_lost.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Refuses a GPU operation after the device was reported lost.
+    ///
+    /// This is the `Err` half of the flag above: it keeps the renderer's own error contract
+    /// instead of letting wgpu abort the process on the next submission (T3-07).
+    pub(crate) fn ensure_device_available(&self) -> Result<(), String> {
+        if self.device_is_lost() {
+            Err("the GPU device was lost; the GPU path is no longer usable".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
     /// Blocks until every submission already handed to the device has completed.
     ///
     /// The public API exposes no queue or fence, and this method deliberately does not: it answers
@@ -398,6 +423,7 @@ impl WgpuRenderer {
     /// is bounded by `GPU_READBACK_TIMEOUT`, the same budget the readback uses, so a lost device
     /// reports an error instead of hanging the process.
     pub fn wait_idle(&self) -> Result<(), String> {
+        self.ensure_device_available()?;
         self.device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -456,6 +482,9 @@ impl WgpuRenderer {
         // not a valid render target and an overflowing byte count must not be
         // truncated (N-S-66).
         let expected_len = rgba_buffer_len(width, height)?;
+        // A device wgpu already reported lost would abort on the first submission; report it
+        // through this method's own `Result` contract instead (T3-07).
+        self.ensure_device_available()?;
         let mut colour_bytes = [0u8; 16];
         for (channel, value) in color.iter().enumerate() {
             let clamped = value.clamp(0.0, 1.0) as f32;

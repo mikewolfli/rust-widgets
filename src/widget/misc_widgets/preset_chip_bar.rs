@@ -589,6 +589,11 @@ impl Draw for PresetChipBar {
                 HorizontalAlignment::Center,
             );
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 

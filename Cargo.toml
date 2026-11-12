@@ -53,8 +53,8 @@ include = [
     # documents, but not the target that writes a project's committed sources.
     "tools/designer_generate.rs",
     # The declared `[[example]]` targets. Same rule as the `tools/` paths above, and the
-    # reason this list is per-file rather than `"examples/**/*"`: the directory is 552 KB,
-    # the ten declared targets are 100 KB of it, and the tarball has a hard 10 MiB ceiling.
+    # reason this list is per-file rather than `"examples/**/*"`: the directory is 604 KB, the
+    # declared targets are a subset of it, and the tarball has a hard 10 MiB ceiling.
     # An example left out of the package is a target a consumer cannot build from the
     # tarball even though `Cargo.toml` announces it.
     "examples/view_counter.rs",
@@ -70,6 +70,29 @@ include = [
     "examples/present_smoke.rs",
     "examples/embedded_host.rs",
     "examples/macos_canvas_lifecycle_probe.rs",
+    # The remaining explicit `[[example]]` declarations (T3-56). Before that round these were
+    # auto-discovered, so the packaging gate never saw them; declaring them made every one a
+    # target the tarball must carry.
+    "examples/export_capability_schema.rs",
+    "examples/demo_button.rs",
+    "examples/demo_wgpu_control_parity.rs",
+    "examples/probe_clipboard_custom.rs",
+    "examples/probe_cross_thread_quit.rs",
+    "examples/probe_displays.rs",
+    "examples/probe_file_picker.rs",
+    "examples/probe_gtk_interactions.rs",
+    "examples/probe_huge_file.rs",
+    "examples/probe_keyboard_focus.rs",
+    "examples/probe_keystroke_cost.rs",
+    "examples/probe_line_vec_cost.rs",
+    "examples/probe_minimap.rs",
+    "examples/probe_minimap_cached.rs",
+    "examples/probe_resize_repaint.rs",
+    "examples/probe_rope_necessity.rs",
+    "examples/probe_splice_cost.rs",
+    "examples/probe_window_on_screen.rs",
+    "examples/readme_check.rs",
+    "examples/show_macos_window.rs",
     # The entries below are **anchored** with a leading `/`. That is not cosmetic.
     #
     # An unanchored `"README.md"` / `"LICENSE"` / `"CHANGELOG.md"` is a gitignore-style
@@ -1461,3 +1484,86 @@ required-features = ["designer"]
 [[example]]
 name = "embedded_host"
 path = "examples/embedded_host.rs"
+
+# ── Explicit targets for the remaining demo/probe binaries (T3-56) ──────────
+#
+# These were built only through Cargo's implicit `autoexamples` set, while every other example in
+# this manifest is declared explicitly. The two are different discovery mechanisms — an explicit
+# target is packaged and can carry `required-features`, an auto target cannot — so leaving them
+# implicit meant a probe could silently stop being built when a file was renamed. Each entry below
+# reproduces exactly what auto-discovery produced: same name, same path, no extra required features.
+[[example]]
+name = "demo_button"
+path = "examples/demo_button.rs"
+
+[[example]]
+name = "demo_wgpu_control_parity"
+path = "examples/demo_wgpu_control_parity.rs"
+
+[[example]]
+name = "probe_clipboard_custom"
+path = "examples/probe_clipboard_custom.rs"
+
+[[example]]
+name = "probe_cross_thread_quit"
+path = "examples/probe_cross_thread_quit.rs"
+
+[[example]]
+name = "probe_displays"
+path = "examples/probe_displays.rs"
+
+[[example]]
+name = "probe_file_picker"
+path = "examples/probe_file_picker.rs"
+
+[[example]]
+name = "probe_gtk_interactions"
+path = "examples/probe_gtk_interactions.rs"
+
+[[example]]
+name = "probe_huge_file"
+path = "examples/probe_huge_file.rs"
+
+[[example]]
+name = "probe_keyboard_focus"
+path = "examples/probe_keyboard_focus.rs"
+
+[[example]]
+name = "probe_keystroke_cost"
+path = "examples/probe_keystroke_cost.rs"
+
+[[example]]
+name = "probe_line_vec_cost"
+path = "examples/probe_line_vec_cost.rs"
+
+[[example]]
+name = "probe_minimap"
+path = "examples/probe_minimap.rs"
+
+[[example]]
+name = "probe_minimap_cached"
+path = "examples/probe_minimap_cached.rs"
+
+[[example]]
+name = "probe_resize_repaint"
+path = "examples/probe_resize_repaint.rs"
+
+[[example]]
+name = "probe_rope_necessity"
+path = "examples/probe_rope_necessity.rs"
+
+[[example]]
+name = "probe_splice_cost"
+path = "examples/probe_splice_cost.rs"
+
+[[example]]
+name = "probe_window_on_screen"
+path = "examples/probe_window_on_screen.rs"
+
+[[example]]
+name = "readme_check"
+path = "examples/readme_check.rs"
+
+[[example]]
+name = "show_macos_window"
+path = "examples/show_macos_window.rs"

@@ -405,23 +405,24 @@ impl FontPreview {
         if !self.show_weights || self.font_weights().len() <= 1 {
             return;
         }
-        let weights = self.font_weights().to_vec();
-        let specimen = if self.preview_text.is_empty() {
-            DEFAULT_PANGRAM.to_string()
-        } else {
-            self.preview_text.clone()
-        };
-        let key = (weights.clone(), specimen.clone());
-        if self.weight_key.as_ref() == Some(&key) {
+        let specimen =
+            if self.preview_text.is_empty() { DEFAULT_PANGRAM } else { self.preview_text.as_str() };
+        // Compare against the stored key without rebuilding it. The old form cloned the weight
+        // list and the specimen into a fresh tuple on every frame just to compare, and cloned
+        // both again into the stored key; a borrowed compare pays neither (W4-26).
+        if self.weight_key.as_ref().is_some_and(|(weights, cached_specimen)| {
+            weights.as_slice() == self.font_weights() && cached_specimen == specimen
+        }) {
             return;
         }
         self.weight_lines.clear();
-        for weight in weights {
+        let weights = self.font_weights().to_vec();
+        for &weight in &weights {
             let mut line = String::new();
             let _ = write!(line, "{weight}  {specimen}");
             self.weight_lines.push(line);
         }
-        self.weight_key = Some(key);
+        self.weight_key = Some((weights, specimen.to_string()));
     }
 
     /// The fixed info-line face. Built once through `OnceLock`: `Font` owns its family
@@ -949,7 +950,7 @@ mod tests {
         assert_eq!(fp.scroll_offset(), 0);
 
         // A move without a press is not a drag.
-        fp.handle_event(&Event::mouse_release(150, 50, 1));
+        fp.handle_event(&Event::mouse_release(150, 50, 1, 0));
         fp.handle_event(&Event::mouse_move(150, 10));
         assert_eq!(fp.scroll_offset(), 0);
     }

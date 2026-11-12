@@ -40,10 +40,11 @@ pub struct Translation {
     /// The translated text for the singular form. Also the key's human-readable
     /// identity in the source language.
     pub message: String,
-    /// Plural forms keyed by *category number*, not by count: the loader or
-    /// lookup code is responsible for mapping a quantity to the right key, so
-    /// the meaning of each number is defined by the translation file rather than
-    /// by this type. `None` means the message has no plural forms.
+    /// Plural forms keyed by *CLDR category number*: `0` zero, `1` one, `2` two, `3` few,
+    /// `4` many, `5` other. The lookup code maps a quantity to the category for the active
+    /// language (`I18nManager`'s minimal rule set), so the meaning of each number is defined here
+    /// and the translation file supplies only the categories its language distinguishes. `None`
+    /// means the message has no plural forms.
     pub plural: Option<HashMap<u32, String>>,
 }
 /// Translation file

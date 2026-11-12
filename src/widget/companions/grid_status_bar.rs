@@ -328,9 +328,13 @@ mod tests {
         bar.status_clicked.connect(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(4, 4), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(4, 4), button: 1, modifiers: 0 });
         assert_eq!(clicks.load(Ordering::SeqCst), 1);
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(400, 400), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(400, 400),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(clicks.load(Ordering::SeqCst), 1, "an outside release is not a click");
     }
 

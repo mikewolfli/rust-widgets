@@ -107,8 +107,6 @@ pub struct InputDialog {
     text_caret: usize,
     /// The uncommitted IME composition drawn inline at the caret.
     preedit: String,
-    /// Whether the host has delivered committed text, which retires the raw-key fallback.
-    text_input_seen: bool,
     /// Whether the text field has been focused by a click. The caret is painted only then, so
     /// an untouched dialog keeps its resting appearance.
     text_focused: bool,
@@ -171,7 +169,6 @@ impl InputDialog {
             double_decimals: 1,
             text_caret: 0,
             preedit: String::new(),
-            text_input_seen: false,
             text_focused: false,
             dropdown_open: false,
             text_value_changed: Signal1::new(),
@@ -897,7 +894,6 @@ impl EventHandler for InputDialog {
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 self.preedit.clear();
-                self.text_input_seen = true;
                 let filtered: String =
                     text.chars().filter(|character| !character.is_control()).collect();
                 if !filtered.is_empty() {
@@ -968,13 +964,9 @@ impl EventHandler for InputDialog {
                     key_codes::BACKSPACE => self.backspace_text(),
                     key_codes::DELETE => self.delete_text(),
                     _ => {
-                        // Printable ASCII is the fallback for a host that reports only key
-                        // codes; committed text wins once it has arrived.
-                        if !self.text_input_seen && *key >= 32 && *key <= 126 {
-                            if let Some(ch) = char::from_u32(*key) {
-                                self.insert_at_caret(&ch.to_string());
-                            }
-                        }
+                        // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01);
+                        // the committed-text arm inserts it, so accepting the raw key here as
+                        // well would type it twice on Windows.
                     }
                 }
             }

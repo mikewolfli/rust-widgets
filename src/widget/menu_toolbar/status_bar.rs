@@ -1246,7 +1246,7 @@ mod tests {
             &[(10, 5), (20, 7)],
             "deltas are from the press origin"
         );
-        bar.handle_event(&Event::mouse_release(grip.x + 22, grip.y + 9, 1));
+        bar.handle_event(&Event::mouse_release(grip.x + 22, grip.y + 9, 1, 0));
         assert!(!bar.is_grip_dragging());
         bar.handle_event(&Event::mouse_move(grip.x + 40, grip.y + 40));
         assert_eq!(drags.lock().unwrap().len(), 2, "a released grip reports nothing more");

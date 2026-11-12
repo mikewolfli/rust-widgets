@@ -807,6 +807,11 @@ impl Draw for BottomNavigationBar {
                 );
             }
         }
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 
@@ -822,7 +827,7 @@ impl EventHandler for BottomNavigationBar {
         };
 
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1061,7 +1066,11 @@ mod tests {
     #[test]
     fn bottom_nav_bar_mouse_release_selects_tab() {
         let mut bar = make_bar();
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(300, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(300, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(bar.selected_index().unwrap_or(0), 3);
     }
 
@@ -1091,7 +1100,7 @@ mod tests {
 
         // 3 / 4 truncates to a zero tab width, which the old press arm divided by.
         bar.handle_event(&Event::MousePress { pos: Point::new(1, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(1, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(1, 28), button: 1, modifiers: 0 });
         assert_eq!(bar.selected_index(), Some(0), "no point can name a tab in a zero-width tab");
     }
 
@@ -1155,14 +1164,18 @@ mod tests {
         let shift = ((1.0 - visibility) * 56.0) as i32;
         assert!(shift > 0, "a partial frame moved the band down");
         bar.handle_event(&Event::MousePress { pos: Point::new(140, 0), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 0), button: 1 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 0), button: 1, modifiers: 0 });
         assert_eq!(bar.selected_index(), Some(0), "a click above the shifted band selects nothing");
 
         // Fully hidden: the reserved band is empty and must ignore clicks entirely.
         while bar.tick(16) {}
         assert_eq!(bar.visibility_progress(), 0.0);
         bar.handle_event(&Event::MousePress { pos: Point::new(140, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(140, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(bar.selected_index(), Some(0), "a fully hidden bar accepts no clicks");
     }
 
@@ -1383,11 +1396,19 @@ mod tests {
         assert!(!bar.is_item_enabled(1));
         // The second tab occupies x = 93..186 of a 375 px bar with four items.
         bar.handle_event(&Event::MousePress { pos: Point::new(140, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(140, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(bar.selected_index(), Some(0), "a disabled destination must not be chosen");
         assert!(bar.set_item_enabled(1, true));
         bar.handle_event(&Event::MousePress { pos: Point::new(140, 28), button: 1, modifiers: 0 });
-        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 28), button: 1 });
+        bar.handle_event(&Event::MouseRelease {
+            pos: Point::new(140, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(bar.selected_index(), Some(1));
     }
 

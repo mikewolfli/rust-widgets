@@ -50,6 +50,13 @@ struct OverflowPopup {
     indices: Vec<usize>,
     rect: Rect,
     hovered: Option<usize>,
+    /// The menu rows built once when the popup opened (T3-20).
+    ///
+    /// `draw` used to rebuild these and clone every `String` each frame. Every mutator that can
+    /// change the items closes the popup (M-015), so the rows are stable for its lifetime.
+    rows: Vec<MenuItem>,
+    /// The typed icon for each row, built alongside `rows`.
+    icons: Vec<(u64, IconSource)>,
 }
 
 /// One editable-mode item drag: the row being moved and whether it has traveled far
@@ -1777,7 +1784,8 @@ impl ToolBar {
         if indices.is_empty() {
             return;
         }
-        self.overflow_popup = Some(OverflowPopup { indices, rect, hovered: None });
+        let (rows, icons) = self.overflow_menu_rows(&indices);
+        self.overflow_popup = Some(OverflowPopup { indices, rect, hovered: None, rows, icons });
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
@@ -2648,7 +2656,7 @@ impl EventHandler for ToolBar {
                     self.set_collapsed(!self.collapsed);
                 }
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 if let Some(state) = self.reorder_state.take() {
                     if !state.moved {
                         // A press that never traveled is still a click.
@@ -2932,24 +2940,20 @@ impl Draw for ToolBar {
             let mid = rect.y + rect.height as i32 / 2;
             let cx = rect.x + rect.width as i32 / 2;
             let points = match self.orientation {
-                ToolBarOrientation::Horizontal => vec![
+                ToolBarOrientation::Horizontal => [
                     Point::new(cx - 2, mid - 4),
                     Point::new(cx + 3, mid),
                     Point::new(cx - 2, mid + 4),
                 ],
-                ToolBarOrientation::Vertical => vec![
+                ToolBarOrientation::Vertical => [
                     Point::new(cx - 4, mid - 2),
                     Point::new(cx, mid + 3),
                     Point::new(cx + 4, mid - 2),
                 ],
             };
-            context.execute_command(crate::render::RenderCommand::DrawPath {
-                points: points.into(),
-                closed: false,
-                color: affordance_ink,
-                filled: false,
-                width: 1,
-            });
+            // A three-point array on the stack: the owning `DrawPath` command would allocate an
+            // `Arc<[Point]>` per frame, which is the one arrow in this file that did (T3-42).
+            context.draw_path(&points, false, affordance_ink, false, 1);
         }
 
         // ── The drag affordance ──
@@ -2984,14 +2988,13 @@ impl Draw for ToolBar {
         // layer above the band. Its rows are the hidden items through the shared menu
         // painter, which is what keeps a collapsed row identical to a visible one.
         if let Some(popup) = self.overflow_popup.as_ref() {
-            let (rows, icons) = self.overflow_menu_rows(&popup.indices);
             draw_menu_panel_range(
                 context,
                 popup.rect,
-                &rows,
+                &popup.rows,
                 0,
-                rows.len(),
-                &icons,
+                popup.rows.len(),
+                &popup.icons,
                 style,
                 accent,
                 true,
@@ -3212,7 +3215,7 @@ mod tests {
         tool_bar.handle_event(&Event::MousePress { pos: press, button: 1, modifiers: 0 });
         let away = Point::new(press.x + 400, press.y + 200);
         tool_bar.handle_event(&Event::MouseMove { pos: away });
-        tool_bar.handle_event(&Event::MouseRelease { pos: away, button: 1 });
+        tool_bar.handle_event(&Event::MouseRelease { pos: away, button: 1, modifiers: 0 });
 
         assert!(tool_bar.is_top_level(), "a release away from the dock must float the strip");
         assert_eq!(count.load(Ordering::SeqCst), 1, "the host is told exactly once");
@@ -3309,7 +3312,7 @@ mod tests {
 
         bar.handle_event(&Event::mouse_press(bands[0].x + 2, bands[0].y + 2, 1));
         bar.handle_event(&Event::mouse_move(bands[2].x + 2, bands[2].y + 2));
-        bar.handle_event(&Event::mouse_release(bands[2].x + 2, bands[2].y + 2, 1));
+        bar.handle_event(&Event::mouse_release(bands[2].x + 2, bands[2].y + 2, 1, 0));
 
         let order: Vec<&str> = bar.items().iter().map(ToolBarItem::text).collect();
         assert_eq!(order, ["B", "A", "C"], "the dragged item lands at the target row");
@@ -3323,12 +3326,12 @@ mod tests {
         bar.add_action("a", "A");
         let grip = bar.drag_band();
 
-        bar.handle_event(&Event::mouse_double_click(grip.x + 2, grip.y + 2, 1));
+        bar.handle_event(&Event::mouse_double_click(grip.x + 2, grip.y + 2, 1, 0));
         assert!(bar.is_collapsed());
         assert_eq!(bar.item_bands()[0], Rect::new(0, 0, 0, 0), "no item box while collapsed");
         assert!(bar.hit_item(Point::new(10, 10)).is_none());
 
-        bar.handle_event(&Event::mouse_double_click(grip.x + 2, grip.y + 2, 1));
+        bar.handle_event(&Event::mouse_double_click(grip.x + 2, grip.y + 2, 1, 0));
         assert!(!bar.is_collapsed(), "the same gesture expands it again");
     }
 

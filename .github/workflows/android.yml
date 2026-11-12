@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Fast, emulator-free gate: build the native library for both shipped ABIs,
   # assemble + sign an APK for each, and verify the JNI binding surface matches

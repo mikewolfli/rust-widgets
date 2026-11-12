@@ -20,6 +20,14 @@ SUMMARY_FILE="${PROJECT_DIR}/target/benchmark_summary.txt"
 mkdir -p "${PROJECT_DIR}/target"
 
 cd "$PROJECT_DIR"
+. "$PROJECT_DIR/tools/lib_timeout.sh"
+
+# Benchmarks are the documented case in `tools/lib_timeout.sh` for an explicit budget
+# above `RW_TIMEOUT_DEFAULT`: a criterion run's cost is not bounded in principle the way
+# a single `cargo check` is. 1200 s stays inside `benchmark.yml`'s 30-minute job timeout,
+# so a wedged bench reports its timeout here instead of the job being cancelled with no
+# verdict (principles #58 and #104).
+BENCH_BUDGET="${RW_BENCH_TIMEOUT:-1200}"
 
 run_bench() {
     local name="$1"
@@ -30,7 +38,16 @@ run_bench() {
     printf "║  %-53s ║\n" "Running $name Benchmark..."
     echo "╚═══════════════════════════════════════════════════════╝"
     echo ""
-    if cargo bench --bench "$bench_name" -- --quick 2>&1; then
+    local output
+    if output="$(rw_run_bounded "$BENCH_BUDGET" cargo bench --bench "$bench_name" -- --quick 2>&1)"; then
+        printf '%s\n' "$output"
+        # A bench compiled under the default libtest harness exits 0 after "running 0 tests".
+        # Criterion always prints a `time:` line; requiring one makes that empty run a failure
+        # instead of a green "completed" (T3-02).
+        if ! grep -q "time:" <<<"$output"; then
+            echo "  ✗ $name benchmark produced no criterion measurement (harness ran 0 benchmarks)" >&2
+            return 1
+        fi
         echo "  ✓ $name benchmark completed successfully"
         return 0
     else
@@ -51,7 +68,13 @@ run_bench_featured() {
     printf "║  %-53s ║\n" "Running $name Benchmark..."
     echo "╚═══════════════════════════════════════════════════════╝"
     echo ""
-    if cargo bench --no-default-features --features "$features" --bench "$bench_name" -- --quick 2>&1; then
+    local output
+    if output="$(rw_run_bounded "$BENCH_BUDGET" cargo bench --no-default-features --features "$features" --bench "$bench_name" -- --quick 2>&1)"; then
+        printf '%s\n' "$output"
+        if ! grep -q "time:" <<<"$output"; then
+            echo "  ✗ $name benchmark produced no criterion measurement (harness ran 0 benchmarks)" >&2
+            return 1
+        fi
         echo "  ✓ $name benchmark completed successfully"
         return 0
     else

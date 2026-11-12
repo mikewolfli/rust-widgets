@@ -261,6 +261,20 @@ impl GlyphAtlas {
     fn rasterisations(&self) -> u64 {
         self.rasterisations
     }
+
+    /// Drops every cached glyph.
+    ///
+    /// # Why a caller needs this
+    ///
+    /// A slot is a pure function of its [`GlyphKey`], and the key names the face. Re-registering a
+    /// face under the same name (`register_face`) changes the ink without changing the key, so a
+    /// static label's resident slot would otherwise be served the old bitmap for the life of the
+    /// process — the CPU-side counterpart of the wgpu coverage cache, which keys on
+    /// `font_assets::face_generation` (W4-02). Callers that own an atlas call this when that
+    /// generation moves.
+    pub fn clear(&mut self) {
+        self.slots.clear();
+    }
 }
 
 impl Default for GlyphAtlas {
@@ -502,5 +516,25 @@ mod tests {
                 ch as u32
             );
         }
+    }
+
+    /// `clear` drops every slot, which is how a face-registry change invalidates the CPU atlas.
+    ///
+    /// A slot's bytes are a function of the key, and the key names the face; re-registering that
+    /// name changes the ink without changing the key. Without a clear the resident slot would be
+    /// served forever (W4-02).
+    #[test]
+    fn clear_drops_every_resident_glyph() {
+        let mut atlas = GlyphAtlas::new();
+        let key = key_for('A', 16);
+        atlas.get_or_raster(key);
+        assert_eq!(atlas.slot_count(), 1);
+
+        atlas.clear();
+
+        assert_eq!(atlas.slot_count(), 0, "clear must drop the resident slots");
+        assert!(!atlas.contains(&key), "a cleared key is a miss");
+        atlas.get_or_raster(key);
+        assert_eq!(atlas.rasterisations(), 2, "a cleared glyph reaches the rasteriser again");
     }
 }

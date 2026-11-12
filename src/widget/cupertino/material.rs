@@ -665,7 +665,7 @@ impl EventHandler for MaterialSnackbar {
                     self.dismiss();
                 }
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1371,7 +1371,7 @@ impl EventHandler for MaterialNavigationRail {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1556,7 +1556,7 @@ mod tests {
         assert_eq!(rail.item_count(), 2, "the labels are kept on the items");
 
         // The hit target is unchanged: a release inside a destination band still selects it.
-        rail.handle_event(&Event::mouse_release(40, 100, 1));
+        rail.handle_event(&Event::mouse_release(40, 100, 1, 0));
         assert_eq!(rail.selected(), 1);
     }
 }

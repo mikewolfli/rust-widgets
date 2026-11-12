@@ -13,7 +13,7 @@
 
 ## 特点
 
-- **231 种控件 / 242 个核心控件名**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。可选 suites 另外提供 **7 组、39 个控件**，安装到同一个 `WidgetFactory`。
+- **231 种控件 / 242 个核心控件名**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。可选 suites 另外提供 **7 组、40 个控件**，安装到同一个 `WidgetFactory`。
 - **输出可复现**——每个控件、每种外观都有提交到仓库的 SVG 与像素快照，视觉变化因此是可审阅的 diff，
   而不是聊天窗口里的一张截图。
 - **能力诚实**——宿主提供不了的服务返回 `false` / `None`；不会先假装成功再报告“已完成”。
@@ -126,7 +126,7 @@ fn main() {
 |---|---|---|
 | `rust-widgets-font` | `fonts-*` 特性背后的 OFL 字体数据，单独拆出以让核心包低于 crates.io 的 10 MiB 上限。 | 间接使用：开启某个 `fonts-*` 特性即可；不要直接依赖它。 |
 | `rust-widgets-icons` | `icons-*` 特性背后的 Material Symbols 图标数据与 `IconName` 名称表，拆出原因同上。`IconName` 与 `register_icon` 家族仍由核心包重导出，现有调用点不变。 | 间接使用：开启某个 `icons-*` 特性；运行时图标走 `register_icon` / `register_icon_on_grid`。 |
-| `rust-widgets-suites` | 七个可选控件组——`form`、`webview`、`finance`、`maps`、`project`、`devtools`、`media-playback`——共 **39 个控件**，具备与核心控件相同的属性、事件、布局、接线与无障碍面。原先独立的 `rust-widgets-webview` 包现在是 `webview` 组。 | `rust_widgets_suites::install(&mut factory)`，或单个组的 `install_*_group`。 |
+| `rust-widgets-suites` | 七个可选控件组——`form`、`webview`、`finance`、`maps`、`project`、`devtools`、`media-playback`——共 **40 个控件**，具备与核心控件相同的属性、事件、布局、接线与无障碍面。原先独立的 `rust-widgets-webview` 包现在是 `webview` 组。 | `rust_widgets_suites::install(&mut factory)`，或单个组的 `install_*_group`。 |
 | `mobile-services` | 面向 Android、iOS、HarmonyOS 的移动应用外壳服务：常亮、触感反馈、权限、通知、分享、深链、安全区与方向锁定。不属于 GUI 核心。 | 在移动目标上使用 `rust_widgets_mobile_services::*`；桌面构建不会链接它。 |
 | `rust-widgets-cli` | 设计器命令行工具，二进制名 `rwui`：校验项目 bundle（`check`）、由它生成并校验已提交的 Rust（`json2rust`，`--check` 查漂移）、规范化文档（`fmt`）、为单个设备 profile 生成可运行工程（`create`）。它直接调用库自身的生成器，因此不会与库产生分歧。CSS 级联与反向解析属于 BLUE31 后续阶段，尚不在这个二进制里。 | `cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- check <bundle-or-json>`。 |
 

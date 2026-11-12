@@ -1570,7 +1570,7 @@ mod tests {
         assert!(preview.base().is_pressed(), "the base routed the press");
         assert_ne!(preview.is_active(), active, "the click still toggles the preview");
 
-        preview.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        preview.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 , modifiers: 0});
         assert!(!preview.base().is_pressed(), "the release clears the gesture");
     }
 }

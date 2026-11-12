@@ -232,7 +232,7 @@ impl TouchEventTranslator {
                 if self.active_touches.remove(&touch_id).is_none() {
                     return;
                 }
-                out.push(Event::MouseRelease { pos, button: mouse_button::PRIMARY });
+                out.push(Event::MouseRelease { pos, button: mouse_button::PRIMARY, modifiers: 0 });
                 out.push(Event::MouseLeave { pos });
             }
             _ if is_touch_cancel(event) => {
@@ -323,7 +323,7 @@ mod tests {
         t.translate(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 });
         let result = t.translate(&Event::TouchEnd { pos: Point::new(9, 8), touch_id: 1 });
         match result[0] {
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 assert_eq!(pos, Point::new(9, 8));
                 assert_eq!(button, crate::event::types::mouse_button::PRIMARY);
             }

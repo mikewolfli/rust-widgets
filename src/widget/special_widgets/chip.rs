@@ -1322,7 +1322,7 @@ impl EventHandler for Chip {
                     }
                 }
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 if let Some(source) = self.drag_source.take() {
                     if let Some(target) = self.drop_target(*pos) {
                         if target != source {

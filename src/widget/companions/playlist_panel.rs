@@ -414,7 +414,7 @@ impl EventHandler for PlaylistPanel {
                 self.track_selected.emit(track);
                 self.base.request_redraw();
             }
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 if let Some(from) = self.drag_from.take() {
                     let visible = self.visible_tracks();
                     let to = self.visible_row_at(*pos).and_then(|row| visible.get(row).copied());
@@ -425,7 +425,7 @@ impl EventHandler for PlaylistPanel {
                     }
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 // A double click is the confirmation of the row's selection: the host starts
                 // playback on the second press and the first has already reported the pick.
                 let visible = self.visible_tracks();
@@ -847,7 +847,7 @@ mod tests {
             }
         });
         panel.handle_event(&Event::mouse_press(100, 11, 1));
-        panel.handle_event(&Event::mouse_release(100, 55, 1));
+        panel.handle_event(&Event::mouse_release(100, 55, 1, 0));
         assert_eq!(*moved.lock().expect("moved lock"), vec![(0, 2)]);
     }
 

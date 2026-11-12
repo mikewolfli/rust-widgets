@@ -130,6 +130,10 @@ impl CodeEditor {
                     generation,
                     font_size_bits,
                     font_weight,
+                    font_family_hash: font_family_hash(font.family()),
+                    font_italic: font.is_italic(),
+                    letter_spacing_bits: font.letter_spacing().to_bits(),
+                    word_spacing_bits: font.word_spacing().to_bits(),
                 };
                 match labels.iter().position(|cached| cached.key == key) {
                     Some(index) => index,

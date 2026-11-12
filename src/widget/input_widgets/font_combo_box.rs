@@ -1396,11 +1396,10 @@ impl EventHandler for FontComboBox {
                         self.base.request_redraw();
                     }
                     _ => {
-                        if let Some(ch) = char::from_u32(*key) {
-                            if ch.is_ascii_graphic() || ch == ' ' {
-                                self.edit_insert(&ch.to_string());
-                            }
-                        }
+                        // Printable content arrives as `Event::TextInput` (W4-01), which the
+                        // committed-text arm routes into `edit_insert`. Taking the printable key
+                        // here as well inserted it twice on Windows, the one backend that also
+                        // forwards `WM_KEYDOWN` for printable virtual keys.
                     }
                 }
             }
@@ -2008,14 +2007,14 @@ mod tests {
         };
 
         // A release with no press must not cycle, wherever it lands.
-        assert_eq!(run(&[Event::MouseRelease { pos: inside, button: 1 }]), (-1, -1));
-        assert_eq!(run(&[Event::MouseRelease { pos: outside, button: 1 }]), (-1, -1));
+        assert_eq!(run(&[Event::MouseRelease { pos: inside, button: 1, modifiers: 0 }]), (-1, -1));
+        assert_eq!(run(&[Event::MouseRelease { pos: outside, button: 1, modifiers: 0 }]), (-1, -1));
 
         // A press outside does not arm the latch.
         assert_eq!(
             run(&[
                 Event::MousePress { pos: outside, button: 1, modifiers: 0 },
-                Event::MouseRelease { pos: inside, button: 1 },
+                Event::MouseRelease { pos: inside, button: 1, modifiers: 0 },
             ]),
             (-1, -1),
             "a drag that began outside must not commit"
@@ -2025,7 +2024,7 @@ mod tests {
         assert_eq!(
             run(&[
                 Event::MousePress { pos: inside, button: 1, modifiers: 0 },
-                Event::MouseRelease { pos: outside, button: 1 },
+                Event::MouseRelease { pos: outside, button: 1, modifiers: 0 },
             ]),
             (-1, -1)
         );
@@ -2035,7 +2034,7 @@ mod tests {
         assert_eq!(
             run(&[
                 Event::MousePress { pos: inside, button: 1, modifiers: 0 },
-                Event::MouseRelease { pos: inside, button: 1 },
+                Event::MouseRelease { pos: inside, button: 1, modifiers: 0 },
             ]),
             (-1, -1)
         );
@@ -2045,7 +2044,7 @@ mod tests {
             run(&[
                 Event::MousePress { pos: inside, button: 1, modifiers: 0 },
                 Event::FocusLost,
-                Event::MouseRelease { pos: inside, button: 1 },
+                Event::MouseRelease { pos: inside, button: 1, modifiers: 0 },
             ]),
             (-1, -1)
         );
@@ -2058,7 +2057,7 @@ mod tests {
         let mut c = FontComboBox::new(Rect::new(0, 0, 200, 30));
         c.add_font("Arial".to_string());
         c.add_font("Helvetica".to_string());
-        c.handle_event(&Event::MouseRelease { pos: inside, button: 3 });
+        c.handle_event(&Event::MouseRelease { pos: inside, button: 3, modifiers: 0 });
         assert_eq!(c.selected_index().map(|index| index as i32).unwrap_or(-1), -1);
     }
 
@@ -2255,7 +2254,7 @@ mod tests {
         }
         let center = Point::new(20, 14);
         combo.handle_event(&Event::MousePress { pos: center, button: 1, modifiers: 0 });
-        combo.handle_event(&Event::MouseRelease { pos: center, button: 1 });
+        combo.handle_event(&Event::MouseRelease { pos: center, button: 1, modifiers: 0 });
         assert!(combo.expanded, "the press opens the popup");
         assert_eq!(combo.selected_index(), None, "the release must not also cycle the font");
     }

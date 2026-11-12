@@ -1143,6 +1143,96 @@ mod tests {
         assert!(session.engine().id_at(&[1]).is_none(), "the removed path is gone");
     }
 
+    /// T3-01: a declarative edit releases the control it removed from the runtime registry.
+    ///
+    /// The factory-backed creator registers every control it makes, but forgetting the node from
+    /// the JSON structure only released its wires. A hot-reload loop therefore kept one registry
+    /// entry (and its callbacks) per removed control.
+    #[test]
+    fn a_removal_unregisters_the_control_from_the_runtime() {
+        use crate::core::Rect;
+        const EDITED: &str = r#"{
+          "window": {
+            "id": "root",
+            "title": "Session",
+            "width": 400,
+            "height": 300,
+            "layout": {
+              "type": "vbox",
+              "children": [
+                { "label": { "id": "title", "text": "Hello" } }
+              ]
+            }
+          }
+        }"#;
+        let create = |node: &Node| {
+            crate::widget::runtime::register(crate::compat::Box::new(crate::widget::Button::new(
+                node.key.clone().unwrap_or_default(),
+                Rect::new(0, 0, 40, 20),
+            )))
+        };
+        let mut session = JsonViewSession::new();
+        session.mount_with(DOCUMENT, &create).expect("the document parses");
+        let button_id = session.engine().id_at(&[1]).expect("the button is mounted");
+        assert!(crate::widget::runtime::is_mounted(button_id));
+
+        let updated = session.update_with(EDITED, &create).expect("the edit parses");
+        assert_eq!(updated.removed_ids, vec![button_id]);
+        assert!(
+            !crate::widget::runtime::is_mounted(button_id),
+            "the removed control must be unregistered, not merely detached"
+        );
+    }
+
+    /// T3-01 (quantitative): 100 remove/re-add cycles must leave no removed id registered.
+    ///
+    /// The single-round test above proves the release path runs; this one proves it runs on
+    /// every round, which is the hot-reload loop the leak was reported against.
+    #[test]
+    fn a_hundred_remove_cycles_leave_no_removed_control_registered() {
+        use crate::core::Rect;
+        const WITH_BUTTON: &str = DOCUMENT;
+        const WITHOUT_BUTTON: &str = r#"{
+          "window": {
+            "id": "root",
+            "title": "Session",
+            "width": 400,
+            "height": 300,
+            "layout": {
+              "type": "vbox",
+              "children": [
+                { "label": { "id": "title", "text": "Hello" } }
+              ]
+            }
+          }
+        }"#;
+        let create = |node: &Node| {
+            crate::widget::runtime::register(crate::compat::Box::new(crate::widget::Button::new(
+                node.key.clone().unwrap_or_default(),
+                Rect::new(0, 0, 40, 20),
+            )))
+        };
+        let mut session = JsonViewSession::new();
+        session.mount_with(WITH_BUTTON, &create).expect("the document parses");
+
+        let mut removed = Vec::new();
+        for _ in 0..100 {
+            let removal = session.update_with(WITHOUT_BUTTON, &create).expect("the removal parses");
+            assert_eq!(removal.removed_ids.len(), 1, "one button leaves per cycle");
+            removed.extend(removal.removed_ids);
+            let readd = session.update_with(WITH_BUTTON, &create).expect("the re-add parses");
+            assert!(readd.removed_ids.is_empty(), "re-adding removes nothing");
+        }
+
+        assert_eq!(removed.len(), 100);
+        for id in removed {
+            assert!(
+                !crate::widget::runtime::is_mounted(id),
+                "a control removed in an earlier cycle is still registered"
+            );
+        }
+    }
+
     /// RW-43: a document that does not parse is refused, and the mounted tree is left as it was.
     #[test]
     fn a_malformed_update_is_refused_without_unmounting() {

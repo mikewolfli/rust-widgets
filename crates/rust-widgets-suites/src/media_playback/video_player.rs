@@ -2442,7 +2442,7 @@ impl EventHandler for VideoPlayer {
                 }
             }
             // A scrub ends on release and commits the position already previewed.
-            Event::MouseRelease { pos, button } if self.scrubbing => {
+            Event::MouseRelease { pos, button, .. } if self.scrubbing => {
                 if *button == 1 {
                     let time = self.time_from_seek_x(pos.x);
                     self.seek(time);
@@ -2772,6 +2772,24 @@ mod tests {
         assert_eq!(vp.current_time(), 10.0);
     }
 
+    /// EOF is not a dead end: `play` rewinds a finished clip and the clock advances again.
+    #[test]
+    fn play_after_the_end_rewinds_and_plays_again() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("test.mp4");
+        vp.set_duration(10.0);
+        vp.play();
+        assert!(vp.tick(20.0));
+        assert_eq!(vp.current_time(), 10.0);
+        assert!(!vp.is_playing());
+
+        vp.play();
+        assert!(vp.is_playing());
+        assert_eq!(vp.current_time(), 0.0, "playing a finished clip rewinds to its start");
+        assert!(!vp.tick(1.0));
+        assert!((vp.current_time() - 1.0).abs() < 1e-9, "the replay advances again");
+    }
+
     /// A negative or non-finite `tick` delta must not move the clock or emit a bad value.
     ///
     /// # What this pins
@@ -3013,6 +3031,40 @@ mod tests {
         assert_eq!(presented.load(std::sync::atomic::Ordering::SeqCst), 42);
         assert!(vp.video_frame().is_some());
         assert!(!vp.present_frame(), "presenting twice without a new frame does nothing");
+    }
+
+    /// Zero dimensions and a non-RGBA format are refused before anything can be painted.
+    #[test]
+    fn a_frame_with_zero_dimensions_or_a_non_rgba_format_is_refused() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("movie.mp4");
+
+        assert!(
+            vp.set_video_frame(VideoFrame {
+                width: 0,
+                height: 2,
+                pts_ms: 0,
+                format: VideoPixelFormat::Rgba8888,
+                stride: 0,
+                data: Arc::from(Vec::new()),
+            })
+            .is_err(),
+            "a zero-width frame has no picture"
+        );
+        assert!(
+            vp.set_video_frame(VideoFrame {
+                width: 2,
+                height: 2,
+                pts_ms: 0,
+                format: VideoPixelFormat::Bgra8888,
+                stride: 8,
+                data: Arc::from(vec![0u8; 16]),
+            })
+            .is_err(),
+            "the painter accepts RGBA8888 only"
+        );
+        assert!(vp.video_frame().is_none());
+        assert!(vp.pending_frame().is_none());
     }
 
     #[test]
@@ -3449,7 +3501,7 @@ mod tests {
 
         {
             let scrubber = vp.scrubber_mut().expect("attached");
-            scrubber.handle_event(&Event::MouseRelease { pos: Point::new(100, 12), button: 1 });
+            scrubber.handle_event(&Event::MouseRelease { pos: Point::new(100, 12), button: 1 , modifiers: 0});
         }
         assert_eq!(vp.apply_pending_scrubber_seeks(), 1, "the commit queues one seek");
         assert!(

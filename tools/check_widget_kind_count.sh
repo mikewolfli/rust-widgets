@@ -87,6 +87,12 @@ FILES = [
     # *generator* can regress to a literal — which it had, at 180 while the enum was 181.
     # Listing it here means the generated page is checked like any other document.
     "control.md",
+    # The crate description states the kind total ("231 widgets"). The gate could not see it
+    # because none of its spellings covered "widgets" (T3-52).
+    "Cargo.toml",
+    # The repository maintenance skill is the first file an agent reads; a stale total there is
+    # repeated into every generated answer.
+    ".dsh/skills/rust-widgets-maintainer/SKILL.md",
     # A pointer page, kept only so existing links resolve. It carries no counts; listing
     # it makes a future hand-written "N kinds" claim inside it fail this gate.
     "docs/WIDGET_GALLERY.md",
@@ -128,6 +134,7 @@ PATTERNS = [
     # comment describes ("a gate whose pattern is narrower than the vocabulary drifts"). These rows
     # are the vocabulary in use; add a new spelling here rather than assuming the set is complete.
     re.compile(r"(?<![\d,])(\d{3})\s+controls?\b"),            # 181 controls
+    re.compile(r"(?<![\d,])(\d{3})\s+widgets?\b(?!\s+types?)"),  # 231 widgets (not "240 widget types")
     re.compile(r"(?<![\d,])(\d{3})\s*(?:個|个)\s*控件"),          # 181 个控件 / 181 個控件
     re.compile(r"controls-(\d{3})-"),                          # badges/controls-181-blue
     re.compile(r"(?<![\d,])(\d{3})\s+in a device profile\b"),  # "(181 in a device profile)"

@@ -916,7 +916,7 @@ impl EventHandler for Breadcrumb {
                     let _ = self.set_selected_index(index);
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } if !self.overflow_open => {
+            Event::MouseDoubleClick { pos, button: 1, .. } if !self.overflow_open => {
                 if let Some(index) = self.hit_index(*pos) {
                     let _ = self.set_selected_index(index);
                     let _ = self.activate_selected();

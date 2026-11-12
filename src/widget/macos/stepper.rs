@@ -649,7 +649,11 @@ mod tests {
         let mut stepper = sample();
         stepper.handle_event(&Event::MousePress { pos: Point::new(9, 5), button: 1, modifiers: 0 });
         assert_eq!(stepper.value(), 1);
-        stepper.handle_event(&Event::MouseRelease { pos: Point::new(9, 5), button: 1 });
+        stepper.handle_event(&Event::MouseRelease {
+            pos: Point::new(9, 5),
+            button: 1,
+            modifiers: 0,
+        });
         stepper.handle_event(&Event::MousePress {
             pos: Point::new(9, 22),
             button: 1,
@@ -751,7 +755,7 @@ mod tests {
         assert!(stepper.tick(100));
         assert_eq!(stepper.value(), 4);
 
-        stepper.handle_event(&Event::MouseRelease { pos: up, button: 1 });
+        stepper.handle_event(&Event::MouseRelease { pos: up, button: 1, modifiers: 0 });
         assert!(!stepper.is_animating());
         assert!(!stepper.tick(500), "a released stepper does not keep stepping");
         assert_eq!(stepper.value(), 4);

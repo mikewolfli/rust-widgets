@@ -646,29 +646,13 @@ impl EventHandler for TextArea {
                         self.select_with_modifiers(target, mods);
                     }
                     _ => {
-                        // Character input. A control chord is not text, and neither is an unmapped
-                        // non-printable key.
+                        // Printable content arrives as `Event::TextInput` (W4-01).
                         //
-                        // # Why the three modifiers are tested one at a time
-                        //
-                        // `Modifiers::contains` compares the *value* of the mask, so the
-                        // combined `contains(CTRL | ALT | META)` form is true only when all
-                        // three are held at once — a single-Control chord fails it and the
-                        // character goes through. That is the defect this arm exists to stop, so
-                        // the combined spelling would have fixed nothing.
-                        if !mods.contains(crate::shortcut::Modifiers::CTRL)
-                            && !mods.contains(crate::shortcut::Modifiers::ALT)
-                            && !mods.contains(crate::shortcut::Modifiers::META)
-                        {
-                            // Only a **printable** key is content: `char::from_u32(0)` is NUL, and
-                            // 9/10/13 are Tab/LF/CR — control codes the host owns, not text.
-                            if let Some(ch) = char::from_u32(*key).filter(|c| !c.is_control()) {
-                                if ch.is_ascii_graphic() || ch == ' ' {
-                                    self.insert_char(ch);
-                                    self.request_redraw();
-                                }
-                            }
-                        }
+                        // Backends deliver a typed character as `TextInput`/`ImeCommit`, which
+                        // the committed-text arm below routes into `insert_committed_text`. Taking
+                        // the printable key here as well inserted it twice on Windows, the one
+                        // backend that also forwards `WM_KEYDOWN` for printable virtual keys. A
+                        // control chord and a non-printable key have nothing left to do here.
                     }
                 }
             }
@@ -693,7 +677,7 @@ impl EventHandler for TextArea {
                 }
             }
             // A double click selects the word under the pointer.
-            Event::MouseDoubleClick { pos, button } if *button == 1 && self.hit_test(*pos) => {
+            Event::MouseDoubleClick { pos, button, .. } if *button == 1 && self.hit_test(*pos) => {
                 self.focused = true;
                 let index = self.byte_index_at(*pos);
                 let (start, end) = self.word_range_at(index);

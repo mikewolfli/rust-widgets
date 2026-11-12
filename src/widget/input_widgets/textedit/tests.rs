@@ -266,7 +266,7 @@ fn max_length_bounds_typing_not_only_the_existing_value() {
     te.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
     te.set_max_length(Some(5));
     for ch in ['a', 'b', 'c', 'd', 'e', 'f', 'g'] {
-        te.handle_event(&Event::KeyPress { key: ch as u32, modifiers: 0 });
+        te.handle_event(&Event::text_input(ch.to_string()));
     }
     assert_eq!(te.text(), "abcde", "the field stopped at the limit, and did not lose a prefix");
     assert_eq!(te.text().len(), 5);
@@ -281,7 +281,7 @@ fn max_length_bounds_typing_not_only_the_existing_value() {
     te.handle_event(&Event::KeyPress { key: 8, modifiers: 0 });
     assert_eq!(te.text(), "abcd");
     // And the field is usable again now that there is room.
-    te.handle_event(&Event::KeyPress { key: 'z' as u32, modifiers: 0 });
+    te.handle_event(&Event::text_input("z"));
     assert_eq!(te.text(), "abcdz");
 
     // Raising the limit re-opens the field; clearing it removes the bound entirely.
@@ -499,7 +499,7 @@ fn unfocused_ignores_text_input() {
 fn typing_inserts_at_the_caret_not_at_the_end() {
     let mut te = editor("ac");
     te.set_cursor(1);
-    te.handle_event(&Event::key_press(98, 0)); // 'b'
+    te.handle_event(&Event::text_input("b")); // 'b'
     assert_eq!(te.text(), "abc", "the character went between `a` and `c`");
     assert_eq!(te.cursor(), 2, "and the caret advanced past it");
 }
@@ -513,8 +513,8 @@ fn typing_with_an_untouched_caret_still_appends() {
     let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
     te.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
     assert_eq!(te.cursor(), 0);
-    te.handle_event(&Event::key_press(97, 0)); // 'a'
-    te.handle_event(&Event::key_press(98, 0)); // 'b'
+    te.handle_event(&Event::text_input("a")); // 'a'
+    te.handle_event(&Event::text_input("b")); // 'b'
     assert_eq!(te.text(), "ab", "an empty field's typing lands where it always did");
     assert_eq!(te.cursor(), 2);
 }
@@ -585,7 +585,7 @@ fn typing_over_a_selection_replaces_it_in_one_undo_step() {
     }
     assert_eq!(te.selected_text(), "hello");
 
-    te.handle_event(&Event::key_press(88, 0)); // 'X'
+    te.handle_event(&Event::text_input("X")); // 'X'
     assert_eq!(te.text(), "X world", "the selection was consumed");
     assert!(te.undo(), "one press");
     assert_eq!(te.text(), "hello world", "one undo restores the whole operation");
@@ -624,7 +624,7 @@ fn a_control_chord_is_not_typed_into_the_editor() {
         te.handle_event(&Event::key_press(98, bits));
         assert!(te.text().is_empty(), "{name}+b must not be typed");
     }
-    te.handle_event(&Event::key_press(98, 0));
+    te.handle_event(&Event::text_input("b"));
     assert_eq!(te.text(), "b", "a plain `b` is content");
 }
 
@@ -727,7 +727,7 @@ fn a_drag_extends_the_selection_but_a_bare_hover_does_not() {
     let (_, end) = te.selection_range().unwrap_or((0, te.cursor()));
     assert!(end > start, "the drag grew the range: {start} -> {end}");
 
-    te.handle_event(&Event::mouse_release(rect.x + 44, rect.y + 10, 1));
+    te.handle_event(&Event::mouse_release(rect.x + 44, rect.y + 10, 1, 0));
     let kept = te.selected_text();
     te.handle_event(&Event::mouse_move(rect.x + 4, rect.y + 10));
     assert_eq!(te.selected_text(), kept, "a hover after the release does not extend");
@@ -816,15 +816,15 @@ fn the_limit_bounds_an_insert_at_the_caret() {
 #[test]
 fn an_unfocused_editor_ignores_the_keyboard() {
     let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
-    te.handle_event(&Event::key_press(97, 0)); // 'a'
+    te.handle_event(&Event::text_input("a")); // 'a'
     assert!(te.text().is_empty(), "an unfocused editor must not take the keystroke");
 
     te.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
-    te.handle_event(&Event::key_press(97, 0));
+    te.handle_event(&Event::text_input("a"));
     assert_eq!(te.text(), "a", "once focused it does");
 
     te.handle_event(&Event::FocusLost);
-    te.handle_event(&Event::key_press(98, 0)); // 'b'
+    te.handle_event(&Event::text_input("b")); // 'b'
     assert_eq!(te.text(), "a", "and losing focus takes the keyboard away again");
 }
 
@@ -834,7 +834,7 @@ fn a_press_focuses_the_editor() {
     let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
     let rect = te.geometry();
     te.handle_event(&Event::mouse_press(rect.x + 6, rect.y + 6, 1));
-    te.handle_event(&Event::key_press(97, 0)); // 'a'
+    te.handle_event(&Event::text_input("a")); // 'a'
     assert_eq!(te.text(), "a", "the press made the editor own the keyboard");
 }
 
@@ -915,7 +915,11 @@ fn primary_v_pastes_at_the_caret() {
 fn a_double_click_selects_a_word() {
     let mut te = TextEdit::new(Rect::new(0, 0, 300, 100));
     te.set_text("alpha beta".to_string());
-    te.handle_event(&Event::MouseDoubleClick { pos: crate::core::Point::new(6, 10), button: 1 });
+    te.handle_event(&Event::MouseDoubleClick {
+        pos: crate::core::Point::new(6, 10),
+        button: 1,
+        modifiers: 0,
+    });
     assert_eq!(te.selected_text(), "alpha");
 }
 

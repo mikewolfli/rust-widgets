@@ -3914,6 +3914,7 @@ mod tests {
         tw.handle_event(&Event::MouseRelease {
             pos: Point::new(third.x + third.width as i32 / 2, press.y),
             button: 1,
+            modifiers: 0,
         });
         // The release settles the gesture; the live reorder already happened.
         assert_eq!(titles(&tw), vec!["T1", "T2", "T0"]);
@@ -4015,7 +4016,7 @@ mod tests {
         );
         assert_eq!(coordinator.on_event(&Event::mouse_move(drop.x, drop.y), viewport), None);
         assert_eq!(
-            coordinator.on_event(&Event::mouse_release(drop.x, drop.y, PRIMARY), viewport),
+            coordinator.on_event(&Event::mouse_release(drop.x, drop.y, PRIMARY, 0), viewport),
             Some(DropEffect::Move)
         );
 
@@ -4074,7 +4075,7 @@ mod tests {
         );
         assert_eq!(coordinator.on_event(&Event::mouse_move(drop.x, drop.y), viewport), None);
         assert_eq!(
-            coordinator.on_event(&Event::mouse_release(drop.x, drop.y, PRIMARY), viewport),
+            coordinator.on_event(&Event::mouse_release(drop.x, drop.y, PRIMARY, 0), viewport),
             Some(DropEffect::Move)
         );
 
@@ -4124,7 +4125,7 @@ mod tests {
         let mut coordinator = DragCoordinator::new();
         let press_event = Event::mouse_press(press.x, press.y, PRIMARY);
         let move_event = Event::mouse_move(drop.x, drop.y);
-        let release_event = Event::mouse_release(drop.x, drop.y, PRIMARY);
+        let release_event = Event::mouse_release(drop.x, drop.y, PRIMARY, 0);
 
         let _ = with_widget_mut(id, |widget| widget.handle_event(&press_event));
         let _ = coordinator.on_event(&press_event, viewport);

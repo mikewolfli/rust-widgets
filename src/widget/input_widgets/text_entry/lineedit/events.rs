@@ -347,31 +347,14 @@ impl LineEdit {
                 let _ = self.redo();
             }
             _ => {
-                // Character input. A control chord must not be swallowed as text, nor may an
-                // unmapped **non-printable** key be: both used to be typed as their bare
-                // character, so `Ctrl+B` inserted `b` and `Ctrl+Z` inserted `z`.
+                // Printable content is **not** taken from `KeyPress` (W4-01).
                 //
-                // # Why the three modifiers are tested one at a time
-                //
-                // Combining them with `|` and asking `contains` is not the predicate it reads
-                // as: `Modifiers::contains` compares the *value* of the mask, so
-                // `contains(CTRL | ALT | META)` is true only when **all three** are held at once.
-                // A `Ctrl+B` carries CTRL alone and therefore failed the combined test, which is
-                // exactly the defect this arm exists to stop. Three separate `contains` calls say
-                // what is meant: none of the three is held.
-                let chord_held = modifiers.contains(crate::shortcut::Modifiers::CTRL)
-                    || modifiers.contains(crate::shortcut::Modifiers::ALT)
-                    || modifiers.contains(crate::shortcut::Modifiers::META);
-                if !chord_held {
-                    // Only a **printable** key is content. `char::from_u32(0)` is `\0`, and 9, 10
-                    // and 13 are Tab/Enter/CR — none of them is something a user typed into a
-                    // text field, and all of them are control codes the host owns.
-                    if let Some(ch) = char::from_u32(key).filter(|c| !c.is_control()) {
-                        if ch.is_ascii_graphic() || ch == ' ' {
-                            self.insert_char(ch);
-                        }
-                    }
-                }
+                // Every backend delivers a typed character as `Event::TextInput` (macOS
+                // `insertText:`, Windows `WM_CHAR`, GTK `printable_char`, Redox `TextInput`,
+                // mobile IME commits) and the arm below routes that into `insert_str`. Inserting
+                // the printable key here as well typed every character twice on Windows, the one
+                // backend that also forwards `WM_KEYDOWN` for printable virtual keys. A control
+                // chord and a non-printable key therefore have nothing left to do in this arm.
             }
         }
         true
@@ -500,7 +483,7 @@ impl EventHandler for LineEdit {
             }
             // A double click selects the word under the pointer; a third click in the same streak
             // selects the whole value, which is the convention for single-line fields.
-            Event::MouseDoubleClick { pos, button }
+            Event::MouseDoubleClick { pos, button, .. }
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
                 let index = self.byte_index_at_x(pos.x);

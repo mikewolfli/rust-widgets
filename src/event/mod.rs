@@ -59,8 +59,8 @@ pub use key_codes::{
 };
 pub use key_repeat::{is_dispatch_repeat, with_dispatch_repeat, KeyRepeatState};
 pub use propagation::{
-    ancestor_chain, consume_event, is_consumed, route_event, take_consumed, DispatchPhase,
-    Propagation,
+    ancestor_chain, consume_event, current_dispatch_phase, is_consumed, route_event, take_consumed,
+    DispatchPhase, Propagation,
 };
 pub use r#loop::{AnimationFrameRequest, EventFilterFn, EventLoop, GESTURE_LONG_PRESS_TIMER_ID};
 pub use timer::IdleTask;

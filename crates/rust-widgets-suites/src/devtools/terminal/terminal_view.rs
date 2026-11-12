@@ -1768,7 +1768,7 @@ impl EventHandler for TerminalView {
             }
             // Double-clicking an output row selects the whole row; dragging has no other way to
             // say "this row, not the one above it".
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some((line, _row)) = self.output_line_at(*pos) {
                     let length =
                         self.lines.get(line).map(|l| strip_ansi(l).chars().count()).unwrap_or(0);
@@ -2146,6 +2146,7 @@ impl Draw for TerminalView {
                 context.fill_rect(caret, fill);
             }
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 
@@ -3626,7 +3627,7 @@ mod tests {
         assert_eq!(terminal.selected_output().as_deref(), Some("red first\nsecond"));
         assert!(!terminal.selected_output().unwrap().contains('\u{1b}'));
 
-        terminal.handle_event(&Event::mouse_release(40, 16 + OUTPUT_LINE_HEIGHT, 1));
+        terminal.handle_event(&Event::mouse_release(40, 16 + OUTPUT_LINE_HEIGHT, 1, 0));
         assert!(terminal.copy_output());
     }
 
@@ -3643,7 +3644,7 @@ mod tests {
             }
         });
 
-        terminal.handle_event(&Event::mouse_double_click(40, 16, 1));
+        terminal.handle_event(&Event::mouse_double_click(40, 16, 1, 0));
         assert_eq!(terminal.output_selection(), Some((0, 0)));
         assert_eq!(terminal.selected_output().as_deref(), Some("only"));
         terminal.clear_output_selection();
@@ -3767,7 +3768,7 @@ mod tests {
             }
         });
 
-        terminal.handle_event(&Event::mouse_double_click(40, 16, 1));
+        terminal.handle_event(&Event::mouse_double_click(40, 16, 1, 0));
         assert_eq!(terminal.output_selection(), Some((0, 0)));
 
         terminal.set_scrollback_lines(1);
@@ -3788,7 +3789,7 @@ mod tests {
             terminal.append_output(line);
         }
         terminal.set_scrollback_lines(3);
-        terminal.handle_event(&Event::mouse_double_click(40, 16 + 2 * OUTPUT_LINE_HEIGHT, 1));
+        terminal.handle_event(&Event::mouse_double_click(40, 16 + 2 * OUTPUT_LINE_HEIGHT, 1, 0));
         assert_eq!(terminal.output_selection(), Some((2, 2)), "the newest row is selected");
 
         terminal.append_output("four");
@@ -4215,7 +4216,7 @@ mod tests {
             }
         });
 
-        terminal.handle_event(&Event::mouse_double_click(40, 16 + OUTPUT_LINE_HEIGHT, 1));
+        terminal.handle_event(&Event::mouse_double_click(40, 16 + OUTPUT_LINE_HEIGHT, 1, 0));
         assert_eq!(terminal.output_selection(), Some((1, 1)));
 
         // Erasing the second screen row makes it a trailing empty row, which the buffer drops.

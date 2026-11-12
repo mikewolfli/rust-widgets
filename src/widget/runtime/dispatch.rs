@@ -857,7 +857,11 @@ mod tests {
 
         assert!(dispatch_event(
             id,
-            &Event::MouseRelease { pos: Point::new(5, 5), button: mouse_button::PRIMARY }
+            &Event::MouseRelease {
+                pos: Point::new(5, 5),
+                button: mouse_button::PRIMARY,
+                modifiers: 0
+            }
         ));
         assert_eq!(
             read_widget(id, |widget| widget.base().is_pressed()),

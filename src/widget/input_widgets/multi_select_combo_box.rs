@@ -18,6 +18,7 @@
 use core::fmt::Write as _;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1092,7 +1093,11 @@ impl EventHandler for MultiSelectComboBox {
                 // Keyboard support: Escape closes, arrows move the active row, Space toggles
                 // it, Page keys move a screenful, and Primary+A selects every enabled row.
                 if !self.expanded {
-                    if matches!(*key, 13 | 32 | 38 | 40) && !self.items.is_empty() {
+                    if matches!(
+                        *key,
+                        key_codes::ENTER | key_codes::SPACE | key_codes::UP | key_codes::DOWN
+                    ) && !self.items.is_empty()
+                    {
                         self.set_expanded(true);
                     }
                     return;
@@ -1114,25 +1119,27 @@ impl EventHandler for MultiSelectComboBox {
                 }
                 let page = self.page_size();
                 match *key {
-                    27 => {
+                    key_codes::ESCAPE => {
                         self.set_expanded(false);
                     }
-                    38 => self.set_active_index(self.active_index.saturating_sub(1)),
-                    40 => {
+                    key_codes::UP => self.set_active_index(self.active_index.saturating_sub(1)),
+                    key_codes::DOWN => {
                         if self.active_index + 1 < self.items.len() {
                             self.set_active_index(self.active_index + 1);
                         }
                     }
-                    33 => self.set_active_index(self.active_index.saturating_sub(page)),
-                    34 => self.set_active_index(
+                    key_codes::PAGE_UP => {
+                        self.set_active_index(self.active_index.saturating_sub(page))
+                    }
+                    key_codes::PAGE_DOWN => self.set_active_index(
                         (self.active_index + page).min(self.items.len().saturating_sub(1)),
                     ),
-                    36 => self.set_active_index(0),
-                    35 => {
+                    key_codes::HOME => self.set_active_index(0),
+                    key_codes::END => {
                         self.set_active_index(self.items.len().saturating_sub(1));
                     }
-                    32 => self.toggle(self.active_index),
-                    13 => {
+                    key_codes::SPACE => self.toggle(self.active_index),
+                    key_codes::ENTER => {
                         self.toggle(self.active_index);
                         self.set_expanded(false);
                     }

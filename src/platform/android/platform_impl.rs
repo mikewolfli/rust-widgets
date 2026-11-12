@@ -615,7 +615,7 @@ impl Platform for AndroidPlatform {
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.state.count_kind(AndroidHandleKind::Window) > 0 {
             log::warn!(
-                "[android] create_window: this backend hosts one Activity window; the second
+                "[android] create_window: this backend hosts one Activity window; the second \
                  request returns 0 (BLUE28 B28.43)"
             );
             return 0;

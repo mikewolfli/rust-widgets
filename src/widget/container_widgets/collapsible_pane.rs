@@ -495,6 +495,10 @@ impl EventHandler for CollapsiblePane {
         }
 
         match event {
+            // The header's fill answers a hover, so the entry/exit transitions own a repaint.
+            Event::MouseEnter { .. } | Event::MouseLeave { .. } => {
+                self.base.request_redraw();
+            }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let hdr = self.header_rect();
                 if hdr.contains(*pos) {
@@ -576,6 +580,13 @@ impl Draw for CollapsiblePane {
         // stays a surface and its ink stays readable against it on both appearances.
         let header_bg =
             if self.base.is_enabled() { header_bg } else { header_bg.blend(&window_fill, 0.5) };
+        // A hovered header lifts a small step toward its ink, so the clickable disclosure answers
+        // the pointer. At rest the fill is unchanged.
+        let header_bg = if self.base.is_enabled() && self.base.is_hovered() {
+            header_bg.blend(&text_color, 0.04)
+        } else {
+            header_bg
+        };
         context.fill_rect(hdr, header_bg);
 
         // --- Draw header bottom border ---

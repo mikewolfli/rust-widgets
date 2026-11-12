@@ -1592,7 +1592,7 @@ impl EventHandler for PropertyGrid {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button, .. } => {
                 if *button == 3 {
                     self.context_menu_requested.emit(*pos);
                     return;
@@ -1731,7 +1731,7 @@ impl EventHandler for PropertyGrid {
                 }
                 self.base.handle_event(event);
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 // A double click is a row gesture like a press, so it needs the same
                 // containment guard: `row_index_at` reads only `y`, and a point beside the grid
                 // at a row's height otherwise opened that row's editor.
@@ -2231,12 +2231,14 @@ mod tests {
         pg.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(5000, rows_top + ROW_HEIGHT as i32 / 2),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(pg.editing_entry(), None, "a double click beside the grid must not edit");
 
         pg.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(60, rows_top + ROW_HEIGHT as i32 / 2),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(pg.editing_entry(), Some(0), "the same point inside still edits");
     }
@@ -2577,7 +2579,11 @@ mod tests {
             grid.add_property(format!("p{index}"), format!("v{index}"), true);
         }
         let row = grid.content_rect().y + FIRST_ROW_TOP as i32 + 12;
-        grid.handle_event(&Event::MouseDoubleClick { pos: Point::new(200, row), button: 1 });
+        grid.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(200, row),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(grid.editing_entry(), Some(0));
         grid.handle_event(&Event::text_input("x"));
         let changed = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -2670,6 +2676,7 @@ mod tests {
         grid.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(200, rows_top + 12),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(colours.load(Ordering::Relaxed), 1);
         assert_eq!(grid.editing_entry(), Some(0), "the text editor stays as the fallback");
@@ -2678,6 +2685,7 @@ mod tests {
         grid.handle_event(&Event::MouseDoubleClick {
             pos: Point::new(200, rows_top + ROW_HEIGHT as i32 + 12),
             button: 1,
+            modifiers: 0,
         });
         assert_eq!(files.load(Ordering::Relaxed), 1);
     }
@@ -2745,14 +2753,14 @@ mod tests {
         let rows_top = grid.content_rect().y + FIRST_ROW_TOP as i32;
         let row = Point::new(60, rows_top + 2 * ROW_HEIGHT as i32 + 12);
         grid.handle_event(&Event::MousePress { pos: row, button: 1, modifiers: 0 });
-        grid.handle_event(&Event::MouseRelease { pos: row, button: 1 });
+        grid.handle_event(&Event::MouseRelease { pos: row, button: 1, modifiers: 0 });
         assert_eq!(grid.selected_index(), Some(1));
         assert_eq!(*emitted.lock().expect("lock"), vec![1], "one click announces one selection");
 
         // A header press toggles its group; the release must not then deselect.
         let header = Point::new(10, rows_top + 12);
         grid.handle_event(&Event::MousePress { pos: header, button: 1, modifiers: 0 });
-        grid.handle_event(&Event::MouseRelease { pos: header, button: 1 });
+        grid.handle_event(&Event::MouseRelease { pos: header, button: 1, modifiers: 0 });
         assert!(grid.is_category_collapsed("General"));
         assert_eq!(grid.selected_index(), Some(1), "a release must not clear the selection");
     }

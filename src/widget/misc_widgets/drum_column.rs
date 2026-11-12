@@ -187,13 +187,27 @@ impl DrumColumn {
         self.loop_wrap
     }
 
-    /// Sets the wrap rule.
-    pub fn set_loop_wrap(&mut self, wrap: bool) {
+    /// Sets whether stepping past an end wraps around.
+    ///
+    /// The canonical name shared by the scrolling-wrap controls (roller, number picker, spin
+    /// box, drum column).
+    pub fn set_wrap(&mut self, wrap: bool) {
         if self.loop_wrap == wrap {
             return;
         }
         self.loop_wrap = wrap;
         self.base.request_redraw();
+    }
+
+    /// Sets the wrap rule.
+    ///
+    /// # Deprecated
+    ///
+    /// [`Self::set_wrap`] is the name shared by the scrolling-wrap controls (W4-43). This alias
+    /// enters exactly the same path, so migrating is a rename with no behaviour change.
+    #[deprecated(note = "use `set_wrap`, the name shared by the scrolling-wrap controls (W4-43)")]
+    pub fn set_loop_wrap(&mut self, wrap: bool) {
+        self.set_wrap(wrap);
     }
 
     /// The explicit divider colour, if one was set.
@@ -609,6 +623,11 @@ impl Draw for DrumColumn {
         );
 
         context.draw_rect(drum_rect, chrome.divider);
+
+        // Tab and Shortcut focus must be visible here as on every other control (U3-04).
+        let ring_rect = self.base.geometry();
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, ring_rect, ring_radius);
     }
 }
 
@@ -655,7 +674,7 @@ impl WidgetProperties for DrumColumn {
                 Ok(())
             }
             "loop_wrap" => {
-                self.set_loop_wrap(expect_bool(value)?);
+                self.set_wrap(expect_bool(value)?);
                 Ok(())
             }
             "row_height" => {
@@ -717,7 +736,7 @@ mod tests {
     #[test]
     fn stepping_wraps_when_asked() {
         let mut column = column();
-        column.set_loop_wrap(true);
+        column.set_wrap(true);
         column.set_selected_index(4);
         assert!(column.scroll_by(1));
         assert_eq!(column.selected_index(), 0);
@@ -848,7 +867,11 @@ mod tests {
         // 20 px down: less than a row but more than half of one, so the nearest row is row 2.
         column.handle_event(&Event::MouseMove { pos: Point::new(40, 190) });
         assert!((column.drag_offset - 20.0).abs() < 1e-4);
-        column.handle_event(&Event::MouseRelease { pos: Point::new(40, 190), button: 1 });
+        column.handle_event(&Event::MouseRelease {
+            pos: Point::new(40, 190),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(column.selected_index(), 2, "the snap picks the nearest row");
         assert!((column.drag_offset + 12.0).abs() < 1e-4, "the remaining 12 px is animated");
         assert!(column.is_animating());
@@ -880,7 +903,11 @@ mod tests {
         column.handle_event(&Event::MouseMove { pos: Point::new(40, 80) });
         assert_eq!(column.selected_index(), 0);
         assert_eq!(column.drag_offset, 0.0);
-        column.handle_event(&Event::MouseRelease { pos: Point::new(40, 80), button: 1 });
+        column.handle_event(&Event::MouseRelease {
+            pos: Point::new(40, 80),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(column.drag_offset, 0.0);
         assert!(!column.is_animating());
     }

@@ -42,6 +42,34 @@ replace these configurations with `--all-features`: the device profiles are
 mutually exclusive. `run_all_gates.sh` runs the source and contract gates; it
 does not replace the Cargo test matrix, and host-limited gates may report a skip.
 
+## Dependency and version policy
+
+This repository is **not** a Cargo workspace. The root package, each crate under
+`crates/` (five), each demo under `demo/` (five) and the three probe packages
+under `tools/` resolve independently, so a working tree can contain fourteen
+package-level `Cargo.lock` files (a fifteenth can appear under a build `target/`
+directory, which is output rather than an input). A shared transitive dependency can
+therefore resolve to different versions in different packages.
+
+- A dependency bump must be applied to every `Cargo.toml` that names it; bumping
+  only the root leaves the companion and demo packages on the old resolution.
+- When auditing dependencies, regenerate **every** lockfile, not just the root one:
+
+  ```bash
+  cargo update --manifest-path Cargo.toml
+  for manifest in crates/*/Cargo.toml demo/*/Cargo.toml tools/*/Cargo.toml; do
+    [ -f "$manifest" ] && cargo update --manifest-path "$manifest"
+  done
+  ```
+
+- Compare the resolved version of a shared dependency across packages with
+  `cargo tree --manifest-path <manifest> -i <crate>` before claiming a uniform
+  dependency graph.
+
+Companion crates must carry the same version as the root package; the release
+checks enforce that. The absence of a workspace is intentional (the nested packages
+are excluded from the published tarball), so do not "fix" it by adding one.
+
 ## Branch and commit
 
 - Create a feature branch from `main`.

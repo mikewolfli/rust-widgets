@@ -33,6 +33,13 @@ use crate::video::VideoDecoder as VideoDecoderTrait;
 /// Returns all decoded RGBA8 frames and the video metadata.
 /// Supports any container format that FFmpeg can demux.
 ///
+/// # Reachability (G-228)
+///
+/// This is a **whole-file helper for host tools** (thumbnailing, offline conversion, tests), not
+/// a widget path: every frame is held in memory at once. Production playback goes through
+/// [`FfmpegDecoder`] / `VideoEngine`, which streams one frame at a time. No in-library caller
+/// uses this function.
+///
 /// # Errors
 ///
 /// Returns a human-readable error string if FFmpeg initialisation,

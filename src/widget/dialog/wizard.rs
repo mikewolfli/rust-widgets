@@ -1954,7 +1954,7 @@ mod tests {
         let cancel = hidden[0].center();
         wiz.handle_event(&Event::MousePress { pos: cancel, button: 1, modifiers: 0 });
         assert_eq!(wiz.pressed_button, None, "an unpainted button cannot be pressed");
-        wiz.handle_event(&Event::MouseRelease { pos: cancel, button: 1 });
+        wiz.handle_event(&Event::MouseRelease { pos: cancel, button: 1, modifiers: 0 });
         assert_eq!(canceled.load(Ordering::SeqCst), 0, "an unpainted Cancel must not fire");
 
         wiz.handle_event(&Event::KeyPress { key: crate::event::key_codes::TAB, modifiers: 0 });
@@ -2093,7 +2093,7 @@ mod tests {
         let pos = Point::new(btn_x + 20, btn_y + 10);
         wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not finish");
-        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "one click finishes exactly once");
     }
 
@@ -2115,7 +2115,7 @@ mod tests {
         let pos = Point::new(btn_x + 20, btn_y + 10);
         wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not cancel");
-        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "one click cancels exactly once");
     }
 
@@ -2137,7 +2137,7 @@ mod tests {
         assert_eq!(wiz.current_step(), 0, "a press must not advance the step");
         assert_eq!(changes.load(Ordering::SeqCst), 0, "a press must not emit step_changed");
 
-        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_eq!(wiz.current_step(), 1, "the release commits the advance");
         assert_eq!(changes.load(Ordering::SeqCst), 1, "one click emits step_changed once");
     }
@@ -2360,7 +2360,7 @@ mod tests {
         });
         let pos = Point::new(help_rect.x + 4, help_rect.y + 4);
         wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
-        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "Help must emit help_requested");
     }
 
@@ -2391,7 +2391,7 @@ mod tests {
         });
         let pos = Point::new(custom_rect.x + 4, custom_rect.y + 4);
         wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
-        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
         assert_eq!(clicked.load(Ordering::SeqCst), 0, "the clicked custom index is reported");
         assert_eq!(wiz.step_count(), 1, "a custom action does not navigate");
     }

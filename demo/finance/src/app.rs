@@ -84,6 +84,11 @@ struct LogEntry {
     text: String,
 }
 
+/// The demo's event log.
+///
+/// Every lock in this demo recovers from poisoning instead of panicking: a signal handler that
+/// fails must not take the window down with it, and the guarded data is still readable after the
+/// panic (`unwrap_or_else(|poisoned| poisoned.into_inner())`).
 struct EventLog {
     entries: Mutex<VecDeque<LogEntry>>,
     /// The status bar that shows the most recent entry, once one exists.
@@ -104,7 +109,7 @@ impl EventLog {
     fn append(&self, message: impl Into<String>) {
         let message = message.into();
         {
-            let mut entries = self.entries.lock().unwrap();
+            let mut entries = self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if entries.len() >= EVENT_LOG_CAPACITY {
                 entries.pop_front();
             }
@@ -124,7 +129,7 @@ impl EventLog {
     fn append_coalesced(&self, tag: &'static str, message: impl Into<String>) {
         let message = message.into();
         {
-            let mut entries = self.entries.lock().unwrap();
+            let mut entries = self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(entry) = entries.iter_mut().rev().find(|entry| entry.tag == Some(tag)) {
                 entry.text.clear();
                 entry.text.push_str(&message);
@@ -140,9 +145,13 @@ impl EventLog {
 
     /// Writes `text` to the attached status bar unless it already shows it.
     fn publish(&self, text: &str) {
-        let Some(status) = self.status.lock().unwrap().clone() else { return };
+        let Some(status) =
+            self.status.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        else {
+            return;
+        };
         {
-            let mut shown = self.shown.lock().unwrap();
+            let mut shown = self.shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if *shown == text {
                 return;
             }
@@ -162,9 +171,9 @@ impl EventLog {
     /// immediately: a bar left showing its creation text would be indistinguishable from a
     /// broken one.
     fn attach_status(&self, status: StatusBarHandle) {
-        *self.status.lock().unwrap() = Some(status);
+        *self.status.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(status);
         // The new bar shows its creation text, which is not what `shown` records.
-        self.shown.lock().unwrap().clear();
+        self.shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
         let latest = self.latest();
         if !latest.is_empty() {
             self.publish(&latest);
@@ -172,12 +181,22 @@ impl EventLog {
     }
 
     fn snapshot(&self) -> Vec<String> {
-        self.entries.lock().unwrap().iter().map(|entry| entry.text.clone()).collect()
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|entry| entry.text.clone())
+            .collect()
     }
 
     /// The most recent entry, for the status bar.
     fn latest(&self) -> String {
-        self.entries.lock().unwrap().back().map(|entry| entry.text.clone()).unwrap_or_default()
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .back()
+            .map(|entry| entry.text.clone())
+            .unwrap_or_default()
     }
 }
 

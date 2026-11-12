@@ -2368,7 +2368,7 @@ impl EventHandler for RiveWidget {
         // itself pressed (and never emit `mouse_up`).
         self.base.handle_event(event);
         // Playback toggles on **release** only (L-P01).
-        if let Event::MouseRelease { pos, button } = event {
+        if let Event::MouseRelease { pos, button, .. } = event {
             if *button == 1 && self.geometry().contains_point(*pos) {
                 if self.is_playing {
                     self.pause();
@@ -2910,7 +2910,7 @@ mod tests {
         rive.load_animation_from_json("run", &make_rive_json()).unwrap();
         rive.handle_event(&Event::mouse_press(10, 10, 1));
         assert!(rive.base().is_pressed(), "the press arms the base gesture");
-        rive.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        rive.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 , modifiers: 0});
         assert!(!rive.base().is_pressed(), "the release must clear what the press armed");
         assert!(rive.is_playing(), "and the click still toggles playback");
     }

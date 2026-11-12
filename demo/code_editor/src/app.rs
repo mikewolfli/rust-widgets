@@ -68,6 +68,11 @@ fn apply_appearance(default_dark: bool) {
 /// the ones that survive.
 const EVENT_LOG_CAPACITY: usize = 200;
 
+/// The demo's event log.
+///
+/// Every lock in this demo recovers from poisoning instead of panicking: a callback that fails
+/// must not take the window down with it, and the guarded data is still readable after the
+/// panic (`unwrap_or_else(|poisoned| poisoned.into_inner())`).
 struct EventLog {
     entries: Mutex<VecDeque<String>>,
 }
@@ -79,7 +84,7 @@ impl EventLog {
 
     fn append(&self, msg: impl Into<String>) {
         let msg = msg.into();
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if entries.len() >= EVENT_LOG_CAPACITY {
             entries.pop_front();
         }
@@ -385,10 +390,12 @@ fn wire_status_bar(editor: &CodeEditor, target: Arc<Mutex<Option<ObjectId>>>) {
     let publish_facts = Arc::clone(&facts);
     let publish_shown = Arc::clone(&last_shown);
     let publish = move || {
-        let Some(id) = *target.lock().unwrap() else { return };
-        let line = publish_facts.lock().unwrap().render();
+        let Some(id) = *target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) else {
+            return;
+        };
+        let line = publish_facts.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).render();
         {
-            let mut shown = publish_shown.lock().unwrap();
+            let mut shown = publish_shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if *shown == line {
                 return;
             }
@@ -401,7 +408,7 @@ fn wire_status_bar(editor: &CodeEditor, target: Arc<Mutex<Option<ObjectId>>>) {
     let (cursor_facts, cursor_publish) = (Arc::clone(&facts), publish.clone());
     editor.cursor_moved.connect(move |position| {
         {
-            let mut facts = cursor_facts.lock().unwrap();
+            let mut facts = cursor_facts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             facts.line = position.0;
             facts.column = position.1;
         }
@@ -415,7 +422,7 @@ fn wire_status_bar(editor: &CodeEditor, target: Arc<Mutex<Option<ObjectId>>>) {
     let (text_facts, text_publish) = (Arc::clone(&facts), publish);
     editor.text_change.connect(move |change| {
         {
-            let mut facts = text_facts.lock().unwrap();
+            let mut facts = text_facts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             facts.lines = if change.whole_document {
                 change.inserted_lines
             } else {
@@ -973,7 +980,7 @@ fn build_demo_window(app: &mut App, dark: bool, log: &Arc<EventLog>) -> Result<D
     log.append(format!("[StatusBar] created id={}", status.raw_id()));
     // From here on the signals can write to it. The initial text above came from the
     // same composer the signals use, so the bar starts correct on a fresh window.
-    *status_target.lock().unwrap() = Some(status.raw_id());
+    *status_target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(status.raw_id());
 
     // ── 应用窗口布局 ────────────────────────────────────────────────────
     //

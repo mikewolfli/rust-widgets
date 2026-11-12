@@ -12,7 +12,7 @@
 //! and are only visible to a person looking at the picture.
 //!
 //! So this writes one SVG per control to `snapshots/svg/`, named by `canonical_name`:
-//! the 188 files become a **reviewable artifact** rather than a number. Because they are
+//! every file becomes a **reviewable artifact** rather than a number. Because they are
 //! committed and regenerable, any later visual change shows up as a diff.
 //!
 //! # Why the geometry is fixed rather than per-control

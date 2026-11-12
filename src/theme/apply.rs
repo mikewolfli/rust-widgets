@@ -437,6 +437,10 @@ mod tests {
 
     /// The high-contrast override reaches controls created through this path, not
     /// only through the JSON loader.
+    ///
+    /// The integration twin `tests/theme_application_test.rs::a_high_contrast_override_reaches_a_new_control`
+    /// covers the public `create_*` funnel; this one calls `apply_active_theme` directly. Kept as
+    /// two arms of one intent rather than collapsed (T3-55).
     #[test]
     fn a_high_contrast_override_reaches_a_new_control() {
         use crate::style::HighContrastMode;

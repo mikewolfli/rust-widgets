@@ -1898,7 +1898,7 @@ impl EventHandler for MdiArea {
                     }
                 }
             }
-        } else if let Event::MouseDoubleClick { pos, button } = event {
+        } else if let Event::MouseDoubleClick { pos, button, .. } = event {
             if *button == 1 {
                 if let Some(index) = self.title_bar_at(*pos) {
                     let widget = self.subwindows[index].widget;
@@ -3673,7 +3673,11 @@ mod tests {
             modifiers: 0,
         });
         area.handle_event(&Event::MouseMove { pos: Point::new(249, 100) });
-        area.handle_event(&Event::MouseRelease { pos: Point::new(249, 100), button: 1 });
+        area.handle_event(&Event::MouseRelease {
+            pos: Point::new(249, 100),
+            button: 1,
+            modifiers: 0,
+        });
         let resized = area.sub_window(0).expect("frame").geometry();
         assert_eq!(resized, Rect::new(20, 20, 230, 150), "the right edge followed the drag");
 
@@ -3684,7 +3688,11 @@ mod tests {
             modifiers: 0,
         });
         area.handle_event(&Event::MouseMove { pos: Point::new(-400, 100) });
-        area.handle_event(&Event::MouseRelease { pos: Point::new(-400, 100), button: 1 });
+        area.handle_event(&Event::MouseRelease {
+            pos: Point::new(-400, 100),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(
             area.sub_window(0).expect("frame").geometry().width,
             MIN_SUBWINDOW_WIDTH,
@@ -3693,10 +3701,18 @@ mod tests {
 
         // Double-click the title bar: maximize, then restore.
         let before = area.sub_window(0).expect("frame").geometry();
-        area.handle_event(&Event::MouseDoubleClick { pos: Point::new(40, 22), button: 1 });
+        area.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(40, 22),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(area.sub_window(0).expect("frame").is_maximized());
         assert_eq!(area.sub_window(0).expect("frame").geometry(), area.geometry());
-        area.handle_event(&Event::MouseDoubleClick { pos: Point::new(40, 22), button: 1 });
+        area.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(40, 22),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!area.sub_window(0).expect("frame").is_maximized());
         assert_eq!(area.sub_window(0).expect("frame").geometry(), before);
     }
@@ -3764,6 +3780,7 @@ mod tests {
         area.handle_event(&crate::event::Event::MouseRelease {
             pos: crate::core::Point::new(60, 45),
             button: 1,
+            modifiers: 0,
         });
         let geometry = area.sub_window_mut(0).expect("window").geometry;
         assert_eq!(geometry.x, 50, "moved by the pointer delta");

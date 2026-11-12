@@ -247,7 +247,7 @@ pub struct ChartWidget {
     /// that edited them through [`Self::legend_mut`] is put back in line exactly as before.
     legend_entries_cache: Option<(u64, usize, u64, u64, crate::compat::Vec<LegendEntry>)>,
     /// The hover read-out text and its measured size, with the key it was built for.
-    readout_cache: Option<(usize, u64, String, u32, u32)>,
+    readout_cache: Option<(usize, u64, crate::core::Font, String, u32, u32)>,
     /// The hovered bucket's tooltip line, keyed like `readout_cache`.
     ///
     /// `hover_anchor` runs on every hover move and used to format the line each time; the
@@ -1853,8 +1853,10 @@ impl Draw for ChartWidget {
                     let font = effective_font(style);
                     let fresh = matches!(
                         &self.readout_cache,
-                        Some((cached, cached_generation, _, _, _))
-                            if *cached == index && *cached_generation == generation
+                        Some((cached, cached_generation, cached_font, _, _, _))
+                            if *cached == index
+                                && *cached_generation == generation
+                                && cached_font == font
                     );
                     if !fresh {
                         let text = match self.labels.get(index) {
@@ -1862,10 +1864,16 @@ impl Draw for ChartWidget {
                             None => format_axis_value(value),
                         };
                         let metrics = context.measure_text(&text, font);
-                        self.readout_cache =
-                            Some((index, generation, text, metrics.width, metrics.height.max(1)));
+                        self.readout_cache = Some((
+                            index,
+                            generation,
+                            font.clone(),
+                            text,
+                            metrics.width,
+                            metrics.height.max(1),
+                        ));
                     }
-                    if let Some((_, _, text, width, height)) = &self.readout_cache {
+                    if let Some((_, _, _, text, width, height)) = &self.readout_cache {
                         let width = *width as i32 + 8;
                         let height = *height as i32 + 6;
                         let x = (rect.x + 12).min(rect.x + rect.width as i32 - width).max(rect.x);
@@ -2039,7 +2047,10 @@ fn write_axis_value(value: f64, out: &mut String) {
         let _ = write!(out, "{value:.1}");
     }
     // The value axis is user-visible text, so its decimal point follows the active locale
-    // (U2-07). The rewrite is in place, so the no-allocation property above is preserved.
+    // (U2-07). The ASCII `write!` above allocates nothing, and the C locale's `.` takes the
+    // early-return path here; a locale whose separator is a different character rebuilds the
+    // short label into a new `String` (see `localize_decimal_point`), so "no allocation" holds
+    // only for the ASCII-separator case (T3-39).
     crate::widget::locale_number::localize_decimal_point(out);
 }
 
@@ -3137,7 +3148,7 @@ impl EventHandler for ChartWidget {
                     self.data_point_clicked.emit(index);
                 }
             }
-            Event::MouseRelease { pos: _, button } if *button == 1 => {
+            Event::MouseRelease { pos: _, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
             }
             Event::Wheel { delta, modifiers, .. } => {

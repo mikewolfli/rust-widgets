@@ -39,7 +39,8 @@ pub(crate) fn pointer_event_from_code(
     let _ = button;
     match code {
         1 => Some(crate::event::Event::mouse_press(x, y, crate::event::mouse_button::PRIMARY)),
-        2 => Some(crate::event::Event::mouse_release(x, y, crate::event::mouse_button::PRIMARY)),
+        // The C ABI carries no modifier state, so a programmatic release is plain (`0`).
+        2 => Some(crate::event::Event::mouse_release(x, y, crate::event::mouse_button::PRIMARY, 0)),
         3 => Some(crate::event::Event::mouse_move(x, y)),
         4 => Some(crate::event::Event::MouseEnter { pos: crate::core::Point::new(x, y) }),
         5 => Some(crate::event::Event::MouseLeave { pos: crate::core::Point::new(x, y) }),

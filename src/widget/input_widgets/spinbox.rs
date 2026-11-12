@@ -21,6 +21,7 @@
 //! one geometry.
 use crate::compat::{format, Box, Rc, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -918,13 +919,26 @@ impl SpinBox {
     pub fn wrapping(&self) -> bool {
         self.wrapping
     }
-    /// Sets wrapping state.
-    pub fn set_wrapping(&mut self, wrapping: bool) {
-        if self.wrapping == wrapping {
+    /// Sets whether stepping past an end wraps around.
+    ///
+    /// The canonical name shared by the scrolling-wrap controls (roller, number picker, spin
+    /// box, drum column).
+    pub fn set_wrap(&mut self, wrap: bool) {
+        if self.wrapping == wrap {
             return;
         }
-        self.wrapping = wrapping;
+        self.wrapping = wrap;
         self.base.request_redraw();
+    }
+    /// Sets wrapping state.
+    ///
+    /// # Deprecated
+    ///
+    /// [`Self::set_wrap`] is the name shared by the scrolling-wrap controls (W4-43). This alias
+    /// enters exactly the same path, so migrating is a rename with no behaviour change.
+    #[deprecated(note = "use `set_wrap`, the name shared by the scrolling-wrap controls (W4-43)")]
+    pub fn set_wrapping(&mut self, wrapping: bool) {
+        self.set_wrap(wrapping);
     }
     /// Increments value by single step.
     pub fn step_up(&mut self) {
@@ -1911,7 +1925,7 @@ impl WidgetProperties for SpinBox {
                 Ok(())
             }
             "wrapping" => {
-                self.set_wrapping(expect_bool(value)?);
+                self.set_wrap(expect_bool(value)?);
                 Ok(())
             }
             "thousands_grouping" => {
@@ -2077,13 +2091,13 @@ impl EventHandler for SpinBox {
                         // Enter commits and Escape abandons: the spin box owns the numeric
                         // contract, while every other key goes to the hosted field (caret,
                         // selection, clipboard and undo included).
-                        13 => {
+                        key_codes::ENTER => {
                             self.commit_edit();
                         }
-                        27 => self.cancel_edit(),
+                        key_codes::ESCAPE => self.cancel_edit(),
                         // The legacy forward-delete code the old buffer accepted; `LineEdit`
                         // spells the same operation as key 46.
-                        127 => {
+                        key_codes::DELETE_ASCII => {
                             self.entry.delete();
                             self.revalidate();
                             self.base.request_redraw();
@@ -2098,33 +2112,33 @@ impl EventHandler for SpinBox {
                     return;
                 }
                 match *key {
-                    38 => {
+                    key_codes::UP => {
                         // Up arrow
                         self.step_up();
                     }
-                    40 => {
+                    key_codes::DOWN => {
                         // Down arrow
                         self.step_down();
                     }
-                    33 => {
+                    key_codes::PAGE_UP => {
                         // Page Up takes a larger step (ten single steps).
                         let target =
                             (self.current_value() + self.single_step * 10.0).min(self.maximum);
                         self.step_to(target);
                     }
-                    34 => {
+                    key_codes::PAGE_DOWN => {
                         // Page Down.
                         let target =
                             (self.current_value() - self.single_step * 10.0).max(self.minimum);
                         self.step_to(target);
                     }
-                    36 => self.set_value_f64(self.minimum),
-                    35 => self.set_value_f64(self.maximum),
-                    13 => {
+                    key_codes::HOME => self.set_value_f64(self.minimum),
+                    key_codes::END => self.set_value_f64(self.maximum),
+                    key_codes::ENTER => {
                         // Enter begins a typed edit.
                         self.begin_edit();
                     }
-                    27 => {
+                    key_codes::ESCAPE => {
                         // Escape outside an edit has nothing to finish: the old path emitted
                         // `editing_finished` here with no edit open, which reported an event
                         // that had not happened.
@@ -2132,6 +2146,7 @@ impl EventHandler for SpinBox {
                     48..=57 | 46 | 45 => {
                         // A printable numeric key starts an edit from the current value, with the
                         // seeded value selected so the typed digit replaces rather than appends.
+                        // `46`/`45` are '.'/'-' here, not the Delete/Insert keys.
                         self.begin_edit();
                         self.entry.select_all();
                         self.place_entry();
@@ -2614,9 +2629,9 @@ mod tests {
     fn spinbox_wrapping() {
         let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
         assert!(!sb.wrapping());
-        sb.set_wrapping(true);
+        sb.set_wrap(true);
         assert!(sb.wrapping());
-        sb.set_wrapping(false);
+        sb.set_wrap(false);
         assert!(!sb.wrapping());
     }
 
@@ -2639,7 +2654,7 @@ mod tests {
     #[test]
     fn spinbox_step_up_wraps() {
         let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
-        sb.set_wrapping(true);
+        sb.set_wrap(true);
         sb.set_value(99);
         sb.step_up();
         assert_eq!(sb.value(), 0); // wraps to min
@@ -2664,7 +2679,7 @@ mod tests {
     #[test]
     fn spinbox_step_down_wraps() {
         let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
-        sb.set_wrapping(true);
+        sb.set_wrap(true);
         sb.set_value(0);
         sb.step_down();
         assert_eq!(sb.value(), 99); // wraps to max
@@ -3304,8 +3319,8 @@ mod tests {
     fn a_typed_value_is_committed_or_cancelled() {
         let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
         spin.set_range_f64(0.0, 1000.0);
-        for key in [49u32, 50, 51] {
-            spin.handle_event(&Event::KeyPress { key, modifiers: 0 });
+        for ch in ["1", "2", "3"] {
+            spin.handle_event(&Event::TextInput { text: ch.to_string() });
         }
         assert!(spin.is_editing());
         assert_eq!(spin.value(), 0, "nothing is committed while typing");
@@ -3343,7 +3358,7 @@ mod tests {
         assert!(spin.tick(16), "a held button keeps owing frames");
         assert!(spin.tick(600));
         assert!(spin.value() > after_press, "holding the button repeats");
-        spin.handle_event(&Event::MouseRelease { pos: center, button: 1 });
+        spin.handle_event(&Event::MouseRelease { pos: center, button: 1, modifiers: 0 });
         assert!(!spin.tick(500));
     }
 

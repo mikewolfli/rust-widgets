@@ -5,6 +5,44 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## Unreleased — accessibility, input and table-direction round (2026-11-11/12)
+
+The round is recorded in `docs/log/log-20261111-1.md`, `log-20261111-2.md` and
+`log-20261112-1.md`. It is behaviour-only: no public type or import path is removed.
+
+### Added
+
+- **Focus rings on every focusable control** — `BaseWidget::draw_focus_ring` /
+  `draw_focus_ring_if_needed` are wired into the full focusable roster (34 controls, including the
+  table family and the grid's empty state), so keyboard focus is visible instead of implicit.
+- **Disabled rendering across the widget set** — 26 controls now resist interaction *and* recede
+  visually through `disabled_ink_on` / `DISABLED_VEIL_ALPHA`; the six finance panes, the map
+  companions and the devtools terminal gained the same suite-side veil.
+- **`find_requested`** — the search intent is a published event with a typed payload, routed from
+  the JSON/designer path as well as the handle API.
+- **RTL column order (`rtl_columns`)** — the table family (DataGrid, GridTable, VirtualTable,
+  TreeTable, GridViewHeader) mirrors column order, hit testing and resize drags; the virtual table's
+  2 px cell gap now falls on the same side the hit test asserts.
+- **Overscroll physics** — container families consume the shared damp/settle model instead of
+  stopping at the edge.
+
+### Fixed
+
+- **IME allow-list** — text controls that previously dropped composition now accept pre-edit and
+  commit through the platform IME bridge; the allow-list is derived from the control's properties.
+- **Touch and gesture targets** — hit areas are widened to the measured touch target on tablet and
+  mobile, and gesture thresholds no longer reject a short drag.
+- **Number localisation** — decimal separators and digit shaping follow the active locale instead of
+  hard-coded `.` formatting.
+- **Popup Tab range** — Tab stays inside an open popup instead of escaping to the parent window.
+- **RangeSlider geometry** — a zero-width track no longer underflows its thumb positions.
+- **Declarative hot-reload teardown** — a removed node is unregistered from the runtime registry and
+  its handle callbacks, so repeated patch/hot-reload cycles no longer accumulate controls.
+- **MJPEG and video** — declared frame sizes are refused before allocation, and a stream ended by
+  manual stepping reports `Ended` so it can be replayed.
+- **Charts and tables** — hover/extent caches are keyed by the inputs they actually read (data
+  revision and font), removing per-frame rescans and stale tooltip sizes.
+
 ## Unreleased — editor layering, editor features, and the `rwui` CLI (BLUE31)
 
 The round is recorded in `docs/log/log-20261110-1.md`. It gives the two editor controls a shared

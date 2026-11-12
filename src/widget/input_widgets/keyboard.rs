@@ -722,9 +722,9 @@ impl Keyboard {
     fn emit_key_signals(&self, key_code: u32) {
         self.key_pressed.emit((key_code, 0));
         match key_code {
-            13 => self.enter_pressed.emit(),
-            8 => self.backspace_pressed.emit(),
-            32 => self.space_pressed.emit(),
+            key_codes::ENTER => self.enter_pressed.emit(),
+            key_codes::BACKSPACE => self.backspace_pressed.emit(),
+            key_codes::SPACE => self.space_pressed.emit(),
             _ => {}
         }
     }
@@ -792,7 +792,7 @@ impl Keyboard {
             }
         }
         self.emit_key_signals(code);
-        if (65..=90).contains(&code) || code == 32 {
+        if (65..=90).contains(&code) || code == key_codes::SPACE {
             if let Some(base) = code_char(code) {
                 let uppercase = self.shift ^ self.caps_lock;
                 let text =
@@ -1061,20 +1061,20 @@ impl EventHandler for Keyboard {
             Event::TouchEnd { .. } => self.release_key(),
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {
-                    8 => {
+                    key_codes::BACKSPACE => {
                         // Backspace
                         self.backspace_pressed.emit();
-                        self.key_pressed.emit((8, 0));
+                        self.key_pressed.emit((key_codes::BACKSPACE, 0));
                     }
-                    13 => {
+                    key_codes::ENTER => {
                         // Enter
                         self.enter_pressed.emit();
-                        self.key_pressed.emit((13, 0));
+                        self.key_pressed.emit((key_codes::ENTER, 0));
                     }
-                    32 => {
+                    key_codes::SPACE => {
                         // Space
                         self.space_pressed.emit();
-                        self.key_pressed.emit((32, 0));
+                        self.key_pressed.emit((key_codes::SPACE, 0));
                     }
                     _ => {}
                 }
@@ -1267,7 +1267,7 @@ impl Draw for Keyboard {
                     // share of the 30 px row's remaining height. `draw_text_line` is the entry
                     // point that does both halves, and it is the one the doc-comment above
                     // already promised.
-                    let key_text = if key.key_code == 16 && (self.shift ^ self.caps_lock) {
+                    let key_text = if key.key_code == SHIFT_CODE && (self.shift ^ self.caps_lock) {
                         shift_bg.contrast_color()
                     } else {
                         text_color
@@ -1591,7 +1591,7 @@ mod tests {
             "the key under the pointer must be visible as pressed; both fills were {resting}"
         );
 
-        kbd.handle_event(&Event::MouseRelease { pos: centre, button: 1 });
+        kbd.handle_event(&Event::MouseRelease { pos: centre, button: 1, modifiers: 0 });
         let released = key_fill(&mut kbd, rect, centre).expect("the key still paints a fill");
         assert_eq!(
             released, resting,
@@ -1852,7 +1852,7 @@ mod tests {
         kbd.handle_event(&Event::MousePress { pos: Point::new(16, 20), button: 1, modifiers: 0 });
         kbd.handle_event(&Event::MouseMove { pos: Point::new(48, 20) });
         kbd.handle_event(&Event::MouseMove { pos: Point::new(80, 20) });
-        kbd.handle_event(&Event::MouseRelease { pos: Point::new(80, 20), button: 1 });
+        kbd.handle_event(&Event::MouseRelease { pos: Point::new(80, 20), button: 1, modifiers: 0 });
 
         assert_eq!(committed.lock().unwrap().last().map(String::as_str), Some("we"));
     }

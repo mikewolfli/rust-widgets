@@ -1509,7 +1509,7 @@ mod tests {
         assert!(d.is_resizing(), "a press on the grip starts a resize, not a move");
         d.handle_event(&Event::MouseMove { pos: Point::new(grip.x + 41, grip.y + 21) });
         assert_eq!(d.geometry(), Rect::new(0, 0, 440, 340));
-        d.handle_event(&Event::MouseRelease { pos: Point::new(440, 340), button: 1 });
+        d.handle_event(&Event::MouseRelease { pos: Point::new(440, 340), button: 1, modifiers: 0 });
         assert!(!d.is_resizing());
 
         // A shrink clamps to the minimum rather than to zero.
@@ -1557,6 +1557,7 @@ mod tests {
         d.handle_event(&Event::MouseRelease {
             pos: Point::new(grab.x + 15, grab.y + 25),
             button: 1,
+            modifiers: 0,
         });
         // A move after the release no longer drags.
         let settled = d.geometry();
@@ -2011,7 +2012,7 @@ mod tests {
             d.geometry()
         );
 
-        d.handle_event(&Event::MouseRelease { pos: Point::new(0, 0), button: 1 });
+        d.handle_event(&Event::MouseRelease { pos: Point::new(0, 0), button: 1, modifiers: 0 });
         let bar = d.drag_bar().expect("titled dialogs drag by the bar");
         d.handle_event(&Event::MousePress {
             pos: Point::new(bar.x + 2, bar.y + 2),

@@ -227,6 +227,17 @@ fn drive_frame_ticks_a_hovered_control_and_asks_for_another_frame() {
     );
 }
 
+/// T3-22: a delta from a C ABI or a resumed host is clamped before it reaches an animation.
+#[test]
+fn a_frame_delta_is_clamped_at_the_entry_point() {
+    let _serial = serialise_drive_frame();
+    let _ = drive_frame(0);
+    // `FrameOutcome` does not expose the delta; the contract is that a huge input is accepted and
+    // clamped rather than overflowing a control's phase (`CursorBlink::tick`). The clamp itself is
+    // pinned by `AnimationClock::advance_delta`, which shares the same constant.
+    let _ = drive_frame(u32::MAX);
+}
+
 /// The animation registry is the one source of truth for the sweep and both counters (G-06).
 #[test]
 fn the_animation_registry_tracks_start_settle_and_destroy() {
@@ -2708,7 +2719,7 @@ fn the_drag_coordinator_drops_a_text_selection_on_a_drop_zone() {
 
     assert_eq!(
         coordinator.on_event(
-            &Event::mouse_release(220, 40, crate::event::mouse_button::PRIMARY),
+            &Event::mouse_release(220, 40, crate::event::mouse_button::PRIMARY, 0),
             viewport
         ),
         Some(DropEffect::Copy)
@@ -2764,8 +2775,10 @@ fn a_control_without_the_drag_traits_changes_nothing() {
     assert_eq!(coordinator.hovered(), None);
     assert_eq!(coordinator.on_event(&Event::mouse_move(60, 20), viewport), None);
     assert_eq!(
-        coordinator
-            .on_event(&Event::mouse_release(60, 20, crate::event::mouse_button::PRIMARY), viewport),
+        coordinator.on_event(
+            &Event::mouse_release(60, 20, crate::event::mouse_button::PRIMARY, 0),
+            viewport
+        ),
         None
     );
     assert_eq!(
@@ -2831,7 +2844,7 @@ fn the_source_learns_the_effect_of_the_drop() {
         .on_event(&Event::mouse_press(10, 10, crate::event::mouse_button::PRIMARY), viewport);
     let _ = coordinator.on_event(&Event::mouse_move(220, 40), viewport);
     let effect = coordinator
-        .on_event(&Event::mouse_release(220, 40, crate::event::mouse_button::PRIMARY), viewport);
+        .on_event(&Event::mouse_release(220, 40, crate::event::mouse_button::PRIMARY, 0), viewport);
     assert_eq!(effect, Some(DropEffect::Copy));
     assert_eq!(*finished.lock().unwrap(), Some(DropEffect::Copy));
 }
@@ -4029,7 +4042,11 @@ fn a_press_released_off_the_control_is_delivered_back_and_clears_its_latch() {
     assert!(
         dispatch_pointer_event(
             parent,
-            &Event::MouseRelease { pos: Point::new(280, 280), button: mouse_button::PRIMARY },
+            &Event::MouseRelease {
+                pos: Point::new(280, 280),
+                button: mouse_button::PRIMARY,
+                modifiers: 0
+            },
             Point::new(280, 280),
         ),
         "the off-widget release must be routed back to the gesture owner, not dropped"
@@ -4053,7 +4070,11 @@ fn a_press_released_off_the_control_is_delivered_back_and_clears_its_latch() {
     );
     dispatch_pointer_event(
         parent,
-        &Event::MouseRelease { pos: Point::new(40, 35), button: mouse_button::PRIMARY },
+        &Event::MouseRelease {
+            pos: Point::new(40, 35),
+            button: mouse_button::PRIMARY,
+            modifiers: 0,
+        },
         Point::new(40, 35),
     );
     assert_eq!(
@@ -5090,6 +5111,7 @@ fn a_click_callback_may_update_other_widgets_without_panicking() {
         &crate::event::Event::MouseRelease {
             pos: Point::new(10, 10),
             button: mouse_button::PRIMARY,
+            modifiers: 0,
         },
     );
 
@@ -5139,6 +5161,7 @@ fn a_callback_may_destroy_the_widget_it_is_handling() {
         &crate::event::Event::MouseRelease {
             pos: Point::new(10, 10),
             button: mouse_button::PRIMARY,
+            modifiers: 0,
         },
     );
 
@@ -5259,6 +5282,7 @@ fn a_callback_does_not_alias_a_widget_while_it_is_mutably_driven() {
         &crate::event::Event::MouseRelease {
             pos: Point::new(10, 10),
             button: mouse_button::PRIMARY,
+            modifiers: 0,
         },
     );
 
@@ -5303,6 +5327,7 @@ fn a_panicking_input_callback_leaves_no_stale_dispatch_state() {
     let release = crate::event::Event::MouseRelease {
         pos: Point::new(10, 10),
         button: mouse_button::PRIMARY,
+        modifiers: 0,
     };
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         dispatch_event(button_id, &press);
@@ -6152,18 +6177,18 @@ fn the_cached_tree_frame_is_reused_until_content_changes() {
     .expect("mount");
     let size = Size::new(40, 30);
 
-    let first = render_frame_tree_cached(id, size, Color::WHITE).expect("first frame");
+    let first = render_frame_tree_cached_shared(id, size, Color::WHITE).expect("first frame");
     assert_eq!(draws.get(), 1, "the first call has no frame to reuse");
 
-    let second = render_frame_tree_cached(id, size, Color::WHITE).expect("cached frame");
+    let second = render_frame_tree_cached_shared(id, size, Color::WHITE).expect("cached frame");
     assert_eq!(draws.get(), 1, "an unchanged tree must not be drawn again");
-    assert_eq!(first, second, "the reused frame must be the one that was drawn");
+    assert_eq!(first.as_ref(), second.as_ref(), "the reused frame must be the one that was drawn");
 
     // A control's own `request_redraw` reaches `mark_dirty_rect` through the own-id map.
     let _ = mark_dirty_rect(id, Rect::new(0, 0, 40, 30));
-    let third = render_frame_tree_cached(id, size, Color::WHITE).expect("repainted frame");
+    let third = render_frame_tree_cached_shared(id, size, Color::WHITE).expect("repainted frame");
     assert_eq!(draws.get(), 2, "a submitted change must repaint the tree");
-    assert_eq!(first, third, "the same content paints the same bytes");
+    assert_eq!(first.as_ref(), third.as_ref(), "the same content paints the same bytes");
 
     unregister(id);
 }
@@ -6398,12 +6423,12 @@ fn a_global_repaint_invalidates_cached_layers() {
     let (root, child, draws) = layer_fixture(Rect::new(0, 0, 60, 40), Rect::new(5, 5, 20, 20));
     let size = Size::new(60, 40);
 
-    render_frame_tree_cached(root, size, Color::WHITE).expect("first frame");
-    render_frame_tree_cached(root, size, Color::WHITE).expect("cached frame");
+    render_frame_tree_cached_shared(root, size, Color::WHITE).expect("first frame");
+    render_frame_tree_cached_shared(root, size, Color::WHITE).expect("cached frame");
     assert_eq!(draws.get(), 1, "the untouched frame replays the cache");
 
     arm_global_repaint();
-    render_frame_tree_cached(root, size, Color::WHITE).expect("repainted frame");
+    render_frame_tree_cached_shared(root, size, Color::WHITE).expect("repainted frame");
     assert_eq!(draws.get(), 2, "a global repaint must not reuse the old theme's pixels");
 
     unregister(child);

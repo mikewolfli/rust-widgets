@@ -747,9 +747,13 @@ impl I18nManager {
                 }
             }
         }
-        // A plural entry whose category is absent has no string for this count; fall
-        // through to the singular rather than reporting a miss.
-        if let Some(plural_form) = translation.plural.as_ref().and_then(|plural| plural.get(&count))
+        // Plural forms are keyed by CLDR category number, not by the raw count (W4-17). The
+        // category this quantity selects is what the file's `plural` map is asked for; a file that
+        // provides no form for that category falls through to the singular rather than reporting a
+        // miss.
+        let category = plural_category(language, count);
+        if let Some(plural_form) =
+            translation.plural.as_ref().and_then(|plural| plural.get(&category))
         {
             out.push_str(plural_form);
             return true;
@@ -759,6 +763,66 @@ impl I18nManager {
     }
 }
 crate::impl_default_via_new!(I18nManager);
+
+/// Numeric plural-category keys, in CLDR's canonical order (W4-17).
+///
+/// A translation's `plural` map is keyed by these numbers, not by the quantity itself: `1` is the
+/// singular form and `5` is the catch-all form regardless of the count that selected it. The full
+/// order is `zero = 0`, `one = 1`, `two = 2`, `few = 3`, `many = 4`, `other = 5`; the rules below
+/// select only the categories they actually distinguish.
+mod plural {
+    pub const ONE: u32 = 1;
+    pub const FEW: u32 = 3;
+    pub const MANY: u32 = 4;
+    pub const OTHER: u32 = 5;
+}
+
+/// Maps a quantity to its CLDR plural category number for `language` (W4-17).
+///
+/// # Scope
+///
+/// This is the **minimal** rule set the crate needs; it is not a full CLDR table. It covers:
+///
+/// - languages without grammatical number (`zh`, `ja`, `ko`, `th`, `vi`, `id`, `ms`, `lo`, `my`)
+///   always select [`plural::OTHER`];
+/// - French and Portuguese select [`plural::ONE`] for 0 and 1 and [`plural::OTHER`] above that;
+/// - the East-Slavic family (`ru`, `uk`, `be`, `sr`, `hr`, `bs`) uses the integer one/few/many
+///   rules;
+/// - everything else, including English and German, selects [`plural::ONE`] for exactly 1 and
+///   [`plural::OTHER`] otherwise.
+///
+/// Categories a language does not use (`two` for English, for example) are never selected, and a
+/// file may omit them. Languages with dual or paucal forms (`ar`, `he`, `cy`, ...) fall back to
+/// the default one/other rule rather than pretending to be correct; a host that needs them
+/// supplies pre-formatted text through [`PlaceholderArgument::Text`]. Extending the table is
+/// local to this function.
+fn plural_category(language: &str, count: u32) -> u32 {
+    let primary = language.split(['-', '_']).next().unwrap_or("");
+    let is_one_of = |tags: &[&str]| tags.iter().any(|tag| primary.eq_ignore_ascii_case(tag));
+
+    if is_one_of(&["zh", "ja", "ko", "th", "vi", "id", "ms", "lo", "my"]) {
+        return plural::OTHER;
+    }
+    if is_one_of(&["fr", "pt"]) {
+        return if count <= 1 { plural::ONE } else { plural::OTHER };
+    }
+    if is_one_of(&["ru", "uk", "be", "sr", "hr", "bs"]) {
+        let mod10 = count % 10;
+        let mod100 = count % 100;
+        return if mod10 == 1 && mod100 != 11 {
+            plural::ONE
+        } else if (2..=4).contains(&mod10) && !(12..=14).contains(&mod100) {
+            plural::FEW
+        } else {
+            plural::MANY
+        };
+    }
+    if count == 1 {
+        plural::ONE
+    } else {
+        plural::OTHER
+    }
+}
 
 /// The ordered lookup candidates for a BCP-47 language tag.
 ///

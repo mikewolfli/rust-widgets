@@ -50,10 +50,34 @@ proptest! {
         assert_eq!(ab, ba, "intersection must be commutative");
     }
 
-    /// For any Color, premultiplied alpha with itself should produce the same color.
+    /// `Color` stores **straight** (non-premultiplied) RGBA: a colour channel may exceed alpha,
+    /// and alpha-only operations must not touch RGB.
+    ///
+    /// This replaces an empty body named `color_premultiplied_invariants`: the type has no
+    /// premultiply operation, and `let _ = c;` could never fail.
     #[test]
-    fn color_premultiplied_invariants(r in 0u8.., g in 0u8.., b in 0u8.., a in 0u8..) {
+    fn color_alpha_operations_preserve_straight_channels(r in 0u8.., g in 0u8.., b in 0u8.., a in 0u8..) {
         let c = Color::rgba(r, g, b, a);
-        let _ = c; // Structure: invariant is that type construction never panics
+        // Straight storage: alpha does not clamp the colour channels.
+        assert_eq!((c.r, c.g, c.b, c.a), (r, g, b, a));
+
+        // An alpha-only change leaves straight RGB untouched.
+        let cleared = c.with_alpha(0);
+        assert_eq!((cleared.r, cleared.g, cleared.b), (r, g, b));
+        assert_eq!(cleared.a, 0);
+
+        // Inversion complements RGB and preserves alpha.
+        let inverted = c.invert();
+        assert_eq!(
+            (inverted.r, inverted.g, inverted.b, inverted.a),
+            (255 - r, 255 - g, 255 - b, a)
+        );
+
+        // The unit-range conversion is where a channel count could drift past 1.0.
+        let (fr, fg, fb, fa) = c.to_f32();
+        for (channel, expected) in [(fr, r), (fg, g), (fb, b), (fa, a)] {
+            assert!(channel.is_finite() && (0.0..=1.0).contains(&channel));
+            assert!((channel - expected as f32 / 255.0).abs() < f32::EPSILON);
+        }
     }
 }

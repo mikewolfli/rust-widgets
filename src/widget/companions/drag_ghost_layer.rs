@@ -269,7 +269,7 @@ impl EventHandler for DragGhostLayer {
         }
         match event {
             Event::MouseMove { pos } => self.follow(*pos),
-            Event::MouseRelease { pos, button: 1 } => {
+            Event::MouseRelease { pos, button: 1, .. } => {
                 self.follow(*pos);
                 self.finish();
             }
@@ -608,7 +608,11 @@ mod tests {
         layer.begin(origin(), "Move");
         layer.handle_event(&Event::MouseMove { pos: Point::new(44, 55) });
         assert_eq!(layer.pointer(), Point::new(44, 55));
-        layer.handle_event(&Event::MouseRelease { pos: Point::new(60, 70), button: 1 });
+        layer.handle_event(&Event::MouseRelease {
+            pos: Point::new(60, 70),
+            button: 1,
+            modifiers: 0,
+        });
 
         assert!(!layer.is_active());
         assert_eq!(*seen.lock().unwrap(), Vec::from([(Point::new(60, 70), false)]));

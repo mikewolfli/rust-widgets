@@ -17,6 +17,21 @@
  *   rust_widgets::run();
  *
  * ---------------------------------------------------------------------------
+ * Coverage / subset boundary (T3-28)
+ *
+ * This header wraps the **widget-control subset** of the C ABI. It is not a
+ * complete binding: the surface family (`rw_mount_surface`, …), scroll-family
+ * helpers, `rw_widget_layout_*`, `rw_widget_list_*`, `rw_widget_set_*`, and the
+ * font/theme families are intentionally exposed through the C ABI only. A C++
+ * host that needs them should include `<rw_generated.h>` and call `rw_*`
+ * directly; the forward declarations below only cover symbols this header
+ * itself uses that the generated header did not yet declare.
+ *
+ * The per-family counts are checked against `include/rw_generated.h` by
+ * `tools/check_binding_symbol_coverage.py`; that gate reports the wrapped count
+ * rather than claiming full coverage.
+ * ---------------------------------------------------------------------------
+ *
  * Compiled with: g++ -std=c++17 -I<repo>/include ...
  */
 
@@ -31,6 +46,10 @@
 // ==========================================================================
 //  Forward declarations for C ABI functions that exist in the Rust library
 //  but may not yet appear in the auto‑generated C header.
+//
+//  These are declarations for symbols this header calls. Their presence does
+//  NOT mean the C++ binding covers every C ABI family; see the coverage note at
+//  the top of this file (T3-28).
 // ==========================================================================
 
 #ifdef __cplusplus

@@ -39,6 +39,11 @@ pub mod types;
 pub use custom::CustomPaintControlBackend;
 pub use dispatcher::{active_control_policy, get_control_backend, get_control_backend_for_widget};
 #[cfg(not(alloc_frugal))]
+/// Diagnostics-only wrapper that forwards control operations to the active platform.
+///
+/// The name names a mechanism, so it is deliberately **not** part of the widget-facing API
+/// surface (principle #52); it exists for the backend seam and runtime traces. New host code talks
+/// to controls through handles and the platform trait, not through this type.
 pub use native::NativeControlBackend;
 pub use routing::route_preference_for_widget_kind;
 pub use trait_def::ControlBackend;

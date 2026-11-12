@@ -27,6 +27,9 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// capped at a quarter of the disc in `draw` so a tiny avatar still has a non-empty budget.
 const INITIALS_INSET: u32 = 4;
 
+/// How far a hovered avatar's disc moves towards its own contrast colour.
+const AVATAR_HOVER_TINT: f32 = 0.08;
+
 /// A status badge painted on an avatar's lower-right corner.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AvatarBadge {
@@ -443,6 +446,14 @@ impl Draw for Avatar {
         // square picture over a circular avatar have to be painted in exactly this colour -- two
         // copies would let a mask square differ from the disc it continues.
         let disc_color = self.disc_fill();
+        // A hovered avatar lifts a small step toward its contrast colour, so the clickable disc
+        // acknowledges the pointer even when the theme declares no `avatar:hover` fill. At rest
+        // the disc is untouched, which keeps the default picture byte-identical.
+        let disc_color = if self.base.is_enabled() && self.base.is_hovered() {
+            disc_color.blend(&disc_color.contrast_color(), AVATAR_HOVER_TINT)
+        } else {
+            disc_color
+        };
 
         // Draw the avatar shape (circle or rounded square)
         if self.square {
@@ -722,6 +733,11 @@ impl EventHandler for Avatar {
             return;
         }
         match event {
+            // Pointer entry and exit change the disc's fill, so they own a repaint (the base
+            // call above already recorded the flag).
+            Event::MouseEnter { .. } | Event::MouseLeave { .. } => {
+                self.base.request_redraw();
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 let disc = self.disc_rect();
                 let center =
@@ -1154,7 +1170,11 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        avatar.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        avatar.handle_event(&Event::MouseRelease {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         avatar.handle_event(&Event::MouseMove { pos: Point::new(20, 20) });
         avatar.handle_event(&Event::KeyPress { key: 0x41, modifiers: 0 });
         avatar.handle_event(&Event::KeyRelease { key: 0x41, modifiers: 0 });
@@ -1170,7 +1190,11 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        avatar.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        avatar.handle_event(&Event::MouseRelease {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
     }
 
     #[test]
@@ -1179,6 +1203,28 @@ mod tests {
         avatar.set_text("MW");
         let svg = crate::widget::svg::render_to_svg(&mut avatar);
         assert!(svg.starts_with("<svg"), "SVG output should start with <svg, got: {svg:.80}");
+    }
+
+    /// Pointer entry and exit change the disc's fill, and leaving restores it exactly.
+    #[test]
+    fn hovering_lifts_the_disc_and_leaving_restores_it() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
+        avatar.set_text("MW");
+        let rest = crate::widget::svg::render_to_svg(&mut avatar);
+
+        avatar.handle_event(&Event::MouseEnter { pos: Point::new(20, 20) });
+        assert!(avatar.base.is_hovered(), "MouseEnter sets the hover state");
+        let hovered = crate::widget::svg::render_to_svg(&mut avatar);
+        assert_ne!(rest, hovered, "a hovered avatar paints a different disc fill");
+
+        avatar.handle_event(&Event::MouseLeave { pos: Point::new(200, 200) });
+        assert!(!avatar.base.is_hovered(), "MouseLeave clears the hover state");
+        assert_eq!(
+            crate::widget::svg::render_to_svg(&mut avatar),
+            rest,
+            "leaving restores the resting disc byte for byte"
+        );
     }
 
     #[test]

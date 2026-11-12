@@ -2862,7 +2862,7 @@ impl EventHandler for LottieWidget {
         self.base.handle_event(event);
         // Playback toggles on **release** only: the paired press arm flipped it a second
         // time, so one click cancelled itself (L-P01).
-        if let Event::MouseRelease { pos, button } = event {
+        if let Event::MouseRelease { pos, button, .. } = event {
             if *button == 1 && self.geometry().contains_point(*pos) {
                 if self.playing {
                     self.pause();
@@ -4245,7 +4245,7 @@ mod tests {
         lottie.load_json(&make_lottie_json(10.0, 0.0, 30.0)).unwrap();
         lottie.handle_event(&Event::mouse_press(10, 10, 1));
         assert!(lottie.base().is_pressed(), "the press arms the base gesture");
-        lottie.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        lottie.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 , modifiers: 0});
         assert!(!lottie.base().is_pressed(), "the release must clear what the press armed");
         assert!(lottie.is_playing(), "and the click still toggles playback");
     }

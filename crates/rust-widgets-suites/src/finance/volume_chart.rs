@@ -627,6 +627,7 @@ impl Draw for VolumeChart {
                 1,
             );
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

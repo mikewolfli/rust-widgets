@@ -11,6 +11,19 @@ use rust_widgets::event::*;
 use rust_widgets::i18n::*;
 use rust_widgets::quality::*;
 
+/// Pins that a value exists by construction, without asserting behaviour.
+///
+/// Some tests in this file pin only that a type, constructor or handle can be named and built.
+/// The compiler already fails if the item disappears, but at run time such a test is
+/// indistinguishable from a behavioural test that happens to pass. Wrapping each construction in
+/// this helper — and marking the group with `// existence pin:` — makes the weaker guarantee
+/// visible, so a reader can tell "compiles and constructs" from "verified behaviour".
+#[cfg(all(
+    any(feature = "desktop", feature = "tablet", feature = "mobile"),
+    not(any(feature = "mini", feature = "embedded"))
+))]
+fn assert_exists<T>(_: &T) {}
+
 // ---------------------------------------------------------------------------
 // Core type integration
 // ---------------------------------------------------------------------------
@@ -87,8 +100,15 @@ fn test_rect_intersection() {
 
 #[test]
 fn test_orientation() {
-    assert_eq!(Orientation::Horizontal, Orientation::Horizontal);
-    assert_eq!(Orientation::Vertical, Orientation::Vertical);
+    // `BoxLayout::new` must keep the axis it was given, and `set_orientation` must switch it:
+    // the two axes have to stay distinguishable, or a vertical stack would lay out horizontally.
+    // The old body compared each variant to itself, which could never fail.
+    use rust_widgets::layout::BoxLayout;
+    let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+    assert_eq!(layout.orientation(), Orientation::Horizontal);
+    layout.set_orientation(Orientation::Vertical);
+    assert_eq!(layout.orientation(), Orientation::Vertical);
+    assert_ne!(Orientation::Horizontal, Orientation::Vertical);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +261,9 @@ fn test_rw_error_not_implemented_display() {
 fn test_app_new() {
     // App can be created without a running platform
     use rust_widgets::app::App;
-    let _app = App::new();
-    // App::new() should not panic — construction succeeds without platform
+    let app = App::new();
+    // existence pin: `App::new` constructs without a platform; no behaviour is asserted here.
+    assert_exists(&app);
 }
 
 #[cfg(all(
@@ -345,10 +366,12 @@ fn test_message_box_handle_no_widget_methods() {
 fn test_combo_box_handle_specific_ops() {
     use rust_widgets::app::ComboBoxHandle;
     let cb = ComboBoxHandle::from_raw(10);
-    // Without platform these return defaults, but should not panic
-    let _ = cb.add_item("A");
-    let _ = cb.current_index();
-    let _ = cb.item_count();
+    // An id that is not a mounted combo box is documented as "refused": `add_item` returns
+    // `false`, there is no selection, and the count is zero. Asserting those defaults is what
+    // makes this a test rather than a "does not panic" smoke check.
+    assert!(!cb.add_item("A"), "an unmounted combo box must refuse an item write");
+    assert_eq!(cb.current_index(), None, "an unmounted combo box has nothing selected");
+    assert_eq!(cb.item_count(), 0, "an unmounted combo box holds no items");
 }
 
 #[cfg(all(
@@ -359,11 +382,13 @@ fn test_combo_box_handle_specific_ops() {
 fn test_list_box_handle_specific_ops() {
     use rust_widgets::app::ListBoxHandle;
     let lb = ListBoxHandle::from_raw(11);
-    let _ = lb.add_item("X");
-    let _ = lb.remove_item(0);
-    let _ = lb.clear_items();
-    let _ = lb.current_index();
-    let _ = lb.item_count();
+    // Same documented defaults as the combo box: every mutator reports `false` for an id that
+    // is not a mounted list box, and the read-only facts start empty.
+    assert!(!lb.add_item("X"), "an unmounted list box must refuse an item write");
+    assert!(!lb.remove_item(0), "an unmounted list box must refuse a removal");
+    assert!(!lb.clear_items(), "an unmounted list box must refuse a clear");
+    assert_eq!(lb.current_index(), None, "an unmounted list box has nothing selected");
+    assert_eq!(lb.item_count(), 0, "an unmounted list box holds no items");
 }
 
 #[cfg(all(
@@ -652,22 +677,23 @@ fn test_dispatch_trigger_no_callback() {
 ))]
 #[test]
 fn test_all_widget_handle_types_exist() {
-    // Compile-time check that all handle types are constructable
+    // existence pin: every handle type below must construct from a raw id. Compilation is the
+    // assertion; the helper makes that weaker guarantee explicit at the call site.
     use rust_widgets::app::*;
-    let _ = ButtonHandle::from_raw(1);
-    let _ = LabelHandle::from_raw(2);
-    let _ = CheckBoxHandle::from_raw(3);
-    let _ = RadioButtonHandle::from_raw(4);
-    let _ = LineEditHandle::from_raw(5);
-    let _ = ComboBoxHandle::from_raw(6);
-    let _ = ListBoxHandle::from_raw(7);
-    let _ = SliderHandle::from_raw(8);
-    let _ = ProgressBarHandle::from_raw(9);
-    let _ = PanelHandle::from_raw(10);
-    let _ = SpinBoxHandle::from_raw(11);
-    let _ = ListViewHandle::from_raw(12);
-    let _ = ScrollAreaHandle::from_raw(13);
-    let _ = MessageBoxHandle::from_raw(14);
+    assert_exists(&ButtonHandle::from_raw(1));
+    assert_exists(&LabelHandle::from_raw(2));
+    assert_exists(&CheckBoxHandle::from_raw(3));
+    assert_exists(&RadioButtonHandle::from_raw(4));
+    assert_exists(&LineEditHandle::from_raw(5));
+    assert_exists(&ComboBoxHandle::from_raw(6));
+    assert_exists(&ListBoxHandle::from_raw(7));
+    assert_exists(&SliderHandle::from_raw(8));
+    assert_exists(&ProgressBarHandle::from_raw(9));
+    assert_exists(&PanelHandle::from_raw(10));
+    assert_exists(&SpinBoxHandle::from_raw(11));
+    assert_exists(&ListViewHandle::from_raw(12));
+    assert_exists(&ScrollAreaHandle::from_raw(13));
+    assert_exists(&MessageBoxHandle::from_raw(14));
 }
 
 #[cfg(all(
@@ -676,24 +702,24 @@ fn test_all_widget_handle_types_exist() {
 ))]
 #[test]
 fn test_new_widgets_module_exports_exist() {
-    // Verify that BLUE11 R10 new widgets are accessible from the widget crate root
+    // existence pin: the BLUE11 R10 widgets must be reachable from the widget crate root and
+    // constructable. Compilation is the assertion; the helper names that guarantee.
     #[cfg(feature = "desktop")]
     {
         use rust_widgets::widget::{
             AppBar, Badge, BottomNavigationBar, BottomSheet, MobileDatePicker, NavigationDrawer,
             PullToRefresh, SearchBox, SkeletonLoader, Switch, FAB,
         };
-        // Compile-time check: all types exist and are constructable
-        let _ = Switch::new(rust_widgets::core::Rect::new(0, 0, 60, 30));
-        let _ = SearchBox::new(rust_widgets::core::Rect::new(0, 0, 200, 30));
-        let _ = Badge::new(rust_widgets::core::Rect::new(0, 0, 24, 24));
-        let _ = FAB::new(rust_widgets::core::Rect::new(0, 0, 56, 56));
-        let _ = SkeletonLoader::new(rust_widgets::core::Rect::new(0, 0, 200, 20));
-        let _ = PullToRefresh::new(rust_widgets::core::Rect::new(0, 0, 300, 400));
-        let _ = BottomSheet::new(rust_widgets::core::Rect::new(0, 0, 300, 400));
-        let _ = BottomNavigationBar::new(rust_widgets::core::Rect::new(0, 0, 375, 56));
-        let _ = NavigationDrawer::new(rust_widgets::core::Rect::new(0, 0, 300, 600));
-        let _ = AppBar::new("Test", rust_widgets::core::Rect::new(0, 0, 375, 56));
-        let _ = MobileDatePicker::new(rust_widgets::core::Rect::new(0, 0, 300, 200));
+        assert_exists(&Switch::new(rust_widgets::core::Rect::new(0, 0, 60, 30)));
+        assert_exists(&SearchBox::new(rust_widgets::core::Rect::new(0, 0, 200, 30)));
+        assert_exists(&Badge::new(rust_widgets::core::Rect::new(0, 0, 24, 24)));
+        assert_exists(&FAB::new(rust_widgets::core::Rect::new(0, 0, 56, 56)));
+        assert_exists(&SkeletonLoader::new(rust_widgets::core::Rect::new(0, 0, 200, 20)));
+        assert_exists(&PullToRefresh::new(rust_widgets::core::Rect::new(0, 0, 300, 400)));
+        assert_exists(&BottomSheet::new(rust_widgets::core::Rect::new(0, 0, 300, 400)));
+        assert_exists(&BottomNavigationBar::new(rust_widgets::core::Rect::new(0, 0, 375, 56)));
+        assert_exists(&NavigationDrawer::new(rust_widgets::core::Rect::new(0, 0, 300, 600)));
+        assert_exists(&AppBar::new("Test", rust_widgets::core::Rect::new(0, 0, 375, 56)));
+        assert_exists(&MobileDatePicker::new(rust_widgets::core::Rect::new(0, 0, 300, 200)));
     }
 }

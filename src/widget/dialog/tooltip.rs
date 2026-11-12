@@ -90,6 +90,9 @@ struct TooltipWrapKey {
     weight: u16,
     bold: bool,
     italic: bool,
+    /// Tracking and word spacing change where a line breaks, so they are part of the key.
+    letter_spacing_bits: u32,
+    word_spacing_bits: u32,
     available: u32,
     wrap: bool,
 }
@@ -608,6 +611,8 @@ impl Tooltip {
             weight: font.weight(),
             bold: font.is_bold(),
             italic: font.is_italic(),
+            letter_spacing_bits: font.letter_spacing().to_bits(),
+            word_spacing_bits: font.word_spacing().to_bits(),
             available,
             wrap: self.wrap,
         };
@@ -677,6 +682,8 @@ impl Tooltip {
         font.weight().hash(&mut hasher);
         font.is_bold().hash(&mut hasher);
         font.is_italic().hash(&mut hasher);
+        font.letter_spacing().to_bits().hash(&mut hasher);
+        font.word_spacing().to_bits().hash(&mut hasher);
         self.wrap.hash(&mut hasher);
         available.hash(&mut hasher);
         for span in &self.spans {

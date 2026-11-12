@@ -76,6 +76,25 @@ pub use web_engine::{
     WebEngineScriptDialog, WebEngineSettings, WebEngineView, WebEngineWebChannel,
     DEFAULT_USER_AGENT,
 };
+
+// # The three history models: division of labour (principle #101, T3-25)
+//
+// They are deliberately not merged, because they answer three different questions:
+//
+// * [`history::BrowserHistory`] — the **persistent visit log**: one row per URL with a visit
+//   count and the last visit time. It is what a history panel, a most-visited list or an
+//   address-bar suggestion reads, and it survives sessions.
+// * [`history::SessionHistory`] — the **per-tab navigation stack** with document snapshots, so
+//   Back/Forward can restore the page state rather than refetching it.
+// * [`navigation::NavigationHistory`] — the **engine's index-based navigation log** used while a
+//   page is being driven; it records a linear sequence and a current index.
+// * [`web_engine::HistoryEntry`] (re-exported as the root `HistoryEntry`) — the **live engine
+//   view's** URL/title/scroll entry, the value a running `WebEngineView` reports.
+//
+// The two same-named `HistoryEntry` types are the one real collision. The root `HistoryEntry` is
+// the engine's; the visit-count model is `history::HistoryEntry`, and both carry that name in
+// their docs. `WebHistoryPanel` accepts a flat `WebHistoryRecord` list (with host-supplied
+// `visited_ms`) so any of these models can feed it without the panel depending on one of them.
 pub use web_engine_enhanced::WebEngineViewEnhanced;
 pub use web_history_panel::{WebHistoryPanel, WebHistoryRecord};
 pub use web_view::WebView;

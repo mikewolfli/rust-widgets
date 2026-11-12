@@ -1480,7 +1480,7 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 }
                 self.base.request_redraw();
             }
-            crate::event::Event::MouseRelease { pos, button } if *button == 1 => {
+            crate::event::Event::MouseRelease { pos, button, .. } if *button == 1 => {
                 if let Some((_, start)) = self.body_drag.take() {
                     let after = self.base.geometry();
                     self.record_geometry(start, after);
@@ -2215,7 +2215,7 @@ mod shape_canvas_tests {
         canvas.handle_event(&Event::mouse_press(30, 30, 1));
         assert_eq!(canvas.selection(), &[id]);
         canvas.handle_event(&Event::mouse_move(47, 36));
-        canvas.handle_event(&Event::mouse_release(47, 36, 1));
+        canvas.handle_event(&Event::mouse_release(47, 36, 1, 0));
 
         let geometry = canvas.shape(id).expect("shape").base().geometry();
         assert_eq!((geometry.x, geometry.y), (30, 20));

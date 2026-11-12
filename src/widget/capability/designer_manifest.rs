@@ -11,7 +11,7 @@
 //! description, or every reopening of a project silently loses information.
 //!
 //! [`capability_manifest_json`] writes that document; [`DesignerManifest::from_json`] reads it
-//! back. The pair is asserted by `tools/check_designer_manifest_roundtrip.py`, which exports,
+//! back. The pair is asserted by `tools/check_designer_manifest_roundtrip.sh`, which exports,
 //! re-loads through the parser here, exports again, and requires the two strings to be
 //! **byte-identical** — and requires the sentinels to be present, so two empty documents cannot
 //! satisfy it.
@@ -2365,9 +2365,12 @@ mod tests {
     /// Every exported control must carry a palette category, and every token must be a stable
     /// lower-case ASCII word.
     ///
-    /// This is the designer-readiness count in its smallest form: a control with no category is a
-    /// row the palette cannot place, and a token with capitals or punctuation is one a consumer
-    /// would have to normalise before comparing.
+    /// This is one palette fact the four-dimensional readiness table's control column reads; the
+    /// full table (controls × properties × events × commands, with typed / wireable / inexpressible
+    /// counts and a reason for every inexpressible row) is printed by
+    /// `tools/check_event_payload_types.py` (principle #100). A control with no category is a row
+    /// the palette cannot place, and a token with capitals or punctuation is one a consumer would
+    /// have to normalise before comparing.
     ///
     /// Gated with the factory and the export it reads: a build without the full widget set has no
     /// registration table to enumerate, and `capability_manifest_json` does not exist there.

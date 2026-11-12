@@ -8,7 +8,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/json/loader.rs:856` (feeds the index only while `LayoutInspector` is enabled, which is the default-off diagnostic path). Removal condition: when the runtime registry subsumes the index, or when the inspector is retired.
+//! **State:** Production callers: `src/json/loader/nodes.rs:847` (feeds the index only while `LayoutInspector` is enabled, which is the default-off diagnostic path). Removal condition: when the runtime registry subsumes the index, or when the inspector is retired.
 
 mod registry;
 

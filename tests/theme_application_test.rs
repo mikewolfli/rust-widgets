@@ -133,6 +133,10 @@ fn a_theme_switch_changes_what_a_new_control_gets() {
     global_theme_manager().set_appearance(AppearanceMode::Light);
 }
 
+/// The same assertion exists as a unit test in `src/theme/apply.rs`
+/// (`theme::apply::tests::a_high_contrast_override_reaches_a_new_control`), which exercises the
+/// function directly without the platform funnel. This copy covers the public `create_*` path;
+/// they are deliberately two arms of one intent, not an accidental duplicate (T3-55).
 #[test]
 fn a_high_contrast_override_reaches_a_new_control() {
     let _guard = guard();

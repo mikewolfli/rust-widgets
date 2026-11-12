@@ -291,7 +291,19 @@ impl<V: View> ReactiveHost<V> {
                 }
             }
         }
-        self.idle_pending.store(false, std::sync::atomic::Ordering::SeqCst);
+        // Row signals share `idle_pending` with binding changes, so the pump that clears the flag
+        // must drain both queues. Draining only `changed` left a pure RowSignal application with
+        // its flag cleared and its rows stranded until an unrelated binding change rebuilt the
+        // tree (T3-09).
+        while let Some(signal) = self.rows.try_pop() {
+            self.engine.update_rows(&self.view, self.create.as_ref(), &signal);
+            applied = true;
+        }
+        if self.has_pending() {
+            self.idle_pending.store(true, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            self.idle_pending.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
         applied
     }
 
@@ -637,7 +649,32 @@ mod tests {
         assert!(!host.has_pending());
     }
 
-    /// A resize rebuilds only when the breakpoint tier moves.
+    /// T3-09: the idle pump drains row signals as well as binding changes.
+    ///
+    /// `publish_rows` raises the same `idle_pending` flag, so a pump that only drained `changed`
+    /// cleared the flag while the rows stayed queued.
+    #[test]
+    fn the_idle_pump_applies_row_signals() {
+        let count = Rc::new(Cell::new(2usize));
+        let mut host = ReactiveHost::new(Rows { count: Rc::clone(&count) }, Box::new(creator()));
+        host.mount();
+        assert!(host.engine().id_at(&[0, 0]).is_some(), "the first row mounted");
+
+        count.set(3);
+        host.publish_rows(
+            RowSignal::new("rows").push(crate::view::RowChange::Insert { at: 2, count: 1 }),
+        )
+        .expect("the queue accepts the signal");
+        assert!(host.has_pending(), "publishing a row signal queues work");
+
+        assert!(host.pump_idle(), "the idle pump saw the queued row signal");
+        assert!(
+            host.engine().id_at(&[0, 2]).is_some(),
+            "the idle pump must apply the queued row signal, not leave it stranded"
+        );
+        assert!(!host.has_pending());
+        assert!(!host.idle_flag().load(std::sync::atomic::Ordering::SeqCst));
+    }
     #[test]
     fn a_resize_rebuilds_only_on_a_tier_change() {
         let count = Rc::new(Cell::new(1usize));

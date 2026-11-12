@@ -1089,6 +1089,46 @@ impl TextArea {
         width
     }
 
+    /// The advance of the caret at `offset` in **visual** order, or `None` for a line that paints
+    /// in logical order.
+    ///
+    /// # Why the logical prefix is the wrong side for an RTL run
+    ///
+    /// The renderer reorders a right-to-left display row when it paints it
+    /// ([`crate::render::text::line`] calls `visual_order_from_levels`), so "the width of the
+    /// logical prefix" is the caret's on-screen x only while the row paints left to right. In an
+    /// RTL row logical offset 0 is the *right* end, and the prefix advance put the marker at the
+    /// opposite end of the row (UX6-02, the mapping the single-line fields already use).
+    ///
+    /// The display row is the unit: a soft-wrapped row is reordered on its own, exactly as the
+    /// painter lays it out.
+    fn visual_caret_advance(&self, caret: usize) -> Option<i32> {
+        let rows = self.display_rows();
+        let row = rows.iter().rfind(|row| row.start <= caret)?;
+        let row_start = row.start;
+        let row_end = row.end.min(self.text.len()).max(row_start);
+        let line = &self.text[row_start..row_end];
+        // The all-LTR row is the steady state: no ranges, no levels, no ordering, no allocation.
+        if !crate::render::text::bidi::has_rtl_char(line) {
+            return None;
+        }
+        let cuts = self.row_advance_cuts(row_start, row_end);
+        if cuts.len() < 2 {
+            return None;
+        }
+        let (ranges, advances) = Self::ranges_and_advances(&cuts);
+        let font = self.text_font().clone();
+        let levels = crate::render::text::line::line_bidi_levels(line, &ranges, &font, 1.0);
+        let caret_in_row = caret.min(row_end).saturating_sub(row_start);
+        crate::render::text::bidi::caret_visual_advance_from_levels(
+            levels.as_ref(),
+            &ranges,
+            &advances,
+            caret_in_row,
+        )
+        .map(|x| x.round() as i32)
+    }
+
     /// The advance of the text on the caret's line, before `offset`, in pixels.
     ///
     /// # Why this is measured and not multiplied
@@ -1108,6 +1148,11 @@ impl TextArea {
     /// construction rather than by a constant that has to be kept in step.
     fn advance_of_caret_prefix(&self, offset: usize) -> i32 {
         let caret = floor_char_boundary(&self.text, offset.min(self.text.len()));
+        // A reordered (RTL) display row places the caret by *visual* order; the logical prefix
+        // advance would put it at the wrong end of the run.
+        if let Some(visual) = self.visual_caret_advance(caret) {
+            return visual;
+        }
         // The display row is the unit the painter advances by: without soft wrap it starts at the
         // logical line, and with it, at the wrapped segment the caret sits on.
         let rows = self.display_rows();
@@ -1140,47 +1185,27 @@ impl TextArea {
             return 0;
         }
         let font = self.text_font().clone();
-        let fresh = {
-            let cache = self.line_advance_cache.borrow();
-            match cache.as_ref() {
-                Some(entry)
-                    if entry.revision == self.revision
-                        && entry.font == font
-                        && entry.start == start
-                        && entry.end == end =>
-                {
-                    Some(entry.cuts.clone())
-                }
-                _ => None,
-            }
-        };
-        let cuts = match fresh {
-            Some(cuts) => cuts,
-            None => {
-                let row = &self.text[start..end];
-                let mut cuts: Vec<(usize, i32)> = Vec::with_capacity(row.len() + 1);
-                cuts.push((0, 0));
-                Self::with_measurement(|context| {
-                    let mut advance = 0i32;
-                    let mut glyph = [0u8; 4];
-                    for (index, ch) in row.char_indices() {
-                        advance +=
-                            context.measure_text(ch.encode_utf8(&mut glyph), &font).width as i32;
-                        cuts.push((index + ch.len_utf8(), advance));
-                    }
-                });
-                let cached = LineAdvanceCache {
-                    revision: self.revision,
-                    font: font.clone(),
-                    start,
-                    end,
-                    cuts: cuts.clone(),
-                };
-                *self.line_advance_cache.borrow_mut() = Some(cached);
-                cuts
-            }
-        };
+        let cuts = self.row_advance_cuts(start, end);
         let target = x.max(0);
+        // A reordered (RTL) display row paints its clusters in visual order, so a click has to be
+        // mapped back through the same permutation rather than compared with logical advances.
+        if crate::render::text::bidi::has_rtl_char(&self.text[start..end]) {
+            let (ranges, advances) = Self::ranges_and_advances(&cuts);
+            let levels = crate::render::text::line::line_bidi_levels(
+                &self.text[start..end],
+                &ranges,
+                &font,
+                1.0,
+            );
+            if let Some(boundary) = crate::render::text::bidi::caret_boundary_from_visual_advance(
+                levels.as_ref(),
+                &ranges,
+                &advances,
+                target as f32,
+            ) {
+                return cuts.get(boundary).map_or(end - start, |&(offset, _)| offset);
+            }
+        }
         let mut best = 0usize;
         for window in cuts.windows(2) {
             let (_, previous) = window[0];
@@ -1192,6 +1217,61 @@ impl TextArea {
             best = offset;
         }
         best
+    }
+
+    /// The cumulative per-character advances of the display row `start..end`, relative to `start`.
+    ///
+    /// The row's boundaries are cached by [`Self::revision`] and the font, so the caret and the
+    /// press hit test read one table instead of shaping the same run twice (I-P09).
+    fn row_advance_cuts(&self, start: usize, end: usize) -> Vec<(usize, i32)> {
+        let font = self.text_font().clone();
+        {
+            let cache = self.line_advance_cache.borrow();
+            if let Some(entry) = cache.as_ref() {
+                if entry.revision == self.revision
+                    && entry.font == font
+                    && entry.start == start
+                    && entry.end == end
+                {
+                    return entry.cuts.clone();
+                }
+            }
+        }
+        let row = &self.text[start..end];
+        let mut cuts: Vec<(usize, i32)> = Vec::with_capacity(row.len() + 1);
+        cuts.push((0, 0));
+        Self::with_measurement(|context| {
+            let mut advance = 0i32;
+            let mut glyph = [0u8; 4];
+            for (index, ch) in row.char_indices() {
+                advance += context.measure_text(ch.encode_utf8(&mut glyph), &font).width as i32;
+                cuts.push((index + ch.len_utf8(), advance));
+            }
+        });
+        let cached = LineAdvanceCache {
+            revision: self.revision,
+            font: font.clone(),
+            start,
+            end,
+            cuts: cuts.clone(),
+        };
+        *self.line_advance_cache.borrow_mut() = Some(cached);
+        cuts
+    }
+
+    /// One `(start, end)` range and one advance per character, in logical order.
+    ///
+    /// Derived from the same cumulative table the hit test walks, so the bidi mapping and the
+    /// logical search cannot disagree about a character's advance.
+    fn ranges_and_advances(cuts: &[(usize, i32)]) -> (Vec<(usize, usize)>, Vec<f32>) {
+        let count = cuts.len().saturating_sub(1);
+        let mut ranges = Vec::with_capacity(count);
+        let mut advances = Vec::with_capacity(count);
+        for pair in cuts.windows(2) {
+            ranges.push((pair[0].0, pair[1].0));
+            advances.push((pair[1].1 - pair[0].1) as f32);
+        }
+        (ranges, advances)
     }
 
     /// Runs `f` against a throwaway measurement surface.

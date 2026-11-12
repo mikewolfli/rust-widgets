@@ -19,7 +19,7 @@
 //! `rect.x + 6` with no bound and the indicator placed independently at
 //! `rect.x + rect.width - 20`.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
@@ -70,6 +70,18 @@ struct EditGeometry {
     box_rect: Rect,
     /// The rectangle the typed value may occupy.
     text_box: Rect,
+}
+
+/// The cached advance table and the inputs that produced it (W4-28).
+struct EditAdvanceCache {
+    /// The value the cuts describe.
+    text: String,
+    /// The face it was measured with.
+    font: Font,
+    /// Device scale the measurement ran at, as bits.
+    dpi_bits: u32,
+    /// `(byte end, advance of the prefix ending there)` for every character boundary.
+    cuts: Rc<Vec<(usize, i32)>>,
 }
 
 impl EditGeometry {
@@ -158,9 +170,65 @@ pub struct EditableComboBox {
     items_revision: u64,
     /// The item revision the popup's rows currently reflect.
     popup_synced_revision: u64,
+    /// Cumulative advances of the value text, keyed by text, face and device scale (W4-28).
+    ///
+    /// The selection band and the caret read three prefix advances from one table instead of
+    /// shaping the value's prefix up to three times a frame.
+    edit_advance_cache: RefCell<Option<EditAdvanceCache>>,
 }
 
 impl EditableComboBox {
+    /// Cumulative advances of `text` at every character boundary, cached (W4-28).
+    ///
+    /// The draw needs the whole value's advance plus up to three prefix advances; each used to be
+    /// a separate `measure_text` call every frame. One table serves all of them, keyed on the
+    /// text, the face it was measured with and the scale — the three inputs the result depends on.
+    /// The borrows are `try_borrow`/`try_borrow_mut` so a re-entrant paint falls back to measuring
+    /// rather than panicking, the same contract `LineEdit::cached_advance` has.
+    fn edit_advance_cuts(
+        &self,
+        context: &RenderContext,
+        text: &str,
+        font: &Font,
+    ) -> Rc<Vec<(usize, i32)>> {
+        let dpi_bits = context.dpi_scale().to_bits();
+        if let Ok(cache) = self.edit_advance_cache.try_borrow() {
+            if let Some(cache) = cache.as_ref() {
+                if cache.text == text && cache.font == *font && cache.dpi_bits == dpi_bits {
+                    return Rc::clone(&cache.cuts);
+                }
+            }
+        }
+        let mut cuts: Vec<(usize, i32)> = Vec::with_capacity(text.chars().count());
+        for (start, ch) in text.char_indices() {
+            let end = start + ch.len_utf8();
+            cuts.push((end, context.measure_text(&text[..end], font).width as i32));
+        }
+        let cuts = Rc::new(cuts);
+        if let Ok(mut cache) = self.edit_advance_cache.try_borrow_mut() {
+            *cache = Some(EditAdvanceCache {
+                text: text.to_string(),
+                font: font.clone(),
+                dpi_bits,
+                cuts: Rc::clone(&cuts),
+            });
+        }
+        cuts
+    }
+
+    /// The advance of the first `offset` bytes, read from the cached table (W4-28).
+    fn advance_at(cuts: &[(usize, i32)], offset: usize) -> i32 {
+        // An empty prefix advances by nothing; without this guard the first entry of the table
+        // (the first character's end) would be returned for offset 0.
+        if offset == 0 {
+            return 0;
+        }
+        cuts.iter()
+            .find(|(end, _)| *end >= offset)
+            .map(|(_, advance)| *advance)
+            .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0))
+    }
+
     /// The band the control actually paints: full width, one field tall, centred.
     ///
     /// # Why the control is not its own rectangle
@@ -202,6 +270,7 @@ impl EditableComboBox {
             popup: SuggestionPopup::new(geometry),
             items_revision: 0,
             popup_synced_revision: u64::MAX,
+            edit_advance_cache: RefCell::new(None),
         };
         combo.sync_popup();
         combo
@@ -885,14 +954,15 @@ impl Draw for EditableComboBox {
         // origin on the field's middle line and drew the value half a line low.
         let value_line = context.text_line(geometry.text_box, font);
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-        let value_advance = context.measure_text(display_text, font).width as i32;
+        // One advance table for the value and the three prefixes below (W4-28).
+        let cuts = self.edit_advance_cuts(context, &self.text, font);
+        let value_advance = Self::advance_at(&cuts, display_text.len());
         let value_origin =
             crate::render::fitted_origin(geometry.text_box, value_advance, value_align);
         // Selection band behind the selected range.
         if let Some((start, end)) = self.selection_range() {
-            let start_x =
-                value_origin.x + context.measure_text(&self.text[..start], font).width as i32;
-            let end_x = value_origin.x + context.measure_text(&self.text[..end], font).width as i32;
+            let start_x = value_origin.x + Self::advance_at(&cuts, start);
+            let end_x = value_origin.x + Self::advance_at(&cuts, end);
             context.fill_rect(
                 Rect::new(
                     start_x.min(end_x),
@@ -918,7 +988,7 @@ impl Draw for EditableComboBox {
 
         // Caret at the field's own insertion point, clipped to the value's box.
         let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
-        let caret_x = value_origin.x + context.measure_text(&self.text[..caret], font).width as i32;
+        let caret_x = value_origin.x + Self::advance_at(&cuts, caret);
         let caret_x = caret_x
             .min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
             .max(geometry.text_box.x);
@@ -1241,13 +1311,9 @@ impl EventHandler for EditableComboBox {
                         return;
                     }
                     _ => {
-                        // Character input
-                        if let Some(ch) = char::from_u32(*key) {
-                            if ch.is_ascii_graphic() || ch == ' ' {
-                                self.append_committed_text(&ch.to_string());
-                                return;
-                            }
-                        }
+                        // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01)
+                        // and the committed arm appends it. Taking the raw key as well typed
+                        // every character twice on Windows.
                     }
                 }
                 self.base.handle_event(event);
@@ -1542,7 +1608,7 @@ mod tests {
         let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 40));
         cb.set_text("helo");
         cb.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
-        cb.handle_event(&Event::KeyPress { key: 108, modifiers: 0 });
+        cb.handle_event(&Event::text_input("l"));
         assert_eq!(cb.text(), "hello");
         assert_eq!(cb.cursor_position(), 4);
 

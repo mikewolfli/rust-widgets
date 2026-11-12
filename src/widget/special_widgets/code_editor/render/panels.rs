@@ -266,6 +266,10 @@ impl CodeEditor {
             match_count: self.find.match_count(),
             font_size_bits: font.size().to_bits(),
             font_weight: font.weight(),
+            font_family_hash: font_family_hash(font.family()),
+            font_italic: font.is_italic(),
+            letter_spacing_bits: font.letter_spacing().to_bits(),
+            word_spacing_bits: font.word_spacing().to_bits(),
         };
         let stale = match self.find_summary_cache.as_ref() {
             Some(cached) => cached.key != key,

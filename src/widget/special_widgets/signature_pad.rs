@@ -1410,7 +1410,7 @@ mod tests {
         p.handle_event(&Event::mouse_press(10, 20, 1));
         p.handle_event(&Event::mouse_move(30, 40));
         p.handle_event(&Event::mouse_move(60, 50));
-        p.handle_event(&Event::mouse_release(60, 50, 1));
+        p.handle_event(&Event::mouse_release(60, 50, 1, 0));
 
         assert_eq!(p.stroke_count(), 1);
         assert!(!p.is_empty());
@@ -1436,7 +1436,7 @@ mod tests {
         // previous point, so neither is recorded.
         p.handle_event(&Event::mouse_move(10, 20));
         p.handle_event(&Event::mouse_move(10, 21));
-        p.handle_event(&Event::mouse_release(10, 21, 1));
+        p.handle_event(&Event::mouse_release(10, 21, 1, 0));
 
         let stroke = &p.strokes()[0];
         // Only the starting press survived; the near-duplicate moves were dropped.
@@ -1526,7 +1526,7 @@ mod tests {
     fn undo_and_clear_work() {
         let mut p = pad();
         p.handle_event(&Event::mouse_press(10, 20, 1));
-        p.handle_event(&Event::mouse_release(10, 20, 1));
+        p.handle_event(&Event::mouse_release(10, 20, 1, 0));
         assert_eq!(p.stroke_count(), 1);
 
         assert!(p.undo());
@@ -1534,7 +1534,7 @@ mod tests {
         assert!(!p.undo()); // nothing left to undo
 
         p.handle_event(&Event::mouse_press(10, 20, 1));
-        p.handle_event(&Event::mouse_release(10, 20, 1));
+        p.handle_event(&Event::mouse_release(10, 20, 1, 0));
         assert_eq!(p.stroke_count(), 1);
         p.clear();
         assert!(p.is_empty());
@@ -1556,7 +1556,7 @@ mod tests {
         });
 
         p.handle_event(&Event::mouse_press(10, 20, 1));
-        p.handle_event(&Event::mouse_release(10, 20, 1));
+        p.handle_event(&Event::mouse_release(10, 20, 1, 0));
         assert_eq!(changed.load(Ordering::SeqCst), 1);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
     }
@@ -1566,9 +1566,9 @@ mod tests {
         let mut p = pad();
         p.handle_event(&Event::mouse_press(10, 20, 1));
         p.handle_event(&Event::mouse_move(30, 40));
-        p.handle_event(&Event::mouse_release(30, 40, 1));
+        p.handle_event(&Event::mouse_release(30, 40, 1, 0));
         p.handle_event(&Event::mouse_press(50, 60, 1));
-        p.handle_event(&Event::mouse_release(50, 60, 1));
+        p.handle_event(&Event::mouse_release(50, 60, 1, 0));
 
         let flat = p.export_polylines();
         // The structure is what this test is about: two strokes, each terminated by a sentinel.
@@ -1752,7 +1752,7 @@ mod tests {
         let mut p = pad();
         p.set_enabled(false);
         p.handle_event(&Event::mouse_press(10, 20, 1));
-        p.handle_event(&Event::mouse_release(10, 20, 1));
+        p.handle_event(&Event::mouse_release(10, 20, 1, 0));
         assert!(p.is_empty());
     }
 
@@ -1850,7 +1850,7 @@ mod tests {
         p.set_min_point_distance(1e-9);
         p.handle_event(&Event::mouse_press(0, 0, 1));
         p.handle_event(&Event::mouse_move(60, 0));
-        p.handle_event(&Event::mouse_release(60, 0, 1));
+        p.handle_event(&Event::mouse_release(60, 0, 1, 0));
 
         assert_eq!(p.stroke_count(), 1, "the move is recorded instead of aborting the host");
         let points = p.strokes()[0].points().len();
@@ -1882,7 +1882,7 @@ mod tests {
         p.handle_event(&Event::mouse_press(10, 20, 1));
         p.handle_event(&Event::mouse_move(50, 20));
         p.clear();
-        p.handle_event(&Event::mouse_release(50, 20, 1));
+        p.handle_event(&Event::mouse_release(50, 20, 1, 0));
         assert_eq!(p.stroke_count(), 0, "the release does not commit a stroke clear removed");
     }
 }

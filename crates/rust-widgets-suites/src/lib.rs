@@ -86,6 +86,38 @@ pub mod media_playback;
 #[cfg(test)]
 mod wiring_tests;
 
+/// Fades a disabled suite control toward its own surface.
+///
+/// The finance panes, the map companions and the terminal all guard their **events** on
+/// `BaseWidget::is_enabled`, and their `draw` used to be pixel-identical in both states. A
+/// disabled control must recede visually too, so this is the same surface-direction veil the core
+/// `Label`/`Frame` use (`DISABLED_VEIL_ALPHA`): it lightens a dark surface and darkens a light one
+/// instead of laying down a mid-grey with no direction (T3-11).
+///
+/// Call this **after** the control has painted its content, so the veil covers it.
+#[cfg(any(feature = "finance", feature = "maps", feature = "devtools"))]
+pub(crate) fn veil_if_disabled(
+    base: &rust_widgets::widget::BaseWidget,
+    context: &mut rust_widgets::render::RenderContext,
+) {
+    if base.is_enabled() {
+        return;
+    }
+    let rect = base.geometry();
+    let surface = base
+        .style()
+        .background_color
+        .or_else(|| rust_widgets::style::palette_shared().map(|colors| colors.background));
+    let veil = match surface {
+        Some(surface) => {
+            surface.with_alpha(rust_widgets::widget::metrics::dimensions::DISABLED_VEIL_ALPHA)
+        }
+        // No surface to fade toward: the historical grey is the honest fallback.
+        None => rust_widgets::core::Color::rgba(128, 128, 128, 60),
+    };
+    context.fill_rect(rect, veil);
+}
+
 use rust_widgets::widget::capability::types::RegistrationError;
 use rust_widgets::widget::capability::WidgetFactory;
 

@@ -33,7 +33,7 @@ fn click(window: rust_widgets::core::ObjectId, x: i32, y: i32) {
     );
     rust_widgets::dispatch_pointer_event(
         window,
-        &Event::mouse_release(x, y, mouse_button::PRIMARY),
+        &Event::mouse_release(x, y, mouse_button::PRIMARY, 0),
         point,
     );
     rust_widgets::drive_frame(16);

@@ -78,10 +78,13 @@ for pair in \
         fail "$file: spot-check file is missing"
         continue
     fi
-    if grep -q "$method" "$ROOT/$file"; then
-        pass "$file mentions $method"
+    # Anchor on a real `fn` declaration, not the bare token: a comment or a stale doc
+    # sentence naming the method kept this green after the function was renamed
+    # (principle #106).
+    if grep -qE "^[[:space:]]*(pub(\\([a-z]+\\))?[[:space:]]+)?fn[[:space:]]+${method}[[:space:]]*\\(" "$ROOT/$file"; then
+        pass "$file declares $method"
     else
-        fail "$file: does not mention $method"
+        fail "$file: does not declare $method"
     fi
 done
 

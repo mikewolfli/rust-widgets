@@ -58,6 +58,29 @@ const PROJECT: &str = r#"{
   }
 }"#;
 
+/// A document whose containers keep their content in side tables rather than `children`.
+///
+/// The loader routes `pages`/`sections` through the container's own methods, so a generator that
+/// read only `children` produced an empty wizard and accordion. This fixture exists because the
+/// scalar-only document above cannot make that disagreement visible.
+const CONTAINER_PROJECT: &str = r#"{
+  "window": {
+    "id": "root",
+    "layout": {
+      "type": "vbox",
+      "children": [
+        { "wizard_dialog": { "id": "wizard", "pages": [
+            { "label": { "id": "step-one", "text": "One" } },
+            { "button": { "id": "step-two", "text": "Two" } }
+        ] } },
+        { "accordion": { "id": "accordion", "sections": [
+            { "label": { "id": "section-one", "title": "One" } }
+        ] } }
+      ]
+    }
+  }
+}"#;
+
 fn request(target: TargetProfile) -> GenerationRequest {
     GenerationRequest {
         json: String::from(PROJECT),
@@ -151,6 +174,61 @@ fn the_stripped_template_agrees_on_the_control_tree() {
         generated.report.nodes_emitted,
         mode1.len(),
         "the report's node count must match the tree it emitted"
+    );
+}
+
+/// **Structure**: container content tables (wizard pages, accordion sections) reach both modes.
+///
+/// This is the reverse injection W4-08 asks for: dropping the `pages`/`sections` entries from the
+/// generator's child sources makes the generated tree shorter than the document's, and this
+/// comparison fails on the first missing node.
+#[test]
+fn container_content_keys_become_child_nodes_in_both_modes() {
+    let project = JsonProject::parse(CONTAINER_PROJECT).expect("the document must parse");
+    let mode1: Vec<(String, Vec<usize>)> =
+        project.walk().map(|node| (node.widget.clone(), node.path.clone())).collect();
+    assert_eq!(
+        mode1.iter().map(|(widget, _)| widget.as_str()).collect::<Vec<_>>(),
+        vec!["window", "wizard_dialog", "label", "button", "accordion", "label"],
+        "the declared pages and sections must be nodes, not dropped structure"
+    );
+
+    let default = generate(&GenerationRequest {
+        json: String::from(CONTAINER_PROJECT),
+        target: TargetProfile::Default,
+        width: 800,
+        height: 600,
+        function_name: String::from("build_ui"),
+    })
+    .expect("the default template must generate");
+    let expected: Vec<String> = mode1.iter().map(|(widget, _)| widget.clone()).collect();
+    assert_eq!(
+        expected,
+        mode2_nodes(&default.source),
+        "the default template must describe every page and section as a child node.\n\
+         mode 2 source:\n{}",
+        default.source
+    );
+
+    let stripped = generate(&GenerationRequest {
+        json: String::from(CONTAINER_PROJECT),
+        target: TargetProfile::Stripped,
+        width: 800,
+        height: 600,
+        function_name: String::from("build_ui"),
+    })
+    .expect("the stripped template must generate");
+    let expected: Vec<String> = mode1
+        .iter()
+        .map(|(widget, _)| rust_widgets::designer::generator::constructor_type_name(widget))
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        expected,
+        mode2_stripped_nodes(&stripped.source),
+        "the stripped template must describe every page and section as a child node.\n\
+         mode 2 source:\n{}",
+        stripped.source
     );
 }
 

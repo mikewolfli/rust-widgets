@@ -565,6 +565,7 @@ impl Draw for MapMarkerDetail {
                 HorizontalAlignment::Center,
             );
         }
+        crate::veil_if_disabled(&self.base, context);
     }
 }
 

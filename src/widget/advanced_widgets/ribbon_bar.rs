@@ -39,6 +39,13 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::key_tip_badge::KeyTipBadge;
 
+/// The Alt virtual-key code, which toggles the KeyTip layer.
+///
+/// It is a **modifier** code rather than a key the shortcut parser names, so it has no
+/// `Key::` variant and therefore no entry in [`crate::event::key_codes`]; the one consumer
+/// names it here instead of leaving a bare `18`.
+const ALT_KEY_CODE: u32 = 18;
+
 // ── Layout constants ──────────────────────────────────────────────────────────
 
 const TAB_HEIGHT: i32 = 20;
@@ -2334,7 +2341,7 @@ impl EventHandler for RibbonBar {
 
             Event::KeyPress { key, modifiers: _ } => match *key {
                 // Alt toggles the KeyTip badges, and F10 focuses the first command.
-                18 => self.set_key_tips_visible(!self.key_tips_visible),
+                ALT_KEY_CODE => self.set_key_tips_visible(!self.key_tips_visible),
                 key_codes::F10 => {
                     self.set_key_tips_visible(true);
                     self.focused_item = self.current_tab_items().first().copied();

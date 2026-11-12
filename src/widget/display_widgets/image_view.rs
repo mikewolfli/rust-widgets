@@ -1373,7 +1373,7 @@ impl EventHandler for ImageView {
         // is reported only when it lands on the control and the control is enabled. It is also
         // the view's own zoom toggle: `1.0` and the fit scale are the two ends a viewer expects,
         // and the change is published through `view_changed`.
-        if let Event::MouseDoubleClick { pos, button: 1 } = event {
+        if let Event::MouseDoubleClick { pos, button: 1, .. } = event {
             if self.base.is_enabled() && self.geometry().contains_point(*pos) {
                 self.double_clicked.emit();
                 let fit = self.fit_zoom();
@@ -1583,7 +1583,11 @@ mod tests {
         view.set_enabled(false);
         // The pending release still arrives while the view is disabled; the guard is what must
         // abandon the drag, because the release arm is never reached.
-        view.handle_event(&Event::MouseRelease { pos: crate::core::Point::new(50, 50), button: 1 });
+        view.handle_event(&Event::MouseRelease {
+            pos: crate::core::Point::new(50, 50),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(view.drag_last.is_none(), "a disabled view holds no pan gesture");
         view.set_enabled(true);
         view.handle_event(&Event::MouseMove { pos: crate::core::Point::new(80, 80) });
@@ -1911,9 +1915,17 @@ mod tests {
         let fit = view.fit_zoom();
         assert!(fit > 1.0, "a small image in a large box fits larger: {fit}");
 
-        view.handle_event(&Event::MouseDoubleClick { pos: Point::new(20, 20), button: 1 });
+        view.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(20, 20),
+            button: 1,
+            modifiers: 0,
+        });
         assert!((view.zoom_level() - fit).abs() < 1e-4, "got {}", view.zoom_level());
-        view.handle_event(&Event::MouseDoubleClick { pos: Point::new(20, 20), button: 1 });
+        view.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(20, 20),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(view.zoom_level(), 1.0);
     }
 
@@ -1965,7 +1977,7 @@ mod tests {
         view.handle_event(&Event::mouse_press(50, 50, 1));
         view.handle_event(&Event::mouse_move(60, 55));
         assert_eq!(view.pan_offset(), Point::new(10, 5));
-        view.handle_event(&Event::mouse_release(60, 55, 1));
+        view.handle_event(&Event::mouse_release(60, 55, 1, 0));
 
         // A move after the release must not keep panning.
         view.handle_event(&Event::mouse_move(90, 90));
@@ -2016,7 +2028,7 @@ mod tests {
             "a gesture must sample the preview level"
         );
 
-        view.handle_event(&Event::mouse_release(10, 10, 1));
+        view.handle_event(&Event::mouse_release(10, 10, 1, 0));
         view.draw(&mut context);
         assert!(
             view.scaled_image.as_ref().is_some_and(|cache| !cache.preview),

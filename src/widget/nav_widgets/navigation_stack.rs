@@ -1099,7 +1099,7 @@ impl EventHandler for NavigationStack {
                     }
                 }
             }
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1640,7 +1640,11 @@ mod tests {
         stack.push(Box::new(TestPage::new(Color::BLACK)));
         stack.handle_event(&Event::MousePress { pos: Point::new(4, 300), button: 1, modifiers: 0 });
         stack.handle_event(&Event::MouseMove { pos: Point::new(200, 300) });
-        stack.handle_event(&Event::MouseRelease { pos: Point::new(200, 300), button: 1 });
+        stack.handle_event(&Event::MouseRelease {
+            pos: Point::new(200, 300),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(stack.page_count(), 1, "a long edge drag commits the pop");
     }
 
@@ -1673,7 +1677,11 @@ mod tests {
         stack.handle_event(&Event::MousePress { pos: Point::new(4, 300), button: 1, modifiers: 0 });
         // 36 px of 400 is 9% of the travel, well short of the one-third commit point.
         stack.handle_event(&Event::MouseMove { pos: Point::new(40, 300) });
-        stack.handle_event(&Event::MouseRelease { pos: Point::new(40, 300), button: 1 });
+        stack.handle_event(&Event::MouseRelease {
+            pos: Point::new(40, 300),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(stack.page_count(), 2, "a short drag must not pop the page");
 
         while stack.tick(16) {}
@@ -1694,7 +1702,11 @@ mod tests {
         stack.handle_event(&Event::MousePress { pos: Point::new(4, 300), button: 1, modifiers: 0 });
         // 146 px of 400 is 36.5% of the travel, just past the commit point.
         stack.handle_event(&Event::MouseMove { pos: Point::new(150, 300) });
-        stack.handle_event(&Event::MouseRelease { pos: Point::new(150, 300), button: 1 });
+        stack.handle_event(&Event::MouseRelease {
+            pos: Point::new(150, 300),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(stack.page_count(), 1, "a third of the travel commits the pop");
     }
 

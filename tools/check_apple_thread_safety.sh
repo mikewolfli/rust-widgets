@@ -138,8 +138,12 @@ ENUMERATED_ENTRY_POINTS=$(( $(grep -cE "^pub\\(crate\\) fn ($GUARDED_FNS)\\b" "$
 # ---------------------------------------------------------------------------
 echo "--- [B] macOS surface resize moves then invalidates the view ---"
 if [[ -f "$MACOS_CANVAS" ]]; then
-  grep -q 'setFrame:' "$MACOS_CANVAS" \
-    || error "$MACOS_CANVAS: expected a setFrame: call for the surface view"
+  # Strip comments and anchor at the start of a code line. The doc comment above the
+  # real message spells `setFrame:` several times, so a bare `grep -q 'setFrame:'`
+  # stayed green with no call at all (principle #106).
+  if ! grep -vE '^\s*(//|\*|/\*)' "$MACOS_CANVAS" | grep -qE '^[[:space:]]*setFrame:'; then
+    error "$MACOS_CANVAS: expected a setFrame: call for the surface view"
+  fi
   if grep -vE '^\s*(//|\*|/\*)' "$MACOS_CANVAS" | grep -qE 'setFrame:display:'; then
     error "$MACOS_CANVAS: setFrame:display: is not an NSView selector on macOS and aborts the process"
   fi

@@ -1083,7 +1083,7 @@ impl EventHandler for AnimatedImage {
             // Playback is toggled on **release**: a press/release pair used to flip the state
             // twice (playing -> paused -> playing), so a complete click looked like it did
             // nothing while still emitting two signals and two repaint requests.
-            Event::MouseRelease { pos, button } => {
+            Event::MouseRelease { pos, button, .. } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.playing {
                         self.pause();

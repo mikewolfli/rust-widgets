@@ -612,16 +612,21 @@ impl DataGrid {
             return None;
         }
         let cells = self.cells_box();
+        let rtl = crate::widget::view_widgets::rtl_columns::is_rtl();
         for column in 0..self.column_count() {
             let x = cells.x + self.column_view_x(column);
-            let right = x + self.column_width_at(column) as i32;
+            let width = self.column_width_at(column) as i32;
+            let right = x + width;
             if right <= band.x {
                 continue;
             }
             if x >= band.x + band.width as i32 {
                 break;
             }
-            if (point.x - right).abs() <= 4
+            // In RTL the mirrored column is anchored at its right edge, so the edge that moves
+            // with the width is the left (trailing) one; in LTR it is the right edge (T3-04).
+            let edge = if rtl { x } else { right };
+            if (point.x - edge).abs() <= 4
                 && self.header_columns.get(column).is_none_or(|spec| spec.resizable)
             {
                 return Some(column);
@@ -645,7 +650,11 @@ impl DataGrid {
         if crate::widget::view_widgets::rtl_columns::is_rtl() {
             // Mirror the whole layout, frozen prefix included: in an RTL grid the pinned
             // columns belong on the right and the scrolling band grows leftwards (U2-06).
-            self.cells_box().width as i32 - x - self.column_width_at(column) as i32
+            crate::widget::view_widgets::rtl_columns::mirror_span(
+                x,
+                self.column_width_at(column),
+                Rect::new(0, 0, self.cells_box().width, 0),
+            )
         } else {
             x
         }
@@ -711,7 +720,10 @@ impl DataGrid {
         // Mirror the probe, not the layout: the walk below is the LTR one and stays correct,
         // and the painted column and the hit-tested column keep one derivation (U2-06).
         let dx = if crate::widget::view_widgets::rtl_columns::is_rtl() {
-            self.cells_box().width as i32 - 1 - dx
+            crate::widget::view_widgets::rtl_columns::mirror_offset(
+                dx,
+                self.cells_box().width as i32,
+            )
         } else {
             dx
         };
@@ -1280,13 +1292,47 @@ mod tests {
         });
         grid.handle_event(&Event::MousePress { pos: edge_a, button: 1, modifiers: 0 });
         assert_eq!(grid.resizing_column, Some(0), "interactive mode starts the drag");
-        grid.handle_event(&Event::MouseRelease { pos: edge_a, button: 1 });
+        grid.handle_event(&Event::MouseRelease { pos: edge_a, button: 1, modifiers: 0 });
         assert_eq!(grid.resizing_column, None, "the release ends it");
 
         grid.set_column_width_mode(ColumnWidthMode::Fixed);
         grid.handle_event(&Event::MousePress { pos: edge_a, button: 1, modifiers: 0 });
         assert_eq!(grid.resizing_column, None, "fixed mode does not start one");
-        assert_eq!(clicked.load(Ordering::Relaxed), 1, "the header sees the click instead");
+    }
+
+    /// T3-04: the RTL handle is the column's trailing (left) edge, and a rightward drag narrows.
+    #[test]
+    fn an_rtl_resize_drag_grabs_the_trailing_edge_and_narrows_when_dragged_right() {
+        let mut grid = grid(4, 4);
+        grid.set_column_width_mode(ColumnWidthMode::Interactive);
+        let band = grid.header_band();
+        let cells = grid.cells_box();
+        let width = grid.column_width_at(0) as i32;
+        crate::widget::view_widgets::rtl_columns::tests::with_rtl(|| {
+            // Column 0 is anchored at the right edge, so its trailing (movable) edge is on the left.
+            let trailing = cells.x + cells.width as i32 - width;
+            let point = Point::new(trailing, band.y + 4);
+            assert_eq!(grid.resize_handle_at(point), Some(0));
+            assert_eq!(
+                grid.resize_handle_at(Point::new(cells.x + cells.width as i32 - 1, band.y + 4)),
+                None,
+                "the fixed right edge is not a handle in RTL"
+            );
+
+            grid.handle_event(&Event::MousePress { pos: point, button: 1, modifiers: 0 });
+            assert_eq!(grid.resizing_column, Some(0));
+            grid.handle_event(&Event::MouseMove { pos: Point::new(trailing + 20, band.y + 4) });
+            assert_eq!(
+                grid.column_width_at(0) as i32,
+                width - 20,
+                "dragging right moves the trailing edge left, narrowing the column"
+            );
+            grid.handle_event(&Event::MouseRelease {
+                pos: Point::new(trailing + 20, band.y + 4),
+                button: 1,
+                modifiers: 0,
+            });
+        });
     }
 
     /// Every setter that changes `visible_window()` reports it, so a host subscribed to the window

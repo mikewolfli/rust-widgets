@@ -54,6 +54,13 @@ pub const BACKSPACE: u32 = 8;
 /// The Delete (forward-delete) key.
 pub const DELETE: u32 = 46;
 
+/// The ASCII DEL code, the other spelling of [`DELETE`] some hosts deliver.
+///
+/// [`crate::shortcut::Key::from_key_code`] folds both `46` and `127` to `Key::Delete`. A handler
+/// that must accept both names the second here rather than leaving a bare `127` whose meaning the
+/// reader has to guess.
+pub const DELETE_ASCII: u32 = 127;
+
 /// The space bar.
 pub const SPACE: u32 = 32;
 
@@ -230,7 +237,7 @@ mod tests {
         // `127` is the other Delete spelling; the constant uses the one `Key::from_key_code` lists
         // first, and both must still agree with the enum.
         assert_eq!(Key::from_key_code(DELETE), Some(Key::Delete));
-        assert_eq!(Key::from_key_code(127), Some(Key::Delete));
+        assert_eq!(Key::from_key_code(DELETE_ASCII), Some(Key::Delete));
     }
 
     /// A platform chord reports a character regardless of case, and the widget layer

@@ -387,6 +387,10 @@ pub(crate) struct DiagnosticLabelKey {
     pub(crate) generation: u64,
     pub(crate) font_size_bits: u32,
     pub(crate) font_weight: u16,
+    pub(crate) font_family_hash: u64,
+    pub(crate) font_italic: bool,
+    pub(crate) letter_spacing_bits: u32,
+    pub(crate) word_spacing_bits: u32,
 }
 
 /// One formatted diagnostic label and its measured advance.
@@ -408,6 +412,10 @@ pub(crate) struct FindSummaryKey {
     pub(crate) match_count: usize,
     pub(crate) font_size_bits: u32,
     pub(crate) font_weight: u16,
+    pub(crate) font_family_hash: u64,
+    pub(crate) font_italic: bool,
+    pub(crate) letter_spacing_bits: u32,
+    pub(crate) word_spacing_bits: u32,
 }
 
 /// One formatted find-bar summary and its measured advance.
@@ -427,6 +435,10 @@ pub(crate) struct FoldLabelKey {
     pub(crate) hidden: usize,
     pub(crate) font_size_bits: u32,
     pub(crate) font_weight: u16,
+    pub(crate) font_family_hash: u64,
+    pub(crate) font_italic: bool,
+    pub(crate) letter_spacing_bits: u32,
+    pub(crate) word_spacing_bits: u32,
 }
 
 /// One formatted fold summary, its measured advance, and the line height it is centred in.

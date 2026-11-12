@@ -62,7 +62,11 @@ fn swatch_click_selects_and_double_click_activates() {
     assert_eq!(swatch.selected_index(), 1);
     assert_eq!(values(&selected), vec![1]);
 
-    swatch.handle_event(&Event::MouseDoubleClick { pos: Point::new(40, 10), button: 1 });
+    swatch.handle_event(&Event::MouseDoubleClick {
+        pos: Point::new(40, 10),
+        button: 1,
+        modifiers: 0,
+    });
     assert_eq!(values(&activated), vec![Color::GREEN]);
 }
 

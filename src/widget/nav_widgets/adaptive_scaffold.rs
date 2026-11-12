@@ -2229,7 +2229,7 @@ impl AdaptiveScaffold {
 impl EventHandler for AdaptiveScaffold {
     fn handle_event(&mut self, event: &Event) {
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button, .. } => {
                 // A disabled scaffold must not navigate between destinations, nor
                 // forward the click to its app bar. Without this gate
                 // `set_enabled(false)` had no effect on this widget.
@@ -2827,7 +2827,11 @@ mod tests {
         });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a press is not a committed tap");
 
-        scaffold.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        scaffold.handle_event(&Event::MouseRelease {
+            pos: Point::new(10, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "one tap forwards exactly one back event");
     }
 
@@ -2849,7 +2853,11 @@ mod tests {
         });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "a press is not a committed tap");
 
-        scaffold.handle_event(&Event::MouseRelease { pos: Point::new(340, 28), button: 1 });
+        scaffold.handle_event(&Event::MouseRelease {
+            pos: Point::new(340, 28),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "one tap forwards exactly one action event");
     }
 
@@ -3115,7 +3123,11 @@ mod tests {
             modifiers: 0,
         });
         assert!(!scaffold.is_drawer_open(), "the modal scrim dismisses on press");
-        scaffold.handle_event(&Event::MouseRelease { pos: Point::new(360, 400), button: 1 });
+        scaffold.handle_event(&Event::MouseRelease {
+            pos: Point::new(360, 400),
+            button: 1,
+            modifiers: 0,
+        });
     }
 
     /// A body that reports every event it is given.
@@ -3362,7 +3374,7 @@ mod tests {
         // rail's top edge, which is where the app bar ends.
         let band = scaffold.navigation_rail_rect().expect("the medium form owns a rail band");
         let pos = Point::new(band.x + 20, band.y + 72 + 20);
-        scaffold.handle_event(&Event::MouseRelease { pos, button: 1 });
+        scaffold.handle_event(&Event::MouseRelease { pos, button: 1, modifiers: 0 });
 
         assert_eq!(captured.load(Ordering::SeqCst), 1);
         assert_eq!(scaffold.selected_nav_index(), 1);

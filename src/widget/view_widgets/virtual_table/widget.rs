@@ -999,6 +999,11 @@ impl VirtualTable {
         // horizontal scroll moves the cells exactly as the old `column * stride` did.
         let x = self.column_offset(absolute) - self.column_offset(self.scroll_column);
         let width = self.column_width_at(absolute);
+        // The cell is 2 px smaller than its stride so the grid lines are the surface showing
+        // through rather than strokes that would double up where cells meet. The shrink is
+        // applied **before** mirroring: in RTL the trailing edge is the left one, so the gap must
+        // land on the left exactly as `column_at` tests it (T3-16).
+        let cell_width = width.saturating_sub(2);
         let stride_y = self.row_height as i32;
         // Mirror the whole column band inside the inset content area (U2-06). `origin` is the
         // control's geometry, so the reflection band is what `column_at` measures against.
@@ -1009,16 +1014,18 @@ impl VirtualTable {
             origin.height,
         );
         let x = if crate::widget::view_widgets::rtl_columns::is_rtl() {
-            crate::widget::view_widgets::rtl_columns::mirror_span(origin.x + INSET + x, width, band)
+            crate::widget::view_widgets::rtl_columns::mirror_span(
+                origin.x + INSET + x,
+                cell_width,
+                band,
+            )
         } else {
             origin.x + INSET + x
         };
         Rect::new(
             x,
             origin.y + INSET + self.header_offset() + row as i32 * stride_y,
-            // The cell is 2 px smaller than its stride on each axis, so the grid lines are the
-            // surface showing through rather than strokes that would double up where cells meet.
-            width.saturating_sub(2),
+            cell_width,
             self.row_height.saturating_sub(2),
         )
     }

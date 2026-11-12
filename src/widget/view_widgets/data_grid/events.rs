@@ -138,7 +138,7 @@ impl crate::event::EventHandler for DataGrid {
         }
 
         match event {
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some((row, column)) = self.cell_at(*pos) {
                     self.cell_double_clicked.emit((row, column));
                     self.apply_selection_click(row, column, 0);
@@ -213,6 +213,13 @@ impl crate::event::EventHandler for DataGrid {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 if let Some(column) = self.resizing_column {
                     let delta = pos.x - self.resize_start_x;
+                    // The handle in RTL is the column's left (trailing) edge, so dragging right
+                    // narrows the column; LTR keeps the additive form (T3-04).
+                    let delta = if crate::widget::view_widgets::rtl_columns::is_rtl() {
+                        -delta
+                    } else {
+                        delta
+                    };
                     let width = (self.resize_start_width as i32 + delta).max(1) as u32;
                     if self.store_column_width(column, width) {
                         self.base.request_redraw();

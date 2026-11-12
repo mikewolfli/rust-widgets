@@ -1119,7 +1119,7 @@ extern "C" fn dispatch_mouse_event(
                 crate::event::Event::mouse_press_with(position.x, position.y, button, 0)
             }
             MouseEventAction::Release => {
-                crate::event::Event::MouseRelease { pos: position, button }
+                crate::event::Event::MouseRelease { pos: position, button, modifiers: 0 }
             }
             MouseEventAction::Move => crate::event::Event::MouseMove { pos: position },
             // `None` is "the system told us nothing happened", and `Cancel` is the pointer leaving

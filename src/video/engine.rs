@@ -661,6 +661,12 @@ impl VideoEngine {
     }
 
     /// Decode the next available frame. Returns None at end of stream.
+    ///
+    /// This is the manual-stepping entry point; `tick_frame` is the clock-driven one. Both reach
+    /// `Ended` at end of stream, so a stream that finished through either path can be replayed by
+    /// `play` (which rewinds only from `Ended`). Reporting `Stopped` here made a manually stepped
+    /// stream unreplayable: `play` skipped the rewind and the next read ended again immediately
+    /// (T3-12).
     pub fn next_frame(&mut self) -> Result<Option<VideoFrame>, String> {
         if self.state != PlaybackState::Playing {
             return Ok(None);
@@ -670,8 +676,9 @@ impl VideoEngine {
             self.current_time = f.timestamp;
             self.on_frame.emit(f.clone());
         } else {
-            // End of stream
-            self.state = PlaybackState::Stopped;
+            // End of stream: the same state `tick_frame` reports, so replay is reachable.
+            self.state = PlaybackState::Ended;
+            self.clock.pause();
             self.on_state_change.emit(self.state);
         }
         Ok(frame)
@@ -1024,6 +1031,38 @@ mod tests {
         let restarted = engine.tick_frame(0, 0.05).expect("no error");
         assert!(restarted.is_some(), "replay starts from the first frame, not EOF");
         assert_eq!(engine.current_time(), 0.0, "the first frame is at 0.0");
+    }
+
+    /// T3-12: a stream that ended through `next_frame` is replayable too.
+    ///
+    /// `next_frame` used to report `Stopped`, while `play` rewinds only from `Ended`, so a
+    /// manually stepped stream could never start over.
+    #[test]
+    fn a_stream_ended_through_next_frame_can_be_replayed() {
+        let mut engine = engine_with_pattern();
+        engine.play();
+
+        let mut ended = false;
+        for _ in 0..1_000 {
+            match engine.next_frame() {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    ended = true;
+                    break;
+                }
+                Err(error) => panic!("stepping must not fail: {error}"),
+            }
+        }
+        assert!(ended, "the stream reaches its end");
+        assert_eq!(
+            engine.state(),
+            PlaybackState::Ended,
+            "manual stepping reports the same end state as the clock path"
+        );
+
+        engine.play();
+        let restarted = engine.next_frame().expect("no error");
+        assert!(restarted.is_some(), "replay starts from the first frame, not EOF");
     }
 
     /// Seeking to the end, ticking, and playing again must start over rather than re-end.

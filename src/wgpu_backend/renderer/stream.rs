@@ -84,6 +84,7 @@ impl WgpuRenderer {
         height: u32,
         commands: &[WgpuDrawCommand],
     ) -> Result<Vec<u8>, String> {
+        self.ensure_device_available()?;
         // One frame, one bracket (issue-20261104 RD-04): the manager's monitor/detector/quality
         // tracker are fed here or nowhere. The frame is recorded whatever the outcome — a failed
         // frame is still one the host waited for, and hiding failures from the trap detector is how
@@ -130,6 +131,7 @@ impl WgpuRenderer {
         height: u32,
         commands: &[WgpuDrawCommand],
     ) -> Result<Ref<'_, [u8]>, String> {
+        self.ensure_device_available()?;
         // Same bracket as the owned entry point — a host that uses the borrowed path must not be
         // invisible to the adaptive monitor. `end_frame` takes `&self`, so the returned `Ref`
         // (which borrows a different field) stays valid.

@@ -1141,7 +1141,7 @@ impl EventHandler for NotificationCenter {
                     let _ = self.select_index(index);
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {
                     let _ = self.select_index(index);
                     let _ = self.activate_selected();

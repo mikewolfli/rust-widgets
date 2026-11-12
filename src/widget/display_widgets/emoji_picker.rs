@@ -1495,7 +1495,7 @@ impl EventHandler for EmojiPicker {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseRelease { pos, button } if *button == 1 => {
+            Event::MouseRelease { pos, button, .. } if *button == 1 => {
                 let Some(index) = self.pressed_cell.take() else {
                     return;
                 };
@@ -1947,7 +1947,7 @@ mod tests {
         let cell = p.cell_rect(0).expect("cell 0");
         p.handle_event(&Event::mouse_press(cell.x + 10, cell.y + 10, 1));
         assert!(p.recent().is_empty(), "a press only arms the cell");
-        p.handle_event(&Event::mouse_release(cell.x + 10, cell.y + 10, 1));
+        p.handle_event(&Event::mouse_release(cell.x + 10, cell.y + 10, 1, 0));
         assert_eq!(p.recent().first().map(String::as_str), Some("smile"));
         assert_eq!(p.cursor(), Some(0));
     }
@@ -1960,7 +1960,7 @@ mod tests {
         p.handle_event(&Event::mouse_press(cell.x + 10, cell.y + 10, 1));
         // A release in the search box is outside the armed cell.
         let rect = p.geometry();
-        p.handle_event(&Event::mouse_release(rect.x + 5, rect.y + 5, 1));
+        p.handle_event(&Event::mouse_release(rect.x + 5, rect.y + 5, 1, 0));
         assert!(p.recent().is_empty(), "the cancelled press must not choose a glyph");
     }
 

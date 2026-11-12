@@ -1761,7 +1761,7 @@ impl EventHandler for Heatmap {
                     }
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
                 if let Some((row, column)) = self.cell_at(*pos) {
                     self.cell_double_clicked.emit((row, column));
                 }
@@ -2546,7 +2546,7 @@ mod tests {
         let (ex, ey) = (end.x + 2, end.y + 2);
         heatmap.handle_event(&Event::mouse_press(sx, sy, 1));
         heatmap.handle_event(&Event::mouse_move(ex, ey));
-        heatmap.handle_event(&Event::mouse_release(ex, ey, 1));
+        heatmap.handle_event(&Event::mouse_release(ex, ey, 1, 0));
 
         let got = regions.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![(0, 0, 2, 3)]);
@@ -2566,7 +2566,7 @@ mod tests {
         let cell = heatmap.cell_rect(1, 1).expect("cell is laid out");
         let (x, y) = (cell.x + 2, cell.y + 2);
         heatmap.handle_event(&Event::mouse_press(x, y, 1));
-        heatmap.handle_event(&Event::mouse_release(x, y, 1));
+        heatmap.handle_event(&Event::mouse_release(x, y, 1, 0));
         assert!(!fired.load(Ordering::SeqCst), "a click is not a region drag");
     }
 
@@ -2583,7 +2583,7 @@ mod tests {
         });
 
         let cell = heatmap.cell_rect(2, 1).expect("cell is laid out");
-        heatmap.handle_event(&Event::mouse_double_click(cell.x + 2, cell.y + 2, 1));
+        heatmap.handle_event(&Event::mouse_double_click(cell.x + 2, cell.y + 2, 1, 0));
         let got = clicked.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![(2, 1)]);
     }

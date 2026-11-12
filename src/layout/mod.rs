@@ -5,7 +5,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/capability/constructors.rs:1` and `src/json/loader.rs:1` (both resolve layout kinds through `layout::`).
+//! **State:** Production callers: `src/widget/capability/constructors.rs:1` and `src/json/loader/nodes.rs:1` (both resolve layout kinds through `layout::`).
 /// Positions each child at explicit absolute coordinates, ignoring the parent
 /// rect apart from the origin it offsets from.
 ///

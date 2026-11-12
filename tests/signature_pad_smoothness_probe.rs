@@ -55,7 +55,7 @@ fn draw_stroke_through(pad: &mut SignaturePad, points: &[Point]) {
         pad.handle_event(&Event::MouseMove { pos: *p });
     }
     let last = points[points.len() - 1];
-    pad.handle_event(&Event::MouseRelease { pos: last, button: 1 });
+    pad.handle_event(&Event::MouseRelease { pos: last, button: 1, modifiers: 0 });
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn probe_jitter_is_still_dropped() {
     for _ in 0..20 {
         pad.handle_event(&Event::MouseMove { pos: Point::new(10, 20) });
     }
-    pad.handle_event(&Event::MouseRelease { pos: Point::new(10, 20), button: 1 });
+    pad.handle_event(&Event::MouseRelease { pos: Point::new(10, 20), button: 1, modifiers: 0 });
 
     let stored = pad.strokes().first().expect("one committed stroke");
     assert_eq!(

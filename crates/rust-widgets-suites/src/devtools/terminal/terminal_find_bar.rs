@@ -707,7 +707,7 @@ mod tests {
     fn reports(bar: &mut TerminalFindBar) -> Arc<Mutex<Vec<(usize, usize)>>> {
         let emitted = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
         let sink = emitted.clone();
-        bar.on_matches_changed.connect(move |value| {
+        bar.matches_changed.connect(move |value| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push((value.0, value.1));
             }
