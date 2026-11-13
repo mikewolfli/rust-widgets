@@ -187,9 +187,16 @@ pub struct MaskedEdit {
     /// nothing to attach to. The position is the mask segment the character was aimed at, so
     /// a host can point at the offending cell.
     pub input_rejected: Signal1<usize>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     /// While true, a mutation does not push its own undo step.
     ///
     /// A committed phrase and a replace-over-selection are **one** edit to the user, so the inner
@@ -285,9 +292,13 @@ impl MaskedEdit {
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
             input_rejected: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            undo_available_announced: false,
+            redo_available_announced: false,
             suppress_history: false,
             completion_announced: false,
             preedit: String::new(),
@@ -413,6 +424,7 @@ impl MaskedEdit {
             )));
         }
         self.text_changed.emit_lazy(|| self.raw_text.clone());
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -449,6 +461,24 @@ impl MaskedEdit {
     /// Returns `true` if [`MaskedEdit::redo`] would change the value.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
+    }
+
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `TextEdit` uses: a host
+    /// menu can enable or disable its Undo/Redo items from the signal, and an edit that leaves the
+    /// history unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
     }
     fn restore_history_text(&mut self) {
         let text = self.history_target.borrow().clone();
@@ -889,6 +919,7 @@ impl MaskedEdit {
             "masked_edit_text",
         )));
         self.announce_completion_if_filled();
+        self.refresh_edit_capabilities();
     }
 
     /// Emits `editing_finished` when the last required cell has just been filled (I-017).
@@ -1143,6 +1174,16 @@ impl Widget for MaskedEdit {
             "input_rejected" => {
                 Some(EventSignalRef::mapped("input_rejected", &self.input_rejected, |v| {
                     CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             _ => None,
@@ -2837,5 +2878,26 @@ mod tests {
             caret > origin,
             "logical offset 0 is the visual right end of an RTL value: {caret} vs {origin}"
         );
+    }
+
+    /// W6-19b: the availability signals are edge-triggered, not per keystroke.
+    #[test]
+    fn undo_available_fires_only_when_availability_changes() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 32));
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        me.undo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        me.redo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+
+        assert!(!me.undo());
+        assert_eq!(*undo.lock().unwrap(), Vec::<bool>::new(), "nothing to report before an edit");
+
+        me.set_text("a");
+        assert!(me.undo());
+        assert!(!me.undo(), "the history is exhausted after one undo");
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "only changes are announced");
+        assert_eq!(*redo.lock().unwrap(), vec![true], "redo becomes available once");
     }
 }

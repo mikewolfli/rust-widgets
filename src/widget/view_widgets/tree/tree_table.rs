@@ -285,6 +285,9 @@ pub struct TreeTable {
     /// The attached [`crate::widget::companions::TreeFindBar`] binding, when one was attached
     /// (W5-09).
     tree_find_bar: Option<TreeFindBarBinding>,
+    /// The attached [`crate::widget::companions::HeaderMenu`] binding, when one was attached
+    /// (W5-11b): sort and hide requests are queued and drained by `poll_header_menu`.
+    header_menu: Option<HeaderMenuBinding>,
     /// Emitted when a row's expansion changes: `(path, expanded)`.
     pub expansion_changed: Signal1<(Vec<usize>, bool)>,
     /// First visible row.
@@ -398,6 +401,23 @@ struct ColumnChooserBinding {
     /// `(source column, visible)` changes reported since the last poll.
     visibility: Arc<std::sync::Mutex<Vec<(usize, bool)>>>,
     /// The subscription, dropped with the binding so a re-attach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// One intent reported by an attached [`HeaderMenu`](crate::widget::companions::HeaderMenu).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderMenuRequest {
+    /// Sort `column` in `state`; `None` clears the column's sort.
+    Sort { column: usize, state: crate::widget::companions::SortState },
+    /// Hide `column`.
+    Hide { column: usize },
+}
+
+/// The live link between a [`TreeTable`] and a `HeaderMenu` (W5-11b).
+struct HeaderMenuBinding {
+    /// Requests reported since the last poll.
+    requests: Arc<std::sync::Mutex<Vec<HeaderMenuRequest>>>,
+    /// The subscriptions, dropped with the binding so a re-attach leaves no slot behind.
     _scope: ConnectionScope,
 }
 
@@ -613,6 +633,114 @@ impl TreeTable {
             changed |= self.set_column_hidden(column, !visible);
         }
         changed
+    }
+
+    // ── HeaderMenu wiring (W5-11b) ──
+
+    /// Attaches `menu` to this table (W5-11b).
+    ///
+    /// Sort and hide requests are resolved against the column titles both controls were
+    /// configured with and queued for [`Self::poll_header_menu`]. A filter request is ignored:
+    /// this table has no filter model, and pretending to apply one would report a state the
+    /// picture does not have. Attaching replaces any previous menu.
+    pub fn attach_header_menu(&mut self, menu: &crate::widget::companions::HeaderMenu) {
+        let lookup = Arc::new(self.column_title_lookup());
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        let sink = Arc::clone(&requests);
+        let titles = Arc::clone(&lookup);
+        let request_redraw = redraw.clone();
+        menu.sort_requested.connect_scoped(&scope, move |reported| {
+            let (token, state) = &*reported;
+            let Some(column) = titles.get(token).copied() else {
+                return;
+            };
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(HeaderMenuRequest::Sort { column, state: *state });
+            request_redraw.emit();
+        });
+
+        let sink = Arc::clone(&requests);
+        let titles = Arc::clone(&lookup);
+        let request_redraw = redraw;
+        menu.hide_column_requested.connect_scoped(&scope, move |token| {
+            let Some(column) = titles.get(token.as_str()).copied() else {
+                return;
+            };
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(HeaderMenuRequest::Hide { column });
+            request_redraw.emit();
+        });
+
+        self.header_menu = Some(HeaderMenuBinding { requests, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached header menu; the sort/hide it last set stays (W5-11b).
+    pub fn detach_header_menu(&mut self) {
+        if self.header_menu.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`HeaderMenu`](crate::widget::companions::HeaderMenu) is attached (W5-11b).
+    pub fn is_header_menu_attached(&self) -> bool {
+        self.header_menu.is_some()
+    }
+
+    /// Applies every header-menu request queued since the last poll (W5-11b).
+    pub fn poll_header_menu(&mut self) -> bool {
+        let Some(binding) = self.header_menu.as_ref() else {
+            return false;
+        };
+        let requests: Vec<HeaderMenuRequest> = {
+            let mut guard =
+                binding.requests.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            core::mem::take(&mut *guard)
+        };
+        let mut changed = false;
+        for request in requests {
+            match request {
+                HeaderMenuRequest::Sort { column, state } => {
+                    self.apply_header_sort(column, state);
+                    changed = true;
+                }
+                HeaderMenuRequest::Hide { column } => {
+                    changed |= self.set_column_hidden(column, true);
+                }
+            }
+        }
+        changed
+    }
+
+    /// Applies one sort intent without toggling to the wrong direction.
+    fn apply_header_sort(&mut self, column: usize, state: crate::widget::companions::SortState) {
+        use crate::widget::companions::SortState;
+        if column >= self.column_count() {
+            return;
+        }
+        match state {
+            SortState::None => self.set_sort_column(None),
+            SortState::Asc => {
+                if self.sort_column != Some(column) {
+                    self.set_sort_column(Some(column));
+                } else if self.sort_descending {
+                    self.toggle_sort_column(column);
+                }
+            }
+            SortState::Desc => {
+                if self.sort_column != Some(column) {
+                    self.set_sort_column(Some(column));
+                    self.toggle_sort_column(column);
+                } else if !self.sort_descending {
+                    self.toggle_sort_column(column);
+                }
+            }
+        }
     }
 
     // ── GridStatusBar wiring (W5-11b) ──
@@ -1055,6 +1183,7 @@ impl TreeTable {
             tree_find_bar: None,
             hidden_columns: BTreeSet::new(),
             column_chooser: None,
+            header_menu: None,
             grid_status_bar: None,
             summary_row: None,
             path_bar: None,
@@ -2681,6 +2810,7 @@ impl Draw for TreeTable {
         // Companion edits apply before the frame is painted too, so a chooser click, a crumb
         // click and the count/aggregate pushes all land in the picture being drawn (W5-11b/c).
         self.poll_column_chooser();
+        self.poll_header_menu();
         self.poll_grid_status_bar();
         self.poll_summary_row();
         self.poll_path_bar();
@@ -2996,6 +3126,7 @@ impl crate::event::EventHandler for TreeTable {
         // The same companion polls as `draw`, so a click on a bound strip, chooser or crumb is
         // applied by the interaction that produced it rather than by a later frame (W5-11b/c).
         self.poll_column_chooser();
+        self.poll_header_menu();
         self.poll_grid_status_bar();
         self.poll_summary_row();
         self.poll_path_bar();
@@ -3173,6 +3304,41 @@ mod tests {
             let id = path.iter().map(|part| part.to_string()).collect::<Vec<_>>().join("/");
             Some(format!("{}:{}", id, column))
         }
+    }
+
+    /// W5-11b: an attached `HeaderMenu` reaches the tree table's sort and hide state.
+    #[test]
+    fn the_header_menu_requests_reach_the_tree_table() {
+        use crate::widget::companions::{Direction, HeaderMenu};
+
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 160));
+        tree.set_model(std::sync::Arc::new(SampleTreeTableModel));
+        tree.set_header_labels(&["Name", "Size"]);
+        let anchor = Rect::new(100, 0, 120, 22);
+        let mut menu = HeaderMenu::new(Rect::new(0, 0, 320, 240));
+
+        tree.attach_header_menu(&menu);
+        assert!(tree.is_header_menu_attached());
+        assert!(!tree.poll_header_menu(), "nothing is queued");
+
+        menu.open_for("Name", anchor);
+        assert!(menu.activate_selected(), "the first row is Sort ascending");
+        assert!(tree.poll_header_menu());
+        assert_eq!(tree.sort_column(), Some(0));
+        assert!(!tree.sort_descending());
+        assert!(!tree.poll_header_menu(), "the queue is drained");
+
+        // With a sort active the rows are Asc, Desc, Clear, Filter, Hide, Choose.
+        menu.open_for("Name", anchor);
+        for _ in 0..4 {
+            menu.move_selection(Direction::Next);
+        }
+        assert!(menu.activate_selected());
+        assert!(tree.poll_header_menu());
+        assert!(tree.is_column_hidden(0), "the Hide request reaches the table");
+
+        tree.detach_header_menu();
+        assert!(!tree.is_header_menu_attached());
     }
 
     /// A menu request selects the row under the pointer before it is emitted (C-9).

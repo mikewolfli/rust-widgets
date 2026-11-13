@@ -241,6 +241,10 @@ pub struct Mention {
     pub mention_inserted: Signal1<String>,
     /// Emitted when the popup opens or closes, with the new state.
     pub popup_toggled: Signal1<bool>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     /// How many candidate rows the popup shows at once.
     max_visible: usize,
     /// The height of one candidate row, in logical pixels.
@@ -273,6 +277,9 @@ pub struct Mention {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     /// The uncommitted input-method composition, or `None` when no IME session is active (IN2-04).
     ///
     /// Held apart from `text`: the mention popup is driven by the token before the caret, so
@@ -298,6 +305,8 @@ impl Mention {
             text_changed: Signal1::new(),
             mention_inserted: Signal1::new(),
             popup_toggled: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             max_visible: MAX_VISIBLE,
             row_height: ROW_HEIGHT,
             selection_anchor: None,
@@ -313,6 +322,8 @@ impl Mention {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            undo_available_announced: false,
+            redo_available_announced: false,
             composition: None,
         }
     }
@@ -558,6 +569,7 @@ impl Mention {
             "Edit text",
             "mention_text",
         )));
+        self.refresh_edit_capabilities();
     }
 
     /// Reverts the latest text mutation (I-101).
@@ -588,7 +600,26 @@ impl Mention {
         self.dirty_from = 0;
         self.refresh();
         self.text_changed.emit_lazy(|| self.text.clone());
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
+    }
+
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `TextEdit` uses: a host
+    /// menu can enable or disable its Undo/Redo items from the signal, and an edit that leaves the
+    /// history unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.undo_stack.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.undo_stack.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
     }
 
     /// Copies the selected text to the platform clipboard (I-101).
@@ -1142,6 +1173,16 @@ impl Widget for Mention {
             "text_changed" => {
                 Some(EventSignalRef::mapped("text_changed", &self.text_changed, |v| {
                     CapabilityValue::String(v.clone())
+                }))
+            }
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             _ => None,
@@ -2478,5 +2519,28 @@ mod tests {
         m.handle_event(&Event::ImeCommit { text: "に".to_string() });
         assert_eq!(m.composition(), None, "the commit clears the preview");
         assert_eq!(m.text(), "に", "the commit inserts the composed run");
+    }
+
+    /// W6-19b: the availability signals are edge-triggered, not per keystroke.
+    #[test]
+    fn undo_available_fires_only_when_availability_changes() {
+        use std::sync::{Arc, Mutex};
+
+        let mut m = Mention::new(Rect::new(0, 0, 240, 30));
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        m.undo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        m.redo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+
+        assert!(!m.undo());
+        assert_eq!(*undo.lock().unwrap(), Vec::<bool>::new(), "nothing to report before an edit");
+
+        m.set_text("a");
+        assert!(m.undo());
+        assert!(!m.undo(), "the history is exhausted after one undo");
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "only changes are announced");
+        assert_eq!(*redo.lock().unwrap(), vec![true], "redo becomes available once");
     }
 }

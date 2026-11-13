@@ -114,5 +114,27 @@ mod wire_prefix_agreement_tests {
             crate::view::is_generated_wire_prop(super::generator::WIRE_PROP_PREFIX),
             "the predicate `view` uses must recognise the prefix `designer` writes"
         );
+        // W6-13: the generated template builds its strip prefixes from the constants these two
+        // assertions cover, so a rename cannot leave a third spelling behind in the template.
+        assert_eq!(
+            crate::json::EVENTS_KEY,
+            "events",
+            "the runtime's events key is the one the generated `create_for` strips"
+        );
+        let carrier = crate::compat::format!(
+            "{}{}.clicked",
+            super::generator::WIRE_PROP_PREFIX,
+            crate::json::EVENTS_KEY
+        );
+        let carrier =
+            format!("{}{}.clicked", super::generator::WIRE_PROP_PREFIX, crate::json::EVENTS_KEY);
+        let suffix = carrier
+            .strip_prefix(super::generator::WIRE_PROP_PREFIX)
+            .expect("the carrier must start with the prefix the template strips");
+        assert_eq!(
+            suffix.strip_prefix(&format!("{}.", crate::json::EVENTS_KEY)),
+            Some("clicked"),
+            "the template's two strips must recover the published event name"
+        );
     }
 }

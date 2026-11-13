@@ -18,7 +18,7 @@ animated_image: animation_finished, frame_changed, frame_advanced
 app_bar: back_pressed, action_pressed, action_index_pressed, action_overflow_pressed, leading_pressed
 arc: changed
 aspect_ratio: 
-auto_complete_edit: text_changed, suggestion_selected
+auto_complete_edit: text_changed, suggestion_selected, undo_available, redo_available
 avatar: avatar_clicked
 axis_picker: axis_assigned
 badge: count_changed, level_changed
@@ -51,7 +51,7 @@ color_dialog: color_selected, accepted, rejected, current_color_changed, focus_c
 color_history: color_selected, color_hovered, color_removed, context_menu_requested, color_added
 color_picker: color_changed, hex_changed, canceled, color_committed, color_previewed
 color_well: clicked, picker_requested, color_changed
-combo_box: current_index_changed, current_text_changed, activated, popup_visibility_changed, highlighted, text_edited
+combo_box: current_index_changed, current_text_changed, activated, popup_visibility_changed, highlighted, text_edited, undo_available, redo_available
 command_link: clicked, hovered
 command_palette: command_activated, query_changed, dismissed
 command_palette_host: command_activated, filter_changed, cancelled
@@ -80,7 +80,7 @@ drop_zone: browse_requested, drop_rejected, dropped, payload_dropped, zone_enter
 dropdown: changed, activated, highlighted
 dropdown_menu: item_selected, submenu_requested, about_to_hide, about_to_show, item_toggled, action_triggered
 drum_column: selection_changed
-editable_combo_box: text_changed, item_selected, editing_finished, return_pressed
+editable_combo_box: text_changed, item_selected, editing_finished, return_pressed, undo_available, redo_available
 email_input: text_changed, editing_finished, return_pressed, context_menu_requested, cursor_position_changed, selection_changed, text_edited, undo_available, redo_available, copy_available  [alias_of=line_edit]
 emoji_picker: glyph_chosen, glyph_hover_changed
 empty_state: action_pressed, secondary_action_pressed
@@ -137,12 +137,12 @@ mac_window_chrome: close_requested, minimize_requested, zoom_requested, fullscre
 markdown_editor: text_changed, preview_mode_changed, selection_changed, heading_activated
 markdown_outline_panel: entry_selected
 markdown_toolbar: action_triggered
-masked_edit: text_changed, editing_finished, input_rejected, return_pressed
+masked_edit: text_changed, editing_finished, input_rejected, return_pressed, undo_available, redo_available
 masonry_layout: item_clicked
 material_navigation_rail: current_changed
 material_snackbar: action_pressed, dismissed
 mdi_area: subwindow_activated, subwindow_title_changed, subwindow_minimized_changed, subwindow_tab_moved, subwindow_close_requested
-mention: mention_inserted, popup_toggled, text_changed
+mention: mention_inserted, popup_toggled, text_changed, undo_available, redo_available
 menu: triggered, triggered_index, about_to_show, submenu_requested, about_to_hide, tearoff_requested, action_triggered
 menu_bar: triggered, entry_hovered, triggered_entry, entry_action_triggered
 menu_button: item_triggered, submenu_requested, about_to_hide, about_to_show, clicked, action_triggered
@@ -184,13 +184,13 @@ range_slider: range_changed, slider_pressed, slider_released
 rating: rating_changed, hover_preview_changed
 refresh_control: refresh_triggered
 ribbon_bar: current_tab_changed, item_triggered, application_clicked, group_overflow_clicked, quick_access_clicked, quick_access_overflow_clicked
-rich_edit: text_changed, selection_changed, cursor_position_changed, read_only_changed, undo_available, redo_available
+rich_edit: text_changed, selection_changed, cursor_position_changed, read_only_changed, undo_available, redo_available, editing_finished
 roller: changed
 safe_area: 
 scroll_area: scroll_position_changed
 scroll_bar: value_changed, slider_moved, slider_pressed, slider_released
 search_bar: text_changed, search_submitted, canceled
-search_box: text_changed, search_submitted
+search_box: text_changed, search_submitted, undo_available, redo_available
 segmented_button: current_changed
 segmented_control: selection_changed
 shape_canvas: shape_added, shape_removed, shape_selected, shape_modified
@@ -224,9 +224,9 @@ table: selection_changed, focused_row_changed, context_menu_requested, edit_requ
 table_widget: selection_changed, focused_row_changed, context_menu_requested, edit_requested, row_activated, column_changed
 tag: closed, selected_changed
 tag_group: tag_closed, selection_changed
-tag_input: tags_changed, tag_overflow, tag_rejected
+tag_input: tags_changed, tag_overflow, tag_rejected, undo_available, redo_available
 text_area: changed, context_menu_requested, selection_changed, cursor_position_changed, undo_available, redo_available, editing_finished
-text_edit: context_menu_requested, cursor_position_changed, redo_available, selection_changed, text_changed, undo_available
+text_edit: context_menu_requested, cursor_position_changed, redo_available, selection_changed, text_changed, undo_available, editing_finished
 time_edit: popup_visibility_changed, time_changed, editing_finished
 time_picker: popup_visibility_changed, time_changed, editing_finished  [alias_of=time_edit]
 timeline_widget: item_selected, viewport_changed, item_hovered, item_moved, item_resized

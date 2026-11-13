@@ -3150,11 +3150,23 @@ fn assemble(
              \x20   let id = rust_widgets::widget::runtime::register(control)?;\n\
              \x20   // Bind every wire the document declared. A refused name is reported at `warn!` by\n\
              \x20   // the library and counted, so a wire that cannot fire is visible rather than silent.\n\
-             \x20   let prefix = \"__wire_\";\n\
+             \x20   let prefix = \"",
+        );
+        // The prefix comes from the module constant, not a second spelling of it: a rename used to
+        // leave this literal behind, after which every generated `create_for` stripped nothing and
+        // bound no event at all while every gate stayed green (W6-13).
+        source.push_str(WIRE_PROP_PREFIX);
+        source.push_str(
+            "\";\n\
              \x20   for (name, value) in node.props.iter() {\n\
              \x20       let Some(suffix) = name.strip_prefix(prefix) else { continue };\n\
              \x20       let Some(handler) = value.as_str() else { continue };\n\
-             \x20       if let Some(event) = suffix.strip_prefix(\"events.\") {\n\
+             \x20       if let Some(event) = suffix.strip_prefix(\"",
+        );
+        // The events key is spelled from the runtime's constant for the same reason.
+        source.push_str(crate::json::EVENTS_KEY);
+        source.push_str(
+            ".\") {\n\
              \x20           rust_widgets::json::bind_published_event(id, node.widget.as_str(), event, handler);\n\
              \x20       } else if let Some(marker) = rust_widgets::json::marker_for_key(suffix) {\n\
              \x20           rust_widgets::json::bind_marker_event(id, suffix, marker, handler);\n\
@@ -4388,8 +4400,22 @@ mod tests {
         let generated = generate(&request).expect("the document must generate");
 
         assert!(
-            generated.source.contains(&format!("{WIRE_PROP_PREFIX}events.clicked")),
+            generated
+                .source
+                .contains(&format!("{WIRE_PROP_PREFIX}{}.clicked", crate::json::EVENTS_KEY)),
             "the wire must travel as a prefixed prop, not under its document key"
+        );
+        // The generated `create_for` must look for the same two constants the emit side used:
+        // a literal here would let a rename bind nothing while every gate stayed green (W6-13).
+        assert!(
+            generated.source.contains(&format!("let prefix = {WIRE_PROP_PREFIX:?}")),
+            "the template must spell the wire prefix from the constant"
+        );
+        assert!(
+            generated
+                .source
+                .contains(&format!("strip_prefix({:?})", format!("{}.", crate::json::EVENTS_KEY))),
+            "the template must spell the events key from the constant"
         );
         assert!(
             generated.source.contains("bind_published_event"),

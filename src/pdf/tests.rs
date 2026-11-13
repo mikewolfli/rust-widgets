@@ -133,6 +133,19 @@ fn reader_bounds_a_declared_page_count_by_the_file_size() {
 }
 
 #[test]
+fn reader_rejects_data_that_is_not_a_pdf() {
+    // A JPEG, an empty file or random bytes used to load as a "1-page blank A4" document,
+    // reporting success for a file that is not a PDF at all (W6-10).
+    let reader = PdfReader::new();
+    for data in [&b"\xFF\xD8\xFF\xE0JPEG payload"[..], &b""[..], &b"not a document"[..]] {
+        let error = reader.load_from_bytes(data).expect_err("must not load as a document");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+    // The legacy fixture format is still accepted.
+    assert!(reader.load_from_bytes(b"pages:2\n").is_ok());
+}
+
+#[test]
 fn reader_roundtrip_preserves_page_stream_and_media_box() {
     let writer = PdfWriter::new();
     let mut doc = writer.create_document(Size { width: 612, height: 792 });

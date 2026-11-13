@@ -251,6 +251,12 @@ pub struct TextEdit {
     pub selection_changed: GenericSignal,
     /// Emitted with the new caret byte offset whenever it moves.
     pub cursor_position_changed: Signal1<usize>,
+    /// Emitted when editing ends — the editor loses focus.
+    ///
+    /// The single-line field publishes the same signal on focus loss and on Enter/Escape; a
+    /// multi-line editor keeps its newlines as content, so focus loss is the one unambiguous end of
+    /// an editing session here. Carries no payload.
+    pub editing_finished: GenericSignal,
     /// Emitted with the new value whenever undo availability changes.
     pub undo_available: Signal1<bool>,
     /// Emitted with the new value whenever redo availability changes.
@@ -264,6 +270,12 @@ pub struct TextEdit {
     /// Last undo/redo availability announced, so both signals are edge-triggered.
     undo_available_announced: bool,
     redo_available_announced: bool,
+    /// Whether the current editing session already ended with `editing_finished`.
+    ///
+    /// Starts `true` because no session is open before the editor gains focus. A `FocusLost`
+    /// delivered to an editor that never gained focus, or a duplicate `FocusLost`, therefore
+    /// cannot report an end that never began; gaining focus opens the next session.
+    pub(super) editing_finished_announced: bool,
     /// Last caret offset and range announced, so both signals are edge-triggered.
     caret_cursor_announced: usize,
     caret_selection_announced: Option<(usize, usize)>,
@@ -422,11 +434,13 @@ impl TextEdit {
             text_changed: Signal1::new(),
             selection_changed: GenericSignal::new(),
             cursor_position_changed: Signal1::new(),
+            editing_finished: GenericSignal::new(),
             undo_available: Signal1::new(),
             redo_available: Signal1::new(),
             context_menu_requested: Signal1::new(),
             undo_available_announced: false,
             redo_available_announced: false,
+            editing_finished_announced: true,
             caret_cursor_announced: 0,
             caret_selection_announced: None,
             row_cache: RefCell::new(None),
@@ -639,8 +653,10 @@ impl TextEdit {
             self.base.request_redraw();
             return;
         }
-        // A press focuses the control, which is how the user reaches it with the pointer.
+        // A press focuses the control, which is how the user reaches it with the pointer. It also
+        // opens an editing session, so the matching blur can report `editing_finished`.
         self.focused = true;
+        self.editing_finished_announced = false;
         let offset = self.offset_at_point(pos);
         self.press_at(offset, crate::shortcut::Modifiers::from_event_bits(modifiers));
     }

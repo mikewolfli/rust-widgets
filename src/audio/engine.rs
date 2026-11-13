@@ -183,7 +183,17 @@ impl AudioEngine {
     fn release_output(&mut self) {}
 
     /// Start or resume playback.
+    ///
+    /// A stream that already reached its end is replayed from the beginning: without the
+    /// rewind the next [`Self::tick`] saw `advanced == 0` at the old end position and stopped
+    /// again immediately, so the play button did nothing after the first play-through
+    /// (W6-09, the audio side of T3-12).
     pub fn play(&mut self) {
+        if let Some(buffer) = &self.buffer {
+            if self.position >= buffer.samples.len() {
+                self.position = 0;
+            }
+        }
         self.is_playing = true;
         #[cfg(feature = "audio-output")]
         if let Some(output) = &mut self.output {
@@ -518,6 +528,21 @@ mod tests {
         assert_eq!(engine.tick(4), 4);
         assert_eq!(engine.tick(usize::MAX), 6);
         assert_eq!(engine.position(), 10);
+    }
+
+    /// W6-09: pressing play after the stream finished restarts it instead of stopping instantly.
+    #[test]
+    fn play_after_the_end_rewinds_to_the_start() {
+        let mut engine = AudioEngine::new();
+        engine.buffer = Some(AudioBuffer::new(44100, vec![0.0; 8], 1));
+        engine.play();
+        assert_eq!(engine.tick(usize::MAX), 8);
+        assert!(!engine.is_playing());
+
+        engine.play();
+        assert_eq!(engine.position(), 0, "the read pointer must return to the first sample");
+        assert!(engine.is_playing());
+        assert_eq!(engine.tick(3), 3, "playback advances again after the replay");
     }
 
     /// N-S-49: `current_samples` with a huge count returns the remainder of the

@@ -145,9 +145,16 @@ pub struct EditableComboBox {
     /// A host that treats Enter as "go" must not have to infer it from `item_selected`: Enter
     /// on a free-typed value selects nothing and would otherwise be silent.
     pub return_pressed: GenericSignal,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     /// The insertion point, in bytes from the start of the value.
     cursor: usize,
     /// The other end of a selection, in bytes. `None` means no selection.
@@ -260,9 +267,13 @@ impl EditableComboBox {
             item_selected: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            undo_available_announced: false,
+            redo_available_announced: false,
             cursor: 0,
             selection_anchor: None,
             cursor_blink: crate::style::CursorBlink::new(),
@@ -375,6 +386,7 @@ impl EditableComboBox {
         }
         self.text_changed.emit_lazy(|| self.text.clone());
         self.sync_popup();
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -654,18 +666,15 @@ impl EditableComboBox {
     /// Steps back one text edit and returns `true`, or `false` when there is
     /// nothing to undo.
     ///
-    /// The restored text is applied through [`EditableComboBox::set_text`], so
-    /// it runs the full validation and signal path. It also clears the selection:
+    /// The restored text is installed before any signal is emitted, so an unwind from a
+    /// subscription cannot leave the history guard armed (W6-44a). It also clears the selection:
     /// undoing a text change does not restore the previously selected item, and
     /// `selected_index` becomes `None` even though the text may match an item.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
         }
-        self.restoring_history = true;
-        let text = self.history_target.borrow().clone();
-        self.set_text(&text);
-        self.restoring_history = false;
+        self.restore_history_text();
         true
     }
     /// Steps forward one undone edit and returns `true`, or `false` when there is
@@ -675,10 +684,7 @@ impl EditableComboBox {
         if self.undo_stack.redo().is_err() {
             return false;
         }
-        self.restoring_history = true;
-        let text = self.history_target.borrow().clone();
-        self.set_text(&text);
-        self.restoring_history = false;
+        self.restore_history_text();
         true
     }
     /// Returns `true` if [`EditableComboBox::undo`] would change the text.
@@ -690,13 +696,60 @@ impl EditableComboBox {
         self.undo_stack.can_redo()
     }
 
+    /// Replays the value the history target now holds.
+    ///
+    /// The `restoring_history` window closes **before** `text_changed` is emitted. Emitting inside
+    /// the window was the W6-44a defect: a panicking subscriber unwound past the reset, leaving the
+    /// flag true so every later edit silently stopped recording. This is the same order
+    /// `AutoCompleteEdit::restore_history_text` and `TextArea` use.
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.restoring_history = false;
+        self.cursor = self.text.len();
+        self.selection_anchor = None;
+        self.text_changed.emit_lazy(|| self.text.clone());
+        self.sync_popup();
+        self.refresh_edit_capabilities();
+        self.base.request_redraw();
+    }
+
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `TextEdit` uses: a host
+    /// menu can enable or disable its Undo/Redo items from the signal, and an edit that leaves the
+    /// history unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
+    }
+
     /// Selects the item at the given index and sets the text field to its value.
     /// Emits `item_selected`. Returns `true` if the selection changed.
     pub fn select_index(&mut self, index: usize) -> bool {
         if index < self.items.len() && self.selected_index != Some(index) {
             self.selected_index = Some(index);
-            self.text = self.items[index].clone();
-            self.text_changed.emit_lazy(|| self.text.clone());
+            // The row label is the field's new value, so it goes through the same history path as
+            // a typed edit. Assigning `self.text` directly left `history_target` at the value
+            // before the selection, and the next undo resurrected it (W6-37).
+            let before = core::mem::replace(&mut self.text, self.items[index].clone());
+            self.cursor = self.text.len();
+            self.selection_anchor = None;
+            if before != self.text {
+                self.publish_text_change(before);
+            } else {
+                self.text_changed.emit_lazy(|| self.text.clone());
+                self.sync_popup();
+                self.base.request_redraw();
+            }
             self.item_selected.emit(index);
             // `collapse`, not a bare assignment: the popup grab is cleared there. Writing
             // `expanded = false` directly left the grab held, so the next press anywhere was
@@ -788,6 +841,16 @@ impl Widget for EditableComboBox {
                 Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
             }
             "return_pressed" => Some(EventSignalRef::unit("return_pressed", &self.return_pressed)),
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -1470,6 +1533,20 @@ mod tests {
         assert!(!cb.select_index(10));
     }
 
+    /// W6-37: a row activation is an edit like any other, so undo returns to the typed value
+    /// instead of resurrecting text from before the selection.
+    #[test]
+    fn selecting_a_row_records_one_undoable_edit() {
+        let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 30));
+        cb.add_item("Alpha");
+        cb.add_item("Beta");
+        cb.set_text("typed");
+        assert!(cb.select_index(1));
+        assert_eq!(cb.text(), "Beta");
+        assert!(cb.undo());
+        assert_eq!(cb.text(), "typed");
+    }
+
     #[test]
     fn editable_combo_box_svg_output() {
         let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 30));
@@ -1662,5 +1739,62 @@ mod tests {
 
         cb.set("scroll_offset", CapabilityValue::UInt(0)).unwrap();
         assert_eq!(cb.get("scroll_offset").unwrap(), CapabilityValue::UInt(0));
+    }
+
+    /// W6-19b: the availability signals are edge-triggered, not per keystroke.
+    #[test]
+    fn undo_available_fires_only_when_availability_changes() {
+        use std::sync::{Arc, Mutex};
+
+        let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 30));
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        cb.undo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        cb.redo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+
+        assert!(!cb.undo());
+        assert_eq!(*undo.lock().unwrap(), Vec::<bool>::new(), "nothing to report before an edit");
+
+        cb.set_text("a");
+        assert!(cb.undo());
+        assert!(!cb.undo(), "the history is exhausted after one undo");
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "only changes are announced");
+        assert_eq!(*redo.lock().unwrap(), vec![true], "redo becomes available once");
+    }
+
+    /// W6-44a: a panicking restore callback must not latch the history guard.
+    ///
+    /// `undo` used to emit `text_changed` inside the `restoring_history = true` window, so a
+    /// subscription that panicked unwound past the reset and every later edit silently stopped
+    /// recording. The flag is now cleared before the signal runs, and the post-panic edit is
+    /// proved to be recorded by undoing it.
+    #[test]
+    fn a_panicking_restore_callback_does_not_latch_restoring_history() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 30));
+        cb.set_text("one");
+        cb.set_text("two");
+
+        let panicked = Arc::new(AtomicBool::new(false));
+        let first = Arc::clone(&panicked);
+        let _slot = cb.text_changed.connect(move |_value: Arc<String>| {
+            if !first.swap(true, Ordering::SeqCst) {
+                panic!("deliberate unwind from a text_changed slot");
+            }
+        });
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cb.undo();
+        }));
+        assert!(caught.is_err(), "the restore must unwind through the panicking callback");
+        assert!(!cb.restoring_history, "an unwind must not leave the history guard armed");
+
+        cb.set_text("three");
+        assert!(cb.undo(), "an edit after the unwind is still recorded");
+        assert_eq!(cb.text(), "one", "undoing it restores the value it replaced");
     }
 }

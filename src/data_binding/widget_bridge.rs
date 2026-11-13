@@ -94,6 +94,12 @@ impl PropertySink for WidgetPropertySink {
 /// changed. The reverse direction is [`pull_widget_property`], which a control calls when its own
 /// value changes.
 ///
+/// The initial push is announced as synced only when it actually reached the control. If the id is
+/// not mounted or the control refuses the property, the failure is logged and the binding is left
+/// out of the synced state — announcing success for a write that did not happen would promise
+/// agreement between a model and a control that disagree (the same contract as
+/// [`crate::data_binding::bind_chart_series`]).
+///
 /// Only built where the runtime exists: `mini`/`embedded` has no mounted-widget registry, which is
 /// the same reason it has no data-binding consumer.
 #[cfg(not(alloc_frugal))]
@@ -115,10 +121,25 @@ pub fn bind_widget_property(
         }
     });
     let initial = binding.get();
-    let _ = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+    let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
         crate::widget::widget_property_set(widget, &property, initial)
     });
-    binding.announce_synced(&property);
+    match applied {
+        Some(Ok(())) => binding.announce_synced(&property),
+        Some(Err(error)) => log::warn!(
+            "bind_widget_property: initial push of `{}` to widget {} was refused ({}); the \
+             binding is not announced as synced",
+            property,
+            widget_id,
+            error
+        ),
+        None => log::warn!(
+            "bind_widget_property: initial push of `{}` skipped because widget {} is not mounted; \
+             the binding is not announced as synced",
+            property,
+            widget_id
+        ),
+    }
 }
 
 /// Copies one mounted widget property back into the binding.
@@ -158,7 +179,12 @@ pub fn pull_widget_property(
 /// A push makes the control emit its value trigger, and the pull that follows would set the binding
 /// again — each direction running forever. The guard is the same atomic re-arm [`Binding::bind_to`]
 /// uses: the side that is applying a change marks the pair busy, so the event caused by that change
-/// is ignored rather than re-propagated.
+/// is ignored rather than re-propagated. The flag is cleared by the RAII [`EchoGuard`], not by a
+/// trailing `store(false)`, so a panic in a property setter or in a `binding_synced` observer
+/// cannot latch it and silently disable both directions for the rest of the binding's life.
+///
+/// The initial push follows [`bind_widget_property`]: it is announced as synced only when the
+/// control actually accepted it.
 #[cfg(all(not(alloc_frugal), full_widgets))]
 pub fn bind_widget_property_two_way<H>(
     binding: &Binding<crate::widget::capability::CapabilityValue>,
@@ -184,10 +210,10 @@ pub fn bind_widget_property_two_way<H>(
             // The control's own change is being pulled into the model; do not push it back.
             return;
         }
+        let _echo = EchoGuard { flag: &push_guard };
         let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
             crate::widget::widget_property_set(widget, &observed_property, value.clone())
         });
-        push_guard.store(false, Ordering::SeqCst);
         if matches!(applied, Some(Ok(()))) {
             linked.announce_synced(&observed_property);
         }
@@ -201,17 +227,52 @@ pub fn bind_widget_property_two_way<H>(
         if pull_guard.swap(true, Ordering::SeqCst) {
             return;
         }
+        let _echo = EchoGuard { flag: &pull_guard };
         let _ = pull_widget_property(&pulled, widget_id, &pulled_property);
-        pull_guard.store(false, Ordering::SeqCst);
     });
 
     // The initial value is published like the one-way bridge, so the control never shows its
     // constructor default until the model next changes.
     let initial = binding.get();
-    let _ = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+    let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
         crate::widget::widget_property_set(widget, &property, initial)
     });
-    binding.announce_synced(&property);
+    match applied {
+        Some(Ok(())) => binding.announce_synced(&property),
+        Some(Err(error)) => log::warn!(
+            "bind_widget_property_two_way: initial push of `{}` to widget {} was refused ({}); \
+             the binding is not announced as synced",
+            property,
+            widget_id,
+            error
+        ),
+        None => log::warn!(
+            "bind_widget_property_two_way: initial push of `{}` skipped because widget {} is not \
+             mounted; the binding is not announced as synced",
+            property,
+            widget_id
+        ),
+    }
+}
+
+/// Clears the two-way echo flag when dropped.
+///
+/// The push and pull directions share one flag: the side applying a change raises it so the event
+/// that change causes is ignored instead of being propagated back. Clearing it with a trailing
+/// `store(false)` skips the reset whenever the callback panics — a property setter or a
+/// `binding_synced` observer can both unwind — and a latched flag makes every later change look
+/// like its own echo, silently stopping the binding in **both** directions. `Drop` runs on the
+/// normal path and while unwinding. Mirrors `data_binding::binding::SyncingGuard`.
+#[cfg(all(not(alloc_frugal), full_widgets))]
+struct EchoGuard<'a> {
+    flag: &'a core::sync::atomic::AtomicBool,
+}
+
+#[cfg(all(not(alloc_frugal), full_widgets))]
+impl Drop for EchoGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, core::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Binds a model value to a widget property through a validator (BIND-010).
@@ -221,7 +282,9 @@ pub fn bind_widget_property_two_way<H>(
 /// A model can hold a value the control's schema refuses (a range limit, an empty required field).
 /// Writing it directly would leave the control and the model disagreeing with no record of why. The
 /// validator runs before every write — including the initial one — and a refusal is reported through
-/// [`Binding::validation_failed_signal`] instead of reaching the control.
+/// [`Binding::validation_failed_signal`] instead of reaching the control. A write the control itself
+/// refuses (or an id nothing is mounted at) is logged and is not announced as synced, matching the
+/// unvalidated bridge.
 #[cfg(not(alloc_frugal))]
 pub fn bind_widget_property_validated<V>(
     binding: &Binding<crate::widget::capability::CapabilityValue>,
@@ -238,10 +301,25 @@ pub fn bind_widget_property_validated<V>(
     // Validate the initial value before the validator moves into the observer.
     match validator.validate(binding.get()) {
         Ok(value) => {
-            let _ = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+            let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
                 crate::widget::widget_property_set(widget, &property, value)
             });
-            binding.announce_synced(&property);
+            match applied {
+                Some(Ok(())) => binding.announce_synced(&property),
+                Some(Err(error)) => log::warn!(
+                    "bind_widget_property_validated: initial push of `{}` to widget {} was \
+                     refused ({}); the binding is not announced as synced",
+                    property,
+                    widget_id,
+                    error
+                ),
+                None => log::warn!(
+                    "bind_widget_property_validated: initial push of `{}` skipped because widget \
+                     {} is not mounted; the binding is not announced as synced",
+                    property,
+                    widget_id
+                ),
+            }
         }
         Err(error) => {
             binding.validation_failed_signal().emit(error.message);
@@ -348,6 +426,150 @@ mod tests {
         binding.set(capability_text("valid"));
         assert_eq!(widget_text(id), capability_text("valid"));
 
+        crate::app::remove_callbacks(id);
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// The RAII echo guard clears the flag while unwinding, so a panic cannot latch it.
+    ///
+    /// Mirrors `data_binding::binding`'s `syncing_guard_clears_flag_on_panic`: the bare
+    /// `store(false)` the two-way bridge used before skipped the reset whenever propagation
+    /// panicked, leaving the pair permanently disarmed.
+    #[test]
+    fn the_echo_guard_clears_the_flag_on_panic() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        let flag = AtomicBool::new(false);
+        assert!(!flag.swap(true, Ordering::SeqCst), "the flag starts unset");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _echo = EchoGuard { flag: &flag };
+            panic!("boom inside the guarded section");
+        }));
+
+        assert!(result.is_err(), "the probe must panic");
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "the guard must clear the echo flag while unwinding, otherwise both directions die"
+        );
+    }
+
+    /// A panic during propagation must not stop the two-way binding from updating afterwards.
+    ///
+    /// The `binding_synced` announcement runs at the tail of the push, inside the guarded section,
+    /// so unwinding from a host observer hits exactly the path the old trailing `store(false)`
+    /// missed. With the flag latched, a later pull would look like the bridge's own echo and a
+    /// later push would be dropped; both directions are exercised here.
+    #[test]
+    fn a_panicking_propagation_does_not_latch_the_two_way_binding() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        let id = mount_button("alpha");
+        let binding = Binding::new(capability_text("alpha"));
+        let handle = crate::app::ButtonHandle::from_raw(id);
+        bind_widget_property_two_way(&binding, "text", &handle, id, "text");
+
+        let armed = crate::compat::Arc::new(AtomicBool::new(true));
+        let panic_once = crate::compat::Arc::clone(&armed);
+        binding.binding_synced_signal().connect_ref(move |_property| {
+            if panic_once.swap(false, Ordering::SeqCst) {
+                panic!("deliberate unwind from a synced announcement");
+            }
+        });
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            binding.set(capability_text("beta"));
+        }));
+        assert!(caught.is_err(), "the announcement must unwind through the push");
+        assert_eq!(
+            widget_text(id),
+            capability_text("beta"),
+            "the push applied before the announcement unwound"
+        );
+
+        let _ = crate::widget::runtime::with_widget_mut(id, |widget| {
+            crate::widget::widget_property_set(widget, "text", capability_text("gamma"))
+        });
+        crate::app::dispatch_trigger(id, crate::platform::WidgetTriggerKind::ValueChanged);
+        assert_eq!(
+            binding.get(),
+            capability_text("gamma"),
+            "control → model still propagates after the panic"
+        );
+
+        binding.set(capability_text("delta"));
+        assert_eq!(
+            widget_text(id),
+            capability_text("delta"),
+            "model → control still propagates after the panic"
+        );
+
+        crate::app::remove_callbacks(id);
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// A push that did not reach a control must not be announced as a synchronization.
+    ///
+    /// The contract documented at `data_binding::chart::bind_chart_series` is that a failed
+    /// initial write reports failure instead of promising updates that cannot arrive; the same
+    /// applies to both widget bridge forms, which used to call `announce_synced` unconditionally.
+    #[test]
+    fn a_failed_initial_push_is_not_announced_as_synced() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        // No widget is ever registered under this id.
+        let unmounted = u64::MAX;
+        let announcements = crate::compat::Arc::new(AtomicUsize::new(0));
+
+        let one_way = Binding::new(capability_text("alpha"));
+        let counter = crate::compat::Arc::clone(&announcements);
+        one_way.binding_synced_signal().connect_ref(move |_property| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        bind_widget_property(&one_way, "text", unmounted, "text");
+        assert_eq!(
+            announcements.load(Ordering::SeqCst),
+            0,
+            "a one-way initial push that did not apply must not claim the binding is synced"
+        );
+
+        let two_way = Binding::new(capability_text("alpha"));
+        let handle = crate::app::ButtonHandle::from_raw(unmounted);
+        bind_widget_property_two_way(&two_way, "text", &handle, unmounted, "text");
+        assert_eq!(
+            announcements.load(Ordering::SeqCst),
+            0,
+            "a two-way initial push that did not apply must not claim the binding is synced"
+        );
+
+        let validated = Binding::new(capability_text("alpha"));
+        let counter = crate::compat::Arc::clone(&announcements);
+        validated.binding_synced_signal().connect_ref(move |_property| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        bind_widget_property_validated(&validated, "text", unmounted, "text", NonEmptyText);
+        assert_eq!(
+            announcements.load(Ordering::SeqCst),
+            0,
+            "a validated initial push that did not apply must not claim the binding is synced"
+        );
+
+        // Positive control: a mounted target is announced exactly once, so the zeros above are
+        // not the vacuous result of a signal that never fires.
+        let id = mount_button("alpha");
+        let mounted = Binding::new(capability_text("alpha"));
+        let counter = crate::compat::Arc::clone(&announcements);
+        mounted.binding_synced_signal().connect_ref(move |_property| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        bind_widget_property(&mounted, "text", id, "text");
+        assert_eq!(
+            announcements.load(Ordering::SeqCst),
+            1,
+            "a successful initial push is announced"
+        );
+
+        crate::app::remove_callbacks(unmounted);
         crate::app::remove_callbacks(id);
         crate::widget::runtime::unregister(id);
     }

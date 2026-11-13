@@ -852,6 +852,22 @@ impl OtpInput {
         let width = if is_last { (row.x + row.width as i32 - x).max(1) as u32 } else { box_width };
         Rect::new(x, row.y, width, row.height)
     }
+
+    /// The face the cells paint and measure their glyphs with (W6-22).
+    ///
+    /// The resolved style font — where the theme's body face and a caller's `set_font` land —
+    /// wins when one is set, including its size. The fallback keeps the resolved UI face and
+    /// derives the size from the row's height, because that is a fact about the cell: a 120 px
+    /// box asks for a proportional glyph rather than shrinking the code to body text. The
+    /// hardcoded `"Sans"` this control used to name ignored `style.font` completely.
+    fn cell_font(&self) -> Font {
+        let style = self.style();
+        match style.font.as_ref() {
+            Some(font) => font.clone(),
+            None => crate::widget::metrics::effective_font(style)
+                .with_size((self.row_rect().height as f32 * 0.4).clamp(8.0, 32.0)),
+        }
+    }
 }
 
 impl Draw for OtpInput {
@@ -912,10 +928,12 @@ impl Draw for OtpInput {
         // as one widget rather than as empty space.
         let hairline = background.blend(&text_color, 0.35);
 
-        // The glyph size comes from the **row's** height, not the control's: deriving it
-        // from a 120 px cell asked for a 48 px glyph in a 48 px box, and the character then
-        // could not fit the cell it was drawn into.
-        let font = Font::simple_interned("Sans", (rect.height as f32 * 0.4).clamp(8.0, 32.0));
+        // The face comes from the resolved style font (W6-22), so a caller- or theme-configured
+        // family reaches the numbers. With no style font the fallback keeps the resolved UI
+        // face and derives the size from the **row's** height — not the control's — because a
+        // 120 px cell once asked for a 48 px glyph in a 48 px box and the character then could
+        // not fit the cell it was drawn into.
+        let font = self.cell_font();
         // The row's own line box, so each glyph is vertically centred in its cell rather
         // than beginning on the cell's middle line (a glyph origin is the top-left corner of
         // its box, so `slot.y + slot.height / 2` drew every character half a line low).
@@ -1066,6 +1084,36 @@ mod tests {
             captured.lock().expect("signal sink poisoned").push(value.to_string());
         });
         seen
+    }
+
+    /// A host-configured face reaches the glyphs the cells paint (W6-22).
+    ///
+    /// # What this pins
+    ///
+    /// The draw path built `Font::simple_interned("Sans", …)`, so `style.font` — the field a
+    /// theme and `set_font` both write — was never read: the numbers a user typed stayed in the
+    /// control's own hardcoded face on every appearance. The resolved face now wins, and only the
+    /// size remains row-derived.
+    #[test]
+    fn the_cell_face_honours_the_style_font() {
+        let mut otp = otp();
+        otp.base_mut().style_mut().font = Some(Font::with_weight("OtpFace", 12.0, 600, true));
+        let font = otp.cell_font();
+        assert_eq!(font.family(), "OtpFace");
+        assert_eq!(font.weight(), 600);
+        assert!(font.is_italic(), "the style face's style must survive into the paint path");
+    }
+
+    /// With no style font the fallback keeps the resolved UI face (W6-22).
+    #[test]
+    fn the_cell_face_falls_back_to_the_resolved_ui_face() {
+        let otp = otp();
+        let font = otp.cell_font();
+        assert_eq!(
+            font.family(),
+            Font::default().family(),
+            "the fallback keeps the resolved UI family, not a hardcoded one"
+        );
     }
 
     #[test]

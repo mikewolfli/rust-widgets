@@ -3,6 +3,7 @@
 
 use super::types::*;
 use crate::compat::{Instant, MiniToString, Rc, RefCell, String};
+use crate::widget::text_utils::floor_char_boundary;
 
 /// How long two adjacent edits of the same source may stay separate records, in milliseconds.
 ///
@@ -61,6 +62,22 @@ pub struct TextSpliceCommand {
 /// Counter for [`TextSpliceCommand`] ids.
 static NEXT_TEXT_SPLICE_ID: crate::compat::atomic::AtomicU64 =
     crate::compat::atomic::AtomicU64::new(1);
+
+/// The smallest character boundary at or after `index`, capped at the value's length.
+///
+/// The counterpart of [`floor_char_boundary`] for the *end* of a removed range: rounding the end
+/// down would leave half of a multi-byte character in place, so it rounds up instead.
+fn ceil_char_boundary(text: &str, index: usize) -> usize {
+    let len = text.len();
+    if index >= len {
+        return len;
+    }
+    let mut boundary = index;
+    while boundary < len && !text.is_char_boundary(boundary) {
+        boundary += 1;
+    }
+    boundary
+}
 
 impl TextSpliceCommand {
     /// Builds a command for a mutation that has already been applied, from the before/after pair.
@@ -126,8 +143,12 @@ impl TextSpliceCommand {
     /// Replaces the recorded range with `insert`.
     fn splice(&self, remove_len: usize, insert: &str) {
         let mut text = self.target.borrow_mut();
-        let start = self.offset.min(text.len());
-        let end = (start + remove_len).min(text.len());
+        // The offset is recorded against the value the edit produced. A caller that let the
+        // target diverge (see `LineEditor::push_history`) can hand us an offset that no longer
+        // lands on a character boundary; `String::replace_range` panics on such a range, so the
+        // endpoints are snapped outward to whole characters before the write (W6-03).
+        let start = floor_char_boundary(&text, self.offset.min(text.len()));
+        let end = ceil_char_boundary(&text, (start + remove_len).min(text.len()).max(start));
         if start <= end {
             text.replace_range(start..end, insert);
         }

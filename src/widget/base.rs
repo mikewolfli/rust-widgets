@@ -1223,6 +1223,22 @@ impl BaseWidget {
         crate::widget::metrics::dimensions::DISABLED_VEIL_ALPHA as f32 / 255.0
     }
 
+    /// The overlay layers this control's own base state implies.
+    ///
+    /// The single entry a draw path should read: it folds `hovered`, `pressed`, the focus
+    /// reason and `enabled` into one [`StateOverlay`](crate::style::StateOverlay), including the
+    /// disabled layer the three-argument `from_base` cannot express (W5-03 extension). The two
+    /// shared painters below consume it, so a control that calls them is wired without naming
+    /// any individual flag.
+    pub fn state_visual(&self) -> crate::style::StateOverlay {
+        crate::style::StateOverlay::from_base_state(
+            self.hovered,
+            self.pressed,
+            self.draws_focus_ring(),
+            !self.enabled,
+        )
+    }
+
     /// Lays the shared disabled veil over `rect` when this control is disabled.
     ///
     /// # Why one call instead of a per-control tint
@@ -1243,7 +1259,7 @@ impl BaseWidget {
         context: &mut crate::render::RenderContext,
         rect: crate::core::Rect,
     ) {
-        if self.enabled {
+        if !self.state_visual().disabled {
             return;
         }
         let surface = self
@@ -1278,7 +1294,8 @@ impl BaseWidget {
         context: &mut crate::render::RenderContext,
         rect: crate::core::Rect,
     ) {
-        if !self.enabled || !self.hovered {
+        let overlay = self.state_visual();
+        if !overlay.hovered {
             return;
         }
         let surface = self
@@ -1879,6 +1896,29 @@ mod tests {
 
     fn make_base() -> BaseWidget {
         BaseWidget::new(WidgetKind::Button, Rect::new(10, 20, 100, 30), "Button")
+    }
+
+    /// `state_visual` folds the base facts into the overlay, including the disabled layer.
+    ///
+    /// The three-argument `StateOverlay::from_base` cannot express "disabled" without a second
+    /// constructor; this is the single entry the shared painters read, so a control that calls
+    /// `paint_disabled_veil`/`paint_hover_wash` is wired without naming a flag (issue §8).
+    #[test]
+    fn state_visual_folds_hover_and_disabled() {
+        let mut bw = make_base();
+        bw.record_interaction_state(&crate::event::Event::MouseEnter {
+            pos: crate::core::Point::new(5, 5),
+        });
+        let hovered = bw.state_visual();
+        assert!(hovered.hovered);
+        assert!(!hovered.disabled);
+        assert_eq!(hovered.fill_blend(), crate::style::HOVER_FILL_BLEND);
+
+        bw.set_enabled(false);
+        let disabled = bw.state_visual();
+        assert!(disabled.disabled);
+        assert_eq!(disabled.fill_blend(), 0.0, "a disabled control has no hover fill");
+        assert_eq!(disabled.disabled_blend(), crate::style::DISABLED_FILL_BLEND);
     }
 
     #[test]

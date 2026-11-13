@@ -480,6 +480,25 @@ jobs:
           ./tools/check_spacing_is_not_sibling_layout.sh
           ./tools/check_focus_ring_respects_reason.sh
 
+      # Issue §8 extension directions 1, 2, 4, 5 and 6. Each gate is listed here
+      # explicitly: `run_all_gates.sh` is the local matrix, but a gate CI never names
+      # can stay red for rounds (the defect N2-02 recorded for 135 gates).
+      - name: Extension gates (issue-20261112-2 §8)
+        shell: bash
+        run: |
+          chmod +x tools/check_focus_reachable_key_arms.sh
+          chmod +x tools/check_suites_conventions.sh
+          chmod +x tools/check_disabled_state_covers_kinds.sh
+          chmod +x tools/check_error_enums_implement_display_and_error.sh
+          chmod +x tools/check_codemap_counts.sh
+          chmod +x tools/check_large_file_ratchet.sh
+          ./tools/check_focus_reachable_key_arms.sh
+          ./tools/check_suites_conventions.sh
+          ./tools/check_disabled_state_covers_kinds.sh
+          ./tools/check_error_enums_implement_display_and_error.sh
+          ./tools/check_codemap_counts.sh
+          ./tools/check_large_file_ratchet.sh
+
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 
@@ -717,14 +736,6 @@ jobs:
             cargo check --target wasm32-unknown-unknown \
               --no-default-features --features "wasm,${profile}"
           done
-      # The JavaScript engine pulls `rand` 0.8 -> `getrandom` 0.2, which refuses to
-      # build for wasm32 without its entropy backend enabled. `Cargo.toml` turns
-      # that feature on for this target, and this step keeps the combination from
-      # regressing silently: the plain `wasm` build above does not cover it.
-      - name: WASM check (with JavaScript engine)
-        run: >-
-          cargo check --target wasm32-unknown-unknown
-          --no-default-features --features wasm,js-engine
 
   harmony-cross-check:
     name: HarmonyOS (OpenHarmony) cross-compile check

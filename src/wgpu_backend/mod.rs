@@ -7,12 +7,16 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved: the `gpu-wgpu` renderer is built only under `--features gpu-wgpu` and
-//! currently has no production caller. The auto scene path was deliberately moved off it in
-//! D09-GPU-01 (it drew the whole scene on the CPU, then round-tripped the frame through the GPU,
-//! so it added work without accelerating anything — see `src/render/backend/scene.rs`). The
-//! renderer is kept compiled for the planned on-GPU scene rasterisation described there, not as a
-//! live code path; the rasteriser and its tests remain the reference for the command set.
+//! **State:** Partly reserved. The renderer **does** have production callers on the frame
+//! presentation path: `render::present::presenter` constructs it with `WgpuRenderer::from_device`
+//! (`FramePresenter::ensure_command_renderer`) and the macOS smooth present path draws through it.
+//! The earlier wording ("currently has no production caller") was false and is corrected rather
+//! than deleted (W6-38). What remains planned is the **auto scene path**, which was deliberately
+//! moved off this renderer in D09-GPU-01 (it drew the whole scene on the CPU, then round-tripped
+//! the frame through the GPU, so it added work without accelerating anything — see
+//! `src/render/backend/scene.rs`). The renderer is therefore live as the command-stream presenter
+//! and reserved only as a future scene rasteriser; the rasteriser and its tests remain the
+//! reference for the command set.
 //!
 //! # Cost (G-63 / G-212)
 //!

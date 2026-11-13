@@ -15,6 +15,13 @@ pub const HOVER_FILL_BLEND: f32 = 0.08;
 /// rule as the hover weight.
 pub const PRESSED_FILL_BLEND: f32 = 0.12;
 
+/// Blend factor a disabled control's surface takes toward the page it sits on.
+///
+/// The same weight the preset theme's `"<kind>:disabled"` override uses, so a control that
+/// applies the overlay and one that resolves the preset key recede by the same amount
+/// (W5-03 framework extension).
+pub const DISABLED_FILL_BLEND: f32 = 0.55;
+
 /// The state layers a control should **overlay** on top of its resolved fill.
 ///
 /// # Why this is separate from [`WidgetState`]
@@ -44,11 +51,13 @@ pub struct StateOverlay {
     pub focused: bool,
     /// A persistent on/selected fact the control wants reflected as well.
     pub checked: bool,
+    /// The control does not accept input: its surface and ink must recede.
+    pub disabled: bool,
 }
 
 /// One of the independent layers [`StateOverlay`] can carry.
 ///
-/// A named set rather than four `bool` arguments, so a caller asking "which layer wins?"
+/// A named set rather than a row of `bool` arguments, so a caller asking "which layer wins?"
 /// cannot transpose two flags, and so [`StateOverlay::layer_weight`] has one spelling per
 /// layer to answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,12 +70,14 @@ pub enum OverlayLayer {
     Focused,
     /// A latched on/selected fact.
     Checked,
+    /// The control is disabled.
+    Disabled,
 }
 
 impl OverlayLayer {
     /// Every layer, in the order the vocabulary is documented.
     pub const ALL: &'static [OverlayLayer] =
-        &[Self::Hovered, Self::Pressed, Self::Focused, Self::Checked];
+        &[Self::Hovered, Self::Pressed, Self::Focused, Self::Checked, Self::Disabled];
 
     /// The layer's precedence, higher meaning later on the pixel.
     pub const fn weight(self) -> u8 {
@@ -77,6 +88,8 @@ impl OverlayLayer {
             Self::Checked => 3,
             // The focus ring is the accessibility channel: it is drawn over every fill.
             Self::Focused => 4,
+            // A disabled control has no interaction left to show; the recede is the last fill.
+            Self::Disabled => 5,
         }
     }
 }
@@ -93,14 +106,16 @@ impl StateOverlay {
     /// an order at the call site. `0` means the layer is not set at all.
     ///
     /// The order is: a press outranks a hover (it already implies one), a latched check outranks
-    /// both (it persists after the gesture), and the focus ring has the last word because it is
-    /// the accessibility channel and must stay visible over every fill.
+    /// both (it persists after the gesture), the focus ring has the last word because it is
+    /// the accessibility channel and must stay visible over every fill, and a disabled control
+    /// outranks the gesture layers because it has no interaction fill to show.
     pub const fn layer_weight(&self, layer: OverlayLayer) -> u8 {
         let set = match layer {
             OverlayLayer::Hovered => self.hovered,
             OverlayLayer::Pressed => self.pressed,
             OverlayLayer::Focused => self.focused,
             OverlayLayer::Checked => self.checked,
+            OverlayLayer::Disabled => self.disabled,
         };
         if set {
             layer.weight()
@@ -123,16 +138,31 @@ impl StateOverlay {
 
     /// The overlay a control's base state alone implies.
     ///
-    /// Built from the four facts [`crate::widget::BaseWidget`] maintains, so a control that
+    /// Built from the three interaction facts [`crate::widget::BaseWidget`] maintains, so a control that
     /// overrides nothing still gets the hover/press/focus overlay for free. `checked` is
     /// not derivable from those facts — a control that latches a value adds it itself.
     pub fn from_base(hovered: bool, pressed: bool, focused: bool) -> Self {
-        Self { hovered, pressed, focused, checked: false }
+        Self { hovered, pressed, focused, checked: false, disabled: false }
+    }
+
+    /// [`Self::from_base`] plus the disabled fact.
+    ///
+    /// Kept as a separate constructor so the three-argument form every existing draw site uses
+    /// keeps its meaning; a control that has `BaseWidget::state_visual` available should prefer
+    /// that single entry.
+    pub fn from_base_state(hovered: bool, pressed: bool, focused: bool, disabled: bool) -> Self {
+        Self { hovered, pressed, focused, checked: false, disabled }
+    }
+
+    /// The same overlay with the disabled fact applied.
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     /// Whether any layer is set, i.e. whether a draw path has anything to add.
     pub fn is_empty(&self) -> bool {
-        !(self.hovered || self.pressed || self.focused || self.checked)
+        !(self.hovered || self.pressed || self.focused || self.checked || self.disabled)
     }
 
     /// The fill blend factor this overlay asks for, in `0.0..=1.0`.
@@ -142,10 +172,26 @@ impl StateOverlay {
     /// the ones the preset theme's `"<kind>:hover"` / `"<kind>:pressed"` overrides derive,
     /// so an overlaid control and a theme-driven one move by the same amount.
     pub fn fill_blend(&self) -> f32 {
-        if self.pressed {
+        if self.disabled {
+            // A disabled control has no hover/press fill: the disabled layer owns the surface.
+            0.0
+        } else if self.pressed {
             PRESSED_FILL_BLEND
         } else if self.hovered {
             HOVER_FILL_BLEND
+        } else {
+            0.0
+        }
+    }
+
+    /// How far a disabled surface recedes toward the page, in `0.0..=1.0`.
+    ///
+    /// `0.0` for an enabled control. A draw that resolves its own surface can blend by this
+    /// factor instead of re-deriving the preset's `DISABLED_FADE`; that is the framework-level
+    /// half of the state visual (W5-03 extension).
+    pub fn disabled_blend(&self) -> f32 {
+        if self.disabled {
+            DISABLED_FILL_BLEND
         } else {
             0.0
         }
@@ -432,12 +478,26 @@ mod tests {
             assert!(!weights.contains(&weight), "{layer:?} must not share a weight");
             weights.push(weight);
         }
-        assert_eq!(OverlayLayer::ALL.len(), 4, "hovered, pressed, focused and checked");
+        assert_eq!(OverlayLayer::ALL.len(), 5, "hovered, pressed, focused, checked and disabled");
 
-        let all = StateOverlay { hovered: true, pressed: true, focused: true, checked: true };
+        let all = StateOverlay {
+            hovered: true,
+            pressed: true,
+            focused: true,
+            checked: true,
+            ..StateOverlay::default()
+        };
         assert_eq!(all.layer_weight(OverlayLayer::Checked), 3);
         assert_eq!(all.layer_weight(OverlayLayer::Focused), 4);
         assert_eq!(all.dominant_layer(), Some(OverlayLayer::Focused));
+
+        // A disabled control outranks the gesture layers: it has no interaction fill to show.
+        let disabled = StateOverlay { hovered: true, disabled: true, ..StateOverlay::default() };
+        assert_eq!(disabled.layer_weight(OverlayLayer::Disabled), 5);
+        assert_eq!(disabled.dominant_layer(), Some(OverlayLayer::Disabled));
+        assert_eq!(disabled.fill_blend(), 0.0, "disabled suppresses the hover fill");
+        assert_eq!(disabled.disabled_blend(), 0.55);
+        assert_eq!(StateOverlay::default().disabled_blend(), 0.0);
 
         // The absent layer weighs nothing, so a combination is never handed a phantom layer.
         let resting = StateOverlay::default();

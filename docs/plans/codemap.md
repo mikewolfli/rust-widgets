@@ -377,13 +377,14 @@ Rust API → extern "C" (C ABI)
 | Layout managers | 15 |
 | Platform backends | 12 |
 | IME implementations | 4 |
-| Clipboard backends | 5 |
-| Gesture recognizers | 10 |
-| Test files | 75 integration + inline |
+| Clipboard backends | 9 |
+| Gesture recognizers | 11 |
+| Integration test files | 76 |
 | Benchmark files | 9 |
 
-Counts are derived, not hand-maintained: `find src -name '*.rs' | wc -l` (1,020),
-`WidgetKind::` variants in `src/widget/kind.rs` (231), `impl Layout for` in `src/layout/`
-(15), and `bench = true` entries in `Cargo.toml` (9). The earlier "14 layout / 5 benchmark"
-row was stale: two files matched the wrong pattern and two `[[bench]]` entries were added
-without updating the table (W5-25).
+Counts are generated, not hand-maintained: `python3 tools/gen_codemap_counts.py` rewrites this
+block and `--check` is the gate. Each row's derivation lives in that script (layout managers
+exclude the internal `ScaleProbe` adapter and `Wrapper` specialisation; clipboard backends
+exclude the test mock; integration tests are `tests/*.rs`). The earlier "14 layout / 5 benchmark"
+and "10 gesture / 5 clipboard" rows were stale hand counts: two files matched the wrong pattern
+and new entries were added without updating the table (W5-25 / issue §8 direction 5).

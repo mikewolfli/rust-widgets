@@ -101,6 +101,9 @@ impl Widget for TextEdit {
                 &self.cursor_position_changed,
                 |v| CapabilityValue::UInt(*v as u64),
             )),
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
             "undo_available" => {
                 Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
                     CapabilityValue::Bool(*v)
@@ -321,6 +324,8 @@ impl EventHandler for TextEdit {
         match event {
             Event::FocusGained { .. } => {
                 self.focused = true;
+                // Focus arrival opens an editing session, so its end is reportable exactly once.
+                self.editing_finished_announced = false;
                 // I-119: the caret only blinks while the editor owns focus.
                 self.cursor_blink.start();
                 self.base.request_redraw();
@@ -328,6 +333,13 @@ impl EventHandler for TextEdit {
             Event::FocusLost => {
                 self.focused = false;
                 self.cursor_blink.stop();
+                // Losing focus is the end of the editing session, announced the same way the
+                // single-line field announces it. The flag keeps a duplicate `FocusLost`, or one
+                // for an editor that never gained focus, from reporting an end that did not happen.
+                if !self.editing_finished_announced {
+                    self.editing_finished_announced = true;
+                    self.editing_finished.emit();
+                }
                 self.base.request_redraw();
             }
             // A press places the caret and starts a selection. It used to do nothing at all, so the
@@ -347,6 +359,7 @@ impl EventHandler for TextEdit {
             // A double click selects the word under the pointer.
             Event::MouseDoubleClick { pos, button, .. } if *button == 1 => {
                 self.focused = true;
+                self.editing_finished_announced = false;
                 let offset = self.offset_at_point(*pos);
                 let (start, end) = self.word_range_at(offset);
                 self.selection_anchor = Some(start);

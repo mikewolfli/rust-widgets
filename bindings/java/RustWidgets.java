@@ -38,6 +38,17 @@ package io.github.rustwidgets;
  * native failures, which was untrue for both categories (D09-JNI-01); it now
  * describes what the methods do.
  *
+ * <h2>Coverage</h2>
+ *
+ * <p>This class is a <b>subset</b> of the {@code rw_*} C ABI, not a mirror of it. It exposes
+ * the lifecycle, creation, input and query surface a Java host drives directly (57 native
+ * symbols when measured), while {@code include/rw_generated.h} declares roughly 155. The
+ * remainder — generic property read/write beyond the typed accessors, the geometry setters, the
+ * five dispatch entry points and {@code rw_pump_frame}, {@code rw_error_code}/
+ * {@code rw_error_message}, the surface family, the theme/font family and
+ * {@code rw_create_widget_of_kind} — is reachable only through the C ABI. A new C ABI symbol
+ * does not appear here automatically; this boundary is documented rather than promised.
+ *
  * <p>Thread safety: the native library expects all calls from the main (EDT)
  * thread unless documented otherwise.
  */

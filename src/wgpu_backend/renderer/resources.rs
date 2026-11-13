@@ -745,11 +745,11 @@ impl TextureCache {
 
 /// Identity of one rasterised text coverage mask (RD3-04).
 ///
-/// The bytes of a coverage texture depend on the text, the box it was laid out in, and **which
-/// face answered each character** — the last of which changes when a host calls `register_face`
-/// without any text changing. All four are therefore part of the key. `digest` plus `len` is the
-/// probe; the entry keeps the text itself, so a hash collision costs a comparison and never draws
-/// the wrong glyphs.
+/// The bytes of a coverage texture depend on the text (or, for the shaped path, the mask bytes
+/// themselves), the box it was laid out in, and **which face answered each character** — the last
+/// of which changes when a host calls `register_face` without any text changing. All four are
+/// therefore part of the key. `digest` plus `len` is the probe; the entry keeps the original
+/// content, so a hash collision costs a comparison and never draws the wrong glyphs.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TextCoverageKey {
     digest: u64,
@@ -761,16 +761,28 @@ pub(crate) struct TextCoverageKey {
 
 impl TextCoverageKey {
     pub(crate) fn new(text: &str, width: u32, height: u32) -> Self {
+        Self::digest_bytes(text.as_bytes(), text.len(), width, height)
+    }
+
+    /// The key for a caller-supplied coverage mask, which has no text behind it.
+    ///
+    /// The shaped-text path hands the renderer the already-rasterised mask, so its identity is
+    /// the bytes themselves plus the box and face (W6-05).
+    pub(crate) fn coverage(bytes: &[u8], width: u32, height: u32) -> Self {
+        Self::digest_bytes(bytes, bytes.len(), width, height)
+    }
+
+    fn digest_bytes(bytes: &[u8], len: usize, width: u32, height: u32) -> Self {
         const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
         let mut digest = FNV_OFFSET;
-        for byte in text.as_bytes() {
+        for byte in bytes {
             digest ^= u64::from(*byte);
             digest = digest.wrapping_mul(FNV_PRIME);
         }
         Self {
             digest,
-            len: text.len(),
+            len,
             width,
             height,
             face_generation: crate::render::text::font_assets::face_generation(),
@@ -778,13 +790,23 @@ impl TextCoverageKey {
     }
 }
 
-/// One cached coverage upload: the text it was rasterised from, plus the texture.
+/// One cached coverage upload: the content it was rasterised from, plus the texture.
 pub(crate) struct CachedTextCoverage {
-    /// The text, retained so a hash collision cannot reuse the wrong glyphs.
-    text: Arc<str>,
+    /// The content, retained so a hash collision cannot reuse the wrong mask.
+    content: CachedCoverageContent,
     /// The texture the view was made from (the view alone already keeps it alive).
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
+}
+
+/// What a cached coverage entry was built from.
+///
+/// The text path keys on a string and the shaped path on the mask bytes; keeping the original
+/// value lets a lookup reject a digest collision on the exact content rather than on a weaker
+/// proxy.
+enum CachedCoverageContent {
+    Text(Arc<str>),
+    Bytes(Arc<[u8]>),
 }
 
 /// Content-keyed text coverage uploads (RD3-04).
@@ -820,8 +842,25 @@ impl TextCoverageCache {
     /// A hit marks the entry as most recently used (see [`Self::touch`]).
     pub(crate) fn view(&mut self, key: &TextCoverageKey, text: &str) -> Option<wgpu::TextureView> {
         let entry = self.entries.get(key)?;
-        if entry.text.as_ref() != text {
-            return None;
+        match &entry.content {
+            CachedCoverageContent::Text(cached) if cached.as_ref() == text => {}
+            _ => return None,
+        }
+        let view = entry.view.clone();
+        self.touch(key);
+        Some(view)
+    }
+
+    /// The cached view for a shaped mask, when the entry holds exactly these bytes.
+    pub(crate) fn view_coverage(
+        &mut self,
+        key: &TextCoverageKey,
+        coverage: &[u8],
+    ) -> Option<wgpu::TextureView> {
+        let entry = self.entries.get(key)?;
+        match &entry.content {
+            CachedCoverageContent::Bytes(cached) if cached.as_ref() == coverage => {}
+            _ => return None,
         }
         let view = entry.view.clone();
         self.touch(key);
@@ -850,11 +889,36 @@ impl TextCoverageCache {
         texture: wgpu::Texture,
         view: wgpu::TextureView,
     ) {
+        self.insert_entry(key, CachedCoverageContent::Text(text), texture, view);
+    }
+
+    /// Stores a shaped mask's texture under `key`, evicting the least recently used entry when
+    /// the cache is full.
+    pub(crate) fn insert_coverage(
+        &mut self,
+        key: TextCoverageKey,
+        coverage: Arc<[u8]>,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+    ) {
+        self.insert_entry(key, CachedCoverageContent::Bytes(coverage), texture, view);
+    }
+
+    fn insert_entry(
+        &mut self,
+        key: TextCoverageKey,
+        content: CachedCoverageContent,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+    ) {
         #[cfg(test)]
         {
             self.uploads = self.uploads.saturating_add(1);
         }
-        if self.entries.insert(key, CachedTextCoverage { text, _texture: texture, view }).is_none()
+        if self
+            .entries
+            .insert(key, CachedTextCoverage { content, _texture: texture, view })
+            .is_none()
         {
             self.order.push_back(key);
         } else {

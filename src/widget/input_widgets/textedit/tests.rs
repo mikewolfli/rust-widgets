@@ -828,6 +828,35 @@ fn an_unfocused_editor_ignores_the_keyboard() {
     assert_eq!(te.text(), "a", "and losing focus takes the keyboard away again");
 }
 
+/// Losing focus ends the editing session (W6-19a).
+///
+/// The editor handled `FocusLost` only to stop the caret blink, so a host that wants to commit the
+/// value on blur had no event to bind. The single-line field and the text area publish
+/// `editing_finished`; this pins the same edge here and checks that neither a blur with no session
+/// nor a duplicate blur reports an end that did not happen.
+#[test]
+fn losing_focus_emits_editing_finished_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let mut te = TextEdit::new(Rect::new(0, 0, 200, 100));
+    let seen = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::clone(&seen);
+    te.editing_finished.connect(move || {
+        sink.fetch_add(1, Ordering::SeqCst);
+    });
+
+    te.handle_event(&Event::FocusLost);
+    assert_eq!(seen.load(Ordering::SeqCst), 0, "no session means no finished event");
+
+    te.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+    te.handle_event(&Event::FocusLost);
+    assert_eq!(seen.load(Ordering::SeqCst), 1, "losing focus finishes the edit exactly once");
+
+    te.handle_event(&Event::FocusLost);
+    assert_eq!(seen.load(Ordering::SeqCst), 1, "a duplicate blur is not a second end");
+}
+
 /// A press focuses the editor, which is how a user reaches it with the pointer.
 #[test]
 fn a_press_focuses_the_editor() {

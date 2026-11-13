@@ -1403,8 +1403,10 @@ fn seeded_theme_manager() -> Mutex<ThemeManager> {
     // that fails (off-main, or an AppKit without the notification) is not fatal: the
     // observer function leaves the explicit `refresh_system_accent` entry point as the
     // hook, which is the documented boundary for backends with no notification source.
-    #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
-    crate::platform::macos::environment::install_system_color_observer();
+    //
+    // Which backend (if any) owns an observer is the platform layer's decision; this file
+    // names no OS and carries no `cfg(target_os)` (W6-12).
+    crate::platform::install_system_color_observer();
     Mutex::new(manager)
 }
 
@@ -2407,7 +2409,7 @@ impl Theme {
         // the palette without re-deriving it would leave those fills describing the replaced
         // colours — the same drift `Theme::dark` guards against.
         theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
-        if let Some(family) = register_macos_system_ui_face() {
+        if let Some(family) = crate::platform::register_system_ui_face() {
             apply_system_ui_family(&mut theme.fonts, family);
         }
         // Native macOS motion is slightly slower than the Material tempo: 120 ms for a direct
@@ -2461,7 +2463,7 @@ impl Theme {
             bright_text: Color::rgb(255, 255, 255),
         };
         theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
-        if let Some(family) = register_macos_system_ui_face() {
+        if let Some(family) = crate::platform::register_system_ui_face() {
             apply_system_ui_family(&mut theme.fonts, family);
         }
         theme.motion = Motion { fast: 120, normal: 220, slow: 300, ..Motion::default() };
@@ -2505,37 +2507,7 @@ fn apply_system_ui_family(fonts: &mut Fonts, family: &str) {
     fonts.display = fonts.display.with_family(family);
 }
 
-/// Registers the host's system UI face and returns the family name it was registered under.
-///
-/// `None` is the honest answer on every path where the face is not available: the runtime face
-/// registry is compiled out, this is not macOS, the system file is absent, or the registry refused
-/// the bytes. The macOS presets check this **before** naming a family, so a preset never claims a
-/// face the renderer cannot draw.
-#[cfg(all(target_os = "macos", feature = "cocoa-legacy", feature = "runtime-fonts"))]
-fn register_macos_system_ui_face() -> Option<&'static str> {
-    crate::platform::macos::environment::register_system_ui_face()
-}
-
-#[cfg(all(
-    target_os = "macos",
-    not(feature = "cocoa-legacy"),
-    feature = "macos",
-    feature = "runtime-fonts"
-))]
-fn register_macos_system_ui_face() -> Option<&'static str> {
-    crate::platform::macos_objc2::native::register_system_ui_face()
-}
-
-#[cfg(not(all(
-    target_os = "macos",
-    any(feature = "cocoa-legacy", feature = "macos"),
-    feature = "runtime-fonts"
-)))]
-fn register_macos_system_ui_face() -> Option<&'static str> {
-    None
-}
-
-#[cfg(all(test, feature = "desktop", widgets_unstripped))]
+#[cfg(test)]
 mod environment_appearance_tests {
     use super::*;
     use crate::core::TextDirection;
@@ -2774,7 +2746,7 @@ mod macos_preset_tests {
     /// face that would render as a fallback.
     #[test]
     fn the_macos_preset_only_names_the_system_ui_face_when_it_was_registered() {
-        let registered = register_macos_system_ui_face();
+        let registered = crate::platform::register_system_ui_face();
         let light = Theme::macos_light();
         match registered {
             Some(family) => {

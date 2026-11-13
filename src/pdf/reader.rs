@@ -137,6 +137,19 @@ impl PdfReader {
     /// Load PDF from bytes
     pub fn load_from_bytes(&self, data: &[u8]) -> Result<Box<dyn PdfDocument>, std::io::Error> {
         let text = String::from_utf8_lossy(data);
+        // A PDF stream begins with `%PDF-` (the specification allows it anywhere in the first
+        // 1024 bytes) or, for this crate's legacy text fixture, a `pages:` line. Accepting any
+        // bytes made a JPEG or a random file load as a one-page blank document and print blank
+        // pages, which reported success for something that did not happen (W6-10).
+        let header_window = &data[..data.len().min(1024)];
+        let has_pdf_header = header_window.windows(5).any(|window| window == b"%PDF-");
+        let has_legacy_marker = text.lines().any(|line| line.strip_prefix("pages:").is_some());
+        if !has_pdf_header && !has_legacy_marker {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "not a PDF: the data has no %PDF- header and no legacy `pages:` marker",
+            ));
+        }
         let mut page_count = 1;
         // Legacy fallback parser for older fake format.
         for line in text.lines() {

@@ -240,7 +240,17 @@ impl LineEditor {
     /// Used for a programmatic write, where only the diff is needed; the normal edit paths pass
     /// their splice directly (I-001).
     fn push_history(&mut self, before: &str, after: &str, record: bool) {
-        if !record || self.restoring {
+        if self.restoring {
+            return;
+        }
+        if !record {
+            // A programmatic write is the saved state by definition: the history that could
+            // restore a value before it no longer describes this field. Clearing both the stack
+            // and the shared target keeps every later splice aligned with `self.text` — a stale
+            // target made the next keystroke splice a byte offset from one string into another
+            // (W6-03).
+            *self.history_target.borrow_mut() = after.to_string();
+            self.undo_stack.clear();
             return;
         }
         *self.history_target.borrow_mut() = after.to_string();
@@ -326,16 +336,30 @@ mod tests {
     }
 
     #[test]
-    fn a_programmatic_write_is_not_undoable() {
+    fn a_programmatic_write_discards_the_history_it_invalidates() {
         let mut editor = LineEditor::new();
         editor.set_text("typed".to_string(), true);
         editor.set_text("assigned".to_string(), false);
-        // Only the typed edit is on the stack; undoing it restores the value before it, not the
-        // programmatic write the host made afterwards.
+        // A programmatic write is the saved state by definition: the record that predates it can
+        // no longer describe this value, so the history is cleared instead of left to resurrect
+        // the value the host itself replaced (W6-03).
         assert_eq!(editor.text(), "assigned");
-        assert!(editor.undo());
-        assert_eq!(editor.text(), "");
         assert!(!editor.can_undo());
+        assert!(!editor.undo());
+        assert_eq!(editor.text(), "assigned");
+    }
+
+    #[test]
+    fn typing_after_a_programmatic_write_keeps_the_history_target_aligned() {
+        let mut editor = LineEditor::new();
+        assert!(editor.insert("东京"));
+        assert!(editor.set_text("Paris".to_string(), false));
+        // The next splice offsets into "Paris"; before W6-03 it reused an offset from the
+        // five-byte-broader "东京" value and could land inside a character (panic).
+        assert!(editor.insert("!"));
+        assert_eq!(editor.text(), "Paris!");
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "Paris");
     }
 
     #[test]

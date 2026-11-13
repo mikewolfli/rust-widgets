@@ -64,9 +64,15 @@ impl ErrorId {
     // --- Widget (100–199) ---
     /// Reserved — not yet wired into any code path.
     pub const WIDGET_BASE_NOT_IMPL: Self = Self(100);
-    /// Reserved — not yet wired into any code path.
+    /// The FFI property bridge's error for an id that names no widget.
+    ///
+    /// Produced by `error/ffi.rs` when a property read or write cannot resolve its widget, so
+    /// this is a live code path rather than a reserved value.
     pub const WIDGET_NOT_FOUND: Self = Self(101);
-    /// Reserved — not yet wired into any code path.
+    /// The FFI property bridge's error for a widget that cannot serve the request.
+    ///
+    /// Produced by `error/ffi.rs` for a disabled/read-only property, an unknown property, and a
+    /// property that is not meaningful for the widget — a live code path, not a reserved value.
     pub const WIDGET_INVALID_STATE: Self = Self(102);
     /// Reserved — not yet wired into any code path.
     pub const WIDGET_DEPRECATED: Self = Self(103);

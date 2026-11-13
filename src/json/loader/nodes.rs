@@ -6,6 +6,13 @@ use super::*;
 /// drift (JSON-010).
 pub(crate) const MAX_DEPTH: u32 = crate::json::MAX_DEPTH;
 
+/// The largest carousel page index a document may name.
+///
+/// `index` is document input, and the loader grows the carousel up to it, so a declaration of
+/// `"index": 4294967295` used to drive billions of page allocations before anything was drawn
+/// (W6-08). The ceiling matches the navigation-destination guard in `adaptive_scaffold_ids.rs`.
+const MAX_CAROUSEL_PAGES: usize = 1024;
+
 /// The declaration a **published-name** wire was reached from, for its refusal diagnostic.
 ///
 /// # Why the message needs to know
@@ -359,11 +366,18 @@ pub(crate) fn route_container_content(
         "carousel" => {
             for (position, page) in as_array(obj.get("pages")).iter().enumerate() {
                 let Some(entry) = page.as_object() else { continue };
-                let index = entry
+                let declared = entry
                     .get("index")
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize)
                     .unwrap_or(position);
+                let index = declared.min(MAX_CAROUSEL_PAGES - 1);
+                if declared != index {
+                    log::warn!(
+                        "[json] carousel page index {declared} exceeds the {MAX_CAROUSEL_PAGES}-page \
+                         ceiling; clamped to {index}"
+                    );
+                }
                 let Some((child_type, child_val)) =
                     entry.iter().find(|(key, _)| key.as_str() != "index")
                 else {

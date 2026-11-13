@@ -2568,3 +2568,25 @@ fn a_repeated_caption_uploads_its_coverage_once() {
     );
     drop((first, second));
 }
+
+/// W6-05: the shaped-text path uploads identical coverage once, not once per frame.
+///
+/// `RenderCommand::DrawText` reaches the GPU as `DrawTextCoverage`, so this is the production
+/// shape. The cache above existed but this entry point bypassed it.
+#[test]
+fn a_repeated_coverage_mask_uploads_once() {
+    let Some(renderer) = renderer() else { return };
+    let rect = PixelRect { x: 0, y: 0, width: 8, height: 4 };
+    let color = Rgba8 { r: 255, g: 255, b: 255, a: 255 };
+    let coverage = vec![128u8; rect.width as usize * rect.height as usize];
+
+    let first = renderer.upload_coverage_draw(rect, &coverage, color);
+    let second = renderer.upload_coverage_draw(rect, &coverage, color);
+
+    assert_eq!(
+        renderer.text_coverage_uploads(),
+        1,
+        "identical coverage bytes must reuse one texture"
+    );
+    drop((first, second));
+}

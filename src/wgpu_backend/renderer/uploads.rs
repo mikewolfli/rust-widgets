@@ -468,7 +468,24 @@ impl WgpuRenderer {
         color: Rgba8,
     ) -> TextDraw {
         debug_assert_eq!(coverage.len(), rect.width as usize * rect.height as usize);
-        let (_texture, view) = self.coverage_texture(rect, coverage);
+        // The shaped-text stream draws the same caption on every frame exactly like the text
+        // path, but this method used to create and upload a texture per draw — the cache existed
+        // and the production bridge fed this variant, so it was never reachable (W6-05).
+        let key = TextCoverageKey::coverage(coverage, rect.width, rect.height);
+        let cached = self.text_coverage_cache.borrow_mut().view_coverage(&key, coverage);
+        let view = match cached {
+            Some(view) => view,
+            None => {
+                let (texture, view) = self.coverage_texture(rect, coverage);
+                self.text_coverage_cache.borrow_mut().insert_coverage(
+                    key,
+                    Arc::from(coverage),
+                    texture,
+                    view.clone(),
+                );
+                view
+            }
+        };
         self.text_draw_bind_group(rect, color, view)
     }
 

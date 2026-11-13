@@ -7,7 +7,7 @@
 
 - `src/` — the library. Controls live in `src/widget/<family>/`; `WidgetKind` is `src/widget/kind.rs`; platform backends are `src/platform/`.
 - `crates/` — `rust-widgets-suites` (finance / webview / maps / project / devtools / media), `rust-widgets-icons`, `rust-widgets-font`, `mobile-services`.
-- `tools/` — ~131 gate scripts (`check_*.sh`, `*.py`). Run one directly (`bash tools/check_<name>.sh`); the batch runner is `tools/run_all_gates.sh`.
+- `tools/` — the gate scripts (`check_*.sh` and `check_*.py`; the live count is whatever `ls tools/check_*.sh | wc -l` and `ls tools/check_*.py | wc -l` print — do not trust a number written here). Run one directly (`bash tools/check_<name>.sh`); the batch runner is `tools/run_all_gates.sh`.
 - `docs/plans/principle.md` — the 106 engineering principles every change must follow.
 - `docs/issues/` — scan reports; `docs/log/` — per-round evidence logs.
 - `.dsh/skills/rust-widgets-maintainer/SKILL.md` — repository-specific maintenance guide (authoritative file-layout list).

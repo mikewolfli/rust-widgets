@@ -165,9 +165,16 @@ pub struct AutoCompleteEdit {
     pub text_changed: Signal1<String>,
     /// Emitted when a suggestion is selected from the dropdown.
     pub suggestion_selected: Signal1<String>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     /// The hint painted while the field is empty, or `""` for no hint (I-04).
     ///
     /// Defaults to empty: the field used to hardcode "Type to search...", which a host could
@@ -222,9 +229,13 @@ impl AutoCompleteEdit {
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             suggestion_selected: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            undo_available_announced: false,
+            redo_available_announced: false,
             placeholder: String::new(),
             focused: false,
             preedit: String::new(),
@@ -294,6 +305,7 @@ impl AutoCompleteEdit {
         if changed {
             self.text_changed.emit_lazy(|| self.text.clone());
         }
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -501,6 +513,24 @@ impl AutoCompleteEdit {
         self.undo_stack.can_redo()
     }
 
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `TextEdit` uses: a host
+    /// menu can enable or disable its Undo/Redo items from the signal, and an edit that leaves the
+    /// history unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
+    }
+
     fn restore_history_text(&mut self) {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
@@ -513,6 +543,7 @@ impl AutoCompleteEdit {
         self.selection_anchor = None;
         self.filter_suggestions();
         self.text_changed.emit_lazy(|| self.text.clone());
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -1122,6 +1153,16 @@ impl Widget for AutoCompleteEdit {
                 &self.suggestion_selected,
                 |v| CapabilityValue::String(v.clone()),
             )),
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -2089,5 +2130,26 @@ mod tests {
         edit.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });
         assert_eq!(edit.text(), "alpha");
         assert!(!edit.is_showing_dropdown(), "Enter commits explicitly, so the list closes");
+    }
+
+    /// W6-19b: the availability signals are edge-triggered, not per keystroke.
+    #[test]
+    fn undo_available_fires_only_when_availability_changes() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        edit.undo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        edit.redo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+
+        assert!(!edit.undo());
+        assert_eq!(*undo.lock().unwrap(), Vec::<bool>::new(), "nothing to report before an edit");
+
+        edit.set_text("a");
+        assert!(edit.undo());
+        assert!(!edit.undo(), "the history is exhausted after one undo");
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "only changes are announced");
+        assert_eq!(*redo.lock().unwrap(), vec![true], "redo becomes available once");
     }
 }

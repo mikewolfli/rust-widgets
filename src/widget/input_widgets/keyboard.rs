@@ -848,6 +848,18 @@ impl Widget for Keyboard {
         )
     }
 
+    /// A virtual keyboard owns the hardware keys while it is the focus target (W6-17).
+    ///
+    /// Its kind is `Keyboard`, which
+    /// [`WidgetKind::wants_keyboard_focus`](crate::widget::WidgetKind::wants_keyboard_focus)
+    /// does not list, so the pointer router never made the board the focus owner: a physical
+    /// key delivered to `focused_widget()` skipped this control's `KeyPress` arm entirely. The
+    /// board is the one control whose whole purpose is producing key events, so it opts in
+    /// here rather than widening the kind table for every board in a stripped build.
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
     /// A held key and a fading press flash both owe frames.
     fn is_animating(&self) -> bool {
         self.held_key.is_some() || self.press_progress > 0.0
@@ -1783,6 +1795,30 @@ mod tests {
         // IDs should be unique across instances.
         let kbd2 = Keyboard::new(Rect::new(0, 0, 320, 160));
         assert_ne!(kbd.id(), kbd2.id());
+    }
+
+    /// The board can hold focus, so a physical key reaches its handler (W6-17).
+    ///
+    /// # What this pins
+    ///
+    /// `WidgetKind::Keyboard` is absent from `wants_keyboard_focus`, so the default
+    /// `Widget::is_focusable` answered `false`: the router never made the board the focus owner
+    /// and the `KeyPress` arm below was unreachable code. Both halves are asserted — the
+    /// predicate the router reads, and the fact that the key arm actually answers once the
+    /// board is driven with the event the platform delivers to the focus target.
+    #[test]
+    fn the_board_is_a_focus_target_and_a_hardware_key_reaches_its_arm() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        assert!(kbd.is_focusable(), "the router could never focus the board otherwise");
+
+        let pressed = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&pressed);
+        kbd.space_pressed.connect(move || flag.store(true, Ordering::SeqCst));
+        kbd.handle_event(&Event::KeyPress { key: key_codes::SPACE, modifiers: 0 });
+        assert!(pressed.load(Ordering::SeqCst), "the focused board must receive the key");
     }
 
     #[test]

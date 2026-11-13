@@ -864,16 +864,39 @@ pub fn payload_kinds(
     }
 }
 
+/// Resolves `event_name` on `widget` through the one lookup every wiring query uses.
+///
+/// A control that overrides [`Widget::event_signal_dyn`] answers only for the names it declares.
+/// The two base focus events are published for **every** control
+/// (`BaseWidget::PUBLISHED_EVENTS`), so the base is asked directly before reporting "not
+/// published" — otherwise a focus observer installed through `WidgetHandle::on_focus_gained`
+/// would be invisible on exactly the kinds that enumerate their own arms.
+///
+/// The resolved reference must also declare the requested name: an arm that answers with a
+/// signal built under another name is not a wire to *this* name.
+///
+/// [`is_wired`], [`subscriber_count`] and [`subscription_counts`] all resolve through here, so the
+/// same `(widget, event)` cannot answer differently depending on which query asked (W6-26).
+///
+/// [`Widget::event_signal_dyn`]: crate::widget::Widget::event_signal_dyn
+#[cfg(full_widgets)]
+fn resolve_signal(
+    widget: &dyn crate::widget::Widget,
+    event_name: &str,
+) -> Option<crate::signal::EventSignalRef> {
+    widget
+        .event_signal_dyn(event_name)
+        .or_else(|| widget.base_event_signal(event_name))
+        .filter(|reference| reference.name() == event_name)
+}
+
 /// Resolves `event_name` on `widget` and requires that the reference declares that name.
 ///
 /// The declared-name check is the same one `wire_one` makes: a reference that answers to another
 /// name is not a wire to *this* name.
 #[cfg(full_widgets)]
 fn reference_is_wired(widget: &dyn crate::widget::Widget, event_name: &str) -> bool {
-    widget
-        .event_signal_dyn(event_name)
-        .filter(|reference| reference.name() == event_name)
-        .is_some_and(|reference| reference.slot_count() > 0)
+    resolve_signal(widget, event_name).is_some_and(|reference| reference.slot_count() > 0)
 }
 
 /// Live subscriber count for one published event of the control at `widget_id`.
@@ -887,21 +910,14 @@ fn reference_is_wired(widget: &dyn crate::widget::Widget, event_name: &str) -> b
 ///
 /// `None` means the id is not mounted, the name is not published, or the capability table is
 /// compiled out. `Some(0)` means the event is published and currently has no subscriber.
+///
+/// Resolution is [`resolve_signal`], the same helper [`is_wired`] and [`subscription_counts`] use,
+/// so all three answer the same fact for one `(widget, event)` pair.
 pub fn subscriber_count(widget_id: crate::core::ObjectId, event_name: &str) -> Option<usize> {
     #[cfg(full_widgets)]
     {
         crate::widget::runtime::read_widget(widget_id, |widget| {
-            widget
-                .event_signal_dyn(event_name)
-                // A control that overrides `event_signal_dyn` answers only for the names it
-                // declares. The two base focus events are published for **every** control
-                // (`BaseWidget::PUBLISHED_EVENTS`), so ask the base directly before reporting
-                // "not published" — otherwise a focus observer installed through
-                // `WidgetHandle::on_focus_gained` would be invisible here on exactly the kinds
-                // that enumerate their own arms.
-                .or_else(|| widget.base_event_signal(event_name))
-                .filter(|reference| reference.name() == event_name)
-                .map(|reference| reference.slot_count())
+            resolve_signal(widget, event_name).map(|reference| reference.slot_count())
         })
         .flatten()
     }
@@ -914,9 +930,10 @@ pub fn subscriber_count(widget_id: crate::core::ObjectId, event_name: &str) -> O
 
 /// Every published event of the control at `widget_id`, paired with its live subscriber count.
 ///
-/// This is the whole-control form of [`subscriber_count`]: one capability walk, one answer per
-/// event, with zero for names nothing has subscribed to. `None` has the same meaning as
-/// [`subscriber_count`] returning `None`.
+/// This is the whole-control form of [`subscriber_count`]: one capability walk plus the two base
+/// focus events every control inherits, one answer per published event, with zero for names
+/// nothing has subscribed to. `None` has the same meaning as [`subscriber_count`] returning
+/// `None`.
 #[cfg(full_widgets)]
 pub fn subscription_counts(
     widget_id: crate::core::ObjectId,
@@ -924,19 +941,25 @@ pub fn subscription_counts(
     crate::widget::runtime::read_widget(widget_id, |widget| {
         let factory = crate::widget::capability::WidgetFactory::shared();
         let capability = factory.capability_for_kind_instance(widget)?;
-        Some(
-            capability
-                .events
-                .iter()
-                .map(|schema| {
-                    let count = widget
-                        .event_signal_dyn(schema.name)
-                        .filter(|reference| reference.name() == schema.name)
-                        .map_or(0, |reference| reference.slot_count());
-                    (schema.name, count)
-                })
-                .collect(),
-        )
+        let mut counts: alloc::vec::Vec<(&'static str, usize)> = capability
+            .events
+            .iter()
+            .map(|schema| {
+                let count = resolve_signal(widget, schema.name)
+                    .map_or(0, |reference| reference.slot_count());
+                (schema.name, count)
+            })
+            .collect();
+        // Base focus events have no per-kind row, so walking `capability.events` alone omitted
+        // them and made this query disagree with `subscriber_count` for the same name.
+        for &name in crate::widget::BaseWidget::PUBLISHED_EVENTS {
+            if capability.events.iter().any(|schema| schema.name == name) {
+                continue;
+            }
+            let count = resolve_signal(widget, name).map_or(0, |reference| reference.slot_count());
+            counts.push((name, count));
+        }
+        Some(counts)
     })
     .flatten()
 }
@@ -1092,6 +1115,90 @@ mod tests {
         reference.disconnect(first);
         reference.disconnect(second);
         assert_eq!(subscriber_count(id, "clicked"), Some(0), "published but unwired is zero");
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// W6-26: the three wiring queries resolve one `(widget, event)` pair through the same lookup.
+    ///
+    /// `subscriber_count` used to fall back to `base_event_signal` while `is_wired` and
+    /// `subscription_counts` did not, so a focus observer was visible to one query and invisible
+    /// to the other two. All three now resolve through `resolve_signal`.
+    #[test]
+    fn the_wiring_queries_agree_on_published_base_and_unwired_events() {
+        use crate::signal::{is_wired, subscriber_count, subscription_counts};
+
+        fn count_in(whole: &[(&'static str, usize)], name: &str) -> Option<usize> {
+            whole.iter().find(|(event, _)| *event == name).map(|(_, count)| *count)
+        }
+
+        let id = crate::widget::runtime::register(alloc::boxed::Box::new(
+            crate::widget::base_widgets::button::Button::new(
+                "agreed".to_string(),
+                Rect::new(0, 0, 80, 24),
+            ),
+        ))
+        .expect("a button mounts");
+
+        // (c) a published event nothing has subscribed to.
+        let counts = subscription_counts(id).expect("a mounted button has a published set");
+        assert!(!is_wired(id, "clicked"));
+        assert_eq!(subscriber_count(id, "clicked"), Some(0));
+        assert_eq!(count_in(&counts, "clicked"), Some(0));
+        assert_eq!(
+            count_in(&counts, "focus_gained"),
+            Some(0),
+            "the base event is listed even while it has no subscriber"
+        );
+
+        // (a) a published event with subscribers.
+        let clicked =
+            crate::widget::runtime::read_widget(id, |widget| widget.event_signal_dyn("clicked"))
+                .flatten()
+                .expect("a button publishes `clicked`");
+        let clicked_handle = clicked.subscribe(alloc::boxed::Box::new(|_| {}));
+
+        // (b) a base event name: published for every control, while `Button`'s own resolver does
+        // not name it.
+        assert!(!is_wired(id, "focus_gained"));
+        assert_eq!(subscriber_count(id, "focus_gained"), Some(0));
+        let focus = crate::widget::runtime::read_widget(id, |widget| {
+            widget.base_event_signal("focus_gained")
+        })
+        .flatten()
+        .expect("every control publishes `focus_gained`");
+        let focus_handle = focus.subscribe(alloc::boxed::Box::new(|_| {}));
+
+        let counts = subscription_counts(id).expect("mounted");
+        assert!(is_wired(id, "clicked"));
+        assert_eq!(subscriber_count(id, "clicked"), Some(1));
+        assert_eq!(count_in(&counts, "clicked"), Some(1));
+        assert!(
+            is_wired(id, "focus_gained"),
+            "the base event is wired through the shared resolver"
+        );
+        assert_eq!(subscriber_count(id, "focus_gained"), Some(1));
+        assert_eq!(
+            count_in(&counts, "focus_gained"),
+            Some(1),
+            "the whole-control query lists the base event it used to omit"
+        );
+
+        // The same fact for every published name, not only the two spot checks above.
+        for (name, count) in &counts {
+            assert_eq!(
+                *count,
+                subscriber_count(id, name).unwrap_or(0),
+                "`subscription_counts` and `subscriber_count` disagree on `{name}`"
+            );
+            assert_eq!(
+                *count > 0,
+                is_wired(id, name),
+                "`subscription_counts` and `is_wired` disagree on `{name}`"
+            );
+        }
+
+        clicked.disconnect(clicked_handle);
+        focus.disconnect(focus_handle);
         crate::widget::runtime::unregister(id);
     }
 

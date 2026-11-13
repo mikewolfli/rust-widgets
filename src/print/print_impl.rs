@@ -316,6 +316,26 @@ pub trait PrintContext {
     /// or a zero-area rect draws nothing.
     fn draw_image(&mut self, image: &[u8], rect: Rect);
 
+    /// Draws `image` into `rect`, given the pixel dimensions of `image` itself.
+    ///
+    /// [`Self::draw_image`] has no way to describe a source whose aspect ratio differs
+    /// from `rect`'s, so a context that renders raster data (the PostScript recorder) needs
+    /// both numbers to avoid stretching the image. The default forwards to
+    /// [`Self::draw_image`], keeping existing implementors compiling; a context that can
+    /// preserve the aspect ratio overrides this and treats `draw_image` as the
+    /// "payload describes the rectangle" case (W6-33).
+    fn draw_image_sized(
+        &mut self,
+        image: &[u8],
+        source_width: u32,
+        source_height: u32,
+        rect: Rect,
+    ) {
+        // The dimensions are advisory for an implementation that has no use for them.
+        let _ = (source_width, source_height);
+        self.draw_image(image, rect);
+    }
+
     /// Restricts all subsequent drawing to `rect` until [`Self::pop_clip`].
     ///
     /// Calls **nest**: a clip inside an active clip intersects the two rather than
@@ -632,8 +652,10 @@ impl PrintPreviewDialog {
             return false;
         };
 
-        // A memory-backed context, so `show()` records instead of printing.
-        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        // A memory-backed context, so `show()` records instead of printing. The page size is
+        // the document's own: a hard-coded A4 made every preview disagree with what the
+        // document would actually print (W6-49).
+        let mut context = MemoryPrintContext::new(document.page_size());
         for page in PrintPagination::default().selected_pages(self.page_count) {
             document.draw_page(page, &mut context);
             context.end_page();
@@ -664,10 +686,7 @@ pub struct Printer {
 impl Printer {
     /// Creates a printer using default page size and backend selection.
     pub fn new() -> Self {
-        Self {
-            page_size: Size { width: 595, height: 842 },
-            backend: PrintBackend::default_for_platform(),
-        }
+        Self { page_size: PaperSize::A4.points(), backend: PrintBackend::default_for_platform() }
     }
     /// Creates a printer with an explicit backend and page size.
     ///
@@ -1075,18 +1094,23 @@ fn write_print_job_body(
     );
 
     let mut pages = 0u32;
+    let mut page_open = false;
     for command in &job.commands {
         if command == "page-break" {
             writeln!(out, "showpage")?;
             pages += 1;
+            page_open = false;
             continue;
         }
         let rendered =
             render_command_ps(command, job.page_size, grayscale).map_err(std::io::Error::other)?;
+        page_open = page_open || !rendered.is_empty();
         out.write_all(rendered.as_bytes())?;
     }
-    // A document with no explicit trailing page-break still needs its last page shown.
-    if pages == 0 {
+    // The last page has to be shown, because PostScript discards whatever is still buffered at
+    // `%%EOF`. A document that ends with an explicit break already showed it, so appending a
+    // second `showpage` there would print a blank trailing page (W6-07).
+    if page_open || pages == 0 {
         writeln!(out, "showpage")?;
     }
     writeln!(out, "%%EOF")
@@ -1276,6 +1300,52 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 // Print framework types (PrintOrientation, PrintSettings, PrintJob,
 // PrintPage, PrintManager, and platform helpers)
 // ────────────────────────────────────────────────────────────────
+
+/// One point at the page-space unit every print and PostScript coordinate in this module uses.
+///
+/// The unit was implicit while every literal was a bare `595 × 842` (the classic A4 size in
+/// points), so a caller could not tell points from millimetres or pixels (W6-49). PostScript
+/// itself measures in points, and so does every value in [`PrintContext`].
+pub const POINTS_PER_INCH: f32 = 72.0;
+
+/// A named paper size, in portrait orientation, in PostScript points.
+///
+/// Printers and previews take a [`Size`]; this enum names the common physical sheets so a
+/// caller does not have to remember the point figures. Landscape is [`PrintOrientation`]'s job,
+/// not the paper's, so every variant below is listed in its portrait form (W6-49).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaperSize {
+    /// ISO A5 (148 × 210 mm).
+    A5,
+    /// ISO A4 (210 × 297 mm).
+    A4,
+    /// ISO A3 (297 × 420 mm).
+    A3,
+    /// US Letter (8.5 × 11 in).
+    Letter,
+    /// US Legal (8.5 × 14 in).
+    Legal,
+}
+
+impl PaperSize {
+    /// The portrait page size in points ([`POINTS_PER_INCH`] per inch).
+    pub fn points(self) -> Size {
+        // Millimetre figures are converted through inches so the table stays readable; the
+        // US sizes are exact inches. Values are rounded to the nearest point, which is the
+        // resolution PostScript itself names pages in.
+        let mm = |width: f32, height: f32| Size {
+            width: (width / 25.4 * POINTS_PER_INCH).round() as u32,
+            height: (height / 25.4 * POINTS_PER_INCH).round() as u32,
+        };
+        match self {
+            PaperSize::A5 => mm(148.0, 210.0),
+            PaperSize::A4 => mm(210.0, 297.0),
+            PaperSize::A3 => mm(297.0, 420.0),
+            PaperSize::Letter => Size { width: 612, height: 792 },
+            PaperSize::Legal => Size { width: 612, height: 1008 },
+        }
+    }
+}
 
 /// Print orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1786,7 +1856,8 @@ impl PrintContext for MemoryPrintContext {
             if style.monospace { 'm' } else { '-' }
         );
         self.commands.push(format!(
-            "text:{text}@{mapped_x},{mapped_y}:{font_size}:{}:{flags}",
+            "text:{}@{mapped_x},{mapped_y}:{font_size}:{}:{flags}",
+            escape_stream_text(text),
             hex_color(color)
         ));
     }
@@ -1820,18 +1891,38 @@ impl PrintContext for MemoryPrintContext {
         ));
     }
     fn draw_image(&mut self, image: &[u8], rect: Rect) {
+        // `draw_image` has no way to state the source's pixel dimensions, so the payload is
+        // taken to describe the rectangle at its own scale — the contract that method documents.
+        // A caller that knows the real source size uses `draw_image_sized` instead (W6-33).
+        let width = rect.width.max(1) as u32;
+        let height = rect.height.max(1) as u32;
+        self.draw_image_sized(image, width, height, rect);
+    }
+    fn draw_image_sized(
+        &mut self,
+        image: &[u8],
+        source_width: u32,
+        source_height: u32,
+        rect: Rect,
+    ) {
         let mapped = self.mapped_rect(rect);
         // Record the image **pixels**, not just their length. The previous command
         // kept only `image.len()` and the rect, so the bytes could not be recovered
         // and the printed page lost every image (D09-PR-01). The pixels are carried
         // as lowercase hex after the geometry, which keeps the stream text-parseable
         // and the renderer able to reconstruct the bitmap.
+        //
+        // The source's pixel width and height travel with the payload. Without them the
+        // renderer had to infer the row length from the destination rectangle, which turned
+        // every non-proportional placement into a stretched or truncated image (W6-33).
         self.commands.push(format!(
-            "img:{},{},{},{}:{}:{}",
+            "img:{},{},{},{}:{},{}:{}:{}",
             mapped.x,
             mapped.y,
             mapped.width,
             mapped.height,
+            source_width,
+            source_height,
             image.len(),
             encode_hex(image),
         ));
@@ -1886,6 +1977,58 @@ impl PrintContext for MemoryPrintContext {
 /// disagree with what a real spooler would print.
 fn hex_color(color: Color) -> String {
     format!("#{:02X}{:02X}{:02X}{:02X}", color.r, color.g, color.b, color.a)
+}
+
+/// Escapes the characters the recorded text command reserves.
+///
+/// The stream is `text:<payload>@<x>,<y>:…`, so a raw `@` in the payload ended the text early
+/// and made the metadata parse fail — an e-mail address or a URL turned into a failed print job
+/// (W6-06). `%` is escaped first so the escape itself is unambiguous, and a payload with neither
+/// character is returned unchanged.
+fn escape_stream_text(text: &str) -> String {
+    if !text.contains(['@', '%']) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            '@' => out.push_str("%40"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Reverses [`escape_stream_text`].
+fn unescape_stream_text(text: &str) -> String {
+    if !text.contains('%') {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            match &bytes[index + 1..index + 3] {
+                b"40" => {
+                    out.push('@');
+                    index += 3;
+                    continue;
+                }
+                b"25" => {
+                    out.push('%');
+                    index += 3;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        let ch = text[index..].chars().next().expect("index is a character boundary");
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
 }
 
 /// Lowercase hex for a byte slice, used to carry image pixels in the command stream.
@@ -1967,16 +2110,21 @@ fn render_postscript(job: &PrintJobPayload) -> Result<String, String> {
     );
 
     let mut pages = 0u32;
+    let mut page_open = false;
     for command in &job.commands {
         if command == "page-break" {
             out.push_str("showpage\n");
             pages += 1;
+            page_open = false;
             continue;
         }
-        out.push_str(&render_command_ps(command, job.page_size, grayscale)?);
+        let rendered = render_command_ps(command, job.page_size, grayscale)?;
+        page_open = page_open || !rendered.is_empty();
+        out.push_str(&rendered);
     }
-    // A document with no explicit trailing page-break still needs its last page shown.
-    if pages == 0 {
+    // Same rule as the streaming writer: the last page is shown unless an explicit break
+    // already ended it (W6-07).
+    if page_open || pages == 0 {
         out.push_str("showpage\n");
     }
     out.push_str("%%EOF\n");
@@ -1988,13 +2136,18 @@ fn render_command_ps(command: &str, page_size: Size, grayscale: bool) -> Result<
     let height = page_size.height as f32;
     if let Some(rest) = command.strip_prefix("text:") {
         // text:<text>@<x>,<y>:<size>:#RRGGBBAA:<flags>
-        let (text, meta) = rest.split_once('@').ok_or_else(|| "malformed text".to_string())?;
+        let (payload, meta) = rest
+            .split_once('@')
+            .ok_or_else(|| format!("a text command has no `@` metadata separator: {command}"))?;
+        let text = unescape_stream_text(payload);
         let parts: Vec<&str> = meta.split(':').collect();
         if parts.len() < 3 {
-            return Err(format!("malformed text command: {command}"));
+            return Err(format!("malformed text metadata in {command:?}: {meta:?}"));
         }
         let (x, y) = parse_pair(parts[0])?;
-        let size: f32 = parts[1].parse().map_err(|_| "bad font size".to_string())?;
+        let size: f32 = parts[1]
+            .parse()
+            .map_err(|_| format!("bad font size in {command:?}: {:?}", parts[1]))?;
         let (r, g, b) = maybe_gray(parse_hex_color(parts[2])?, grayscale);
         // `Helvetica` is a standard PostScript base-35 font available in every
         // interpreter, so the generated document needs no embedded font.
@@ -2079,17 +2232,30 @@ fn render_rect_ps(
 }
 
 fn render_image_ps(rest: &str, height: f32, grayscale: bool) -> Result<String, String> {
-    // <x>,<y>,<w>,<h>:<byte_len>:<hex>
-    let (geo, tail) = rest.split_once(':').ok_or_else(|| "malformed image".to_string())?;
-    let (len_str, hex) = tail.split_once(':').ok_or_else(|| "malformed image".to_string())?;
+    // <x>,<y>,<w>,<h>:<src_w>,<src_h>:<byte_len>:<hex>
+    let (geo, tail) = rest
+        .split_once(':')
+        .ok_or_else(|| format!("an image command has no geometry separator: {rest:.80}"))?;
+    let (dims, tail) = tail
+        .split_once(':')
+        .ok_or_else(|| format!("an image command has no source-size field: {rest:.80}"))?;
+    let (len_str, hex) = tail
+        .split_once(':')
+        .ok_or_else(|| format!("an image command has no payload separator: {rest:.80}"))?;
     let coords: Vec<&str> = geo.split(',').collect();
     if coords.len() != 4 {
-        return Err(format!("malformed image geometry: {rest}"));
+        return Err(format!("malformed image geometry: {rest:.80}"));
     }
     let x: f32 = coords[0].parse().map_err(|_| "bad image x".to_string())?;
     let y: f32 = coords[1].parse().map_err(|_| "bad image y".to_string())?;
     let w: f32 = coords[2].parse().map_err(|_| "bad image width".to_string())?;
     let h: f32 = coords[3].parse().map_err(|_| "bad image height".to_string())?;
+    let source: Vec<&str> = dims.split(',').collect();
+    if source.len() != 2 {
+        return Err(format!("malformed image source size: {dims}"));
+    }
+    let source_w: usize = source[0].parse().map_err(|_| "bad source image width".to_string())?;
+    let source_h: usize = source[1].parse().map_err(|_| "bad source image height".to_string())?;
     let expected: usize = len_str.parse().map_err(|_| "bad image length".to_string())?;
     let pixels = decode_hex(hex)?;
     if pixels.len() != expected {
@@ -2098,22 +2264,41 @@ fn render_image_ps(rest: &str, height: f32, grayscale: bool) -> Result<String, S
             pixels.len()
         ));
     }
-    if w <= 0.0 || h <= 0.0 || pixels.is_empty() {
+    if w <= 0.0 || h <= 0.0 || pixels.is_empty() || source_w == 0 || source_h == 0 {
         return Ok(String::new());
     }
-    // The pixels are RGBA; PostScript `colorimage` needs a sample per component. A
-    // 4-component image is not directly expressible, so composite over white into
-    // RGB (the same flattening a printer without an alpha channel will do).
-    let sample_count = pixels.len() / 4;
-    let width_px = sample_count.min(w as usize).max(1);
-    let height_px = (sample_count / width_px).max(1);
-    let mut rgb = String::with_capacity(sample_count * 3 * 4);
-    for chunk in pixels.as_chunks::<4>().0 {
-        let (r, g, b, a) =
-            (chunk[0] as f32, chunk[1] as f32, chunk[2] as f32, chunk[3] as f32 / 255.0);
-        let rr = (r * a + 255.0 * (1.0 - a)).round() as u8;
-        let gg = (g * a + 255.0 * (1.0 - a)).round() as u8;
-        let bb = (b * a + 255.0 * (1.0 - a)).round() as u8;
+    // How many bytes each source pixel carries. The source dimensions make this exact; the
+    // old code divided by the destination rectangle's width instead, so an image placed at a
+    // different scale was read with the wrong row length (W6-33).
+    let declared = source_w.saturating_mul(source_h);
+    let channels =
+        if declared > 0 && pixels.len() % declared == 0 { pixels.len() / declared } else { 0 };
+    if !matches!(channels, 1 | 3 | 4) {
+        return Err(format!(
+            "a {}x{} source cannot be reconstructed from {} bytes ({} bytes per pixel)",
+            source_w,
+            source_h,
+            pixels.len(),
+            channels
+        ));
+    }
+    // PostScript `colorimage` needs one sample per component and has no alpha, so an RGBA
+    // source is composited over the white page. Grayscale is expanded to RGB the same way.
+    let mut rgb = String::with_capacity(declared * 3 * 2);
+    use std::fmt::Write as _;
+    for pixel in pixels.chunks_exact(channels) {
+        let (rr, gg, bb) = match channels {
+            1 => (pixel[0], pixel[0], pixel[0]),
+            3 => (pixel[0], pixel[1], pixel[2]),
+            _ => {
+                let alpha = pixel[3] as f32 / 255.0;
+                (
+                    (pixel[0] as f32 * alpha + 255.0 * (1.0 - alpha)).round() as u8,
+                    (pixel[1] as f32 * alpha + 255.0 * (1.0 - alpha)).round() as u8,
+                    (pixel[2] as f32 * alpha + 255.0 * (1.0 - alpha)).round() as u8,
+                )
+            }
+        };
         let (rr, gg, bb) = if grayscale {
             // Rec. 601 luma, the standard greyscale conversion.
             let luma = (0.299 * rr as f32 + 0.587 * gg as f32 + 0.114 * bb as f32).round() as u8;
@@ -2121,12 +2306,18 @@ fn render_image_ps(rest: &str, height: f32, grayscale: bool) -> Result<String, S
         } else {
             (rr, gg, bb)
         };
-        rgb.push_str(&format!("{rr:02X}{gg:02X}{bb:02X}"));
+        let _ = write!(rgb, "{rr:02X}{gg:02X}{bb:02X}");
     }
-    // PostScript's image origin is the lower-left; flip y.
-    let lower_left_y = height - y - h;
+    // Fit the source inside the requested rectangle without stretching it: the caller's
+    // rectangle says where the image may go, the source size says what shape it is (W6-33).
+    let scale = (w / source_w as f32).min(h / source_h as f32);
+    let drawn_w = source_w as f32 * scale;
+    let drawn_h = source_h as f32 * scale;
+    let left = x + (w - drawn_w) / 2.0;
+    // PostScript's image origin is the lower-left; flip y and centre vertically.
+    let lower_left_y = height - y - (h + drawn_h) / 2.0;
     Ok(format!(
-        "gsave {x} {lower_left_y} translate {w} {h} scale {width_px} {height_px} 8 [{width_px} 0 0 -{height_px} 0 {height_px}] {{<{rgb}>}} false 3 colorimage grestore\n"
+        "gsave {left} {lower_left_y} translate {drawn_w} {drawn_h} scale {source_w} {source_h} 8 [{source_w} 0 0 -{source_h} 0 {source_h}] {{<{rgb}>}} false 3 colorimage grestore\n"
     ))
 }
 
@@ -2140,6 +2331,10 @@ fn parse_pair(text: &str) -> Result<(f32, f32), String> {
 }
 
 /// Parse a `#RRGGBB` or `#RRGGBBAA` colour into 0..1 PostScript components.
+///
+/// PostScript's Level 2 colour operators have no alpha channel, so the alpha byte is
+/// composited over the white page rather than dropped: ignoring it printed every translucent
+/// stroke fully opaque (W6-49).
 fn parse_hex_color(text: &str) -> Result<(f32, f32, f32), String> {
     let hex = text.trim_start_matches('#');
     if hex.len() != 6 && hex.len() != 8 {
@@ -2150,7 +2345,9 @@ fn parse_hex_color(text: &str) -> Result<(f32, f32, f32), String> {
             .map_err(|_| format!("malformed colour: {text}"))?;
         Ok(byte as f32 / 255.0)
     };
-    Ok((channel(0)?, channel(2)?, channel(4)?))
+    let alpha = if hex.len() == 8 { channel(6)? } else { 1.0 };
+    let over_white = |value: f32| value * alpha + (1.0 - alpha);
+    Ok((over_white(channel(0)?), over_white(channel(2)?), over_white(channel(4)?)))
 }
 
 /// Collapse a colour to grey when the job asked for grayscale/monochrome.
@@ -2572,12 +2769,93 @@ mod tests {
         let job = PrintJobPayload {
             page_size: Size { width: 100, height: 100 },
             color_mode: None,
-            commands: vec![format!("img:0,0,10,10:{}:{}", pixels.len(), encode_hex(&pixels))],
+            commands: vec![format!("img:0,0,10,10:1,1:{}:{}", pixels.len(), encode_hex(&pixels))],
         };
         let document = render_postscript(&job).expect("render must succeed");
         assert!(document.contains("colorimage"), "the image must become a PostScript colorimage");
         // Opaque red over white is FF0000.
         assert!(document.contains("<FF0000>"), "the image pixels must be embedded: {document}");
+    }
+
+    /// W6-06: a `@` inside the text must not be mistaken for the metadata separator.
+    #[test]
+    fn a_text_payload_containing_an_at_sign_prints_verbatim() {
+        let mut context = MemoryPrintContext::new(Size { width: 100, height: 100 });
+        context.draw_text("mike@example.com 100%", 10.0, 20.0, 12.0, Color::BLACK);
+        let job = PrintJobPayload {
+            page_size: Size { width: 100, height: 100 },
+            color_mode: None,
+            commands: context.commands,
+        };
+        let document = render_postscript(&job).expect("an @ in the text must not fail the job");
+        assert!(
+            document.contains("(mike@example.com 100%)"),
+            "the text must reach the page unchanged: {document}"
+        );
+    }
+
+    /// W6-07: the last page after a `page-break` must be shown, and a trailing break must not
+    /// print an extra blank page.
+    #[test]
+    fn the_last_page_is_shown_exactly_once() {
+        let page = |label: &str| format!("text:{label}@10,10:12:#000000FF:---");
+        let job = |commands: Vec<String>| PrintJobPayload {
+            page_size: Size { width: 100, height: 100 },
+            color_mode: None,
+            commands,
+        };
+
+        let two_pages =
+            render_postscript(&job(vec![page("one"), "page-break".into(), page("two")]))
+                .expect("render must succeed");
+        assert_eq!(
+            two_pages.matches("showpage").count(),
+            2,
+            "both pages must be flushed: {two_pages}"
+        );
+
+        let trailing_break =
+            render_postscript(&job(vec![page("only"), "page-break".into()])).expect("render");
+        assert_eq!(
+            trailing_break.matches("showpage").count(),
+            1,
+            "a trailing break must not add a blank page: {trailing_break}"
+        );
+    }
+
+    /// W6-33: the source's pixel size decides the aspect ratio, not the destination width.
+    #[test]
+    fn an_image_keeps_its_aspect_ratio_inside_a_square_rect() {
+        // A 2x1 RGBA source in a 10x10 rect fits as 10x5, centred vertically.
+        let pixels = vec![255u8, 0, 0, 255, 0, 0, 255, 255];
+        let job = PrintJobPayload {
+            page_size: Size { width: 100, height: 100 },
+            color_mode: None,
+            commands: vec![format!("img:0,0,10,10:2,1:{}:{}", pixels.len(), encode_hex(&pixels))],
+        };
+        let document = render_postscript(&job).expect("render must succeed");
+        assert!(
+            document.contains("10 5 scale 2 1 8 [2 0 0 -1 0 1]"),
+            "the image must be fitted, not stretched: {document}"
+        );
+    }
+
+    /// W6-49: alpha is composited over the white page rather than silently dropped.
+    #[test]
+    fn a_translucent_colour_is_composited_over_white() {
+        let (r, g, b) = parse_hex_color("#FF000080").expect("valid colour");
+        assert!((r - 1.0).abs() < 0.01, "red stays red: {r}");
+        assert!((g - 0.5).abs() < 0.01, "half-transparent red is half white: {g}");
+        assert!((b - 0.5).abs() < 0.01, "half-transparent red is half white: {b}");
+        assert_eq!(parse_hex_color("#00000000").expect("valid colour"), (1.0, 1.0, 1.0));
+    }
+
+    /// W6-49: paper sizes are declared in PostScript points.
+    #[test]
+    fn named_paper_sizes_are_in_points() {
+        assert_eq!(PaperSize::A4.points(), Size { width: 595, height: 842 });
+        assert_eq!(PaperSize::Letter.points(), Size { width: 612, height: 792 });
+        assert_eq!(POINTS_PER_INCH, 72.0);
     }
 
     /// Grayscale/monochrome must actually change the rendered colours.

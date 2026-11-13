@@ -83,9 +83,16 @@ pub struct SearchBox {
     /// character. The same name [`crate::widget::SearchBar`] publishes, so a host can treat the
     /// two controls the same way.
     pub search_submitted: Signal1<String>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     /// The insertion point, in bytes from the start of the value.
     cursor: usize,
     /// The other end of a selection, in bytes. `None` means there is no selection.
@@ -139,9 +146,13 @@ impl SearchBox {
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             search_submitted: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            undo_available_announced: false,
+            redo_available_announced: false,
             cursor: 0,
             selection_anchor: None,
             cursor_blink: crate::style::CursorBlink::new(),
@@ -229,6 +240,7 @@ impl SearchBox {
             self.cursor = self.text.len();
             self.selection_anchor = None;
             self.text_changed.emit_lazy(|| text);
+            self.refresh_edit_capabilities();
             self.base.request_redraw();
         }
     }
@@ -444,6 +456,24 @@ impl SearchBox {
         self.undo_stack.can_redo()
     }
 
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `TextEdit` uses: a host
+    /// menu can enable or disable its Undo/Redo items from the signal, and an edit that leaves the
+    /// history unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
+    }
+
     fn restore_history_text(&mut self) {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
@@ -457,6 +487,7 @@ impl SearchBox {
         );
         self.selection_anchor = None;
         self.text_changed.emit_lazy(|| self.text.clone());
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -506,6 +537,7 @@ impl SearchBox {
             "search_box_text",
         )));
         self.text_changed.emit_lazy(|| self.text.clone());
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -524,6 +556,7 @@ impl SearchBox {
             "search_box_text",
         )));
         self.text_changed.emit_lazy(|| self.text.clone());
+        self.refresh_edit_capabilities();
     }
 
     /// Copies the selected text to the platform clipboard (I-110).
@@ -767,6 +800,16 @@ impl Widget for SearchBox {
             "search_submitted" => {
                 Some(EventSignalRef::mapped("search_submitted", &self.search_submitted, |v| {
                     CapabilityValue::String(v.clone())
+                }))
+            }
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             _ => None,
@@ -1887,5 +1930,26 @@ mod tests {
         sb.handle_event(&Event::ImeCommit { text: "に".to_string() });
         assert_eq!(sb.preedit(), "", "the commit clears the composition");
         assert_eq!(sb.text(), "に");
+    }
+
+    /// W6-19b: the availability signals are edge-triggered, not per keystroke.
+    #[test]
+    fn undo_available_fires_only_when_availability_changes() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        sb.undo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        sb.redo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+
+        assert!(!sb.undo());
+        assert_eq!(*undo.lock().unwrap(), Vec::<bool>::new(), "nothing to report before an edit");
+
+        sb.set_text("a");
+        assert!(sb.undo());
+        assert!(!sb.undo(), "the history is exhausted after one undo");
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "only changes are announced");
+        assert_eq!(*redo.lock().unwrap(), vec![true], "redo becomes available once");
     }
 }

@@ -15,7 +15,7 @@ use core::fmt::Write as _;
 use crate::media_playback::media_player::subtitle_bar::SubtitleBar;
 use rust_widgets::compat::{Arc, Mutex, Vec};
 use rust_widgets::core::{Color, HorizontalAlignment, Point, Rect};
-use rust_widgets::event::{Event, EventHandler};
+use rust_widgets::event::{key_codes, Event, EventHandler};
 use rust_widgets::impl_widget_property_hooks;
 use rust_widgets::property_names_of;
 use rust_widgets::render::RenderContext;
@@ -2482,31 +2482,32 @@ impl EventHandler for VideoPlayer {
             Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
                 match (key, modifiers) {
                     // Space bar toggles play/pause.
-                    (32, _) => {
+                    (key_codes::SPACE, _) => {
                         self.toggle_play();
                     }
                     // Left arrow seeks backward 5 seconds.
-                    (37, _) => {
+                    (key_codes::LEFT, _) => {
                         self.seek(self.current_time - 5.0);
                     }
                     // Right arrow seeks forward 5 seconds.
-                    (39, _) => {
+                    (key_codes::RIGHT, _) => {
                         self.seek(self.current_time + 5.0);
                     }
                     // Up arrow increases volume.
-                    (38, _) => {
+                    (key_codes::UP, _) => {
                         self.set_volume(self.volume + 0.1);
                     }
                     // Down arrow decreases volume.
-                    (40, _) => {
+                    (key_codes::DOWN, _) => {
                         self.set_volume(self.volume - 0.1);
                     }
-                    // M key toggles mute.
-                    (109, _) | (77, _) => {
+                    // M key toggles mute. The lower-case literal is the un-folded form a host
+                    // that did not run `ascii_key_code` still sends.
+                    (key_codes::M, _) | (109, _) => {
                         self.set_muted(!self.muted);
                     }
-                    // F key toggles fullscreen.
-                    (102, _) | (70, _) => {
+                    // F key toggles fullscreen; lower-case as above.
+                    (key_codes::F, _) | (102, _) => {
                         self.toggle_fullscreen();
                     }
                     _ => {}

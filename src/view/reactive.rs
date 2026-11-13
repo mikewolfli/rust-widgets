@@ -228,13 +228,13 @@ impl<V: View> ReactiveHost<V> {
     /// [`ViewEngine::update`], so its comparison stops at that container; a change with no scope
     /// rebuilds the whole view, exactly as before.
     pub fn pump(&mut self) -> usize {
+        // The flag is recomputed when this scope exits, including an unwind through a host
+        // callback, so it can never be left describing work that is no longer queued.
+        let _idle = self.idle_pending_guard();
         let mut rebuilds = 0usize;
         while let Some(change) = self.changed.try_pop() {
             self.apply_change(&change);
             rebuilds += 1;
-        }
-        if rebuilds > 0 {
-            self.idle_pending.store(false, std::sync::atomic::Ordering::SeqCst);
         }
         rebuilds
     }
@@ -267,6 +267,7 @@ impl<V: View> ReactiveHost<V> {
     /// two changes naming different containers, make the coalesced update a full one: the union of
     /// two scopes is not a scope, and guessing one would leave the other stale.
     pub fn pump_idle(&mut self) -> bool {
+        let _idle = self.idle_pending_guard();
         let mut applied = false;
         let mut scope: Option<crate::compat::String> = None;
         let mut whole_view = false;
@@ -298,11 +299,6 @@ impl<V: View> ReactiveHost<V> {
         while let Some(signal) = self.rows.try_pop() {
             self.engine.update_rows(&self.view, self.create.as_ref(), &signal);
             applied = true;
-        }
-        if self.has_pending() {
-            self.idle_pending.store(true, std::sync::atomic::Ordering::SeqCst);
-        } else {
-            self.idle_pending.store(false, std::sync::atomic::Ordering::SeqCst);
         }
         applied
     }
@@ -352,17 +348,25 @@ impl<V: View> ReactiveHost<V> {
     /// ambiguous. Within one container a producer can already coalesce by sending one signal
     /// with several [`RowChange`](crate::view::RowChange)s.
     pub fn pump_rows(&mut self) -> usize {
+        let _idle = self.idle_pending_guard();
         let mut updates = 0usize;
         while let Some(signal) = self.rows.try_pop() {
             self.engine.update_rows(&self.view, self.create.as_ref(), &signal);
             updates += 1;
         }
-        if !self.changed.is_empty() || !self.rows.is_empty() {
-            self.idle_pending.store(true, std::sync::atomic::Ordering::SeqCst);
-        } else {
-            self.idle_pending.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
         updates
+    }
+
+    /// Arms [`IdlePendingGuard`] for one pump.
+    ///
+    /// The guard owns clones of the queues and the flag rather than borrows, because the engine
+    /// update it spans takes `&mut self`.
+    fn idle_pending_guard(&self) -> IdlePendingGuard {
+        IdlePendingGuard {
+            changed: std::sync::Arc::clone(&self.changed),
+            rows: std::sync::Arc::clone(&self.rows),
+            idle_pending: std::sync::Arc::clone(&self.idle_pending),
+        }
     }
 
     /// Whether any work is queued for either pump.
@@ -421,6 +425,29 @@ impl<V: View> core::fmt::Debug for ReactiveHost<V> {
             .field("pending", &self.changed.len())
             .field("notifications", &self.notifications())
             .finish_non_exhaustive()
+    }
+}
+
+/// Recomputes `idle_pending` from the queues when a pump exits.
+///
+/// # Why the flag needs a guard
+///
+/// The flag is read by the loop's idle task, and the rebuild a pump runs calls arbitrary host
+/// callbacks. Those callbacks may queue more work (which must stay signalled) and may panic. A
+/// bare `store(false)` after them erases the first fact, and an unwind past it leaves the loop
+/// with a stale answer about work that is no longer queued. Recomputing from the queues on
+/// **every** exit — normal and unwinding — is the same RAII rule `SyncingGuard` applies in
+/// `data_binding::binding`.
+struct IdlePendingGuard {
+    changed: std::sync::Arc<BlockingQueue<Changed>>,
+    rows: std::sync::Arc<BlockingQueue<RowSignal>>,
+    idle_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for IdlePendingGuard {
+    fn drop(&mut self) {
+        let pending = !self.changed.is_empty() || !self.rows.is_empty();
+        self.idle_pending.store(pending, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -815,5 +842,75 @@ mod tests {
             Some("o0"),
             "one scoped update, so the container's siblings were not compared"
         );
+    }
+
+    /// W6-44b: the idle flag is recomputed from the queues, not cleared blindly.
+    ///
+    /// A rebuild runs host callbacks, and one may queue more work. The guard sees that on its way
+    /// out, so a pump cannot erase the request the loop still has to service.
+    #[test]
+    fn the_idle_flag_guard_keeps_new_work_signalled() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let flag = Arc::new(AtomicBool::new(true));
+        let changed = Arc::new(BlockingQueue::new());
+        let rows = Arc::new(BlockingQueue::new());
+        changed.push(Changed { scope: None }).expect("the queue accepts the change");
+
+        {
+            let _guard = IdlePendingGuard {
+                changed: Arc::clone(&changed),
+                rows: Arc::clone(&rows),
+                idle_pending: Arc::clone(&flag),
+            };
+        }
+
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "work still in the queue must stay signalled after the guard drops"
+        );
+    }
+
+    /// W6-44b: an unwind through a pump callback leaves the flag honest, not latched.
+    ///
+    /// This is the regression the bare `store(false)` produced: the cleanup was skipped by the
+    /// unwind, so the loop kept the flag describing a previous state instead of the queue's
+    /// current one. The guard recomputes on the unwind path, which this test drives explicitly.
+    #[test]
+    fn the_idle_flag_guard_recomputes_while_unwinding() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let changed = Arc::new(BlockingQueue::new());
+        let rows = Arc::new(BlockingQueue::new());
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = IdlePendingGuard {
+                changed: Arc::clone(&changed),
+                rows: Arc::clone(&rows),
+                idle_pending: Arc::clone(&flag),
+            };
+            changed.push(Changed { scope: None }).expect("the queue accepts the change");
+            panic!("boom while the pump owns the flag");
+        }));
+
+        assert!(caught.is_err(), "the probe must panic");
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "work queued during the pump must stay signalled after an unwind"
+        );
+
+        let cleared = Arc::new(AtomicBool::new(true));
+        {
+            let _guard = IdlePendingGuard {
+                changed: Arc::clone(&changed),
+                rows: Arc::clone(&rows),
+                idle_pending: Arc::clone(&cleared),
+            };
+            while changed.try_pop().is_some() {}
+        }
+        assert!(!cleared.load(Ordering::SeqCst), "an empty queue clears the flag on exit");
     }
 }

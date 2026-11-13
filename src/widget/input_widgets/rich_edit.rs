@@ -280,6 +280,12 @@ pub struct RichEdit {
     /// Note the name does not match the payload: it reports an offset, not a
     /// position struct.
     pub cursor_position_changed: Signal1<usize>,
+    /// Emitted when editing ends — the editor loses focus.
+    ///
+    /// A document is multi-line content, so focus loss is the one unambiguous end of an editing
+    /// session here; the single-line field publishes the same signal on focus loss and on
+    /// Enter/Escape. Carries no payload.
+    pub editing_finished: GenericSignal,
     /// Emitted with the new value whenever undo availability changes.
     pub undo_available: Signal1<bool>,
     /// Emitted with the new value whenever redo availability changes.
@@ -288,6 +294,12 @@ pub struct RichEdit {
     /// on every keystroke that left it unchanged.
     undo_available_announced: bool,
     redo_available_announced: bool,
+    /// Whether the current editing session already ended with `editing_finished`.
+    ///
+    /// Starts `true` because no session is open before the editor gains focus, so a `FocusLost`
+    /// that arrives without a preceding focus cannot report an end that never began. Gaining
+    /// focus — or a press, which focuses the control — opens the next session.
+    editing_finished_announced: bool,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -440,10 +452,12 @@ impl RichEdit {
             selection_changed: Signal1::new(),
             read_only_changed: Signal1::new(),
             cursor_position_changed: Signal1::new(),
+            editing_finished: GenericSignal::new(),
             undo_available: Signal1::new(),
             redo_available: Signal1::new(),
             undo_available_announced: false,
             redo_available_announced: false,
+            editing_finished_announced: true,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -1843,6 +1857,9 @@ impl Widget for RichEdit {
                 &self.cursor_position_changed,
                 |v| CapabilityValue::UInt(*v as u64),
             )),
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
             "read_only_changed" => {
                 Some(EventSignalRef::mapped("read_only_changed", &self.read_only_changed, |v| {
                     CapabilityValue::Bool(*v)
@@ -2258,8 +2275,10 @@ impl RichEdit {
             return;
         }
         self.base.set_mouse_pressed(true);
-        // A press focuses the control, which is how the user reaches it with the pointer.
+        // A press focuses the control, which is how the user reaches it with the pointer. It also
+        // opens an editing session, so the matching blur can report `editing_finished`.
         self.focused = true;
+        self.editing_finished_announced = false;
         // A press places the caret where the user aimed, anchoring a selection a drag can grow.
         let index = self.byte_offset_at_point(pos);
         self.set_selection(index, index);
@@ -2371,12 +2390,21 @@ impl crate::event::EventHandler for RichEdit {
         match event {
             crate::event::Event::FocusGained { .. } => {
                 self.focused = true;
+                // Focus arrival opens an editing session, so its end is reportable exactly once.
+                self.editing_finished_announced = false;
                 self.cursor_blink.start();
                 self.base.request_redraw();
             }
             crate::event::Event::FocusLost => {
                 self.focused = false;
                 self.cursor_blink.stop();
+                // Losing focus is the end of the editing session, announced the same way the
+                // single-line field announces it. The flag keeps a duplicate `FocusLost`, or one
+                // for an editor that never gained focus, from reporting an end that did not happen.
+                if !self.editing_finished_announced {
+                    self.editing_finished_announced = true;
+                    self.editing_finished.emit();
+                }
                 self.base.request_redraw();
             }
             crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
@@ -3187,6 +3215,36 @@ mod tests {
         re.handle_event(&crate::event::Event::FocusLost);
         re.handle_event(&crate::event::Event::text_input("b")); // 'b'
         assert_eq!(re.text(), "a", "and losing focus takes the keyboard away again");
+    }
+
+    /// Losing focus ends the editing session (W6-19a).
+    ///
+    /// The editor handled `FocusLost` only to stop the caret blink, so a host that wants to commit
+    /// the document on blur had no event to bind. This pins the new edge and checks that neither a
+    /// blur with no session nor a duplicate blur reports an end that did not happen.
+    #[test]
+    fn losing_focus_emits_editing_finished_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
+        let seen = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&seen);
+        re.editing_finished.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        re.handle_event(&crate::event::Event::FocusLost);
+        assert_eq!(seen.load(Ordering::SeqCst), 0, "no session means no finished event");
+
+        re.handle_event(&crate::event::Event::FocusGained {
+            reason: crate::event::FocusReason::Tab,
+        });
+        re.handle_event(&crate::event::Event::FocusLost);
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "losing focus finishes the edit exactly once");
+
+        re.handle_event(&crate::event::Event::FocusLost);
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "a duplicate blur is not a second end");
     }
 
     /// A press focuses the editor, which is how a user reaches it with the pointer.

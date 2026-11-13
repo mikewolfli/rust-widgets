@@ -10,6 +10,24 @@
 //! (`cargo build --features jni`). No Android-specific features are
 //! required — the same `.so`/`.dylib`/`.dll` can be loaded from desktop
 //! Java.
+//!
+//! # Coverage (W6-14)
+//!
+//! The Java surface is a **subset** of the C ABI, not a mirror of it. Measured at the time of
+//! writing: 57 distinct `rw_*` symbols are called here, while `include/rw_generated.h` declares
+//! about 155. The subset is the lifecycle/creation/input/query surface a Java host drives
+//! directly; the rest is reachable only through the C ABI and has no Java method yet:
+//!
+//! * property read/write beyond the typed accessors declared on `RustWidgets`;
+//! * geometry setters (`rw_widget_set_geometry`, per-edge variants);
+//! * the five dispatch/pump entry points and `rw_pump_frame`;
+//! * `rw_error_code` / `rw_error_message` (Java gets `String` or `0` instead);
+//! * the surface family (`rw_surface_*`, seven symbols);
+//! * the theme/font family and `rw_create_widget_of_kind`.
+//!
+//! The counts are not a contract: they are what `check_binding_symbol_coverage.py` and
+//! `check_jni_signatures.sh` can re-derive. A symbol added to the C ABI does not automatically
+//! appear here, and no gate requires it to — the subset is a documented boundary, not a promise.
 
 #![cfg(feature = "jni")]
 

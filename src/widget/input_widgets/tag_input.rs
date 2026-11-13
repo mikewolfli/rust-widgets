@@ -94,6 +94,25 @@ struct ChipLayoutCache {
     layout: Rc<ChipLayout>,
 }
 
+/// Which of the control's pointer targets is currently under the pointer (W6-20).
+///
+/// The chips, their close buttons and the `+N` badge are separate targets, so one whole-control
+/// hover flag cannot answer them: the fix is a target, not a boolean. `Close` wins over `Chip`
+/// because the remove affordance sits inside the chip and must answer first — the same order the
+/// press path hit-tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TagHoverTarget {
+    /// The pointer is not over any interactive part of the control.
+    #[default]
+    None,
+    /// The remove affordance of the chip at this index.
+    Close(usize),
+    /// The body of the chip at this index.
+    Chip(usize),
+    /// The trailing `+N` overflow badge.
+    Overflow,
+}
+
 /// TagInput widget — a text input that creates tags/chips on Enter or comma.
 pub struct TagInput {
     base: BaseWidget,
@@ -129,6 +148,12 @@ pub struct TagInput {
     chip_scroll: usize,
     /// The x of the drag insertion indicator while a chip is being dragged (I-115).
     drag_indicator: Option<i32>,
+    /// The chip, close button or overflow badge the pointer currently rests on (W6-20).
+    ///
+    /// Cleared on leave, so a repaint never keeps a highlight after the pointer has gone. It is
+    /// separate from `BaseWidget`'s hover flag because that flag describes the control as a
+    /// whole, while the affordances inside the field are individually clickable.
+    hover_target: TagHoverTarget,
     /// Whether the suggestion layer is open (I-113).
     suggestions_open: bool,
     /// The suggestion engine the layer's filtered rows, window, hit test and highlight come from
@@ -149,10 +174,17 @@ pub struct TagInput {
     pub tag_overflow: Signal1<String>,
     /// Emitted with the text a tag validator refused (I-123).
     pub tag_rejected: Signal1<String>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     /// Optional rule a tag must satisfy before it is added (I-123).
     tag_validator: Option<Box<dyn Validator>>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<TagInputState>>,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     /// Shared view of [`Self::tags`], keyed by [`Self::tags_revision`].
     ///
     /// Every undo snapshot clones this handle instead of the tag list, so a keystroke that only
@@ -193,6 +225,7 @@ impl TagInput {
             multiline: false,
             chip_scroll: 0,
             drag_indicator: None,
+            hover_target: TagHoverTarget::None,
             suggestions_open: false,
             popup: SuggestionPopup::new(geometry),
             viewport: None,
@@ -200,12 +233,16 @@ impl TagInput {
             tags_changed: Signal1::new(),
             tag_overflow: Signal1::new(),
             tag_rejected: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             tag_validator: None,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(TagInputState {
                 tags: Rc::new(Vec::new()),
                 input_buffer: String::new(),
             })),
+            undo_available_announced: false,
+            redo_available_announced: false,
             shared_tags: RefCell::new(None),
             input_revision: 0,
             input_advance_cache: RefCell::new(None),
@@ -635,6 +672,24 @@ impl TagInput {
         self.undo_stack.can_redo()
     }
 
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `TextEdit` uses: a host
+    /// menu can enable or disable its Undo/Redo items from the signal, and an edit that leaves the
+    /// history unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
+    }
+
     // ── Private helpers ──
 
     /// The current tags as a shared, copy-on-write snapshot.
@@ -670,6 +725,7 @@ impl TagInput {
             "Edit tags",
             "tag_input_state",
         )));
+        self.refresh_edit_capabilities();
     }
 
     fn restore_history_state(&mut self) {
@@ -683,6 +739,7 @@ impl TagInput {
         self.input_anchor = None;
         self.input_revision = self.input_revision.wrapping_add(1);
         self.bump_tags();
+        self.refresh_edit_capabilities();
         if self.tags != previous_tags {
             self.tags_changed.emit(self.tags.clone());
         }
@@ -1015,6 +1072,38 @@ impl TagInput {
             .map(|chip| chip.index)
     }
 
+    /// The affordance a point rests on, in the order the press path resolves targets (W6-20).
+    ///
+    /// One derivation read by both `MouseEnter` and `MouseMove`, so the hover highlight and the
+    /// click that follows can never name different targets: the close disc answers before the
+    /// chip body it sits in, and the overflow badge answers before the empty field behind it.
+    fn hover_target_at(&self, pos: Point) -> TagHoverTarget {
+        if let Some(index) = self.hit_tag_close(pos) {
+            return TagHoverTarget::Close(index);
+        }
+        if let Some((overflow, _)) = self.overflow_rect() {
+            if overflow.contains_point(pos) {
+                return TagHoverTarget::Overflow;
+            }
+        }
+        if let Some(index) = self.hit_tag_index(pos) {
+            return TagHoverTarget::Chip(index);
+        }
+        TagHoverTarget::None
+    }
+
+    /// Records the pointer's current target and asks for a frame when it changed.
+    ///
+    /// The early return is what keeps a pointer sweep across a chip row from repainting every
+    /// pixel on every move event: only a target *transition* changes the picture.
+    fn track_hover(&mut self, pos: Point) {
+        let target = self.hover_target_at(pos);
+        if target != self.hover_target {
+            self.hover_target = target;
+            self.base.request_redraw();
+        }
+    }
+
     /// Computes the width of a tag chip based on its text content.
     ///
     /// Measured, not estimated from the byte count: `tag.len() * 7` under-measured CJK and wide
@@ -1294,6 +1383,16 @@ impl Widget for TagInput {
                     CapabilityValue::String(text.clone())
                 }))
             }
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -1382,9 +1481,15 @@ impl Draw for TagInput {
         let accent = style.border_color.or(themed_border);
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(235, 235, 235, 200));
-        // The page this field sits in, read once: a disabled fill recedes toward it.
-        let window_fill =
-            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        // The page this field sits in and the selection hue, read once (I-P07). The selection
+        // band used to be the literal `rgba(60,140,255,70)`, so a themed accent never reached
+        // the one band that shows what a caret action will replace (W6-20).
+        let (window_fill, selection_accent) = {
+            match crate::style::palette_shared() {
+                Some(colors) => (colors.background, colors.primary),
+                None => (Color::WHITE, Color::rgba(60, 140, 255, 200)),
+            }
+        };
         let bg_color = if !is_enabled {
             // A disabled **field** recedes toward the page. It read `base_bg.blend(&Color::WHITE,
             // 0.35)`, and white is not a direction: on a dark field that moves the disabled fill
@@ -1424,6 +1529,9 @@ impl Draw for TagInput {
         let layout = self.chip_layout();
         let chip_y = self.chip_row_y();
         let font = effective_font(style);
+        // One hover step for every pointer target: the crate's single weight, so a chip does not
+        // answer the pointer by a different amount than any other control (W6-20).
+        let hover_weight = crate::style::StateOverlay::from_base(true, false, false).fill_blend();
         let mut last_x = rect.x + TAG_PADDING;
         let mut last_y = chip_y;
 
@@ -1447,6 +1555,16 @@ impl Draw for TagInput {
             } else {
                 Color::rgba(180, 180, 180, 160)
             };
+            // A chip under the pointer lifts one hover step, so the row the next click or drag
+            // would act on is visible before anything is pressed (W6-20). The disabled check is
+            // the same one the event gate above uses: a disabled field refuses the pointer.
+            let chip_bg = if is_enabled
+                && matches!(self.hover_target, TagHoverTarget::Chip(index) if index == chip.index)
+            {
+                chip_bg.blend(&chip_bg.contrast_color(), hover_weight)
+            } else {
+                chip_bg
+            };
             context.fill_rounded_rect(chip_rect, TAG_CHIP_RADIUS, chip_bg);
 
             // Chip text: the contrasting ink for the fill, so it stays legible when the
@@ -1466,9 +1584,22 @@ impl Draw for TagInput {
             // "remove this" affordance has to read on whatever accent the theme supplies.
             let close_center = self.tag_close_center(chip.x, chip_width, chip.y);
             let close_bg = text_color;
+            if is_enabled
+                && matches!(self.hover_target, TagHoverTarget::Close(index) if index == chip.index)
+            {
+                // The hover answer is a halo, not a second disc colour: the disc is already the
+                // chip's inverse ink, so growing it at the shared hover weight rings the target
+                // without changing what the affordance means (W6-20).
+                context.fill_circle(
+                    close_center,
+                    TAG_CLOSE_RADIUS as u32 + 2,
+                    close_bg.with_alpha(dimensions::HOVER_VEIL_ALPHA),
+                );
+            }
             context.fill_circle(close_center, TAG_CLOSE_RADIUS as u32, close_bg);
 
-            // X mark (two diagonal lines)
+            // X mark (two diagonal lines). Its ink is the chip fill, which is derived from the
+            // theme accent above — it is not a fixed colour, so it follows an appearance switch.
             let x_offset = (TAG_CLOSE_RADIUS as f32 * 0.45) as i32;
             let close_fg = chip_bg;
             context.draw_line(
@@ -1500,6 +1631,13 @@ impl Draw for TagInput {
         // silently disappearing. Clicking it expands the field into its multi-row layout.
         if let Some((overflow, hidden)) = self.overflow_rect() {
             let chip_bg = accent.unwrap_or(Color::rgb(120, 120, 120));
+            // The badge is a press target that expands the field into its multi-row layout, so it
+            // answers the pointer like a chip does (W6-20).
+            let chip_bg = if is_enabled && self.hover_target == TagHoverTarget::Overflow {
+                chip_bg.blend(&chip_bg.contrast_color(), hover_weight)
+            } else {
+                chip_bg
+            };
             context.fill_rounded_rect(overflow, TAG_CHIP_RADIUS, chip_bg);
             // The label is the one the layout measured, so this frame formats and measures nothing
             // (IN2-08). `hidden` is read from the same layout entry, so the ink and the geometry
@@ -1597,7 +1735,9 @@ impl Draw for TagInput {
                     (end_x - start_x).unsigned_abs(),
                     input_line.height.max(1),
                 ),
-                Color::rgba(60, 140, 255, 70),
+                // The band's hue is the theme's accent; only the translucency is a constant, so a
+                // selection reads as "this is what a caret action replaces" on any appearance.
+                selection_accent.with_alpha(70),
             );
         }
         context.draw_text_fitted_ellipsis(
@@ -1746,7 +1886,16 @@ impl EventHandler for TagInput {
                     self.begin_edit_tag(index);
                 }
             }
+            Event::MouseEnter { pos } => {
+                // The base still records the control-level hover fact; the per-target state is
+                // what the chips, their close discs and the overflow badge paint (W6-20).
+                self.base.handle_event(event);
+                self.track_hover(*pos);
+            }
             Event::MouseMove { pos } => {
+                // Which affordance is under the pointer is a fact about this event, so it is
+                // re-derived here rather than cached from the last frame (W6-20).
+                self.track_hover(*pos);
                 // I-115: while a chip is dragged, the insertion line follows the pointer.
                 if self.dragging_tag.is_some() {
                     self.drag_indicator = Some(pos.x);
@@ -1785,6 +1934,12 @@ impl EventHandler for TagInput {
             Event::MouseLeave { .. } => {
                 self.dragging_tag = None;
                 self.drag_indicator = None;
+                // A highlight that outlived the pointer would keep painting a target the user is
+                // no longer on, so leaving clears it and repaints once (W6-20).
+                if self.hover_target != TagHoverTarget::None {
+                    self.hover_target = TagHoverTarget::None;
+                    self.base.request_redraw();
+                }
             }
             Event::FocusGained { .. } => {
                 self.set_focused(true);
@@ -2638,5 +2793,80 @@ mod tests {
             ti.input_prefix_advance(&font, 3),
             cuts_a.last().map(|(_, advance)| *advance).unwrap_or(0)
         );
+    }
+
+    /// Every clickable chip affordance answers the pointer (W6-20).
+    ///
+    /// # What this pins
+    ///
+    /// The control tracked no per-target hover at all: the close disc, the chip body and the
+    /// overflow badge were all pressable and all painted identically whether the pointer was on
+    /// them or a metre away. The target is derived by the same order the press path uses, so the
+    /// highlight and the click can never name different affordances, and enter/leave repaint.
+    #[test]
+    fn the_pointer_highlights_the_chip_affordances_and_leaving_clears_them() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.add_tag("alpha");
+        let chip = *ti.chip_layout().chips.first().expect("the tag has a chip");
+
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        ti.base.redraw_requested.connect(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Entering over the remove affordance resolves the innermost target first.
+        let close = ti.tag_close_center(chip.x, chip.width, chip.y);
+        ti.handle_event(&Event::MouseEnter { pos: close });
+        assert_eq!(ti.hover_target, TagHoverTarget::Close(chip.index));
+        assert!(redraws.load(Ordering::SeqCst) > 0, "entering must repaint the highlight");
+
+        // Off the disc, the chip body is the target.
+        ti.handle_event(&Event::MouseMove { pos: Point::new(chip.x + 2, chip.y + TAG_HEIGHT / 2) });
+        assert_eq!(ti.hover_target, TagHoverTarget::Chip(chip.index));
+
+        let before_leave = redraws.load(Ordering::SeqCst);
+        ti.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert_eq!(ti.hover_target, TagHoverTarget::None, "leaving must drop the highlight");
+        assert!(
+            redraws.load(Ordering::SeqCst) > before_leave,
+            "leaving must repaint, or the highlight would outlive the pointer"
+        );
+    }
+
+    /// The `+N` badge is a press target, so it answers the pointer too (W6-20).
+    #[test]
+    fn the_pointer_highlights_the_overflow_badge() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 160, 48));
+        for tag in ["aaaaaa", "bbbbbb", "cccccc", "dddddd"] {
+            ti.add_tag(tag);
+        }
+        let (badge, hidden) = ti.overflow_rect().expect("a narrow field hides chips");
+        assert!(hidden > 0);
+        ti.handle_event(&Event::MouseMove { pos: Point::new(badge.x + 2, badge.y + 2) });
+        assert_eq!(ti.hover_target, TagHoverTarget::Overflow);
+    }
+
+    /// W6-19b: the availability signals are edge-triggered, not per change.
+    #[test]
+    fn undo_available_fires_only_when_availability_changes() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        ti.undo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        ti.redo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+
+        assert!(!ti.undo());
+        assert_eq!(*undo.lock().unwrap(), Vec::<bool>::new(), "nothing to report before an edit");
+
+        ti.add_tag("a");
+        assert!(ti.undo());
+        assert!(!ti.undo(), "the history is exhausted after one undo");
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "only changes are announced");
+        assert_eq!(*redo.lock().unwrap(), vec![true], "redo becomes available once");
     }
 }

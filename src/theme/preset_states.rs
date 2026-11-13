@@ -43,7 +43,259 @@ const PRESSED_BLEND: f32 = crate::style::PRESSED_FILL_BLEND;
 const CHECKED_BLEND: f32 = 0.25;
 
 /// Blend factor for taking a control's fill toward its own background when disabled.
-const DISABLED_FADE: f32 = 0.55;
+const DISABLED_FADE: f32 = crate::style::DISABLED_FILL_BLEND;
+
+/// Every canonical control that receives a generated `"<kind>:disabled"` override.
+///
+/// The list is generated from `docs/capability_schema.json` (the registry's own export), so a
+/// control that registers gains its disabled key without a second edit here. The gate
+/// `check_disabled_state_covers_kinds` compares this list with the schema and fails when a
+/// newly registered control is missing (W5-03 framework extension: the 13-name hand list could
+/// not grow with the registry).
+pub(super) const DISABLED_STATE_KINDS: &[&str] = &[
+    "about_dialog",
+    "accordion",
+    "action",
+    "adaptive_scaffold",
+    "alert_dialog",
+    "align",
+    "animated_image",
+    "app_bar",
+    "arc",
+    "aspect_ratio",
+    "auto_complete_edit",
+    "avatar",
+    "axis_picker",
+    "badge",
+    "banner",
+    "bar_chart",
+    "barcode_scanner",
+    "bezier_curve_editor",
+    "bottom_navigation_bar",
+    "bottom_sheet",
+    "breadcrumb",
+    "button",
+    "calendar",
+    "calendar_mark_layer",
+    "canvas",
+    "carousel",
+    "cascader",
+    "center",
+    "chart",
+    "chart_crosshair",
+    "chart_data_table",
+    "chart_reference_line",
+    "chart_tooltip",
+    "check_box",
+    "chip",
+    "chip_input",
+    "clock",
+    "code_editor",
+    "collapsible_pane",
+    "color_dialog",
+    "color_history",
+    "color_picker",
+    "color_well",
+    "combo_box",
+    "command_link",
+    "command_palette",
+    "command_palette_host",
+    "confirm_dialog",
+    "context_menu",
+    "cupertino_alert_dialog",
+    "cupertino_date_picker",
+    "cupertino_navigation_bar",
+    "cupertino_segmented_control",
+    "cupertino_slider",
+    "cupertino_switch",
+    "data_grid",
+    "data_view",
+    "date_edit",
+    "date_range_picker",
+    "date_time_edit",
+    "dial",
+    "dialog",
+    "divider",
+    "dock_area",
+    "dock_widget",
+    "drag_ghost_layer",
+    "drawer_section_header",
+    "drop_down_popup_host",
+    "drop_zone",
+    "dropdown",
+    "dropdown_menu",
+    "drum_column",
+    "editable_combo_box",
+    "email_input",
+    "emoji_picker",
+    "empty_state",
+    "expanded",
+    "fab",
+    "file_dialog",
+    "filter_row",
+    "find_bar",
+    "find_replace_bar",
+    "find_replace_dialog",
+    "flex",
+    "flexible",
+    "floating_label",
+    "flow_layout",
+    "font_combo_box",
+    "font_dialog",
+    "font_preview",
+    "frame",
+    "freeform_shape",
+    "gauge",
+    "grid",
+    "grid_status_bar",
+    "grid_table",
+    "grid_view_header",
+    "group_avatar",
+    "group_box",
+    "header_menu",
+    "heatmap",
+    "hero_animation",
+    "icon",
+    "image_gallery",
+    "image_view",
+    "ime_preedit",
+    "inplace_editor",
+    "input_dialog",
+    "intrinsic_width",
+    "key_sequence_editor",
+    "keyboard",
+    "label",
+    "layer_panel",
+    "lcd_number",
+    "legend",
+    "line",
+    "line_chart",
+    "line_edit",
+    "line_number_gutter",
+    "list_box",
+    "list_state_host",
+    "list_view",
+    "mac_segmented_control",
+    "mac_source_list",
+    "mac_stepper",
+    "mac_toolbar",
+    "mac_window_chrome",
+    "markdown_editor",
+    "markdown_outline_panel",
+    "markdown_toolbar",
+    "masked_edit",
+    "masonry_layout",
+    "material_navigation_rail",
+    "material_snackbar",
+    "mdi_area",
+    "mention",
+    "menu",
+    "menu_bar",
+    "menu_button",
+    "menu_panel",
+    "message_box",
+    "meter",
+    "mini_canvas",
+    "mini_chart",
+    "mobile_date_picker",
+    "modal_bottom_sheet",
+    "multi_select_combo_box",
+    "navigation_drawer",
+    "navigation_stack",
+    "notification_center",
+    "number_picker",
+    "otp_input",
+    "padding",
+    "pagination",
+    "panel",
+    "password_edit",
+    "phone_input",
+    "pie_chart",
+    "pie_menu",
+    "playlist_panel",
+    "popover",
+    "popup_window",
+    "preset_chip_bar",
+    "progress_bar",
+    "progress_circle",
+    "progress_dialog",
+    "properties_panel",
+    "property_grid",
+    "qr_code",
+    "query_builder",
+    "radar_chart",
+    "radio_button",
+    "range_preset_bar",
+    "range_slider",
+    "rating",
+    "refresh_control",
+    "ribbon_bar",
+    "rich_edit",
+    "roller",
+    "safe_area",
+    "scroll_area",
+    "scroll_bar",
+    "search_bar",
+    "search_box",
+    "segmented_button",
+    "segmented_control",
+    "shape_canvas",
+    "shortcut_editor",
+    "signature_pad",
+    "sized_box",
+    "skeleton_loader",
+    "slider",
+    "snackbar",
+    "spacer",
+    "sparkline",
+    "speed_dial",
+    "spin_box",
+    "spinner",
+    "splash_screen",
+    "split_button",
+    "split_layout",
+    "splitter",
+    "stacked_widget",
+    "status_bar",
+    "stepper",
+    "summary_row",
+    "swatch",
+    "swipe_actions",
+    "swipe_to_dismiss",
+    "switch",
+    "tab_bar",
+    "tab_view",
+    "tab_widget",
+    "table",
+    "table_widget",
+    "tag",
+    "tag_group",
+    "tag_input",
+    "text_area",
+    "text_edit",
+    "time_edit",
+    "time_picker",
+    "timeline_widget",
+    "toast",
+    "toast_host",
+    "toast_stack",
+    "toggle_button",
+    "tool_bar",
+    "tool_box",
+    "tool_button",
+    "tooltip",
+    "tooltip_manager",
+    "tree_find_bar",
+    "tree_table",
+    "tree_view",
+    "virtual_list",
+    "virtual_table",
+    "window",
+    "wizard_dialog",
+    "wrap_layout",
+    "zoom_pan_controller",
+    "zoom_strip",
+];
 
 /// Builds the `"<kind>:<state>"` override table for a preset.
 ///
@@ -54,11 +306,9 @@ const DISABLED_FADE: f32 = 0.55;
 ///
 /// * `button` / `toggle_button` / `tool_button` are the daily interactive fills, so they
 ///   get hover, pressed and disabled.
-/// * The input, container and view controls that report `Disabled` but carried no key
-///   (`line_edit`, `text_area`, `text_edit`, `accordion`, `splitter`, `tree_table`, `table`,
-///   `grid_table`, `code_editor`) get a `disabled` entry, derived from the palette's own
-///   `disabled` token. Without it the style re-resolution ran, found nothing, and disabling
-///   the control changed only whether it accepted input.
+/// * Every canonical control gets a `disabled` entry (the generated [`DISABLED_STATE_KINDS`]
+///   list), derived from the palette's own `disabled` token. Without it the style re-resolution
+///   ran, found nothing, and disabling the control changed only whether it accepted input.
 /// * `check_box` / `radio_button` / `switch` latch a value, so they get `checked`.
 /// * The editable kinds get `:error`, which is the one state the `error` colour role had
 ///   no consumer for.
@@ -110,6 +360,11 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     // The colours are the same pair the button family uses: the palette's own `disabled` token
     // for the surface and a fade toward the preset's background for the ink, so a disabled
     // field cannot drift to a literal grey on one appearance and stay readable on the other.
+    // The interactive kinds that need a disabled *fill* as well as ink. A presentational
+    // control (label, frame, layout wrapper) derives its disabled surface from its own resolved
+    // pair and a fixed palette fill here would replace that direction-aware rule — which is the
+    // regression the generated list caused on `label`. The generated pass below therefore adds
+    // only a faded foreground for every other kind.
     for kind in [
         "line_edit",
         "text_area",
@@ -128,6 +383,16 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
                 foreground: Some(colors.background.blend(&ink, DISABLED_FADE)),
                 ..ThemeStyleToken::default()
             },
+        );
+    }
+
+    // Every other canonical kind gets a disabled *ink* entry, so a control that resolves the
+    // `"<kind>:disabled"` state has a defined answer instead of falling back to the resting
+    // style. The background is deliberately left unset: see the comment above.
+    let disabled_ink = colors.background.blend(&ink, DISABLED_FADE);
+    for kind in DISABLED_STATE_KINDS {
+        styles.entry(format!("{kind}:{}", WidgetState::Disabled.state_suffix())).or_insert(
+            ThemeStyleToken { foreground: Some(disabled_ink), ..ThemeStyleToken::default() },
         );
     }
 
@@ -256,22 +521,19 @@ pub(super) fn preset_surface_overrides() -> BTreeMap<String, ThemeStyleToken> {
 /// test that pins the count read the same number rather than each hard-coding it. A
 /// preset with fewer keys than this means a state group was dropped.
 pub fn preset_state_key_count() -> usize {
-    // 4 push-button kinds x 3 states, 9 input/container/view kinds x 1 `disabled`,
-    // 3 latching kinds x 1 `checked` + 1 chip `selected`, 1 `toggle_button:checked` (a
-    // **different** key shape from the three above — see the long note beside it: a checked
-    // toggle needs a deeper step of its own accent, not the plain `primary` the others take),
-    // 1 editable kind x 1 `error`.
+    // Every canonical kind × 1 `disabled` (the generated list), 4 push-button kinds × 2
+    // gesture states (hover/pressed; their disabled key is already in the list), 3 latching
+    // kinds × 1 `checked`, 1 chip `selected`, 1 `toggle_button:checked` (a **different** key
+    // shape from the three above — see the long note beside it: a checked toggle needs a deeper
+    // step of its own accent, not the plain `primary` the others take), and 1 editable kind ×
+    // 1 `error`.
     //
     // The `toggle_button` term was missing when its key was added, and this number is what
     // `every_preset_family_carries_its_states` compares against — so the count said 26 while
     // the table held 27, and the test that exists to catch a missing group **failed on a
-    // surplus one instead**. The `+ 1` is the fix, and the comment now names the key so the
-    // next addition has an obvious place to count itself.
-    //
-    // The error term fell from 10 to 1 in BLUE25 A-3: nine of the ten kinds declared a
-    // refusal state no control could report, so their keys were removed rather than left as
-    // data no theme author could observe. See the table's own comment for the rule.
-    4 * 3 + 9 + 3 + 1 + 1 + 1
+    // surplus one instead**. The comment now names each term so the next addition has an
+    // obvious place to count itself.
+    DISABLED_STATE_KINDS.len() + 4 * 2 + 3 + 1 + 1 + 1
 }
 
 #[cfg(test)]

@@ -107,6 +107,12 @@ pub struct FramePresenter {
     read_back: Option<ReadBackBuffer>,
     /// The most recent device-side failure, for diagnostics.
     last_failure: Option<SurfaceFailure>,
+    /// A reconfigure the driver asked for while a surface texture was still alive.
+    ///
+    /// `Surface::configure` panics if a `SurfaceTexture` acquired from that surface is alive
+    /// (wgpu 30.0.1), so a `Suboptimal` acquisition can only record the intent; the next
+    /// acquisition consumes it before asking for a new texture (W6-04).
+    pending_reconfigure: bool,
 }
 
 /// One verification readback's staging buffer.
@@ -243,6 +249,7 @@ impl FramePresenter {
             copy_src,
             read_back: None,
             last_failure: None,
+            pending_reconfigure: false,
         })
     }
 
@@ -640,12 +647,28 @@ impl FramePresenter {
 
     /// Acquires the next frame from the surface, or reports the semantic status to return.
     fn acquire_surface(&mut self) -> Result<wgpu::SurfaceTexture, PresentationStatus> {
+        // A `Suboptimal` acquisition asks for a reconfigure, but `Surface::configure` must not
+        // run while the texture it returned is alive. The intent recorded by that arm is
+        // consumed here, before the request for a new texture, so the configure can never race
+        // a live `SurfaceTexture` (W6-04).
+        if self.pending_reconfigure {
+            self.pending_reconfigure = false;
+            if let Err(failure) = self.try_configure() {
+                log::warn!(
+                    "[present] the deferred reconfigure was refused ({}); the target keeps \
+                     presenting with its current configuration",
+                    failure.label()
+                );
+                self.last_failure = Some(failure);
+            }
+        }
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => Ok(texture),
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                // Usable now; reconfigure so the next frame is optimal. Presenting first keeps
-                // this frame from being dropped over a cosmetic mismatch.
-                let _ = self.try_configure();
+                // Usable now; reconfigure so the next frame is optimal. The configure is deferred
+                // to the next acquisition because this frame's texture must be presented first
+                // and must not be alive when the surface is reconfigured.
+                self.pending_reconfigure = true;
                 Ok(texture)
             }
             wgpu::CurrentSurfaceTexture::Timeout => {

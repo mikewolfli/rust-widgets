@@ -270,6 +270,9 @@ pub struct GridTableWidget {
     hidden_columns: std::collections::BTreeSet<usize>,
     /// The attached column chooser binding, when one was attached (W5-11b).
     column_chooser: Option<ColumnChooserBinding>,
+    /// The attached header-menu binding (W5-11b); sort/hide requests are polled by
+    /// `poll_header_menu`.
+    header_menu: Option<HeaderMenuBinding>,
     /// The attached count strip, when one was attached (W5-11b).
     grid_status_bar: Option<GridStatusBarBinding>,
     /// The attached aggregate row, when one was attached (W5-11b).
@@ -283,6 +286,23 @@ pub struct GridTableWidget {
 /// each token through the column titles both controls were configured with and parks the answer
 /// in a shared queue. [`GridTableWidget::poll_column_chooser`] drains that queue, the same
 /// host-free shape `DataGrid`'s chooser binding uses.
+/// One intent reported by an attached [`HeaderMenu`](crate::widget::companions::HeaderMenu).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderMenuRequest {
+    /// Sort `column` in `state`; `None` clears the sort.
+    Sort { column: usize, state: crate::widget::companions::SortState },
+    /// Hide `column`.
+    Hide { column: usize },
+}
+
+/// The live link between a [`GridTable`] and a `HeaderMenu` (W5-11b).
+struct HeaderMenuBinding {
+    /// Requests reported since the last poll.
+    requests: Arc<std::sync::Mutex<Vec<HeaderMenuRequest>>>,
+    /// The subscriptions, dropped with the binding so a re-attach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
 struct ColumnChooserBinding {
     /// `(source column, visible)` changes reported since the last poll.
     visibility: Arc<std::sync::Mutex<Vec<(usize, bool)>>>,
@@ -428,6 +448,7 @@ impl GridTableWidget {
             placeholder: CollectionPlaceholder::new(),
             hidden_columns: std::collections::BTreeSet::new(),
             column_chooser: None,
+            header_menu: None,
             grid_status_bar: None,
             summary_row: None,
         }
@@ -1131,6 +1152,121 @@ impl GridTableWidget {
             changed |= self.set_column_hidden(column, !visible);
         }
         changed
+    }
+
+    // ── HeaderMenu wiring (W5-11b) ──
+
+    /// Attaches `menu` to this grid (W5-11b).
+    ///
+    /// Sort and hide requests are resolved against the column titles both controls were
+    /// configured with and queued for [`Self::poll_header_menu`]. Filter requests are ignored:
+    /// this grid has no filter model, and applying one would report a state the picture does not
+    /// have. Attaching replaces any previous menu.
+    pub fn attach_header_menu(&mut self, menu: &crate::widget::companions::HeaderMenu) {
+        let lookup = Arc::new(self.column_title_lookup());
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        let sink = Arc::clone(&requests);
+        let titles = Arc::clone(&lookup);
+        let request_redraw = redraw.clone();
+        menu.sort_requested.connect_scoped(&scope, move |reported| {
+            let (token, state) = &*reported;
+            let Some(column) = titles.get(token).copied() else {
+                return;
+            };
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(HeaderMenuRequest::Sort { column, state: *state });
+            request_redraw.emit();
+        });
+
+        let sink = Arc::clone(&requests);
+        let titles = Arc::clone(&lookup);
+        let request_redraw = redraw;
+        menu.hide_column_requested.connect_scoped(&scope, move |token| {
+            let Some(column) = titles.get(token.as_str()).copied() else {
+                return;
+            };
+            sink.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(HeaderMenuRequest::Hide { column });
+            request_redraw.emit();
+        });
+
+        self.header_menu = Some(HeaderMenuBinding { requests, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached header menu; the sort/hide it last set stays (W5-11b).
+    pub fn detach_header_menu(&mut self) {
+        if self.header_menu.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`HeaderMenu`](crate::widget::companions::HeaderMenu) is attached (W5-11b).
+    pub fn is_header_menu_attached(&self) -> bool {
+        self.header_menu.is_some()
+    }
+
+    /// Applies every header-menu request queued since the last poll (W5-11b).
+    pub fn poll_header_menu(&mut self) -> bool {
+        let Some(binding) = self.header_menu.as_ref() else {
+            return false;
+        };
+        let requests: Vec<HeaderMenuRequest> = {
+            let mut guard =
+                binding.requests.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            core::mem::take(&mut *guard)
+        };
+        let mut changed = false;
+        for request in requests {
+            match request {
+                HeaderMenuRequest::Sort { column, state } => {
+                    self.apply_header_sort(column, state);
+                    changed = true;
+                }
+                HeaderMenuRequest::Hide { column } => {
+                    changed |= self.set_column_hidden(column, true);
+                }
+            }
+        }
+        changed
+    }
+
+    /// Applies one sort intent without toggling to the wrong direction.
+    fn apply_header_sort(&mut self, column: usize, state: crate::widget::companions::SortState) {
+        use crate::widget::companions::SortState;
+        if column >= self.column_count() {
+            return;
+        }
+        let current = self.sort_specs.iter().find(|spec| spec.column == column).cloned();
+        match state {
+            SortState::None => {
+                if !self.sort_specs.is_empty() {
+                    self.sort_specs.clear();
+                    self.sort_order = None;
+                    self.sort_order_key = None;
+                    self.ensure_sort_order();
+                    self.base.request_redraw();
+                }
+            }
+            SortState::Asc => match current {
+                None => self.toggle_sort_column(column),
+                Some(spec) if spec.descending => self.toggle_sort_column(column),
+                Some(_) => {}
+            },
+            SortState::Desc => match current {
+                None => {
+                    self.toggle_sort_column(column);
+                    self.toggle_sort_column(column);
+                }
+                Some(spec) if !spec.descending => self.toggle_sort_column(column),
+                Some(_) => {}
+            },
+        }
     }
 
     /// Attaches `bar` to this grid (W5-11b).
@@ -2481,6 +2617,7 @@ impl Draw for GridTableWidget {
         // Companion edits apply before the frame is painted, so a chooser click, a row-count change
         // and the aggregate push all land in the picture being drawn (W5-11b).
         self.poll_column_chooser();
+        self.poll_header_menu();
         self.poll_grid_status_bar();
         self.poll_summary_row();
 
@@ -2840,6 +2977,7 @@ impl EventHandler for GridTableWidget {
         // The same companion polls as `draw`, so a click on a bound strip or chooser is applied by
         // the interaction that produced it rather than by a later frame (W5-11b).
         self.poll_column_chooser();
+        self.poll_header_menu();
         self.poll_grid_status_bar();
         self.poll_summary_row();
         if !self.base.is_enabled() {
@@ -3082,6 +3220,39 @@ mod tests {
         fn data(&self, row: usize, column: usize) -> Option<String> {
             Some(format!("{}:{}", row, column))
         }
+    }
+
+    /// W5-11b: an attached `HeaderMenu` reaches the grid's sort and hide state.
+    #[test]
+    fn the_header_menu_requests_reach_the_grid_table() {
+        use crate::widget::companions::{Direction, HeaderMenu};
+
+        let mut grid = GridTableWidget::new(Rect::new(0, 0, 320, 160));
+        grid.set_data_source(Arc::new(NamedSource));
+        let anchor = Rect::new(100, 0, 120, 22);
+        let mut menu = HeaderMenu::new(Rect::new(0, 0, 320, 240));
+
+        grid.attach_header_menu(&menu);
+        assert!(grid.is_header_menu_attached());
+        assert!(!grid.poll_header_menu(), "nothing is queued");
+
+        menu.open_for("Symbol", anchor);
+        assert!(menu.activate_selected(), "the first row is Sort ascending");
+        assert!(grid.poll_header_menu());
+        assert_eq!(grid.sort_specs().len(), 1);
+        assert_eq!(grid.sort_specs()[0].column, 0);
+        assert!(!grid.poll_header_menu(), "the queue is drained");
+
+        menu.open_for("Symbol", anchor);
+        for _ in 0..4 {
+            menu.move_selection(Direction::Next);
+        }
+        assert!(menu.activate_selected());
+        assert!(grid.poll_header_menu());
+        assert!(grid.is_column_hidden(0), "the Hide request reaches the grid");
+
+        grid.detach_header_menu();
+        assert!(!grid.is_header_menu_attached());
     }
 
     /// A column header names the column the data source names, not its position.

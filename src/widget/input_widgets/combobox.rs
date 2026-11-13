@@ -592,6 +592,13 @@ pub struct ComboBox {
     ///
     /// Non-editable boxes never emit it, because their value can only change by selecting an item.
     pub text_edited: Signal1<String>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     /// Text shown when the field has no value and the list is empty.
     ///
     /// Empty by default, in which case the field paints its historical `"(Empty)"` fallback and
@@ -1006,6 +1013,10 @@ impl ComboBox {
             popup_visibility_changed: Signal1::new(),
             highlighted: Signal1::new(),
             text_edited: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
+            undo_available_announced: false,
+            redo_available_announced: false,
             placeholder_text: String::new(),
             minimum_contents_length: 0,
             item_meta: Vec::new(),
@@ -1481,6 +1492,24 @@ impl ComboBox {
         self.editor.can_redo()
     }
 
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// The history belongs to the hosted editable value, so the answers are read from it and the
+    /// signals stay edge-triggered — a host menu can enable or disable Undo/Redo without polling,
+    /// and a keystroke that leaves the stack unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
+    }
+
     /// The value the field paints: the live editor's text when editable, otherwise the
     /// selected row's label.
     fn displayed_text(&self) -> &str {
@@ -1558,6 +1587,7 @@ impl ComboBox {
         if !self.editable || !self.editor.insert(text) {
             return false;
         }
+        self.refresh_edit_capabilities();
         self.sync_editor_selection();
         self.text_edited.emit(self.current_text());
         self.base.request_redraw();
@@ -1572,6 +1602,7 @@ impl ComboBox {
         if !self.editable || !delete(&mut self.editor) {
             return false;
         }
+        self.refresh_edit_capabilities();
         self.sync_editor_selection();
         self.text_edited.emit(self.current_text());
         self.base.request_redraw();
@@ -1614,6 +1645,7 @@ impl ComboBox {
     /// Undoes one edit of the editable value (I-06).
     fn editor_undo(&mut self) {
         if self.editor.undo() {
+            self.refresh_edit_capabilities();
             self.sync_editor_selection();
             self.text_edited.emit(self.current_text());
             self.base.request_redraw();
@@ -1623,6 +1655,7 @@ impl ComboBox {
     /// Redoes one edit of the editable value (I-06).
     fn editor_redo(&mut self) {
         if self.editor.redo() {
+            self.refresh_edit_capabilities();
             self.sync_editor_selection();
             self.text_edited.emit(self.current_text());
             self.base.request_redraw();
@@ -1649,6 +1682,7 @@ impl ComboBox {
             return false;
         };
         self.editor.set_text(text, true);
+        self.refresh_edit_capabilities();
         self.sync_editor_selection();
         self.text_edited.emit(self.current_text());
         self.set_open(false);
@@ -2337,6 +2371,16 @@ impl Widget for ComboBox {
             "text_edited" => Some(EventSignalRef::mapped("text_edited", &self.text_edited, |v| {
                 CapabilityValue::String(v.clone())
             })),
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -4206,5 +4250,29 @@ mod tests {
         cb.handle_event(&Event::ImeCommit { text: "に".to_string() });
         assert_eq!(cb.current_text(), "aに", "the commit inserts the composed run");
         assert_eq!(cb.editor.composition(), None, "the commit clears the preview");
+    }
+
+    /// W6-19b: the availability signals are edge-triggered, not per keystroke.
+    #[test]
+    fn undo_available_fires_only_when_availability_changes() {
+        use std::sync::{Arc, Mutex};
+
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_editable(true);
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        cb.undo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        cb.redo_available.connect(move |value: Arc<bool>| sink.lock().unwrap().push(*value));
+
+        assert!(!cb.can_undo());
+        assert_eq!(*undo.lock().unwrap(), Vec::<bool>::new(), "nothing to report before an edit");
+
+        cb.edit_insert("a");
+        cb.editor_undo();
+        assert!(!cb.can_undo(), "the history is exhausted after one undo");
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "only changes are announced");
+        assert_eq!(*redo.lock().unwrap(), vec![true], "redo becomes available once");
     }
 }

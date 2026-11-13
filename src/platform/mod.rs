@@ -362,3 +362,45 @@ pub use a11y_wiring::wire_focus_manager_to_a11y;
 
 mod facts;
 pub use facts::platform_facts;
+
+/// Installs the host's system-accent observer, when the backend has one.
+///
+/// A semantic entry point rather than a backend call: callers outside `src/platform/` must not
+/// name a backend or branch on the OS (principles #35/#36). A backend with no notification
+/// source does nothing here, and `theme::refresh_system_accent` stays the documented hook for
+/// hosts that learn the accent from their own settings screen.
+pub(crate) fn install_system_color_observer() {
+    #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
+    {
+        let _ = macos::environment::install_system_color_observer();
+    }
+    #[cfg(all(target_os = "macos", not(feature = "cocoa-legacy"), feature = "macos"))]
+    {
+        let _ = macos_objc2::environment::install_system_color_observer();
+    }
+}
+
+/// Registers the host's system UI face and returns the family name it was registered under.
+///
+/// `None` is the honest answer on every path where the face is not available: no macOS backend
+/// is compiled in, the runtime face registry is off, or the system file is missing. Presets
+/// check this before naming a family, so a preset never claims a face the renderer cannot draw.
+/// The backend selection lives here, in the platform layer, so the theme layer has no
+/// `cfg(target_os)` of its own (W6-12).
+pub(crate) fn register_system_ui_face() -> Option<&'static str> {
+    #[cfg(all(target_os = "macos", feature = "cocoa-legacy", feature = "runtime-fonts"))]
+    {
+        return macos::environment::register_system_ui_face();
+    }
+    #[cfg(all(
+        target_os = "macos",
+        not(feature = "cocoa-legacy"),
+        feature = "macos",
+        feature = "runtime-fonts"
+    ))]
+    {
+        return macos_objc2::native::register_system_ui_face();
+    }
+    #[allow(unreachable_code)]
+    None
+}

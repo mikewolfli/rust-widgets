@@ -2097,6 +2097,9 @@ impl Draw for ListBox {
         if self.items.is_empty() {
             paint_collection_placeholder(context, content, &self.placeholder, ink, &font);
             context.pop_clip();
+            // An empty list still refuses input when it is disabled, so it has to recede too;
+            // this early exit used to be the one path that painted no control-level cue (W6-18).
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
         let text_inset = 6;
@@ -2260,6 +2263,10 @@ impl Draw for ListBox {
             }
         }
         context.pop_clip();
+        // The event gate above refuses every press and key while disabled, so the picture has to
+        // say the same thing: one shared veil over the whole control, on top of the per-row
+        // alpha a disabled row already carries. Without it a disabled list looked live (W6-18).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 
@@ -2347,6 +2354,48 @@ mod tests {
             lb.add_item(format!("Item {index}"));
         }
         lb
+    }
+
+    /// A disabled list recedes as a whole without losing its rows (W6-18).
+    ///
+    /// # What this pins
+    ///
+    /// The event gate refused every press and key while disabled, but the draw path painted no
+    /// control-level state: only a hovered row and a disabled row's own alpha changed, so an
+    /// enabled list and a disabled one were byte-identical for a list nobody was hovering. The
+    /// label ink also had to survive the veil, otherwise "disabled" would read as "the list is
+    /// empty".
+    #[test]
+    fn a_disabled_list_recedes_without_losing_its_rows() {
+        let _guard = crate::style::theme_test_guard();
+        let mut list = listbox_with(3);
+        let enabled = crate::widget::svg::render_to_svg(&mut list);
+        let enabled_ink = crate::widget::svg::text_ink_boxes(&enabled).len();
+
+        list.set_enabled(false);
+        assert!(!list.is_enabled(), "the control must report the state it was given");
+        let disabled = crate::widget::svg::render_to_svg(&mut list);
+
+        assert_ne!(enabled, disabled, "a disabled list must paint a different frame");
+        assert_eq!(
+            crate::widget::svg::text_ink_boxes(&disabled).len(),
+            enabled_ink,
+            "every row must still be painted while disabled, not disappear"
+        );
+    }
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_disabled_empty_list_also_recedes() {
+        let _guard = crate::style::theme_test_guard();
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 120));
+        let live_svg = crate::widget::svg::render_to_svg(&mut list);
+        list.set_enabled(false);
+        let off_svg = crate::widget::svg::render_to_svg(&mut list);
+        assert_ne!(
+            live_svg, off_svg,
+            "the empty-state caption must be veiled too, not just the populated list"
+        );
     }
 
     /// A Shift-click extends from the anchor, because the press does carry modifiers.

@@ -99,6 +99,12 @@ pub const END: u32 = 35;
 /// bar on `Ctrl+F` (U3-41).
 pub const F: u32 = 70;
 
+/// The `M` key.
+///
+/// Named for the same reason as [`F`]: the media controls toggle mute on it, and a bare `77` in
+/// their key match said nothing about which key it was (W6-11).
+pub const M: u32 = 77;
+
 /// The Page Up key.
 pub const PAGE_UP: u32 = 33;
 

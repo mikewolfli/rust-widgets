@@ -41,7 +41,13 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved: a declarative data-binding layer with no production consumer; no example and no binding uses it. Removal condition: when the declarative JSON path adopts it, or when it is confirmed redundant with the property contract.
+//! **State:** Partly reserved. The declarative [`Binding`]/[`BindingList`]/[`Computed`] model has no
+//! production consumer yet, but the **widget bridge is live**: [`bind_widget_property`] is called by
+//! `spinbox`, `line_edit` and `slider` to bind a property to a binding, and [`pull_widget_property`]
+//! is the read half. The earlier wording here ("no production consumer") was false for that half
+//! and is corrected rather than deleted (W6-27). Removal condition for the remaining declarative
+//! model: when the JSON path adopts it, or when it is confirmed redundant with the property contract.
+//! The widget bridge follows the property contract and is not a removal candidate.
 
 mod binding;
 #[cfg(all(full_widgets, not(alloc_frugal)))]

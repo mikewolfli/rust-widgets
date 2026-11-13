@@ -6,7 +6,7 @@
 //! Displays text normally, and when activated (double-click), switches to an
 //! edit mode with a blinking cursor. Enter/Tab accepts changes, Escape cancels.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
@@ -580,6 +580,20 @@ impl InplaceEditor {
         self.base.request_redraw();
     }
 
+    /// The face the field paints and measures with (W6-22).
+    ///
+    /// The resolved style font wins when one is set — that is where a theme's body face and a
+    /// caller's `set_font` land — and only then does the fallback substitute the resolved UI face
+    /// at the editor's own `font_size`. One accessor, so the draw and both measurement paths
+    /// cannot disagree about the face (the same rule the list box's `row_font` follows).
+    fn resolved_font(&self) -> Font {
+        let style = self.base.style();
+        match style.font.as_ref() {
+            Some(font) => font.clone(),
+            None => crate::widget::metrics::effective_font(style).with_size(self.font_size),
+        }
+    }
+
     /// The character index a horizontal position points at.
     ///
     /// One pass over the value accumulating each character's advance, stopping at the character
@@ -591,7 +605,11 @@ impl InplaceEditor {
         let font = match self.base.style().font.as_ref() {
             Some(font) => font,
             None => {
-                measured_font = crate::core::Font::simple_interned("sans-serif", self.font_size);
+                // The fallback keeps the resolved UI face instead of naming `sans-serif`: the
+                // hit test then measures with the same face the paint path draws with, which is
+                // the whole point of reading the resolved font rather than a literal (W6-22).
+                measured_font = crate::widget::metrics::effective_font(self.base.style())
+                    .with_size(self.font_size);
                 &measured_font
             }
         };
@@ -641,7 +659,10 @@ impl InplaceEditor {
         let font = match style_font.as_ref() {
             Some(font) => font,
             None => {
-                measured_font = crate::core::Font::simple_interned("sans-serif", self.font_size);
+                // Same fallback as `char_index_at_x`, so the caret table and the hit test use one
+                // face and a theme body face reaches both (W6-22).
+                measured_font = crate::widget::metrics::effective_font(self.base.style())
+                    .with_size(self.font_size);
                 &measured_font
             }
         };
@@ -886,12 +907,9 @@ impl Draw for InplaceEditor {
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
         // The field's font honours a caller/theme font when one is resolved, and otherwise uses
-        // this editor's own configured size. It used to hardcode `sans-serif`, so `style.font`
-        // never reached the text it renders.
-        let font = style
-            .font
-            .clone()
-            .unwrap_or_else(|| crate::core::Font::simple_interned("sans-serif", self.font_size));
+        // the resolved UI face at this editor's own configured size. It used to hardcode
+        // `sans-serif`, so `style.font` never reached the text it renders (W6-22).
+        let font = self.resolved_font();
         let theme = crate::style::resolved_theme_style_shared("inplace_editor");
         // One palette read for the whole frame (I-P07): the window fill and the accent used to
         // take the theme manager's lock in two separate calls after the resolved style. The
@@ -1526,6 +1544,30 @@ mod tests {
 
         ie.set_padding(-5); // Should clamp to 0
         assert_eq!(ie.padding(), 0);
+    }
+
+    /// A host-configured face reaches the field's ink (W6-22).
+    ///
+    /// # What this pins
+    ///
+    /// The draw and both measurement paths fell back to `Font::simple_interned("sans-serif", …)`,
+    /// so `style.font` — the field a theme and `set_font` both write — never reached the value the
+    /// editor renders. The resolved face must win, and with no style font the fallback keeps the
+    /// resolved UI family instead of naming one.
+    #[test]
+    fn the_field_face_comes_from_the_resolved_style_font() {
+        let mut ie = InplaceEditor::new("Test", Rect::new(0, 0, 200, 30));
+        assert_eq!(
+            ie.resolved_font().family(),
+            Font::default().family(),
+            "the fallback keeps the resolved UI family, not a hardcoded one"
+        );
+
+        ie.base_mut().style_mut().font = Some(Font::with_weight("EditorFace", 11.0, 600, true));
+        let font = ie.resolved_font();
+        assert_eq!(font.family(), "EditorFace");
+        assert_eq!(font.weight(), 600);
+        assert!(font.is_italic(), "the style face's style must reach the painted value");
     }
 
     #[test]
