@@ -13,13 +13,14 @@
 //! rust-widgets-mobile-services = { path = "../rust-widgets/crates/mobile-services" }
 //! ```
 //!
-//! # The three-state rule
+//! # The status rule
 //!
-//! Every service answers [`Status::Available`], [`Status::Denied`] or [`Status::Unsupported`].
-//! Actions return `Result<(), ServiceError>`; a failure is never reported as success. A request
-//! that would show an OS permission prompt is a **separate** call
-//! ([`MobileServices::request_permission`]); querying status and sending a notification never
-//! trigger a prompt implicitly (principle: no hidden permission side effects).
+//! Every service answers [`Status::Available`], [`Status::Denied`], [`Status::Unsupported`] or
+//! [`Status::Unknown`] (the platform could not answer — never a refusal). Actions return
+//! `Result<(), ServiceError>`; a failure is never reported as success. A request that would show
+//! an OS permission prompt is a **separate** call ([`MobileServices::request_permission`]);
+//! querying status and sending a notification never trigger a prompt implicitly (principle: no
+//! hidden permission side effects).
 //!
 //! # Platform selection
 //!
@@ -40,7 +41,7 @@
 //!   [`services`]; no caller ever picks a backend;
 //! * the crate performs **no OS probing** — it reads no process table or sysfs, and it invokes
 //!   no external command — so it can never fabricate a capability answer from the host;
-//! * everything it reports is a three-state [`Status`], so an absent binding answers `Unsupported`
+//! * everything it reports is a [`Status`], so an absent binding answers `Unsupported`
 //!   rather than a plausible default.
 
 mod types;

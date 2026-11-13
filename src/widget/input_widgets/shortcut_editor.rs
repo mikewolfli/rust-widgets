@@ -204,6 +204,12 @@ pub struct ShortcutEditor {
     blur_commit: bool,
     /// The recording awaiting conflict confirmation (I-028).
     pending_conflict: Option<(String, Vec<String>)>,
+    /// The recording prompt, reused across frames.
+    ///
+    /// The prompt is repainted on every frame while a sequence is being captured; `format!`
+    /// allocated a fresh `String` (and `format_keys` a `Vec` plus one `String` per sequence)
+    /// each time (W6-23).
+    prompt_text: String,
 }
 
 /// The cached per-row display text and conflict flag, keyed by table generation.
@@ -245,6 +251,7 @@ impl ShortcutEditor {
             filter_focused: false,
             blur_commit: false,
             pending_conflict: None,
+            prompt_text: String::new(),
         }
     }
 
@@ -666,22 +673,32 @@ impl ShortcutEditor {
     /// The stored tokens stay stable, portable names (`Ctrl+T`); this is the display form, so
     /// a binding reads as `⌃T` rather than as a concatenation of English words.
     pub fn format_keys(keys: &[String]) -> String {
-        keys.iter()
-            .map(|sequence| {
-                let mut out = String::new();
-                for part in sequence.split('+') {
-                    match part {
-                        "Shift" => out.push('⇧'),
-                        "Ctrl" | "Control" => out.push('⌃'),
-                        "Alt" | "Option" => out.push('⌥'),
-                        "Meta" | "Cmd" | "Command" => out.push('⌘'),
-                        other => out.push_str(other),
-                    }
+        let mut out = String::new();
+        Self::format_keys_into(keys, &mut out);
+        out
+    }
+
+    /// Appends the display form of `keys` to `out` without allocating a `Vec` or a temporary
+    /// `String` per sequence.
+    ///
+    /// The draw path calls this on every frame while a recording is in progress; the public
+    /// [`Self::format_keys`] is the allocating convenience form over the same formatting
+    /// (W6-23).
+    fn format_keys_into(keys: &[String], out: &mut String) {
+        for (index, sequence) in keys.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            for part in sequence.split('+') {
+                match part {
+                    "Shift" => out.push('⇧'),
+                    "Ctrl" | "Control" => out.push('⌃'),
+                    "Alt" | "Option" => out.push('⌥'),
+                    "Meta" | "Cmd" | "Command" => out.push('⌘'),
+                    other => out.push_str(other),
                 }
-                out
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
+            }
+        }
     }
 
     /// Reverts the most recent shortcut-table change.
@@ -1013,14 +1030,16 @@ impl Draw for ShortcutEditor {
         // keys are being captured rather than typed into a filter.
         if self.is_capturing() {
             let capture_font = role_font(style, 13.0);
-            let prompt = if self.capture_keys.is_empty() {
-                "Press a key sequence (Esc cancels, Backspace clears)".to_string()
+            self.prompt_text.clear();
+            if self.capture_keys.is_empty() {
+                self.prompt_text.push_str("Press a key sequence (Esc cancels, Backspace clears)");
             } else {
-                format!("Recording: {}", Self::format_keys(&self.capture_keys))
-            };
+                self.prompt_text.push_str("Recording: ");
+                Self::format_keys_into(&self.capture_keys, &mut self.prompt_text);
+            }
             context.draw_text_fitted_ellipsis(
                 Rect::new(rect.x + margin, y, rect.width.saturating_sub(margin as u32 * 2), 18),
-                &prompt,
+                &self.prompt_text,
                 &capture_font,
                 crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(ink),
                 HorizontalAlignment::Left,

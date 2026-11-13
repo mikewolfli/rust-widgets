@@ -1481,13 +1481,21 @@ fn present_through_target(
         // Falls through to the reference rasteriser, exactly as the cocoa canvas does.
     }
 
+    // The paint's own damage rectangles are preferred: they carry the horizontal extent, which
+    // the AppKit row band throws away (W6-43). The band is the fallback when the paint recorded
+    // no damage (a cached frame).
+    let damage_regions = crate::widget::runtime::last_frame_damage(intent_key);
     let band;
-    let damage = match dirty_rows {
-        Some((first_row, last_row)) if last_row > first_row => {
-            band = [(0i32, first_row as i32, width, (last_row - first_row) as u32)];
-            Some(&band[..])
+    let damage = if !damage_regions.is_empty() {
+        Some(damage_regions.as_slice())
+    } else {
+        match dirty_rows {
+            Some((first_row, last_row)) if last_row > first_row => {
+                band = [(0i32, first_row as i32, width, (last_row - first_row) as u32)];
+                Some(&band[..])
+            }
+            _ => None,
         }
-        _ => None,
     };
     let presented = present::present_window_frame(
         intent_key,

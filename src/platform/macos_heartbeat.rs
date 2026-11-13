@@ -123,7 +123,9 @@ pub(crate) unsafe fn install(scope: HeartbeatScope) -> bool {
         log::warn!("[macos] no main run loop; the frame heartbeat cannot be installed");
         return false;
     };
-    let interval = Duration::from_millis(crate::platform::types::FRAME_INTERVAL_MS);
+    // The display's own period when the backend can report one (a 120 Hz panel gets ~8 ms), with
+    // the fixed grid as the measured-fallback (W6-43).
+    let interval = Duration::from_millis(crate::platform::types::frame_interval_ms());
     let mut context = CFRunLoopTimerContext {
         version: 0,
         info: ptr::null_mut(),

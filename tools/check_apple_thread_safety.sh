@@ -38,6 +38,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 ERRORS=0
 error() {
   echo "❌ $*" >&2
@@ -89,9 +92,19 @@ check_markers() {
   while IFS= read -r start; do
     [[ -n "$start" ]] || continue
     total=$((total + 1))
+    # The whole function body, sliced by brace balance. A fixed 14-line window used to
+    # stand in for "near its top": `create_ns_window` is 55 lines, so the assertion was
+    # measuring a fifth of the function it named, and a guard on line 20 of a body was
+    # invisible (W6-35). Comments are stripped so a doc mention of the marker type is not
+    # a guard.
     local body
-    body="$(sed -n "${start},$((start + 14))p" "$file")"
-    if ! echo "$body" | grep -qE 'mtm: MainThreadMarker|MainThreadMarker::new\(\)'; then
+    body="$(rw_slice_function_body "$file" "$start" || true)"
+    if [ -z "$body" ]; then
+      error "$file:$start: could not slice the entry point's body"
+      continue
+    fi
+    if [ -z "$(printf '%s\n' "$body" | rw_strip_line_comments \
+        | grep -E 'mtm: MainThreadMarker|MainThreadMarker::new\(\)' || true)" ]; then
       error "$file:$start: entry point has neither a MainThreadMarker parameter nor a marker check"
     fi
   done < <(grep -nE "^pub\(crate\) fn ($GUARDED_FNS)\b" "$file" | cut -d: -f1)
@@ -141,10 +154,19 @@ if [[ -f "$MACOS_CANVAS" ]]; then
   # Strip comments and anchor at the start of a code line. The doc comment above the
   # real message spells `setFrame:` several times, so a bare `grep -q 'setFrame:'`
   # stayed green with no call at all (principle #106).
-  if ! grep -vE '^\s*(//|\*|/\*)' "$MACOS_CANVAS" | grep -qE '^[[:space:]]*setFrame:'; then
+  #
+  # Read the matches, then test them: `grep -q` cannot end either pipeline. With
+  # `pipefail` set its early exit makes the upstream `grep` die of SIGPIPE, so the
+  # pipeline reports failure for a file that *does* match — this section exited 1 on a
+  # correct tree at random (the same race `check_first_value_not_zero.sh` recorded).
+  SETFRAME_CALLS="$(grep -vE '^\s*(//|\*|/\*)' "$MACOS_CANVAS" \
+    | grep -E '^[[:space:]]*setFrame:' || true)"
+  if [[ -z "$SETFRAME_CALLS" ]]; then
     error "$MACOS_CANVAS: expected a setFrame: call for the surface view"
   fi
-  if grep -vE '^\s*(//|\*|/\*)' "$MACOS_CANVAS" | grep -qE 'setFrame:display:'; then
+  SETFRAME_DISPLAY="$(grep -vE '^\s*(//|\*|/\*)' "$MACOS_CANVAS" \
+    | grep -E 'setFrame:display:' || true)"
+  if [[ -n "$SETFRAME_DISPLAY" ]]; then
     error "$MACOS_CANVAS: setFrame:display: is not an NSView selector on macOS and aborts the process"
   fi
   if grep -q 'setFrame: NSRect::new' "$MACOS_CANVAS" \
@@ -214,24 +236,19 @@ if [[ "${objc2_entry_points:-0}" -eq 0 ]]; then
 fi
 
 # Count the entry points in the scope that carry NO main-thread guard. Slice each matching function
-# body (from its `fn` line to the next line that starts a new item) and look for any guard idiom.
+# body with the shared brace-aware helper (tools/lib_source_scan.sh): the previous private awk walk
+# had its own comment/string stripping, which is the duplication W6-36 records, and the slice and
+# the [A] slice must agree about what a body is.
 objc2_unguarded=0
 while IFS= read -r start_line; do
-  # Slice the whole function body by brace depth rather than stopping at the first line that
-  # looks like the next item. A nested closure or an attribute-bearing arm at the same
-  # indentation used to end the body early, which could hide an unguarded entry point (W5-37).
-  body="$(awk -v start="$start_line" '
-    NR < start { next }
-    {
-      line = $0
-      sub(/\/\/.*/, "", line)
-      gsub(/"[^"]*"/, "", line)
-      opens += gsub(/\{/, "", line)
-      closes += gsub(/\}/, "", line)
-      print
-      if (NR > start && opens > 0 && opens <= closes) exit
-    }' "$OBJC2_IMPL")"
-  if ! echo "$body" | grep -qE 'MainThreadMarker::new\(\)|on_main_thread\(\)|mtm: MainThreadMarker'; then
+  body="$(rw_slice_function_body "$OBJC2_IMPL" "$start_line" || true)"
+  [ -n "$body" ] || {
+    objc2_unguarded=$((objc2_unguarded + 1))
+    error "$OBJC2_IMPL:$start_line: could not slice the entry point's body"
+    continue
+  }
+  if [ -z "$(printf '%s\n' "$body" | rw_strip_line_comments \
+      | grep -E 'MainThreadMarker::new\(\)|on_main_thread\(\)|mtm: MainThreadMarker' || true)" ]; then
     objc2_unguarded=$((objc2_unguarded + 1))
     error "$OBJC2_IMPL:$start_line: AppKit entry point in the guard scope has no main-thread guard"
   fi

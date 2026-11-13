@@ -13,7 +13,7 @@ use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{TextSpliceCommand, UndoStack};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
@@ -83,6 +83,12 @@ pub struct SearchBox {
     /// character. The same name [`crate::widget::SearchBar`] publishes, so a host can treat the
     /// two controls the same way.
     pub search_submitted: Signal1<String>,
+    /// Emitted when the user dismisses the box with Escape.
+    ///
+    /// The same name [`crate::widget::SearchBar`] publishes for the same gesture, so a host can
+    /// treat the two search controls the same way: abandoning a search is a distinct event from
+    /// submitting it (`search_submitted`) and from a plain focus loss (`FocusLost`).
+    pub canceled: GenericSignal,
     /// Emitted with the new value whenever undo availability changes.
     pub undo_available: Signal1<bool>,
     /// Emitted with the new value whenever redo availability changes.
@@ -146,6 +152,7 @@ impl SearchBox {
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             search_submitted: Signal1::new(),
+            canceled: GenericSignal::new(),
             undo_available: Signal1::new(),
             redo_available: Signal1::new(),
             undo_stack: UndoStack::new(),
@@ -802,6 +809,7 @@ impl Widget for SearchBox {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
             "undo_available" => {
                 Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
                     CapabilityValue::Bool(*v)
@@ -1320,7 +1328,11 @@ impl EventHandler for SearchBox {
                         self.set_focused(false);
                     }
                     27 => {
+                        // Escape cancels: the field gives up focus and tells the host, the same
+                        // `canceled` signal `SearchBar` publishes for the same gesture. Abandoning
+                        // a search is not submitting it.
                         self.set_focused(false);
+                        self.canceled.emit();
                     }
                     _ => {
                         // Printable content arrives as `Event::TextInput`/`ImeCommit` (W4-01)
@@ -1392,6 +1404,31 @@ mod tests {
 
         sb.set_text("world");
         assert_eq!(*captured.lock().unwrap(), Some("world".to_string()));
+    }
+
+    /// W6-47: Escape must report the cancellation, not only drop focus.
+    ///
+    /// The box used to call `set_focused(false)` alone, so a host had no way to tell an
+    /// abandoned search from any other focus loss. The emitted signal is the same name and
+    /// payload-free shape `SearchBar` publishes (`search_bar.rs`, Escape arm).
+    #[test]
+    fn escape_emits_canceled_signal() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        sb.set_focused(true);
+        assert!(sb.is_focused());
+
+        let canceled = Arc::new(Mutex::new(false));
+        sb.canceled.connect({
+            let canceled = Arc::clone(&canceled);
+            move || {
+                *canceled.lock().unwrap() = true;
+            }
+        });
+
+        sb.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+
+        assert!(!sb.is_focused(), "Escape still gives up focus");
+        assert!(*canceled.lock().unwrap(), "Escape must emit the canceled signal");
     }
 
     // ─── D09-INPUT-01: platform-committed text reaches the query ───

@@ -75,6 +75,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 echo "[1/4] PropertyDriver::default() is the resting end"
 # The default is the single fallback for every `..Default::default()` construction and
 # for the type's own contract, so it is checked directly rather than inferred from the
@@ -137,7 +140,7 @@ echo "[3/4] no animated control is constructed at the target end"
 # a bare `animation_progress: 1.0` field that nothing read, and this file would still
 # flag it.
 HITS="$(grep -rnE 'PropertyDriver::(at|default)\s*\(\s*1\.0' src/widget/ --include=*.rs \
-    | sed -e 's://.*::' || true)"
+    | rw_strip_line_comments || true)"
 HITS="$(printf '%s\n' "$HITS" | grep -vE ':[[:space:]]*$' || true)"
 
 # Controls that are **shown at rest** *and* read their own visibility later, so the heuristic
@@ -184,7 +187,24 @@ while IFS= read -r line; do
     # `self\.visible\b`: a word boundary, so `self.visible_count()` (a row count in
     # `timeline_widget`) is not read as a visibility fact. Without it a read-only count
     # made a shown-at-rest timeline look like a hidden-at-rest control.
-    if sed -n '1,/^#\[cfg(test)\]$/p' "$file" | grep -qE 'is_visible\(\)|self\.visible\b'; then
+    #
+    # The read must be the control's *own*: `self.is_visible()` / `self.base.is_visible()`
+    # (the base flag is the control's) or a read of `self.visible`. Two shapes that used to
+    # count and are not about the control itself are excluded, because they made a correct
+    # chart look like a hidden-at-rest control:
+    #   * `self.visible = visible;` — a write, not a read;
+    #   * `legend.is_visible()` / `tooltip.is_visible()` — another object's visibility.
+    # The old `\|is_visible\(\)\|` alternative matched both. Which files fell into this hole
+    # was decided by a SIGPIPE race in the next line, so the gate was also nondeterministic.
+    # `grep -q` cannot close this pipeline. With `pipefail` set, its early exit makes `sed`
+    # die of SIGPIPE, so the pipeline reports failure for a file that *does* match — which
+    # made this gate exit 1 on a correct tree at random (measured: 3 of 6 runs). Read the
+    # matches, then test the variable.
+    production="$(sed -n '1,/^#\[cfg(test)\]$/p' "$file" \
+        | grep -E 'self\.(base\.)?is_visible\(\)|self\.visible\b' \
+        | grep -vE 'self\.visible[[:space:]]*=' \
+        || true)"
+    if [ -n "$production" ]; then
         FINDINGS="${FINDINGS}${line}
 "
     else

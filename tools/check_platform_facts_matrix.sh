@@ -12,7 +12,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 
-if python3 tools/generate_platform_facts_matrix.py --check; then
+# shellcheck source=tools/lib_python.sh
+. "$ROOT/tools/lib_python.sh"
+
+if "$PYTHON" tools/generate_platform_facts_matrix.py --check; then
     echo "RESULT: PASS"
 else
     echo "RESULT: FAIL"

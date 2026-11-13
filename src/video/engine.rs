@@ -650,23 +650,49 @@ impl VideoEngine {
         }
     }
 
-    /// Advance one frame (step forward).
+    /// Advance one frame (step forward). Returns `None` at end of stream.
+    ///
+    /// This is the manual single-step entry point; `next_frame` is the decode-and-show one and
+    /// `tick_frame` is the clock-driven one. All three reach `Ended` at end of stream and emit
+    /// [`Self::on_state_change`] exactly once, at the boundary, so a stream that finished through
+    /// any of them is replayable by `play` (which rewinds only from `Ended`). Stepping used to
+    /// leave the state untouched, so a stream stepped to its end was not reported as finished and
+    /// `play` had nothing to rewind from.
     pub fn step_frame(&mut self) -> Result<Option<VideoFrame>, String> {
         let frame = self.take_frame()?;
-        if let Some(ref f) = frame {
-            self.current_time = f.timestamp;
-            self.on_frame.emit(f.clone());
+        match frame {
+            Some(ref f) => {
+                self.current_time = f.timestamp;
+                self.on_frame.emit(f.clone());
+            }
+            None => self.report_end_of_stream(),
         }
         Ok(frame)
     }
 
+    /// Moves to `Ended` and announces the transition, once.
+    ///
+    /// Every read path that can reach the end of the stream goes through here instead of assigning
+    /// the state itself, because the announcement belongs to the boundary: a second read past the
+    /// same end (a repeated step, a tick after the end) describes the transition that was already
+    /// reported and must not emit again.
+    fn report_end_of_stream(&mut self) {
+        if self.state == PlaybackState::Ended {
+            return;
+        }
+        self.state = PlaybackState::Ended;
+        self.clock.pause();
+        self.on_state_change.emit(self.state);
+    }
+
     /// Decode the next available frame. Returns None at end of stream.
     ///
-    /// This is the manual-stepping entry point; `tick_frame` is the clock-driven one. Both reach
-    /// `Ended` at end of stream, so a stream that finished through either path can be replayed by
-    /// `play` (which rewinds only from `Ended`). Reporting `Stopped` here made a manually stepped
-    /// stream unreplayable: `play` skipped the rewind and the next read ended again immediately
-    /// (T3-12).
+    /// This is the decode-and-show entry point; `step_frame` is the single-step one and
+    /// `tick_frame` is the clock-driven one. All three reach `Ended` at end of stream and emit
+    /// [`Self::on_state_change`] once at the boundary, so a stream that finished through any of
+    /// them can be replayed by `play` (which rewinds only from `Ended`). Reporting `Stopped` here
+    /// made a manually stepped stream unreplayable: `play` skipped the rewind and the next read
+    /// ended again immediately (T3-12).
     pub fn next_frame(&mut self) -> Result<Option<VideoFrame>, String> {
         if self.state != PlaybackState::Playing {
             return Ok(None);
@@ -677,9 +703,7 @@ impl VideoEngine {
             self.on_frame.emit(f.clone());
         } else {
             // End of stream: the same state `tick_frame` reports, so replay is reachable.
-            self.state = PlaybackState::Ended;
-            self.clock.pause();
-            self.on_state_change.emit(self.state);
+            self.report_end_of_stream();
         }
         Ok(frame)
     }
@@ -1063,6 +1087,52 @@ mod tests {
         engine.play();
         let restarted = engine.next_frame().expect("no error");
         assert!(restarted.is_some(), "replay starts from the first frame, not EOF");
+    }
+
+    /// Stepping past the last frame reports `Ended`, exactly once.
+    ///
+    /// `step_frame` reached end of stream without moving the state, so a stream stepped to its end
+    /// was never reported as finished and could not be replayed (the transition `next_frame` and
+    /// `tick_frame` already announced). The announcement belongs to the boundary: a second step
+    /// past the same end must not emit the same transition again.
+    #[test]
+    fn stepping_past_the_last_frame_reports_ended_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut engine = engine_with_pattern();
+        engine.play();
+        let ended = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&ended);
+        engine.on_state_change.connect(move |state: Arc<PlaybackState>| {
+            if *state == PlaybackState::Ended {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let mut stepped = 0;
+        loop {
+            match engine.step_frame() {
+                Ok(Some(_)) => stepped += 1,
+                Ok(None) => break,
+                Err(error) => panic!("stepping must not fail: {error}"),
+            }
+        }
+        assert!(stepped > 0, "the pattern source produced frames");
+        assert_eq!(
+            engine.state(),
+            PlaybackState::Ended,
+            "the end of stream is `Ended`, the state the other read paths report"
+        );
+        assert_eq!(ended.load(Ordering::SeqCst), 1, "the transition is announced once");
+
+        // The same end of stream read again is not a new transition.
+        assert!(engine.step_frame().expect("no error").is_none());
+        assert_eq!(
+            ended.load(Ordering::SeqCst),
+            1,
+            "a repeated step past the end must not emit `Ended` twice"
+        );
     }
 
     /// Seeking to the end, ticking, and playing again must start over rather than re-end.

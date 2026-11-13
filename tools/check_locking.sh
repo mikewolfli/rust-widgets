@@ -176,11 +176,47 @@ def is_finding(stripped: str) -> bool:
     return bool(PATTERN.search(stripped))
 
 
+def inside_shared_arc(lines: list[str], index: int) -> bool:
+    """Whether `lines[index]` is part of an `Arc< .. >` expression opened on an earlier line.
+
+    rustfmt wraps a long shared-cell type as `segments: Arc<` / `std::sync::Mutex<` / … , so
+    the `Arc` marker and the primitive land on different lines. The line-based rule above saw
+    only the `Mutex` line and reported a shared companion cell as in-place widget state (the
+    tree/breadcrumb binding). Walking back over still-open angle brackets keeps the documented
+    `Arc<Mutex<..>>` rule intact without excusing a bare `state: Mutex<..>`.
+    """
+    depth = 0
+    lookback = 0
+    probe = index - 1
+    while probe >= 0 and lookback < 8:
+        text = lines[probe]
+        depth += text.count("<") - text.count(">")
+        if depth > 0 and re.search(r"\bArc\b", text):
+            return True
+        if depth <= 0 and ":" in text:
+            return False
+        probe -= 1
+        lookback += 1
+    return False
+
+
 # Reverse injection: the widened `Arc` rule must not excuse an in-place lock.
 assert is_finding("    state: Mutex<Vec<u8>>,"), "a bare Mutex must still be a finding"
 assert is_finding("    static CACHE: OnceLock<u32> = OnceLock::new();")
 assert not is_finding("    clicked: Arc<Mutex<Option<usize>>>,")
 assert not is_finding("    let requests = Arc::new(Mutex::new(Vec::new()));")
+# The same shared cell when rustfmt wraps it across lines (segments: Arc< / Mutex< / …).
+assert inside_shared_arc(
+    [
+        "    segments: Arc<",
+        "        std::sync::Mutex<",
+        "            Option<Vec<u8>>,",
+        "        >,",
+        "    >,",
+    ],
+    1,
+), "a wrapped Arc cell must still be recognised"
+assert not inside_shared_arc(["    state: Mutex<Vec<u8>>,"], 0)
 
 # The two character classes whose net count decides whether a line opens a body.
 # Named constants rather than inline literals: when these were written inline, the
@@ -464,9 +500,10 @@ for path in sorted(Path(SCAN_ROOT).rglob("*.rs")):
         print(f"  exempt (named in the header): {path}")
         continue
     production = strip_test_modules(path.read_text(encoding="utf-8"))
-    for number, line in enumerate(production.split("\n"), start=1):
+    production_lines = production.split("\n")
+    for number, line in enumerate(production_lines, start=1):
         stripped = line.strip()
-        if is_finding(stripped):
+        if is_finding(stripped) and not inside_shared_arc(production_lines, number - 1):
             findings.append(f"{path}:{number}: {stripped}")
 
 if findings:

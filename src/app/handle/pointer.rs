@@ -239,22 +239,17 @@ impl ListBoxHandle {
         F: FnMut(Point) + Send + 'static,
     {
         let id = self.raw_id();
-        let held: std::sync::Arc<std::sync::Mutex<F>> =
-            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let held: std::sync::Arc<std::sync::Mutex<Option<F>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
         let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
             let held = std::sync::Arc::clone(&held);
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::input_widgets::listbox::ListBox>()
                 .map(|list| {
                     list.context_menu_requested.connect_ref(move |pos: &Point| {
-                        if let Ok(mut callback) = held.lock() {
-                            callback(*pos);
-                        } else {
-                            log::warn!(
-                                "the list-box context-menu callback for widget {id} could not be \
-                                 locked; skipping this request rather than panicking"
-                            );
-                        }
+                        run_shared_callback(&held, "list-box context-menu", id, |callback| {
+                            callback(*pos)
+                        });
                     })
                 })
         })
@@ -297,22 +292,17 @@ impl ButtonHandle {
         F: FnMut(Point) + Send + 'static,
     {
         let id = self.raw_id();
-        let held: std::sync::Arc<std::sync::Mutex<F>> =
-            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let held: std::sync::Arc<std::sync::Mutex<Option<F>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
         let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
             let held = std::sync::Arc::clone(&held);
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::base_widgets::button::Button>()
                 .map(|button| {
                     button.context_menu_requested.connect_ref(move |pos: &Point| {
-                        if let Ok(mut callback) = held.lock() {
-                            callback(*pos);
-                        } else {
-                            log::warn!(
-                                "the button context-menu callback for widget {id} could not be \
-                                 locked; skipping this request rather than panicking"
-                            );
-                        }
+                        run_shared_callback(&held, "button context-menu", id, |callback| {
+                            callback(*pos)
+                        });
                     })
                 })
         })

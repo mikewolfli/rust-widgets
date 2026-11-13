@@ -174,6 +174,9 @@ pub struct CameraPreview {
     pub error_occurred: Signal1<String>,
     /// Emitted when the host reports that camera permission was denied.
     pub permission_denied: GenericSignal,
+    /// Emitted with the lost device's label when the host's enumeration no longer lists the
+    /// camera the preview was showing.
+    pub device_lost: Signal1<String>,
     /// Emitted with the capture timestamp when the host delivers a frame.
     pub frame_available: Signal1<u64>,
     /// Emitted with the presented timestamp **in seconds** when a frame is swapped on screen.
@@ -221,6 +224,7 @@ impl CameraPreview {
             front: None,
             error_occurred: Signal1::new(),
             permission_denied: GenericSignal::new(),
+            device_lost: Signal1::new(),
             frame_available: Signal1::new(),
             frame_presented: Signal1::new(),
             available_cameras: Vec::new(),
@@ -293,8 +297,29 @@ impl CameraPreview {
     }
 
     /// Replaces the host-enumerated camera list.
+    ///
+    /// Re-enumeration is how the control learns that a device went away: the host reports the
+    /// devices that still exist, so a selected camera that was listed before and is not listed
+    /// now has been lost. That transition emits [`Self::device_lost`] once, with the lost
+    /// device's label; an enumeration that still omits it describes the same loss rather than a
+    /// new one, and a later enumeration that lists it again re-arms the report.
     pub fn set_available_cameras(&mut self, devices: Vec<CameraDevice>) {
+        let lost = self
+            .available_cameras
+            .iter()
+            .find(|device| device.id == self.camera_id)
+            .filter(|_| !devices.iter().any(|device| device.id == self.camera_id))
+            .map(|device| {
+                if device.label.is_empty() {
+                    self.camera_id_text.clone()
+                } else {
+                    device.label.clone()
+                }
+            });
         self.available_cameras = devices;
+        if let Some(label) = lost {
+            self.device_lost.emit(label);
+        }
         self.base.request_redraw();
     }
 
@@ -739,7 +764,9 @@ impl Widget for CameraPreview {
     /// `error_occurred` carries the host's message as a `String`, the same shape
     /// the capability declares. `permission_denied` is a unit signal and is
     /// reported as `Null`, which is the honest value for an event that reports
-    /// nothing beyond the fact that it happened.
+    /// nothing beyond the fact that it happened. `device_lost` carries the lost
+    /// device's label, so a host with several cameras can name the one that went
+    /// away.
     fn event_signal_dyn(&self, name: &str) -> Option<rust_widgets::signal::EventSignalRef> {
         use rust_widgets::signal::EventSignalRef;
         match name {
@@ -754,6 +781,9 @@ impl Widget for CameraPreview {
             "permission_denied" => {
                 Some(EventSignalRef::unit("permission_denied", &self.permission_denied))
             }
+            "device_lost" => Some(EventSignalRef::mapped("device_lost", &self.device_lost, |v| {
+                CapabilityValue::String(v.clone())
+            })),
             "frame_available" => {
                 Some(EventSignalRef::mapped("frame_available", &self.frame_available, |v| {
                     CapabilityValue::UInt(*v)
@@ -1140,6 +1170,7 @@ mod tests {
         for name in [
             "error_occurred",
             "permission_denied",
+            "device_lost",
             "frame_available",
             "frame_presented",
             "format_negotiated",
@@ -1392,6 +1423,33 @@ mod tests {
         assert!(denied.load(std::sync::atomic::Ordering::SeqCst));
     }
 
+    /// A device that disappears from the host's enumeration is reported once.
+    ///
+    /// The viewfinder does no I/O, so re-enumeration is the only way it learns that a camera
+    /// went away. The loss is the transition (listed, then not listed): an enumeration that
+    /// still omits the device describes the same loss, so a host polling the device list must
+    /// not see the event on every poll.
+    #[test]
+    fn a_lost_device_is_reported_once() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        preview.set_available_cameras(vec![CameraDevice::new(3, "Rear")]);
+        preview.set_camera_id(3).expect("the listed device is selectable");
+
+        let lost = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::clone(&lost);
+        preview.device_lost.connect(move |label: std::sync::Arc<String>| {
+            seen.lock().unwrap().push((*label).clone());
+        });
+
+        // The device is gone from the host's list: one loss, one report.
+        preview.set_available_cameras(vec![CameraDevice::new(4, "Front")]);
+        assert_eq!(*lost.lock().unwrap(), vec!["Rear".to_string()], "the lost device is named");
+
+        // Polling again with the same absence is not a second loss.
+        preview.set_available_cameras(vec![CameraDevice::new(4, "Front")]);
+        assert_eq!(lost.lock().unwrap().len(), 1, "one loss, one report");
+    }
+
     /// A BGRA capture is converted in the repack pass, so the declared format is implemented
     /// rather than a dead alternative (MW-007).
     #[test]
@@ -1571,7 +1629,11 @@ mod tests {
         assert!(preview.base().is_pressed(), "the base routed the press");
         assert_ne!(preview.is_active(), active, "the click still toggles the preview");
 
-        preview.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 , modifiers: 0});
+        preview.handle_event(&Event::MouseRelease {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!preview.base().is_pressed(), "the release clears the gesture");
     }
 }

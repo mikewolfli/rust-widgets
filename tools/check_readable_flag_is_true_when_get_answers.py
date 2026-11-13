@@ -67,6 +67,8 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
 CAPABILITY = SRC / "widget" / "capability"
@@ -109,19 +111,6 @@ WIDGET_PROPERTIES_IMPL = re.compile(r"impl\s+WidgetProperties\s+for\s+(?P<type>[
 
 # `Box::new(` that is really the box constructor, not the tail of `CheckBox::new(`.
 BOX_NEW = r"(?<![A-Za-z0-9_:])Box::new\(\s*"
-
-LINE_COMMENT = re.compile(r"//[^\n]*")
-BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
-
-
-def strip_comments(text: str) -> str:
-    """Blanks comments while preserving offsets, so a doc example cannot be read as code.
-
-    The doc comments in `properties_trait.rs` contain `impl WidgetProperties for Button {` as
-    *prose*, and a scan that read them would believe a third `Button` impl exists.
-    """
-    text = BLOCK_COMMENT.sub(lambda m: " " * len(m.group(0)), text)
-    return LINE_COMMENT.sub(lambda m: " " * len(m.group(0)), text)
 
 
 def brace_body(text: str, open_index: int) -> str:

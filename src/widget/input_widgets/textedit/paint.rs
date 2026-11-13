@@ -115,6 +115,103 @@ impl TextEdit {
         width
     }
 
+    /// The bidi levels, per-character byte ranges and advances of the display row `start..end`,
+    /// or `None` for a left-to-right row.
+    ///
+    /// # Why the logical prefix is the wrong side for an RTL row
+    ///
+    /// The renderer paints a right-to-left row in **visual** order
+    /// ([`crate::render::text::line`] reorders its clusters), while the selection band and the
+    /// caret were placed at "the width of the logical prefix". That width is the on-screen x only
+    /// while the row paints left to right: in an RTL row logical offset 0 is the *right* end, so
+    /// the markers landed at the opposite end of the row (W6-21, the multi-line sibling of
+    /// UX6-02).
+    ///
+    /// The all-LTR row is the steady state and allocates nothing: `has_rtl_char` rejects it
+    /// before any range or level table is built. The ranges are relative to the row, which is the
+    /// space the caret byte is translated into by [`Self::visual_marker_advance`].
+    fn row_bidi_metrics(
+        &self,
+        context: &RenderContext,
+        font: &Font,
+        start: usize,
+        end: usize,
+    ) -> Option<crate::render::text::bidi::RowBidiMetrics> {
+        let end = end.min(self.text.len()).max(start);
+        // The row's own newline is not ink, exactly as `draw_rows` trims it before painting.
+        let ink_end = if self.text[..end].ends_with('\n') { (end - 1).max(start) } else { end };
+        let row = &self.text[start..ink_end];
+        if !crate::render::text::bidi::has_rtl_char(row) {
+            return None;
+        }
+        let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(row.len());
+        let mut advances: Vec<f32> = Vec::with_capacity(row.len());
+        for (offset, ch) in row.char_indices() {
+            let cluster_end = offset + ch.len_utf8();
+            ranges.push((offset, cluster_end));
+            advances.push(context.measure_text(&row[offset..cluster_end], font).width as f32);
+        }
+        if ranges.is_empty() {
+            return None;
+        }
+        let levels = crate::render::text::line::line_bidi_levels(row, &ranges, font, 1.0);
+        Some((levels, ranges, advances))
+    }
+
+    /// The **visual** advance of `byte` from the start of the row `start..end`, or `None` for an
+    /// all-left-to-right row.
+    fn visual_marker_advance(
+        &self,
+        context: &RenderContext,
+        font: &Font,
+        start: usize,
+        end: usize,
+        byte: usize,
+    ) -> Option<u32> {
+        let (levels, ranges, advances) = self.row_bidi_metrics(context, font, start, end)?;
+        let caret = byte.saturating_sub(start).min(ranges.last()?.1);
+        crate::render::text::bidi::caret_visual_advance_from_levels(
+            levels.as_ref(),
+            &ranges,
+            &advances,
+            caret,
+        )
+        .map(|x| x.max(0.0).round() as u32)
+    }
+
+    /// The **visual** `(left, width)` of the selection `from..to` within the row `start..end`,
+    /// or `None` for an all-left-to-right row.
+    ///
+    /// A reordered row paints its runs right to left, so the two mapped edges are ordered before
+    /// the rectangle is built. The width is the band's bounding box: a range that a nested run
+    /// splits into two visual pieces still paints as one rectangle, which is what a single
+    /// `fill_rect` per row expresses.
+    #[allow(clippy::too_many_arguments)]
+    fn visual_selection_band(
+        &self,
+        context: &RenderContext,
+        font: &Font,
+        start: usize,
+        end: usize,
+        from: usize,
+        to: usize,
+    ) -> Option<(u32, u32)> {
+        let (levels, ranges, advances) = self.row_bidi_metrics(context, font, start, end)?;
+        let last = ranges.last()?.1;
+        let edge = |byte: usize| {
+            crate::render::text::bidi::caret_visual_advance_from_levels(
+                levels.as_ref(),
+                &ranges,
+                &advances,
+                byte.saturating_sub(start).min(last),
+            )
+        };
+        let a = edge(from)?;
+        let b = edge(to)?;
+        let (left, right) = if a <= b { (a, b) } else { (b, a) };
+        Some((left.max(0.0).round() as u32, (right - left).max(0.0).round() as u32))
+    }
+
     /// Paints the right-edge scrollbar when the value is taller than the viewport (I-015).
     fn draw_scrollbar(&self, context: &mut RenderContext) {
         let Some((track, total, visible)) = self.scrollbar_track() else {
@@ -301,9 +398,18 @@ impl Draw for TextEdit {
                         if to <= from {
                             continue;
                         }
-                        let left =
-                            text_x + self.marker_advance(measure, font, span.start, from) as i32;
-                        let width = self.marker_advance(measure, font, from, to);
+                        // A reordered (RTL) row maps both edges through the visual order, so the
+                        // band lands on the glyphs it covers rather than on the logical span's
+                        // mirrors (W6-21).
+                        let (advance, width) = self
+                            .visual_selection_band(measure, font, span.start, span.end, from, to)
+                            .unwrap_or_else(|| {
+                                (
+                                    self.marker_advance(measure, font, span.start, from),
+                                    self.marker_advance(measure, font, from, to),
+                                )
+                            });
+                        let left = text_x + advance as i32;
                         // The band is clipped to the interior, so a row wider than the field cannot
                         // paint outside the box it belongs to.
                         let width = width.min(interior_width);
@@ -330,12 +436,24 @@ impl Draw for TextEdit {
                             &self.text,
                             self.cursor.min(span.end).max(span.start),
                         );
-                        let advance = self.marker_advance(
-                            measure,
-                            font,
-                            span.start,
-                            caret_in_row.min(self.text.len()),
-                        ) as i32;
+                        // A reordered (RTL) row places the caret by visual order; the logical
+                        // prefix would put it at the wrong end of the run (W6-21).
+                        let advance = self
+                            .visual_marker_advance(
+                                measure,
+                                font,
+                                span.start,
+                                span.end,
+                                caret_in_row,
+                            )
+                            .unwrap_or_else(|| {
+                                self.marker_advance(
+                                    measure,
+                                    font,
+                                    span.start,
+                                    caret_in_row.min(self.text.len()),
+                                )
+                            }) as i32;
                         let caret = crate::style::semantic_color(crate::style::SemanticColor::Info)
                             .unwrap_or(ink);
                         let x = text_x + advance;

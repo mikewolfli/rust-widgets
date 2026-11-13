@@ -18,14 +18,9 @@
 //!     frame duration per sample and has no equivalent, so stage attribution would be lost.
 //!   * `frame_timer` is the timer for the profiles where the `gpu` module does not compile
 //!     (`mini`, `embedded`). `gpu::performance` cannot serve those hosts at all.
-//!   * `frame_timer` / `profiler` — a frame-timing toolkit with no caller **inside** the crate.
-//!     The open question was whether `gpu::performance` (`AdaptivePerformanceMonitor`,
-//!     `PerformanceStats`, consumed by `src/gpu/adapter.rs`) covers them. Measured answer: it
-//!     does not. `profiler` measures **named stages** inside a frame, while `gpu::performance`
-//!     records one frame duration per sample; `frame_timer` is the timer for the profiles where
-//!     the `gpu` module does not compile (`mini`, `embedded`). They therefore stay as
-//!     **host-facing utilities** — a complete capability the crate does not consume, which a host
-//!     drives directly — and each is covered by tests (`frame_timer` 8, `profiler` 6).
+//!   They therefore stay as **host-facing utilities** — a complete capability the crate does
+//!   not consume, which a host drives directly — and each is covered by tests (`frame_timer` 8,
+//!   `profiler` 6).
 //!
 //!   `batcher` (`UpdateBatcher`) was removed in this round: unlike the two above it duplicated
 //!   the timeout/count policy of the frame loop's own coalescing while having no caller at all,

@@ -2480,7 +2480,7 @@ impl EventHandler for VideoPlayer {
                 self.base.request_redraw();
             }
             Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
-                match (key, modifiers) {
+                match (*key, *modifiers) {
                     // Space bar toggles play/pause.
                     (key_codes::SPACE, _) => {
                         self.toggle_play();

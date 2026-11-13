@@ -3028,7 +3028,7 @@ mod tests {
     /// production caller ever set it, so the whole route was dead outside tests. The loop now
     /// installs a resolver backed by the widget registry at construction; this test registers a
     /// real parent and child and observes both phases without touching `set_parent_lookup`.
-    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32"), not(feature = "mini")))]
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
     #[test]
     fn the_default_resolver_makes_the_propagation_route_reachable() {
         use crate::core::Rect;

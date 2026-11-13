@@ -32,7 +32,7 @@ const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 // These are plain comments, not doc comments: there is no item for a doc comment to attach to
 // here (the item is the `thread_local!` expansion), and Rust reports that as an unused doc
 // comment on wasm.
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[cfg(wasm_browser)]
 thread_local! {
     static RAF_LOOP: core::cell::RefCell<
         Option<std::rc::Rc<core::cell::RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut()>>>>>,
@@ -45,7 +45,7 @@ thread_local! {
 /// backend only set `running = true` and returned: triggers were never drained and animations
 /// never advanced, so a wasm application froze after `run()` (PL-06). The callback drives one
 /// frame and re-requests itself while `running` stays true.
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[cfg(wasm_browser)]
 fn start_raf_loop(running: std::sync::Arc<core::sync::atomic::AtomicBool>) {
     use wasm_bindgen::JsCast;
 
@@ -81,7 +81,7 @@ fn start_raf_loop(running: std::sync::Arc<core::sync::atomic::AtomicBool>) {
 }
 
 /// Evaluates a CSS media query in the browser, or `None` on a host build.
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[cfg(wasm_browser)]
 fn match_media(query: &str) -> Option<bool> {
     web_sys::window()?.match_media(query).ok().flatten().map(|list| list.matches())
 }
@@ -92,7 +92,7 @@ fn match_media(query: &str) -> Option<bool> {
 /// not an interface. The closures are forgotten because each backend owns exactly one canvas for
 /// the life of the page; one leak per listener is the price of a `'static` listener the browser
 /// can call after `create_window` returns.
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[cfg(wasm_browser)]
 fn install_canvas_input(canvas: &web_sys::HtmlCanvasElement, window_id: u64) {
     use wasm_bindgen::JsCast;
 
@@ -201,7 +201,7 @@ impl Platform for WasmPlatform {
         // are real in a browser build and absent on the host build that compiles this module for
         // its tests. `clipboard`/`file_dialog`/`system_fonts` stay `false`: their web APIs are
         // promise-based and the synchronous trait cannot await them (BLUE28 B28.11/B28.39).
-        let browser = cfg!(all(target_arch = "wasm32", not(target_os = "wasi")));
+        let browser = cfg!(wasm_browser);
         PlatformCapabilities {
             dpi_scaling: browser,
             ime: false,
@@ -217,14 +217,14 @@ impl Platform for WasmPlatform {
 
     /// `window.devicePixelRatio` in a browser; `1.0` on the host build.
     fn dpi_scale_factor(&self) -> f32 {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             web_sys::window()
                 .map(|window| window.device_pixel_ratio() as f32)
                 .filter(|scale| scale.is_finite() && *scale > 0.0)
                 .unwrap_or(1.0)
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             1.0
         }
@@ -235,7 +235,7 @@ impl Platform for WasmPlatform {
     /// `window.screen` reports CSS pixels; the trait's `Display` is in logical pixels, so the
     /// numbers transfer unchanged. `scale` is the device pixel ratio.
     fn displays(&self) -> Vec<crate::platform::Display> {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             let Some(window) = web_sys::window() else {
                 return Vec::new();
@@ -259,7 +259,7 @@ impl Platform for WasmPlatform {
                 is_primary: true,
             }]
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             Vec::new()
         }
@@ -317,11 +317,11 @@ impl Platform for WasmPlatform {
 
     /// `prefers-color-scheme: dark`.
     fn system_theme(&self) -> Option<bool> {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             return match_media("(prefers-color-scheme: dark)");
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             None
         }
@@ -329,12 +329,12 @@ impl Platform for WasmPlatform {
 
     /// `prefers-contrast: more`, with `forced-colors: active` as the same fact.
     fn high_contrast(&self) -> Option<bool> {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             return match_media("(prefers-contrast: more)")
                 .or_else(|| match_media("(forced-colors: active)"));
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             None
         }
@@ -342,11 +342,11 @@ impl Platform for WasmPlatform {
 
     /// `prefers-reduced-motion: reduce`.
     fn reduce_motion(&self) -> Option<bool> {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             return match_media("(prefers-reduced-motion: reduce)");
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             None
         }
@@ -354,12 +354,12 @@ impl Platform for WasmPlatform {
 
     /// `navigator.language`.
     fn system_locale(&self) -> Option<&'static str> {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             let language = web_sys::window().map(|window| window.navigator().language());
             return crate::platform::locale::intern(language.flatten());
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             None
         }
@@ -381,7 +381,7 @@ impl Platform for WasmPlatform {
     /// to the document body, measured, and removed in the same call. `None` when there is no
     /// document or the computed style cannot be read.
     fn safe_area_insets(&self, _window_id: u64) -> Option<crate::platform::types::SafeAreaInsets> {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             use wasm_bindgen::JsCast;
             let window = web_sys::window()?;
@@ -416,7 +416,7 @@ impl Platform for WasmPlatform {
             let _ = element.remove();
             return Some(insets);
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             None
         }
@@ -432,7 +432,7 @@ impl Platform for WasmPlatform {
         if target.is_empty() || !is_web {
             return Err(crate::platform::OpenError::InvalidTarget);
         }
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             let window = web_sys::window().ok_or(crate::platform::OpenError::Unsupported)?;
             window
@@ -440,7 +440,7 @@ impl Platform for WasmPlatform {
                 .map(|_| ())
                 .map_err(|_| crate::platform::OpenError::NoHandler)
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             Err(crate::platform::OpenError::Unsupported)
         }
@@ -448,12 +448,12 @@ impl Platform for WasmPlatform {
 
     /// Whether `window.open` exists in this build.
     fn has_external_handler(&self) -> bool {
-        cfg!(all(target_arch = "wasm32", not(target_os = "wasi")))
+        cfg!(wasm_browser)
     }
 
     /// Sets the canvas's CSS `cursor` (BLUE28 B28.09).
     fn set_cursor(&self, _window: u64, icon: crate::platform::CursorIcon) -> bool {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             use crate::platform::CursorIcon;
             use wasm_bindgen::JsCast;
@@ -486,7 +486,7 @@ impl Platform for WasmPlatform {
             let _ = canvas.style().set_property("cursor", css);
             return true;
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             let _ = icon;
             false
@@ -495,7 +495,7 @@ impl Platform for WasmPlatform {
 
     /// Shows or hides the canvas pointer.
     fn set_cursor_visible(&self, _window: u64, visible: bool) -> bool {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             use wasm_bindgen::JsCast;
             let Some(canvas) = web_sys::window()
@@ -509,7 +509,7 @@ impl Platform for WasmPlatform {
             let _ = canvas.style().set_property("cursor", value);
             return true;
         }
-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        #[cfg(not(wasm_browser))]
         {
             let _ = visible;
             false
@@ -560,7 +560,7 @@ impl Platform for WasmPlatform {
         {
             // The browser owns the event loop: install a `requestAnimationFrame` chain instead
             // of blocking. `run` returns immediately; the page keeps calling the callback.
-            #[cfg(not(target_os = "wasi"))]
+            #[cfg(wasm_browser)]
             start_raf_loop(std::sync::Arc::clone(&self.runtime.running));
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -647,7 +647,7 @@ impl Platform for WasmPlatform {
             return 0;
         }
         let id = self.insert_widget(WasmHandleKind::Window, title, x, y, width, height);
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             use wasm_bindgen::JsCast;
             let window = web_sys::window().expect(
@@ -764,7 +764,7 @@ impl Platform for WasmPlatform {
     // ─── Widget mutation ───────────────────────────────────────────────────────
 
     fn set_clipboard_text(&self, text: &str) -> bool {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             // `window()` returns `Option<Window>`; `navigator()` returns
             // `Navigator` directly, so use `map` (not `and_then`).
@@ -800,7 +800,7 @@ impl Platform for WasmPlatform {
     }
 
     fn get_clipboard_text(&self) -> String {
-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        #[cfg(wasm_browser)]
         {
             // A **synchronous** read cannot await `clipboard.read_text()`'s promise, so this answers
             // from the mirror `set_clipboard_text` maintains. That mirror is updated at write time
@@ -1058,7 +1058,7 @@ mod tests {
     ///
     /// The honest `false` matters: a host that read `true` here would attach nothing and
     /// then never receive a resize, with no way to tell that from an idle window.
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+    #[cfg(not(wasm_browser))]
     #[test]
     fn observing_a_canvas_is_unavailable_without_a_dom() {
         let p = make_platform();

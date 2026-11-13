@@ -63,7 +63,7 @@ use core::cell::Cell;
 use core::time::Duration;
 use std::time::Instant;
 
-use crate::platform::types::{FRAME_INTERVAL_MS, IDLE_FRAME_INTERVAL_MS};
+use crate::platform::types::{frame_interval_ms, FRAME_INTERVAL_MS, IDLE_FRAME_INTERVAL_MS};
 
 #[cfg(not(alloc_frugal))]
 mod inner {
@@ -396,7 +396,10 @@ pub(crate) fn pause_between_frames_with<F>(needs_another_frame: bool, block: F)
 where
     F: FnOnce(Duration) -> bool,
 {
-    let interval = Duration::from_millis(FRAME_INTERVAL_MS);
+    // One period of the display the host is on. A 120 Hz panel gets an 8–9 ms grid instead of a
+    // fixed 16 ms one; a backend that cannot report a refresh rate keeps [`FRAME_INTERVAL_MS`]
+    // (W6-43).
+    let interval = Duration::from_millis(frame_interval_ms());
     let mut pacing = load_pacing();
     if !needs_another_frame {
         // Nothing is owed. Clear the grid so the first animated frame after this idle period

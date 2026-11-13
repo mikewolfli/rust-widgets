@@ -47,6 +47,8 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
 CAP = SRC / "widget" / "capability"
@@ -98,12 +100,6 @@ LEDGER_ENTRY = re.compile(
     r"ProgrammaticSetter\s*\{\s*name\s*:\s*\"([^\"]+)\"\s*,\s*reason\s*:\s*\"([^\"]*)\"\s*,?\s*\}",
     re.S,
 )
-
-
-def strip_comments(text: str) -> str:
-    """Drop `//` and block comments so a doc example cannot look like an implementation."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"//[^\n]*", "", text)
 
 
 def brace_block(text: str, open_index: int) -> str:

@@ -18,6 +18,14 @@ use crate::audio::format::{AudioFormat, SampleFormat};
 use crate::audio::samples::AudioBuffer;
 
 /// Detect audio format from magic bytes.
+///
+/// # Why `AudioFormat::Pcm` is never returned
+///
+/// Raw PCM is headerless by definition: [`encode`](crate::audio::encoder::encode) with
+/// [`AudioFormat::Pcm`] writes nothing but the little-endian `f32` samples, so the bytes are
+/// indistinguishable from arbitrary data — there is no signature to look for. Answering `Pcm` for
+/// every buffer whose signature matched nothing would turn "unknown" into a guess, so detection
+/// stays silent about it and [`decode`] documents what that costs a round trip.
 pub fn detect_audio_format(data: &[u8]) -> AudioFormat {
     // WAV: RIFF....WAVE
     if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WAVE" {
@@ -68,33 +76,33 @@ pub fn detect_audio_format(data: &[u8]) -> AudioFormat {
 /// FLAC, OGG Vorbis and AAC require the `symphonia-codecs` feature; without it, decoding those
 /// formats returns an error explaining so. Opus is recognized ([`AudioFormat::Opus`]) but always
 /// refused with the reason — see [`decode_opus`].
+///
+/// # Raw PCM does not round-trip
+///
+/// `encode(buffer, AudioFormat::Pcm)` writes the samples and no header, and the sample rate and
+/// channel count live only in the [`AudioBuffer`] that produced them. Detection therefore cannot
+/// recognise the result (see [`detect_audio_format`]), so an encoded `Pcm` buffer arrives here as
+/// [`AudioFormat::Unknown`] and is refused with the reason rather than guessed at 44.1 kHz mono:
+/// a caller that encoded raw PCM already knows the layout and must rebuild the buffer from it.
 pub fn decode(data: &[u8]) -> Result<AudioBuffer, String> {
     let format = detect_audio_format(data);
     match format {
         AudioFormat::Wav => decode_wav(data),
-        AudioFormat::Pcm => {
-            // Assume 44100 Hz, mono, F32
-            if !data.len().is_multiple_of(4) {
-                return Err(format!(
-                    "raw PCM data is {} bytes, which is not a whole number of 32-bit \
-                     little-endian f32 samples; pad it to a multiple of 4 bytes",
-                    data.len()
-                ));
-            }
-            let samples: Vec<f32> = data
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            Ok(AudioBuffer::new(44100, samples, 1))
-        }
         AudioFormat::Mp3 => decode_mp3(data),
         AudioFormat::Flac => decode_flac(data),
         AudioFormat::Ogg => decode_ogg_vorbis(data),
         AudioFormat::Aac => decode_aac(data),
         AudioFormat::Opus => decode_opus(data),
-        AudioFormat::Unknown => Err("Unknown audio format — cannot decode".into()),
+        // `detect_audio_format` never reports `Pcm`, so a raw-PCM encoding arrives here as
+        // `Unknown`; the variant is matched only because the enum has it. Both share one honest
+        // refusal rather than a branch that assumes 44.1 kHz mono for bytes that describe neither.
+        AudioFormat::Pcm | AudioFormat::Unknown => {
+            Err("Unknown audio format — cannot decode. Raw PCM (what `encode` writes for \
+             `AudioFormat::Pcm`) has no header, so it lands here: its sample rate and channel \
+             count cannot be recovered from the bytes; rebuild the buffer from the layout you \
+             encoded with"
+                .into())
+        }
     }
 }
 
@@ -871,6 +879,31 @@ mod tests {
     #[test]
     fn test_decode_unknown_format() {
         assert!(decode(b"unknown format data").is_err());
+    }
+
+    /// `encode`'s raw-PCM framing is headerless, so the round trip cannot be detected back.
+    ///
+    /// This pins the documented limitation rather than a capability: the decoder reports the
+    /// reason it cannot rebuild the buffer instead of the old branch's guess of 44.1 kHz mono,
+    /// which would have returned samples the bytes never described.
+    #[test]
+    fn an_encoded_pcm_buffer_cannot_be_detected_or_decoded_back() {
+        let buffer = AudioBuffer::new(44100, vec![0.0, 0.5, -0.5, 1.0], 1);
+        let encoded = crate::audio::encoder::encode(&buffer, AudioFormat::Pcm)
+            .expect("raw PCM encoding is supported");
+
+        assert_eq!(
+            detect_audio_format(&encoded),
+            AudioFormat::Unknown,
+            "headerless PCM has no magic bytes for detection to match"
+        );
+
+        let error = decode(&encoded).expect_err("a `Pcm` encoding cannot be decoded back");
+        assert!(error.contains("Raw PCM"), "the refusal names the format, got: {error}");
+        assert!(
+            error.contains("sample rate and channel count"),
+            "the refusal says which layout is missing, got: {error}"
+        );
     }
 
     #[test]

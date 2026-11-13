@@ -252,6 +252,15 @@ pub trait PrintDocument {
     /// The context starts blank for each call: anything not drawn is not printed,
     /// and no state carries over from the previous page.
     fn draw_page(&self, page_index: u32, context: &mut dyn PrintContext);
+
+    /// The size of one page, in PostScript points ([`POINTS_PER_INCH`] per inch).
+    ///
+    /// Defaults to A4 portrait, the size the preview used to hard-code for every document.
+    /// A document printed on a different sheet overrides this, so the preview and the print
+    /// path describe the same page (W6-49).
+    fn page_size(&self) -> Size {
+        PaperSize::A4.points()
+    }
 }
 
 /// The surface a [`PrintDocument`] draws one page onto.
@@ -2155,7 +2164,7 @@ fn render_command_ps(command: &str, page_size: Size, grayscale: bool) -> Result<
             "/Helvetica findfont {size} scalefont setfont {r} {g} {b} setrgbcolor {} {} moveto ({}) show\n",
             x,
             height - y,
-            escape_ps_string(text),
+            escape_ps_string(&text),
         ))
     } else if let Some(rest) = command.strip_prefix("line:") {
         // line:<x1>,<y1>-><x2>,<y2>:<width>:#RRGGBBAA

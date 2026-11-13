@@ -431,8 +431,10 @@ impl MobileServices for AndroidServices {
     }
 
     fn share(&self, request: &ShareRequest) -> Result<(), ServiceError> {
-        if request.text.is_empty() && request.url.is_none() {
-            return Err(ServiceError::Denied);
+        if request.text.trim().is_empty() && request.url.is_none() {
+            // Invalid caller input, not a refusal: `Denied` would send the caller down a
+            // permission-recovery path that cannot help.
+            return Err(ServiceError::InvalidInput);
         }
         let mut payload = request.text.clone();
         if let Some(url) = request.url.as_deref() {

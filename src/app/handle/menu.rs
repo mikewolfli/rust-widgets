@@ -20,8 +20,8 @@ impl MenuBarHandle {
     /// `WidgetHandle::remove_callbacks` really disconnects it.
     pub fn on_triggered<F: FnMut(String) + Send + 'static>(&self, f: F) {
         let id = self.raw_id();
-        let held: std::sync::Arc<std::sync::Mutex<F>> =
-            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let held: std::sync::Arc<std::sync::Mutex<Option<F>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
         let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
             let held = std::sync::Arc::clone(&held);
             (widget as &mut dyn core::any::Any)
@@ -31,14 +31,9 @@ impl MenuBarHandle {
                     // here moves the copy from an `Arc` allocation per emit to one clone that
                     // the user callback would have performed regardless.
                     bar.triggered.connect_ref(move |title: &String| {
-                        if let Ok(mut callback) = held.lock() {
-                            callback(title.clone());
-                        } else {
-                            log::warn!(
-                                "the menu-triggered callback for widget {id} could not be locked; \
-                                 skipping this trigger rather than panicking"
-                            );
-                        }
+                        run_shared_callback(&held, "menu-triggered", id, |callback| {
+                            callback(title.clone())
+                        });
                     })
                 })
         })
@@ -63,22 +58,17 @@ impl MenuBarHandle {
     /// `None`. The emitter therefore carries the rectangle in the event payload.
     pub fn on_entry_triggered<F: FnMut(String, Rect) + Send + 'static>(&self, f: F) {
         let id = self.raw_id();
-        let held: std::sync::Arc<std::sync::Mutex<F>> =
-            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let held: std::sync::Arc<std::sync::Mutex<Option<F>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
         let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
             let held = std::sync::Arc::clone(&held);
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
                 .map(|bar| {
                     bar.triggered_entry.connect_ref(move |payload: &(String, Rect)| {
-                        if let Ok(mut callback) = held.lock() {
-                            callback(payload.0.clone(), payload.1);
-                        } else {
-                            log::warn!(
-                                "the menu-entry callback for widget {id} could not be locked; \
-                                     skipping this trigger rather than panicking"
-                            );
-                        }
+                        run_shared_callback(&held, "menu-entry", id, |callback| {
+                            callback(payload.0.clone(), payload.1)
+                        });
                     })
                 })
         })
@@ -104,22 +94,17 @@ impl MenuBarHandle {
     /// them is unaffected.
     pub fn on_entry_action_triggered<F: FnMut(String, Rect) + Send + 'static>(&self, f: F) {
         let id = self.raw_id();
-        let held: std::sync::Arc<std::sync::Mutex<F>> =
-            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let held: std::sync::Arc<std::sync::Mutex<Option<F>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
         let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
             let held = std::sync::Arc::clone(&held);
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
                 .map(|bar| {
                     bar.entry_action_triggered.connect_ref(move |payload: &(String, Rect)| {
-                        if let Ok(mut callback) = held.lock() {
-                            callback(payload.0.clone(), payload.1);
-                        } else {
-                            log::warn!(
-                                "the menu-entry action callback for widget {id} could not be \
-                                     locked; skipping this trigger rather than panicking"
-                            );
-                        }
+                        run_shared_callback(&held, "menu-entry action", id, |callback| {
+                            callback(payload.0.clone(), payload.1)
+                        });
                     })
                 })
         })
@@ -187,22 +172,17 @@ impl MenuHandle {
     /// way to hear a choice. The subscription is recorded for `remove_callbacks`.
     pub fn on_triggered<F: FnMut(String) + Send + 'static>(&self, f: F) {
         let id = self.raw_id();
-        let held: std::sync::Arc<std::sync::Mutex<F>> =
-            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let held: std::sync::Arc<std::sync::Mutex<Option<F>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
         let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
             let held = std::sync::Arc::clone(&held);
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>()
                 .map(|menu| {
                     menu.triggered.connect_ref(move |title: &String| {
-                        if let Ok(mut callback) = held.lock() {
-                            callback(title.clone());
-                        } else {
-                            log::warn!(
-                                "the menu-triggered callback for widget {id} could not be locked; \
-                                 skipping this trigger rather than panicking"
-                            );
-                        }
+                        run_shared_callback(&held, "menu-triggered", id, |callback| {
+                            callback(title.clone())
+                        });
                     })
                 })
         })
@@ -231,22 +211,17 @@ impl MenuHandle {
     /// [`WindowHandle::new_menu_item_with_action_id`].
     pub fn on_item_action_triggered<F: FnMut(String) + Send + 'static>(&self, f: F) {
         let id = self.raw_id();
-        let held: std::sync::Arc<std::sync::Mutex<F>> =
-            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let held: std::sync::Arc<std::sync::Mutex<Option<F>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
         let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
             let held = std::sync::Arc::clone(&held);
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>()
                 .map(|menu| {
                     menu.action_triggered.connect_ref(move |action_id: &String| {
-                        if let Ok(mut callback) = held.lock() {
-                            callback(action_id.clone());
-                        } else {
-                            log::warn!(
-                                "the menu-item action callback for widget {id} could not be \
-                                 locked; skipping this trigger rather than panicking"
-                            );
-                        }
+                        run_shared_callback(&held, "menu-item action", id, |callback| {
+                            callback(action_id.clone())
+                        });
                     })
                 })
         })

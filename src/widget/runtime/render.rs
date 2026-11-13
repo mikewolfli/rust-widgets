@@ -490,6 +490,7 @@ pub fn render_frame_cached_shared(
                     state.large_damage_run = 0;
                 }
             });
+            remember_frame_damage(id, &[]);
             return Some(Rc::clone(previous));
         }
     }
@@ -638,9 +639,11 @@ pub fn render_frame(id: ObjectId, size: Size, clear: crate::core::Color) -> Opti
     })
     .unwrap_or(false);
     if !painted {
+        remember_frame_damage(id, &[]);
         return_frame_backend(backend, size);
         return None;
     }
+    remember_frame_damage(id, backend.damage_regions());
     let frame = backend.take_frame_rgba();
     return_frame_backend(backend, size);
     Some(frame)
@@ -930,10 +933,12 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     });
 
     if !painted {
+        remember_frame_damage(id, &[]);
         return_frame_backend(backend, size);
         return None;
     }
     backend.end_frame();
+    remember_frame_damage(id, backend.damage_regions());
     let frame = backend.take_frame_rgba();
     return_frame_backend(backend, size);
     Some(frame)
@@ -1184,10 +1189,54 @@ pub(crate) struct SubtreeMetrics {
     pub(crate) paint_clip: Option<Rect>,
 }
 
+/// The damaged rectangles of one painted frame, in frame pixels (`x, y, w, h`).
+type FrameDamage = Vec<(i32, i32, u32, u32)>;
+
 /// The retained `subtree_metrics` table and the key it was computed under (RD3-02).
 type TreeMetricsCache = Option<((ObjectId, u64, u64), HashMap<ObjectId, SubtreeMetrics>)>;
 
+/// Records the damaged rectangles of the frame just painted for `id`.
+///
+/// `PaintBackend::damage_regions` is only readable while the backend is borrowed, and the frame
+/// path returns the backend to its pool immediately after reading the pixels, so the list is
+/// copied here for the presenter. An empty list clears the entry rather than leaving a stale one
+/// (W6-43).
+fn remember_frame_damage(id: ObjectId, regions: &[(i32, i32, u32, u32)]) {
+    let copied = regions.to_vec();
+    let _ = LAST_FRAME_DAMAGE.try_with(|map| {
+        let mut map = map.borrow_mut();
+        if copied.is_empty() {
+            map.remove(&id);
+        } else {
+            map.insert(id, copied);
+        }
+    });
+}
+
+/// The damaged rectangles of the last frame painted for `id`, in frame pixels.
+///
+/// Empty means "no damage recorded" — either nothing has been painted yet, or the last paint
+/// changed nothing; a presenter treats both as "use the whole frame". A host that presents a
+/// frame itself uses this instead of a full-width band, so a cursor blink uploads a cursor-sized
+/// rectangle (W6-43).
+pub fn last_frame_damage(id: ObjectId) -> FrameDamage {
+    LAST_FRAME_DAMAGE
+        .try_with(|map| map.borrow().get(&id).cloned())
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
 thread_local! {
+    /// The damaged rectangles of the last painted frame, by widget id.
+    ///
+    /// The frame buffer is whole (see [`render_frame_incremental`]), so the only record of *what
+    /// changed* is the surface's damage list. Presentation needs it to upload a narrow region
+    /// instead of a full-width row band, and the backend is returned to its pool right after the
+    /// read, so the list has to be copied out here (W6-43).
+    pub(crate) static LAST_FRAME_DAMAGE: RefCell<HashMap<ObjectId, FrameDamage>> =
+        RefCell::new(HashMap::new());
+
     /// The `subtree_metrics` table, kept across frames under the freshness tokens that decide
     /// whether it still describes the tree (RD3-02).
     ///

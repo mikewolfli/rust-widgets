@@ -139,7 +139,8 @@ crate-type = ["lib", "cdylib"]
 [features]
 # ── Default is full desktop ──
 #
-# `default` names the `desktop` profile and nothing else. The real font and icon payloads now live
+# `default = ["desktop", "code-editor", "markdown-editor", "builtin-languages"]`: the `desktop`
+# profile plus the three editor switches (BLUE31 §1.5). The real font and icon payloads live
 # **in the device profiles** (`desktop`/`tablet`/`mobile`) rather than in `default`:
 #
 #   * a profile answers "what kind of machine is this", and a desktop/tablet/mobile host is one
@@ -525,10 +526,11 @@ text-bidi = ["dep:unicode-bidi"]
 ##
 ## `desktop`/`tablet`/`mobile` list the vector faces (Latin, Arabic, CJK, emoji) because a host
 ## with the bytes wants antialiased text; `mini`/`embedded` list none, because they are *sized* and
-## a payload the caller did not ask for is exactly wrong there. `default` names `desktop` and
-## nothing else, so a plain `cargo build` gets the real faces *through the profile* — which is what
-## lets `--features desktop` (the crate's own export/test surface) and a plain `cargo build` render
-## the same picture. `tools/check_font_data_is_opt_in.sh` asserts the split.
+## a payload the caller did not ask for is exactly wrong there. `default` is `desktop` plus the
+## three editor switches and names no face of its own, so a plain `cargo build` gets the real faces
+## *through the profile* — which is what lets `--features desktop` (the crate's own export/test
+## surface) and a plain `cargo build` render the same picture.
+## `tools/check_font_data_is_opt_in.sh` asserts the split.
 ## Real text shaping: ligatures, Arabic joining and kerning, from a face the caller enables.
 ##
 ## Shaping needs a face — it substitutes and positions glyphs by the font's own tables — so this
@@ -640,8 +642,9 @@ fonts-cjk-shard-han = ["text-shaping", "rust-widgets-font/cjk-shard-han"]
 ## That size — 1.53 MB, an order of magnitude more than the vector faces — is why it ships in
 ## `desktop` alone rather than in every capable profile: emoji is a niche a tablet/mobile UI can
 ## drop without losing text quality, while the Latin/Arabic/CJK faces are what make ordinary UI text
-## antialiased. It is still *not* in `default` directly (nothing is): `default` names `desktop`, and
-## only `desktop` carries this face. A tablet/mobile host that wants it asks: `--features tablet,fonts-emoji-color`.
+## antialiased. `default` does not name it: `default` is `desktop` plus the three editor
+## switches (none of which carries a face), and only `desktop` carries this face. A tablet/mobile
+## host that wants it asks: `--features tablet,fonts-emoji-color`.
 ##
 ## # Why it does not need `text-shaping`
 ##
@@ -687,10 +690,10 @@ runtime-fonts = ["text-shaping"]
 ##     hosts with the bytes to spare and a reason to want real outlines, so they list `icons`.
 ##     `mini` and `embedded` are *sized*, so a payload the caller did not ask for is exactly wrong
 ##     there — neither lists it.
-##   * `default` names `desktop` and nothing else, so a plain `cargo build` still gets the real
-##     outlines *through the profile*. Keeping the data in the profiles rather than in `default` is
-##     what makes `--features desktop` (which the crate's own gates export and test) agree with a
-##     plain `cargo build`.
+##   * `default` is `desktop` plus the three editor switches and names `icons` in neither place.
+##     A plain `cargo build` therefore still gets the real outlines *through the profile*. Keeping
+##     the data in the profiles rather than in `default` is what makes `--features desktop` (which
+##     the crate's own gates export and test) agree with a plain `cargo build`.
 ##
 ## A caller who does not want the payload builds a profile that omits it (`mini`/`embedded`), or a
 ## `desktop` build with `--no-default-features --features desktop` no longer drops it — the rejection
@@ -769,7 +772,7 @@ unstable-special-widgets = []
 ## Real audio codecs via symphonia (FLAC, OGG Vorbis, AAC).
 ## Enables actual PCM decoding instead of synthetic fallback data.
 ##
-## Opus is deliberately absent: the pinned symphonia 0.5 release ships no Opus decoder, so the
+## Opus is deliberately absent: the pinned symphonia 0.6 release ships no Opus decoder, so the
 ## format is recognized and refused with that reason (`src/audio/decoder.rs::decode_opus`)
 ## rather than advertised as decodable here.
 symphonia-codecs = ["symphonia"]
@@ -848,10 +851,31 @@ full = [
 ## the question a caller actually means — "enable everything a desktop host can use" — and it is
 ## what CI builds instead.
 ##
-## The excluded features are the ones that need a different host: the non-desktop device
-## profiles, `holographic`, and the codec features that link system libraries
-## (`symphonia-codecs`, `audio-output`, `video-codecs`). Everything `desktop` already lists
-## (icons, image, designer, serde, the text faces, …) comes in through that one name.
+## `desktop` is a subset of the list below, so everything it pulls in (icons, image, designer,
+## serde, the text faces, …) arrives through that one name. The direct entries are the switches
+## no other name turns on: the two editor controls and their lexer, `3d`, the GPU benchmark's
+## `gpu-wgpu` alias, `projection`, runtime font registration, and the two experimental-pipeline
+## aliases.
+##
+## # What it deliberately leaves out
+##
+## The excluded names need a different host or have no consumer on this surface. Derived from
+## this table, not from memory: every feature declared in this file is either reachable from the
+## list below or one of these groups:
+##
+##   * the other device profiles — `tablet`, `mobile`, `mini`, `embedded` — and the internal
+##     `profile-embedded-mini` runtime selector;
+##   * the backends `desktop` does not select — `macos`/`macos-legacy`/`objc2-macos`,
+##     `ios`/`ios-uikit-ffi`, `android`/`android-jni`/`jni`, `wasm`, `harmony`/`xcomponent`,
+##     `linux-wayland`/`wayland-native`/`wayland-portal`, `linux-a11y`, and the no-op `windows`;
+##   * `holographic`;
+##   * the capability features no desktop build enables by default — `print`, `pdf`,
+##     `pdf-encryption`, `video`, `audio`, `raw-window-handle`, `fonts-cjk-bitmap`,
+##     `fonts-cjk-shards` (and its five `fonts-cjk-shard-*` members), `no-declarative-view`,
+##     `software`, `mobile-api`, `quality-management`;
+##   * the codec features that link system libraries — `symphonia-codecs`, `audio-output`,
+##     `video-codecs`;
+##   * the meta names themselves — `default`, `full`.
 all-desktop-features = [
     "desktop",
     "code-editor",
@@ -955,8 +979,8 @@ sha2 = { version = "0.11", optional = true }
 # A real OS CSPRNG for PDF salt/IV material. `EncryptionAlgorithm`'s salt and IV were derived from a
 # time-seeded LCG, which is predictable and defeats the purpose of a salt. `getrandom` is the
 # cross-platform way to read the OS entropy source; on wasm32 it needs the `wasm_js` feature, which
-# is declared in the `[target.'cfg(target_arch = "wasm32")'.dependencies]` section for the same
-# reason the `js`/`wasm_js` features are pinned there.
+# is declared in the `[target.'cfg(target_arch = "wasm32")'.dependencies]` section, and the
+# dependency itself is optional because this feature is its only consumer.
 getrandom = { version = "0.4", optional = true }
 # Note: On Linux, requires `libasound2-dev` package for ALSA backend.
 # On macOS, uses CoreAudio; on Windows, uses WASAPI.
@@ -1027,7 +1051,6 @@ winapi = { version = "0.3", features = [
     "knownfolders",
     "shlobj",
     "shobjidl",
-    "winerror",
     "errhandlingapi",
     "libloaderapi",
     # `GlobalMemoryStatusEx` (sysinfoapi) and `GetProcessMemoryInfo` (psapi)
@@ -1111,16 +1134,6 @@ zbus = { version = "6", optional = true }
 # sysroot, which `cargo ohos` points at. See `tools/check_harmony_cross.sh` and
 # `src/platform/harmony/status.md` for the working recipe.
 
-# `wasm32-unknown-unknown` has no OS entropy source, so `getrandom` refuses to
-# build unless its `js` feature is on. The dependency reaches us transitively
-# through the JavaScript engine (`boa_engine` -> `rand` 0.8 -> `rand_core` 0.6 ->
-# `getrandom` 0.2), so the fix has to be applied from the top of the graph: the
-# `js` feature below is unified with whatever `boa_engine` requests, which is what
-# unlocks the wasm32 backend.
-#
-# This is a pure build-configuration fix — no source change — matching the
-# existing note above the `dev-dependencies` section, where the same constraint
-# is why criterion/tempfile/proptest are gated off wasm32.
 # Redox OS has no toolkit: its display server is Orbital, reached through the
 # `/scheme/orbital` scheme. `orbclient` is the protocol's client half (the same crate
 # winit's Orbital backend reads its event types from); the backend opens a real window
@@ -1130,18 +1143,13 @@ zbus = { version = "6", optional = true }
 orbclient = { version = "0.4.6", default-features = false, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# `getrandom` 0.2 is the version `boa_engine -> rand 0.8 -> rand_core 0.6` depends on, and
-# its browser backend is the feature named `js` (0.3 renamed it to `wasm_js`). The alias must
-# therefore name 0.2: pointing it at 0.4 asked for a feature that version does not have, which
-# is a resolution error on every target (principle #43: the feature name belongs to the
-# version that declares it).
-getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 # `pdf-encryption` derives its salt/IV from `getrandom` 0.4, whose browser backend is opt-in
 # (`wasm_js`). On `wasm32-unknown-unknown` the feature must be on or the crate refuses to build.
 # This is the **same package** as the optional `getrandom` in `[dependencies]`, so it cannot take a
-# distinct name (cargo rejects one package under two names in a single graph); re-declaring it
-# here non-optionally attaches the feature on this target only, which is the constraint.
-getrandom = { version = "0.4", features = ["wasm_js"] }
+# distinct name (cargo rejects one package under two names in a single graph); the declaration is
+# optional for the same reason as the one above — only `pdf-encryption` reads it — and
+# `dep:getrandom` activates it with the `wasm_js` feature on this target.
+getrandom = { version = "0.4", optional = true, features = ["wasm_js"] }
 
 [dev-dependencies]
 # NOTE: criterion (benchmark harness), tempfile (filesystem tests) and proptest

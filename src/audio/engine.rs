@@ -28,8 +28,58 @@ pub struct AudioEngine {
     /// returns.
     #[cfg(feature = "audio-output")]
     output: Option<AudioOutput>,
+    /// Generation of the loaded buffer. Incremented in `install_decoded` so a
+    /// prepared copy can never outlive the samples it was made from.
+    #[cfg(feature = "audio-output")]
+    buffer_revision: u64,
+    /// `buffer` converted to one device layout, reused across `play_to_device`
+    /// calls when the revision and layout both still match.
+    #[cfg(feature = "audio-output")]
+    prepared: Option<PreparedBufferCache>,
     /// Emitted when playback state changes.
     pub on_state_change: Signal<bool>,
+}
+
+/// A prepared copy of the loaded buffer in one device layout.
+///
+/// `prepare_buffer` resamples the whole track and copies every sample; for a
+/// five-minute stereo source that is ≈100 MB of work per call. The engine holds
+/// the result here and reuses it while the buffer revision and the device layout
+/// both stay the same (W6-29).
+#[cfg(feature = "audio-output")]
+struct PreparedBufferCache {
+    revision: u64,
+    sample_rate: u32,
+    channels: u8,
+    samples: Arc<Vec<f32>>,
+}
+
+/// Returns `buffer` prepared for `(sample_rate, channels)`, reusing the cached
+/// conversion when both the buffer revision and the layout match.
+#[cfg(feature = "audio-output")]
+fn prepared_samples_cached(
+    cache: &mut Option<PreparedBufferCache>,
+    revision: u64,
+    buffer: &AudioBuffer,
+    sample_rate: u32,
+    channels: u8,
+) -> Arc<Vec<f32>> {
+    if let Some(entry) = cache.as_ref() {
+        if entry.revision == revision
+            && entry.sample_rate == sample_rate
+            && entry.channels == channels
+        {
+            return Arc::clone(&entry.samples);
+        }
+    }
+    let samples = AudioOutput::prepare_samples(buffer, sample_rate, channels);
+    *cache = Some(PreparedBufferCache {
+        revision,
+        sample_rate,
+        channels,
+        samples: Arc::clone(&samples),
+    });
+    samples
 }
 
 impl AudioEngine {
@@ -43,6 +93,10 @@ impl AudioEngine {
             pending_load: None,
             #[cfg(feature = "audio-output")]
             output: None,
+            #[cfg(feature = "audio-output")]
+            buffer_revision: 0,
+            #[cfg(feature = "audio-output")]
+            prepared: None,
             on_state_change: Signal::new(),
         }
     }
@@ -146,6 +200,13 @@ impl AudioEngine {
         self.buffer = Some(buffer);
         self.position = 0;
         self.is_playing = false;
+        #[cfg(feature = "audio-output")]
+        {
+            // A different buffer means different samples: bump the revision so a
+            // cached conversion can never be reused for it.
+            self.buffer_revision = self.buffer_revision.wrapping_add(1);
+            self.prepared = None;
+        }
     }
 
     /// Load audio from raw bytes. Detects format automatically.
@@ -279,8 +340,51 @@ impl AudioEngine {
     }
 
     /// Play the loaded audio through the system's default audio output device.
+    ///
+    /// The prepared conversion and the device are both reused when they are still
+    /// valid: pausing and resuming must not pay device setup or a full-track
+    /// resample again (W6-29). A new [`AudioOutput`] is constructed only when no
+    /// output is held; its failure is returned unchanged, so the existing error
+    /// contract is preserved.
     #[cfg(feature = "audio-output")]
     pub fn play_to_device(&mut self) -> Result<(), String> {
+        if self.buffer.is_none() {
+            return Err("No audio loaded".to_string());
+        }
+
+        // A paused stream still holds its position and its samples: resuming it is
+        // both the cheapest and the only behaviour that does not jump backwards.
+        if let Some(output) = self.output.as_mut() {
+            if output.is_paused() && output.has_stream() {
+                output.resume();
+                self.is_playing = true;
+                self.on_state_change.emit(true);
+                return Ok(());
+            }
+        }
+
+        // Read the layout before taking a mutable borrow of `output`; the borrow
+        // used by `and_then` must end here or the reuse call below would conflict.
+        let existing_layout = self.output.as_ref().and_then(AudioOutput::prepared_layout);
+        if let Some((sample_rate, channels)) = existing_layout {
+            let revision = self.buffer_revision;
+            let buffer = self.buffer.as_ref().ok_or("No audio loaded")?;
+            let samples = prepared_samples_cached(
+                &mut self.prepared,
+                revision,
+                buffer,
+                sample_rate,
+                channels,
+            );
+            let volume = self.volume;
+            let output = self.output.as_mut().ok_or("No audio device")?;
+            output.set_volume(volume);
+            output.play_prepared(samples)?;
+            self.is_playing = true;
+            self.on_state_change.emit(true);
+            return Ok(());
+        }
+
         let output = AudioOutput::new()?;
         self.play_to_device_with(output)
     }
@@ -289,9 +393,31 @@ impl AudioEngine {
     /// for the duration of playback.
     #[cfg(feature = "audio-output")]
     fn play_to_device_with(&mut self, mut output: AudioOutput) -> Result<(), String> {
-        let buffer = self.buffer.as_ref().ok_or("No audio loaded")?;
+        if self.buffer.is_none() {
+            return Err("No audio loaded".to_string());
+        }
         output.set_volume(self.volume);
-        output.play(buffer)?;
+        match output.prepared_layout() {
+            Some((sample_rate, channels)) => {
+                let revision = self.buffer_revision;
+                let buffer = self.buffer.as_ref().ok_or("No audio loaded")?;
+                let samples = prepared_samples_cached(
+                    &mut self.prepared,
+                    revision,
+                    buffer,
+                    sample_rate,
+                    channels,
+                );
+                output.play_prepared(samples)?;
+            }
+            None => {
+                // No usable layout (for example a test output with no device):
+                // delegate to `play` so the explicit device/config error is the
+                // same one this path has always reported.
+                let buffer = self.buffer.as_ref().ok_or("No audio loaded")?;
+                output.play(buffer)?;
+            }
+        }
         self.output = Some(output);
         self.is_playing = true;
         self.on_state_change.emit(true);
@@ -407,6 +533,79 @@ mod tests {
         assert!(err.contains("No audio device"), "got: {err}");
         assert!(engine.output.is_none());
         assert!(!engine.is_playing());
+    }
+
+    /// Serializes the tests that observe the process-wide prepare/construction
+    /// counters.
+    #[cfg(feature = "audio-output")]
+    static DEVICE_COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// W6-29: an existing, layout-bearing output must be reused rather than a
+    /// second device being constructed on every `play_to_device` call.
+    #[test]
+    #[cfg(feature = "audio-output")]
+    fn play_to_device_reuses_the_existing_output() {
+        let _serial = DEVICE_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::output::reset_construction_count();
+
+        let mut engine = AudioEngine::new();
+        engine.buffer = Some(AudioBuffer::new(48_000, vec![0.0; 8], 1));
+        engine.output = Some(AudioOutput::new_with_layout_for_test(48_000, 1));
+
+        // The injected output has a layout but no device, so starting the stream
+        // reports the explicit contract error; the point is that it was reused.
+        let err = engine.play_to_device().unwrap_err();
+        assert!(err.contains("No audio device"), "got: {err}");
+        assert_eq!(
+            crate::audio::output::construction_count(),
+            0,
+            "an existing output must be reused"
+        );
+        assert!(engine.output.is_some(), "the reused output stays held");
+    }
+
+    /// W6-29: a cache hit must not resample the track again, and a new buffer or
+    /// a new device layout must invalidate the cached conversion.
+    #[test]
+    #[cfg(feature = "audio-output")]
+    fn a_cached_prepared_buffer_is_not_repared_until_the_buffer_or_layout_changes() {
+        let _serial = DEVICE_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::audio::output::reset_prepare_samples_call_count();
+
+        let mut engine = AudioEngine::new();
+        engine.buffer = Some(AudioBuffer::new(24_000, vec![0.0; 240], 1));
+
+        let first = engine.play_to_device_with(AudioOutput::new_with_layout_for_test(48_000, 2));
+        assert!(first.is_err(), "a layout-only test output cannot open a real stream");
+        assert_eq!(
+            crate::audio::output::prepare_samples_call_count(),
+            1,
+            "the first play prepares once"
+        );
+
+        let second = engine.play_to_device_with(AudioOutput::new_with_layout_for_test(48_000, 2));
+        assert!(second.is_err());
+        assert_eq!(
+            crate::audio::output::prepare_samples_call_count(),
+            1,
+            "a cache hit must not resample the track again"
+        );
+
+        // A different device layout is a different cache key.
+        let _ = engine.play_to_device_with(AudioOutput::new_with_layout_for_test(44_100, 1));
+        assert_eq!(crate::audio::output::prepare_samples_call_count(), 2);
+        // The same layout a second time is a hit again.
+        let _ = engine.play_to_device_with(AudioOutput::new_with_layout_for_test(44_100, 1));
+        assert_eq!(crate::audio::output::prepare_samples_call_count(), 2);
+
+        // A new buffer has different samples, so the cache must be invalidated.
+        engine.install_decoded(AudioBuffer::new(24_000, vec![0.5; 480], 1));
+        let _ = engine.play_to_device_with(AudioOutput::new_with_layout_for_test(44_100, 1));
+        assert_eq!(
+            crate::audio::output::prepare_samples_call_count(),
+            3,
+            "loading a new buffer must invalidate the prepared copy"
+        );
     }
 
     #[test]

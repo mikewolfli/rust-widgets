@@ -40,6 +40,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
 . "$ROOT_DIR/tools/lib_timeout.sh"
 . "$ROOT_DIR/tools/lib_cargo_cache.sh"
 . "$ROOT_DIR/tools/lib_python.sh"
@@ -99,14 +101,29 @@ fi
 echo "  PASS  no live reference to the removed wrapper"
 
 echo "[2/4] the capability question exists and is not hardcoded true"
-if ! grep -q "fn supports_web_engine" src/platform/types/traits.rs; then
+# The declaration is located by its *shape* — an anchored `fn supports_web_engine`
+# at the start of a code line — not by the token appearing anywhere in the file.
+# The old judgement took the first line between any mention of the name and the
+# first four-space `    }`, so a doc comment mentioning the function, or a comment
+# containing the word `false`, could stand in for the returned value (W6-35).
+DEFAULT_FN_LINE="$(rw_function_line src/platform/types/traits.rs supports_web_engine || true)"
+if [ -z "$DEFAULT_FN_LINE" ]; then
     echo "  FAIL  Platform::supports_web_engine is missing"
+    echo "        It is the one question a caller can ask before claiming a rendering engine."
     exit 1
 fi
-# The default must be `false`: a backend that declares nothing declares no engine.
-DEFAULT_LINE="$(awk '/fn supports_web_engine/{found=1} found && /^    }/{exit} found && /true|false/{print; exit}' src/platform/types/traits.rs)"
-if ! printf '%s' "$DEFAULT_LINE" | grep -q "false"; then
-    echo "  FAIL  the default body does not answer 'false'; got: $DEFAULT_LINE"
+# The default must be the `false` *literal*: the function body is sliced by brace
+# balance and read with comments removed, so `true // false` is `true`, and a
+# multi-expression override is not silently reduced to its first line.
+DEFAULT_BODY="$(rw_slice_function_body src/platform/types/traits.rs "$DEFAULT_FN_LINE" || true)"
+DEFAULT_ANSWER="$(printf '%s\n' "$DEFAULT_BODY" | rw_strip_line_comments \
+    | sed -n '2,$p' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -vE '^$|^\{$|^\}$' || true)"
+if [ "$DEFAULT_ANSWER" != "false" ] && [ "$DEFAULT_ANSWER" != "false;" ]; then
+    echo "  FAIL  the default body does not answer 'false'; got: ${DEFAULT_ANSWER:-<empty>}"
+    echo "        A backend that declares nothing declares no engine. The answer is read as"
+    echo "        the body's own expression, with comments stripped."
     exit 1
 fi
 echo "  PASS  supports_web_engine() exists and defaults to false"
@@ -134,8 +151,15 @@ if ! rw_cargo_cached "$STEP_BUDGET" test \
 fi
 # Reverse-injection check: the query must actually consult the platform. A hardcoded
 # `true`/`false` in the widget would satisfy the equality test only by coincidence, so the
-# body is inspected for the platform call.
-if ! grep -A 3 "pub fn has_real_engine" crates/rust-widgets-suites/src/webview/web_engine_enhanced.rs | grep -q "supports_web_engine"; then
+# *whole* body is sliced (brace-balanced) and searched with comments removed. The old
+# `grep -A 3` looked at three lines, which is neither the function's body nor an anchor.
+HAS_REAL_ENGINE_LINE="$(rw_function_line crates/rust-widgets-suites/src/webview/web_engine_enhanced.rs has_real_engine || true)"
+PLATFORM_CALL=""
+if [ -n "$HAS_REAL_ENGINE_LINE" ]; then
+    PLATFORM_CALL="$(rw_slice_function_body crates/rust-widgets-suites/src/webview/web_engine_enhanced.rs "$HAS_REAL_ENGINE_LINE" \
+        | rw_strip_line_comments | grep -E 'supports_web_engine\(' || true)"
+fi
+if [ -z "$PLATFORM_CALL" ]; then
     echo "  FAIL  has_real_engine does not ask the platform, so it is a hardcoded answer"
     exit 1
 fi

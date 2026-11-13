@@ -55,6 +55,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 echo "[1/3] the reason channel exists"
 if ! grep -qE '^pub enum RepaintReason' src/widget/runtime/frame.rs; then
     echo "  FAIL  src/widget/runtime/frame.rs no longer defines \`pub enum RepaintReason\`"
@@ -73,7 +76,7 @@ echo "[2/3] every library-side invalidation names a cause"
 # file so a new bare call in the same file is still a finding.
 ALLOWED='request_repaint_because|fn mark_dirty_rect|note_frame_repaint_reason'
 RAW="$(grep -rn 'crate::invalidate_surface' src/widget/ --include=*.rs \
-    | sed -e 's://.*::' || true)"
+    | rw_strip_line_comments || true)"
 
 if [ -z "$RAW" ] || [ "$(printf '%s' "$RAW" | tr -d '[:space:]' | wc -c)" -eq 0 ]; then
     echo "  FAIL  no crate::invalidate_surface call sites found under src/widget/"

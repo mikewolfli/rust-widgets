@@ -75,6 +75,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 ENV_MODULE="src/style/environment.rs"
 
 echo "[1/3] the single source exists and answers all eight facts"
@@ -119,7 +122,7 @@ echo "[2/3] no wall-clock inference of an appearance or motion preference"
 # (BLUE22 §F.3 lesson 4, the same failure this project has recorded before).
 APPEARANCE_FILES="src/style src/theme src/widget/base_widgets src/widget/display_widgets"
 CLOCK_HITS="$(grep -rnE 'SystemTime::now|UNIX_EPOCH|as_secs\(\)|/ 3600|/3600' $APPEARANCE_FILES --include=*.rs \
-    | sed -e 's://.*::' \
+    | rw_strip_line_comments \
     | grep -vE ':\s*$' \
     || true)"
 
@@ -160,7 +163,7 @@ echo "[3/3] no environment variable decides a device fact"
 # one of the eight would put the answer in the process environment rather than in
 # the provider, which no test can substitute.
 ENV_HITS="$(grep -rnE 'std::env::var\(|env::var_os\(' src/style/ src/widget/ src/theme/ --include=*.rs \
-    | sed -e 's://.*::' \
+    | rw_strip_line_comments \
     | grep -vE ':\s*$' \
     || true)"
 CODE_ENV_HITS="$(printf '%s\n' "$ENV_HITS" | while IFS= read -r line; do

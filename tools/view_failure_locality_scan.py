@@ -30,13 +30,9 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-
-
-def strip_comments(text):
-    """Removes `//`-style comments and `/* */` blocks, so prose does not satisfy a check."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
 
 
 def main(argv=None) -> int:

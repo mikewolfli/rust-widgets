@@ -1051,6 +1051,124 @@ fn input_method_query_reports_the_caret_rectangle() {
     assert!(query.caret_rect.x >= te.geometry().x);
 }
 
+/// The x of the caret the frame painted, read back from the SVG.
+///
+/// The caret is a vertical line (`x1 == x2`) drawn after the text, so the last such line in the
+/// frame is the caret.
+#[cfg(feature = "text-bidi")]
+fn painted_caret_x(svg: &str) -> i32 {
+    svg.lines()
+        .filter_map(|line| {
+            let rest = line.split("<line ").nth(1)?;
+            let x1: i32 = rest.split("x1=\"").nth(1)?.split('"').next()?.parse().ok()?;
+            let x2: i32 = rest.split("x2=\"").nth(1)?.split('"').next()?.parse().ok()?;
+            (x1 == x2).then_some(x1)
+        })
+        .next_back()
+        .expect("the caret is drawn as a vertical line")
+}
+
+/// The advance of `text` on the same measurement surface the markers use.
+#[cfg(feature = "text-bidi")]
+fn marker_width(te: &TextEdit, text: &str) -> i32 {
+    TextEdit::with_measurement(|context| context.measure_text(text, te.text_font()).width as i32)
+}
+
+/// W6-21: an RTL row places the caret by the **visual** order.
+///
+/// The caret was placed at "the width of the logical prefix", which is the caret's on-screen x
+/// only while the row paints left to right. The renderer reorders a right-to-left row, so logical
+/// offset 0 belongs at the row's *right* end; before the mapping the marker sat at the left edge
+/// of the row the glyphs were not painted at.
+#[cfg(feature = "text-bidi")]
+#[test]
+fn an_rtl_row_places_the_caret_at_its_visual_side() {
+    use crate::widget::svg::render_to_svg;
+
+    // אבג — one Hebrew (right-to-left) run.
+    let text = "\u{05d0}\u{05d1}\u{05d2}";
+    let mut te = editor(text);
+    te.set_cursor(0);
+    let svg = render_to_svg(&mut te);
+
+    let mut glyph = [0u8; 4];
+    let row_width: i32 = text
+        .chars()
+        .map(|ch| {
+            let cluster = ch.encode_utf8(&mut glyph);
+            marker_width(&te, cluster)
+        })
+        .sum();
+    assert_eq!(
+        painted_caret_x(&svg),
+        4 + row_width,
+        "logical offset 0 is the visual right end of an RTL row"
+    );
+}
+
+/// W6-21: an RTL selection band covers the glyphs it selects, not their logical mirror.
+///
+/// The last logical character is painted at the row's *left* end, so its band starts at the row
+/// origin rather than after the prefix of the two characters before it.
+#[cfg(feature = "text-bidi")]
+#[test]
+fn an_rtl_selection_band_follows_the_visual_order() {
+    use crate::widget::svg::render_to_svg;
+
+    let text = "\u{05d0}\u{05d1}\u{05d2}";
+    let mut te = editor(text);
+    te.set_cursor(4);
+    te.handle_event(&Event::key_press(39, SHIFT_BIT)); // select the last logical character
+    assert_eq!(te.selection_range(), Some((4, 6)));
+    let svg = render_to_svg(&mut te);
+
+    // The last logical character is the leftmost ink in a right-to-left row.
+    let last = text.chars().last().expect("the value is not empty");
+    let mut glyph = [0u8; 4];
+    let width = marker_width(&te, last.encode_utf8(&mut glyph));
+    let painted = svg.lines().any(|line| {
+        if !line.contains("<rect ") || line.contains("fill=\"none\"") {
+            return false;
+        }
+        let attr = |name: &str| -> Option<i32> {
+            line.split(&format!("{name}=\"")).nth(1)?.split('"').next()?.parse().ok()
+        };
+        attr("x") == Some(4) && attr("width") == Some(width)
+    });
+    assert!(painted, "the last logical character is painted at the left end, width {width}");
+}
+
+/// W6-21: an all-left-to-right value keeps the plain logical marker path.
+///
+/// The bidi branch must be a strict addition: with the feature enabled an LTR value still
+/// measures its caret and its band from the logical prefix, byte for byte as before.
+#[cfg(feature = "text-bidi")]
+#[test]
+fn an_ltr_value_keeps_the_logical_marker_path() {
+    use crate::widget::svg::render_to_svg;
+
+    let mut te = editor("abc");
+    te.set_cursor(1);
+    let svg = render_to_svg(&mut te);
+    assert_eq!(painted_caret_x(&svg), 4 + marker_width(&te, "a"));
+
+    te.set_cursor(0);
+    te.handle_event(&Event::key_press(39, SHIFT_BIT)); // select `a`
+    assert_eq!(te.selection_range(), Some((0, 1)));
+    let svg = render_to_svg(&mut te);
+    let width = marker_width(&te, "a");
+    let painted = svg.lines().any(|line| {
+        if !line.contains("<rect ") || line.contains("fill=\"none\"") {
+            return false;
+        }
+        let attr = |name: &str| -> Option<i32> {
+            line.split(&format!("{name}=\"")).nth(1)?.split('"').next()?.parse().ok()
+        };
+        attr("x") == Some(4) && attr("width") == Some(width)
+    });
+    assert!(painted, "an LTR band stays at the logical x=4 width={width}");
+}
+
 /// A document taller than the viewport publishes and paints a scrollbar (I-015).
 #[test]
 fn a_long_document_has_a_scrollbar() {

@@ -20,6 +20,8 @@ import pathlib
 import re
 import subprocess
 
+from lib_source_scan import strip_line_comment as strip_comments
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REDRAW_HELPERS = (
     "request_redraw",
@@ -32,19 +34,6 @@ REDRAW_HELPERS = (
     "invalidate",
     "mark_dirty",
 )
-
-
-def strip_comments(line: str) -> str:
-    out, in_str, i = [], False, 0
-    while i < len(line):
-        ch = line[i]
-        if ch == '"' and (i == 0 or line[i - 1] != "\\"):
-            in_str = not in_str
-        if not in_str and line.startswith("//", i):
-            break
-        out.append(ch)
-        i += 1
-    return "".join(out)
 
 
 def body_of(text: str, method: str) -> str | None:

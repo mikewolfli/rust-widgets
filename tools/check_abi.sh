@@ -113,9 +113,27 @@ for readme in README.md README.zh-CN.md; do
     echo "Missing ${readme}; cannot verify documented ABI function count." >&2
     exit 1
   fi
-  DOCUMENTED_COUNT="$(grep -oE '[0-9]+ ([`]?rw_[`]?|个 `rw_\*`)' "$readme" | head -1 | grep -oE '^[0-9]+' || true)"
+  # The documented count is the **bolded claim** about `rw_*` functions, not the first
+  # number followed by the symbol name anywhere in the prose. The old pattern took the
+  # first `N rw_...` match in the file, so a sentence that happened to mention a count
+  # (a changelog line, an example) became the asserted document — the gate would then
+  # compare against the wrong number and report the header as drifted (W6-35).
+  #
+  # Both READMEs state it in this shape:
+  #   README.md      **152 `rw_*` functions**
+  #   README.zh-CN   **152 个 `rw_*` 函数**
+  # so the anchor is `**<number> … rw_* … **`. An ambiguous document (zero matches, or
+  # more than one bolded count claim) is reported rather than guessed at.
+  DOCUMENTED_HITS="$(grep -oE '\*\*[0-9]+[^*]*rw_\*[^*]*\*\*' "$readme" || true)"
+  DOCUMENTED_CLAIMS="$(printf '%s\n' "$DOCUMENTED_HITS" | grep -c . || true)"
+  if [[ "$DOCUMENTED_CLAIMS" -ne 1 ]]; then
+    echo "Unable to find exactly one documented rw_* function count in ${readme} (found ${DOCUMENTED_CLAIMS})." >&2
+    echo "  Expected one bolded claim of the form: **<n> \`rw_*\` functions**." >&2
+    exit 1
+  fi
+  DOCUMENTED_COUNT="$(printf '%s\n' "$DOCUMENTED_HITS" | sed -n 's/^\*\*\([0-9][0-9]*\).*/\1/p')"
   if [[ -z "$DOCUMENTED_COUNT" ]]; then
-    echo "Unable to find the documented rw_* function count in ${readme}." >&2
+    echo "Unable to read the documented rw_* function count from ${readme}: ${DOCUMENTED_HITS}" >&2
     exit 1
   fi
   if [[ "$DOCUMENTED_COUNT" != "$ACTUAL_COUNT" ]]; then

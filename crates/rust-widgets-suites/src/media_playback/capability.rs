@@ -239,6 +239,7 @@ const AUDIO_VISUALIZER_EVENTS: &[EventSchema] = &[
 /// `camera_preview`'s published events.
 const CAMERA_PREVIEW_EVENTS: &[EventSchema] = &[
     EventSchema::unit("capture_requested"),
+    EventSchema { name: "device_lost", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "error_occurred", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "format_negotiated", payload: Some(K::UInt), shape: Some(S::Tuple2) },
     EventSchema { name: "frame_available", payload: Some(K::UInt), shape: Some(S::Scalar) },

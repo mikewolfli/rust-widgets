@@ -12,6 +12,14 @@ use super::diff::{diff, diff_scoped, DiffReport};
 use super::node::{Host, Node};
 use super::row_signal::RowSignal;
 
+/// The deepest `Node` tree the engine's recursive walks will descend into.
+///
+/// The declarative JSON loader bounds its own trees (`crate::json::MAX_DEPTH`), but a
+/// programmatic `View` builds `Node`s directly, so the engine cannot assume that bound was
+/// applied: tens of thousands of levels overflowed the stack on the first mount/diff (W6-32).
+/// The same figure keeps both paths' limits identical.
+const MAX_TREE_DEPTH: u32 = 64;
+
 /// Values a root supplies to the whole view subtree.
 ///
 /// # Why reading is resolved at build time
@@ -559,7 +567,7 @@ impl ViewEngine {
                 if let Some(old_root) = self.layout.root() {
                     // `id_of_path` still describes the previous tree here — nothing has
                     // rewritten it since the last mount/update.
-                    self.run_unmount_hooks(&previous, old_root, &[], &self.id_of_path);
+                    self.run_unmount_hooks(&previous, old_root, &[], &self.id_of_path, 0);
                 }
             }
             let removed = self.layout.clear_structure();
@@ -604,11 +612,12 @@ impl ViewEngine {
             create,
             &mut report,
             resolver,
+            0,
         );
         self.write_declared_properties(&root, root_id, &mut report, resolver);
         // Lifecycle: the whole tree now exists, so each node's `on_mount` runs -- children
         // before their parent's, which is the order a callback that touches its subtree needs.
-        self.run_mount_hooks(&root, root_id, &[]);
+        self.run_mount_hooks(&root, root_id, &[], 0);
 
         self.current = Some(root);
         // The mounted tree changed, so a snapshot taken before this mount is stale.
@@ -625,12 +634,19 @@ impl ViewEngine {
     /// descends before invoking. The ids come from `id_of_path`, which was populated by the
     /// same walk that created the controls -- so a hook's id is guaranteed to address a
     /// mounted control.
-    fn run_mount_hooks(&self, node: &Node, node_id: ObjectId, path: &[usize]) {
+    fn run_mount_hooks(&self, node: &Node, node_id: ObjectId, path: &[usize], depth: u32) {
+        if depth > MAX_TREE_DEPTH {
+            log::warn!(
+                "[view] the declared tree is deeper than {MAX_TREE_DEPTH} levels; mount hooks \
+                 below this point are not run"
+            );
+            return;
+        }
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
             child_path.push(index);
             if let Some(child_id) = self.id_at(&child_path) {
-                self.run_mount_hooks(child, child_id, &child_path);
+                self.run_mount_hooks(child, child_id, &child_path, depth + 1);
             }
         }
         if let Some(hook) = &node.on_mount {
@@ -652,7 +668,15 @@ impl ViewEngine {
         node_id: ObjectId,
         path: &[usize],
         lookup: &crate::compat::HashMap<Vec<usize>, ObjectId>,
+        depth: u32,
     ) {
+        if depth > MAX_TREE_DEPTH {
+            log::warn!(
+                "[view] the declared tree is deeper than {MAX_TREE_DEPTH} levels; unmount hooks \
+                 below this point are not run"
+            );
+            return;
+        }
         if let Some(hook) = &node.on_unmount {
             hook(node_id);
         }
@@ -660,7 +684,7 @@ impl ViewEngine {
             let mut child_path = path.to_vec();
             child_path.push(index);
             if let Some(child_id) = lookup.get(&child_path).copied() {
-                self.run_unmount_hooks(child, child_id, &child_path, lookup);
+                self.run_unmount_hooks(child, child_id, &child_path, lookup, depth + 1);
             }
         }
     }
@@ -1089,7 +1113,7 @@ impl ViewEngine {
         let created = self.created_ids_this_batch(&report.patches);
         self.current = Some(next);
         if let Some(next) = self.current.as_ref() {
-            self.run_mount_hooks_for_created(next, &[], &created);
+            self.run_mount_hooks_for_created(next, &[], &created, 0);
         }
 
         // The tree changed, so any snapshot taken before this update is stale.
@@ -1143,7 +1167,7 @@ impl ViewEngine {
         if removed.is_empty() {
             return;
         }
-        self.run_unmount_hooks_for_ids(previous, &[], &removed, lookup);
+        self.run_unmount_hooks_for_ids(previous, &[], &removed, lookup, 0);
     }
 
     /// Walks `node`'s subtree, running `on_unmount` for each node of a removed/replaced subtree.
@@ -1158,7 +1182,15 @@ impl ViewEngine {
         path: &[usize],
         removed: &crate::compat::HashMap<ObjectId, ()>,
         lookup: &crate::compat::HashMap<Vec<usize>, ObjectId>,
+        depth: u32,
     ) {
+        if depth > MAX_TREE_DEPTH {
+            log::warn!(
+                "[view] the declared tree is deeper than {MAX_TREE_DEPTH} levels; unmount hooks \
+                 below this point are not run"
+            );
+            return;
+        }
         // Parent-first, mirroring `run_unmount_hooks`. The id comes from `lookup` — normally
         // `id_of_path` itself, or its pre-batch snapshot when reserve shadowed entries (see
         // the snapshot decision in `update_with_optional_icon_resolver`).
@@ -1167,14 +1199,14 @@ impl ViewEngine {
                 // The root of a removed/replaced subtree: tear down the whole subtree, parent
                 // first, so every mounted descendant gets exactly one `on_unmount`. Returning here
                 // rather than continuing the removed-set walk keeps each hook firing once.
-                self.run_unmount_hooks(node, id, path, lookup);
+                self.run_unmount_hooks(node, id, path, lookup, 0);
                 return;
             }
         }
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
             child_path.push(index);
-            self.run_unmount_hooks_for_ids(child, &child_path, removed, lookup);
+            self.run_unmount_hooks_for_ids(child, &child_path, removed, lookup, depth + 1);
         }
     }
 
@@ -1188,7 +1220,15 @@ impl ViewEngine {
         node: &Node,
         path: &[usize],
         created: &crate::compat::HashMap<ObjectId, ()>,
+        depth: u32,
     ) {
+        if depth > MAX_TREE_DEPTH {
+            log::warn!(
+                "[view] the declared tree is deeper than {MAX_TREE_DEPTH} levels; mount hooks \
+                 below this point are not run"
+            );
+            return;
+        }
         let id = self.id_at(path);
         // A root node is never "created" by a batch: `Replace` at the root is refused
         // (`root_replaced`), so the root's id is the one it already had. Reading it as created when
@@ -1199,7 +1239,7 @@ impl ViewEngine {
             for (index, child) in node.children.iter().enumerate() {
                 let mut child_path = path.to_vec();
                 child_path.push(index);
-                self.run_mount_hooks_for_created_subtree(child, &child_path);
+                self.run_mount_hooks_for_created_subtree(child, &child_path, 0);
             }
             if let Some(hook) = &node.on_mount {
                 if let Some(id) = id {
@@ -1211,16 +1251,23 @@ impl ViewEngine {
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
             child_path.push(index);
-            self.run_mount_hooks_for_created(child, &child_path, created);
+            self.run_mount_hooks_for_created(child, &child_path, created, depth + 1);
         }
     }
 
     /// Runs `on_mount` (children-first) for every node of a subtree known to be new.
-    fn run_mount_hooks_for_created_subtree(&self, node: &Node, path: &[usize]) {
+    fn run_mount_hooks_for_created_subtree(&self, node: &Node, path: &[usize], depth: u32) {
+        if depth > MAX_TREE_DEPTH {
+            log::warn!(
+                "[view] the declared tree is deeper than {MAX_TREE_DEPTH} levels; mount hooks \
+                 below this point are not run"
+            );
+            return;
+        }
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
             child_path.push(index);
-            self.run_mount_hooks_for_created_subtree(child, &child_path);
+            self.run_mount_hooks_for_created_subtree(child, &child_path, depth + 1);
         }
         if let Some(hook) = &node.on_mount {
             if let Some(id) = self.id_at(path) {
@@ -1455,7 +1502,15 @@ impl ViewEngine {
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         report: &mut ApplyReport,
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+        depth: u32,
     ) -> usize {
+        if depth > MAX_TREE_DEPTH {
+            log::warn!(
+                "[view] the declared tree is deeper than {MAX_TREE_DEPTH} levels; the mount \
+                 stops here rather than recursing into a stack overflow"
+            );
+            return first_slot;
+        }
         let mut slot = first_slot;
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
@@ -1474,6 +1529,7 @@ impl ViewEngine {
                     create,
                     report,
                     resolver,
+                    depth + 1,
                 );
                 continue;
             }
@@ -1510,6 +1566,7 @@ impl ViewEngine {
                 create,
                 report,
                 resolver,
+                depth + 1,
             );
             self.write_declared_properties(child, child_id, report, resolver);
             slot += 1;
@@ -1610,7 +1667,16 @@ impl ViewEngine {
         if let Some(root_id) = self.layout.root() {
             fresh.insert(Vec::new(), root_id);
         }
-        reindex_children(next, &[], self.layout.root(), 0, &self.layout, &self.layers, &mut fresh);
+        reindex_children(
+            next,
+            &[],
+            self.layout.root(),
+            0,
+            &self.layout,
+            &self.layers,
+            &mut fresh,
+            0,
+        );
         self.id_of_path = fresh;
     }
 
@@ -1673,7 +1739,15 @@ fn reindex_children(
     layout: &crate::json::BoundJsonLayout,
     layers: &[(crate::compat::String, crate::core::ObjectId)],
     out: &mut crate::compat::HashMap<Vec<usize>, crate::core::ObjectId>,
+    depth: u32,
 ) {
+    if depth > MAX_TREE_DEPTH {
+        log::warn!(
+            "[view] the declared tree is deeper than {MAX_TREE_DEPTH} levels; the path index \
+             stops here instead of recursing into a stack overflow"
+        );
+        return;
+    }
     // Address the children by their parent, using the key when the node declares one and the
     // position within the parent otherwise — the same two rules the diff matches by, so the
     // map and the diff cannot disagree about which control a path denotes.
@@ -1711,9 +1785,18 @@ fn reindex_children(
         if super::is_transparent_node(child) {
             // No control of its own: the declaration beneath it is hosted by *this* node's
             // parent, starting where this node would have sat.
-            reindex_children(child, &child_path, lookup_parent, slot, layout, layers, out);
+            reindex_children(
+                child,
+                &child_path,
+                lookup_parent,
+                slot,
+                layout,
+                layers,
+                out,
+                depth + 1,
+            );
         } else {
-            reindex_children(child, &child_path, resolved, 0, layout, layers, out);
+            reindex_children(child, &child_path, resolved, 0, layout, layers, out, depth + 1);
         }
         slot += super::mounted_slots(child);
     }

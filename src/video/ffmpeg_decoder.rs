@@ -69,6 +69,15 @@ pub fn decode_frames(data: &[u8]) -> Result<(Vec<VideoFrame>, VideoMetadata), St
 // FfmpegDecoder — streaming decoder implementing the VideoDecoder trait
 // ---------------------------------------------------------------------------
 
+/// How many consecutive frame-conversion failures mean the pixel format is unusable.
+///
+/// A single dropped frame can have a recoverable cause (a corrupt packet, a scaler hiccup),
+/// so the decoder keeps returning the frames around it. A run of this many failures cannot be
+/// transient: the scaler is configured once per stream, so the same failure repeating means
+/// every frame from this source will fail. Crossing the threshold turns "zero-frame video with
+/// no error signal" into a named conversion/pixel-format failure.
+const MAX_CONSECUTIVE_CONVERT_FAILURES: usize = 8;
+
 /// Streaming FFmpeg-based video decoder.
 ///
 /// Opens a video from raw bytes, uses FFmpeg to demux and decode, and
@@ -100,6 +109,10 @@ pub struct FfmpegDecoder {
     /// Running frame counter for synthesising timestamps when PTS is
     /// unavailable.
     frame_index: u64,
+    /// Frames in a row whose RGBA conversion failed. Reset by any successful
+    /// frame and by a seek; compared against
+    /// [`MAX_CONSECUTIVE_CONVERT_FAILURES`].
+    consecutive_convert_failures: usize,
 }
 
 // SAFETY: All internal FFmpeg pointers (`AVFormatContext`, `AVCodecContext`,
@@ -210,6 +223,7 @@ impl FfmpegDecoder {
             flushed: false,
             buffered: VecDeque::new(),
             frame_index: 0,
+            consecutive_convert_failures: 0,
         })
     }
 
@@ -291,12 +305,32 @@ impl FfmpegDecoder {
                 Ok(()) => {
                     self.frame_index += 1;
                     match self.convert_frame(&frame) {
-                        Ok(vf) => self.buffered.push_back(vf),
-                        Err(e) => log::warn!(
-                            "[FfmpegDecoder] frame {} was skipped because it could not be \
-                             converted to RGBA: {e}",
-                            self.frame_index
-                        ),
+                        Ok(vf) => {
+                            self.consecutive_convert_failures = 0;
+                            self.buffered.push_back(vf);
+                        }
+                        Err(e) => {
+                            let (failures, exhausted) =
+                                record_convert_failure(self.consecutive_convert_failures);
+                            self.consecutive_convert_failures = failures;
+                            if exhausted {
+                                // Stop skipping: the scaler is configured once per stream, so a
+                                // run this long names a systematic failure that would otherwise
+                                // present as an empty video with no error signal.
+                                return Err(format!(
+                                    "RGBA conversion failed for {} consecutive frames; the last \
+                                     failure was frame {} with source pixel format {:?}: {e}",
+                                    failures,
+                                    self.frame_index,
+                                    self.decoder.format()
+                                ));
+                            }
+                            log::warn!(
+                                "[FfmpegDecoder] frame {} was skipped because it could not be \
+                                 converted to RGBA: {e}",
+                                self.frame_index
+                            );
+                        }
                     }
                 }
                 Err(ffmpeg_next::Error::Eof) => break,
@@ -372,6 +406,8 @@ impl VideoDecoderTrait for FfmpegDecoder {
         self.buffered.clear();
         self.eof = false;
         self.flushed = false;
+        // Seeking is a retry: a new position may produce convertible frames again.
+        self.consecutive_convert_failures = 0;
         Ok(())
     }
 
@@ -424,6 +460,16 @@ fn seconds_to_av_time_base(seconds: f64) -> Result<i64, String> {
         ));
     }
     Ok(micros as i64)
+}
+
+/// Record one more consecutive frame-conversion failure.
+///
+/// Returns the new streak and whether it has reached
+/// [`MAX_CONSECUTIVE_CONVERT_FAILURES`]. `saturating_add` keeps a pathological
+/// stream from wrapping the counter back to a small value.
+fn record_convert_failure(streak: usize) -> (usize, bool) {
+    let next = streak.saturating_add(1);
+    (next, next >= MAX_CONSECUTIVE_CONVERT_FAILURES)
 }
 
 /// Packs a strided RGBA plane into a tight `width * height * 4` buffer.
@@ -814,6 +860,27 @@ mod tests {
         assert!(pack_rgba_rows(&tight, 2, 2, 1).is_err());
         // Zero-height is trivially empty and valid.
         assert_eq!(pack_rgba_rows(&[], 8, 2, 0).unwrap().len(), 0);
+    }
+
+    /// W6-28: a run of conversion failures must be reported at the documented
+    /// threshold, not silently skipped forever. Below it, one bad frame is still
+    /// recoverable.
+    #[test]
+    fn test_ffmpeg_consecutive_conversion_failures_reach_the_documented_threshold() {
+        let mut streak = 0;
+        for expected in 1..MAX_CONSECUTIVE_CONVERT_FAILURES {
+            let (next, reached) = record_convert_failure(streak);
+            assert_eq!(next, expected);
+            assert!(!reached, "{expected} failures are below the documented threshold");
+            streak = next;
+        }
+        let (next, reached) = record_convert_failure(streak);
+        assert_eq!(next, MAX_CONSECUTIVE_CONVERT_FAILURES);
+        assert!(reached, "the documented threshold itself must report an error");
+
+        let (saturated, reached) = record_convert_failure(usize::MAX);
+        assert_eq!(saturated, usize::MAX, "the counter saturates instead of wrapping");
+        assert!(reached);
     }
 
     /// N-S-56: the duration→frames estimate must include the time base numerator.

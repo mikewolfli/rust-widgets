@@ -25,6 +25,8 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # The function whose match is the compile-time guarantee. Named rather than discovered: a scan
@@ -34,16 +36,6 @@ GUARANTEED_FN = "route_is_library_painted"
 # An arm that begins a pattern list with `_` — `_ =>`, `_ if … =>`. A wildcard *inside* a
 # comment or a string is not an arm, so comments are stripped before scanning.
 WILDCARD_ARM = re.compile(r"^\s*_\s*(?:if\b[^=]*)?=>", re.MULTILINE)
-
-
-def strip_comments(text):
-    """Removes `//`-style comments, so a wildcard mentioned in prose is not an arm.
-
-    A hand-rolled stripper rather than a parser: this file is Rust source scanned by a gate that
-    must run with nothing installed. The failure mode of over-stripping (a `//` inside a string
-    literal) cannot occur in `routing.rs`, which holds no string literals — asserted below.
-    """
-    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
 
 
 def main(argv=None) -> int:

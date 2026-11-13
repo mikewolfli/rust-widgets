@@ -59,6 +59,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 BREAKPOINT="src/view/breakpoint.rs"
 
 echo "[1/3] the tier type exists in the view layer"
@@ -83,7 +86,7 @@ echo "[2/3] no widget's draw body hand-rolls a width tier from a literal"
 #
 # What remains is the shape a hand-rolled breakpoint takes: `if rect.width < 600`.
 WIDTH_TIERS="$(grep -rnE '\.width\s*(<=|>=|<|>)\s*[2-9][0-9]{2,}' src/widget/ --include=*.rs \
-    | sed -e 's://.*::' \
+    | rw_strip_line_comments \
     | grep -vE 'assert' || true)"
 
 if [ -n "$WIDTH_TIERS" ] && [ "$(printf '%s' "$WIDTH_TIERS" | tr -d '[:space:]' | wc -c)" -gt 0 ]; then
@@ -104,7 +107,7 @@ echo "[3/3] the tier type is not named inside a control"
 # own rustdoc does, because that is where the thresholds live) is not a finding. The
 # rule is about a control *reading* the tier, not about mentioning it.
 CONTROL_HITS="$(grep -rn 'Breakpoint' src/widget/ --include=*.rs \
-    | sed -e 's://.*::' \
+    | rw_strip_line_comments \
     | grep -vE '[: ]\s*$' || true)"
 if [ -n "$CONTROL_HITS" ] && [ "$(printf '%s' "$CONTROL_HITS" | tr -d '[:space:]' | wc -c)" -gt 0 ]; then
     echo "  FAIL  a control names \`Breakpoint\`:"

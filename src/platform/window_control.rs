@@ -25,7 +25,7 @@
 //! function reports "allowed", which is what the backend's own lifecycle did before this
 //! module existed.
 
-use crate::compat::{Box, HashMap, RefCell};
+use crate::compat::{Box, HashMap, Rc, RefCell};
 use crate::core::{ObjectId, Point};
 
 /// A close veto handler: `true` allows the close, `false` refuses it.
@@ -33,7 +33,14 @@ pub(crate) type CloseHandler = Box<dyn Fn() -> bool>;
 
 thread_local! {
     /// Close handlers installed by `WindowHandle::set_close_handler`, keyed by window id.
-    static CLOSE_HANDLERS: RefCell<HashMap<ObjectId, CloseHandler>> =
+    ///
+    /// The handler is **shared** rather than moved out while it runs: `request_window_close`
+    /// clones it, ends the borrow, and only then calls it. That clone is what lets a handler
+    /// re-enter this module (`set_close_handler`, `clear_close_handler`, a nested
+    /// `request_window_close`) without panicking on the `RefCell`, while the map keeps the truth:
+    /// a replacement installed from inside the callback wins, and one the callback clears stays
+    /// cleared.
+    static CLOSE_HANDLERS: RefCell<HashMap<ObjectId, Rc<dyn Fn() -> bool>>> =
         RefCell::new(HashMap::new());
 
     /// The last position the library knows for a window, used as the fallback when a backend
@@ -106,10 +113,13 @@ pub(crate) fn clear_active_window(window_id: ObjectId) -> bool {
 }
 
 /// Installs (or replaces) the close handler for `window_id`.
+///
+/// The `Box` is turned into an `Rc` here so a dispatch can hold a clone of the handler while the
+/// map keeps owning the entry; see [`CLOSE_HANDLERS`].
 #[allow(dead_code)]
 pub(crate) fn set_close_handler(window_id: ObjectId, handler: CloseHandler) {
     CLOSE_HANDLERS.with(|handlers| {
-        handlers.borrow_mut().insert(window_id, handler);
+        handlers.borrow_mut().insert(window_id, Rc::from(handler));
     });
 }
 
@@ -132,8 +142,17 @@ pub(crate) fn clear_close_handler(window_id: ObjectId) -> bool {
 /// matrix needs no per-OS arms in this shared module.
 #[allow(dead_code)]
 pub(crate) fn request_window_close(window_id: ObjectId) -> bool {
-    let handler_allows = CLOSE_HANDLERS
-        .with(|handlers| handlers.borrow().get(&window_id).map(|h| h()).unwrap_or(true));
+    // Clone the handler out and end the borrow before invoking it. The handler is user code, and
+    // user code re-enters this module for real: a "save before closing" veto installs a follow-up
+    // handler and may ask whether the window can close now. Calling it inside the `borrow()`
+    // panicked with `already borrowed` on the first of those calls.
+    //
+    // The entry stays in the map for the duration, so the clone running here is never written
+    // back: a handler installed by the callback answers the next close, and a handler that clears
+    // itself is not resurrected. A nested request does reach this same handler again — the veto
+    // decides the proposal — so a handler that re-asks must not recurse unconditionally.
+    let handler = CLOSE_HANDLERS.with(|handlers| handlers.borrow().get(&window_id).cloned());
+    let handler_allows = handler.map(|handler| handler()).unwrap_or(true);
     // Clear any stale flag left by unrelated delivery on this thread: without this, a control
     // that consumed an earlier event could veto a close it never saw.
     let _ = crate::event::propagation::take_consumed();
@@ -198,4 +217,90 @@ pub(crate) fn notify_window_moved(window_id: ObjectId, position: Point) {
     // layout branch and the DPI/scale re-layout are reachable on macOS too (PL4-02). A
     // moved-only tick is a no-op through the LY3-01 guard, so this costs nothing at rest.
     let _ = crate::inject_widget_trigger_event(window, crate::platform::WidgetTriggerKind::Moved);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::cell::Cell;
+
+    /// Ids no other test or mounted window uses, so the thread-local handler table cannot collide.
+    const REENTRANT_WINDOW: ObjectId = 0x5746_0001;
+    const SELF_CLEARING_WINDOW: ObjectId = 0x5746_0002;
+
+    /// A veto handler may re-enter the close API, and the handler it installs answers next time.
+    ///
+    /// # The defect this closes
+    ///
+    /// The handler used to be called inside `CLOSE_HANDLERS.borrow()`. `set_close_handler` and
+    /// `request_window_close` are exactly the calls a "save before closing" screen makes from
+    /// inside its own veto, and both took the same `RefCell` borrow again — `already borrowed`
+    /// instead of a decision. The handler is now cloned out and the borrow released before it
+    /// runs, and because the map still owns the entry, the replacement wins for the next close.
+    #[test]
+    fn a_close_veto_handler_can_reenter_the_close_api() {
+        let window = REENTRANT_WINDOW;
+        clear_close_handler(window);
+
+        let calls = Rc::new(Cell::new(0u32));
+        let nested = Rc::new(Cell::new(None));
+        let handler_calls = Rc::clone(&calls);
+        let nested_result = Rc::clone(&nested);
+
+        set_close_handler(
+            window,
+            Box::new(move || {
+                handler_calls.set(handler_calls.get() + 1);
+                if handler_calls.get() == 1 {
+                    // Re-enter the module twice: a nested close request (which still sees this
+                    // handler installed) and a replacement (which must win for the next close).
+                    nested_result.set(Some(request_window_close(window)));
+                    set_close_handler(window, Box::new(|| false));
+                }
+                false
+            }),
+        );
+
+        assert!(!request_window_close(window), "the installed handler refuses the close");
+        assert_eq!(
+            calls.get(),
+            2,
+            "the nested request re-entered the handler instead of panicking on the borrow"
+        );
+        assert_eq!(
+            nested.get(),
+            Some(false),
+            "the nested request is answered by the handler that was installed then"
+        );
+
+        // The replacement installed from inside the callback owns the next close. Had the clone
+        // that just ran been written back over it, `calls` would rise again here.
+        assert!(!request_window_close(window), "the replacement handler vetoes the next close");
+        assert_eq!(calls.get(), 2, "the replaced handler must not answer again");
+
+        clear_close_handler(window);
+    }
+
+    /// A handler that clears itself during its run stays cleared.
+    ///
+    /// `clear_close_handler` from inside the veto was the other re-entrant call that panicked on
+    /// the `RefCell` borrow. The handler is cloned rather than moved out of the map, so the
+    /// removal the callback performs is the last word: nothing re-inserts the clone afterwards.
+    #[test]
+    fn a_close_handler_that_clears_itself_is_not_resurrected() {
+        let window = SELF_CLEARING_WINDOW;
+        clear_close_handler(window);
+
+        set_close_handler(
+            window,
+            Box::new(move || {
+                clear_close_handler(window);
+                false
+            }),
+        );
+
+        assert!(!request_window_close(window), "the installed handler vetoes the first close");
+        assert!(request_window_close(window), "a cleared handler must not answer the next close");
+        assert!(!clear_close_handler(window), "the callback already removed it");
+    }
 }

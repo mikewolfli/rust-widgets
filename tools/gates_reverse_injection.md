@@ -653,3 +653,44 @@ new anchors fail for the right reason.
 Before the change, the first injection still satisfied `grep -q 'setFrame:'` (five comment lines),
 and the second still satisfied the bare-token `grep -q set_window_state` (the call sites), which is
 the failure mode principle #106 names.
+
+## Gate-weakness batch (2026-11-13) — W6-15 / W6-35
+
+Seven gates judged an implementation by a token, a fixed window or a slice that ran past the
+function it named. Each was re-anchored to the asserted code's shape with
+`tools/lib_source_scan.sh` (`rw_strip_line_comments`, `rw_slice_function_body`,
+`rw_enclosing_function_name`) and then re-injected. The `reported` column quotes the run.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_native_redraw_goes_through_the_runtime.sh` | added an unannounced `self.native.lock_guard().widgets.values().next().map(\|w\| w.queue_draw());` to `create_file_dialog` in `src/platform/linux/platform_impl.rs` — the *neighbouring* function of `create_window`, whose announcement the old slice swallowed | `FAIL  these files queue more platform redraws than they announce:` / `src/platform/linux/platform_impl.rs:1195 in create_file_dialog()` / exit 1. The old extractor on the same tree produced a 1126-line slice and `old_verdict=PASS` (measured after the injection). Restored: `PASS` at each of the three steps, exit 0 |
+| `check_web_engine_honest.sh` | changed the `supports_web_engine` default body to `true // false` (the old `grep false` was satisfied by the trailing comment) | `FAIL  the default body does not answer 'false'; got: true`. Old extractor on the same tree: `DEFAULT_LINE='        true // false'`, `old_verdict=PASS`. Restored: `PASS supports_web_engine() exists and defaults to false`, exit 0 |
+| `check_semantic_state_is_not_in_the_interaction_chain.sh` | inserted `return WidgetState::Error;` as the first statement of `widget_state` in `src/widget/input_widgets/text_entry/lineedit/events.rs` | `FAIL  a widget_state implementation returns a semantic variant:` / `src/widget/input_widgets/text_entry/lineedit/events.rs:113:        return WidgetState::Error;` (restored: `PASS`, exit 0) |
+| `check_single_creation_mechanism.sh` | replaced the `self.insert_widget(LinuxHandleKind::FileDialog, …)` handle record in linux's `create_file_dialog` with `let _ = (x, y, width, height); 0` | `❌ src/platform/linux/platform_impl.rs:1187 overrides create_file_dialog — the host must create no per-kind control` / `single-creation-mechanism gate: FAILED (1 finding(s))` (restored: four `✅ … records a logical state handle` lines, exit 0) |
+| `check_elevation_is_not_one_value.sh` | added `let _probe_shadow = Shadow { x: 0, y: 2, blur: 6, color: Color::rgba(0, 0, 0, 60) };` as the first statement of `role_base_style` | `FAIL  role_base_style builds a Shadow literal instead of reading a level:` / `2:        let _probe_shadow = Shadow { … }` (restored: `PASS`, exit 0) |
+| `check_apple_thread_safety.sh` | removed `mtm: MainThreadMarker,` from `create_ui_window` in `src/platform/ios/native.rs` | `❌ src/platform/ios/native.rs:106: entry point has neither a MainThreadMarker parameter nor a marker check` / `check_apple_thread_safety: FAILED with 1 issue(s)` (restored: `all Apple native FFI guards present`, exit 0). The slice for `create_ns_window` is the whole 56-line body; the old window was 14 lines (measured) |
+| `check_single_frame_driver.sh` | added `tick_animations(1);` as the first statement of `count_animating_widgets` in `src/widget/runtime/frame.rs` | `FAIL  tick_animations is called from runtime.rs but outside drive_frame:` / `src/widget/runtime/frame.rs:501:    tick_animations(1);` (restored: `OK (one driver, no competing call sites)`, exit 0) |
+| `check_abi.sh` | changed README.md's bolded claim `**152 \`rw_*\` functions**` to `**151 \`rw_*\` functions**` | `README.md documents 151 rw_* functions but include/rw_generated.h declares 152.`, exit 1 (restored: `ABI checks passed.`, exit 0). Anchor check: inserting the prose line `Prose decoy: 999 rw_* functions are mentioned here before the real claim.` *before* the claim leaves the gate green, while the old `grep -oE '[0-9]+ …rw_…' \| head -1` read `999` on that same tree |
+
+`check_first_value_not_zero.sh` is not in the seven, but its comment-strip refactor exposed a
+pre-existing defect worth recording: the file's `sed … \| grep -q …` under `pipefail` made it exit 1
+on a correct tree in 3 of 6 runs (naming `pie_chart.rs` / `line_chart.rs` at random). The pipeline
+now reads its matches before testing them, and the visibility anchor requires the control's *own*
+read (`self.is_visible()`, `self.base.is_visible()`, or a non-assignment `self.visible`), not
+`legend.is_visible()` — which is why the chart constructors now pass deterministically: 6 of 6 runs
+exit 0 with `PASS  55 PropertyDriver constructions audited`.
+
+## New-gate injection records (2026-11-13) — W6 round
+
+Seven gates landed without an injection record; `check_gates_are_worth_running.sh`
+criterion 3 counts a missing record. Each was injected, observed red, and reverted.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_codemap_counts.sh` | changed `| Rust source files | 1,020 |` to `1,021` in `docs/plans/codemap.md` (the derivation was 1,021 after a new source file landed, so this row also proved the gate detects the real drift) | `FAIL: codemap §9 counts drifted; regenerate with …` / `Rust source files: derived 1021`, exit 1. Table regenerated with `python3 tools/gen_codemap_counts.py`; re-run `✅ codemap §9 counts match their derivations`, exit 0 |
+| `check_disabled_state_covers_kinds.sh` | removed the first entry (`"about_dialog"`) from `DISABLED_STATE_KINDS` in `src/theme/preset_states.rs` | `checked=242 listed=241 missing=1 stale=0`, exit 1 (restored: `missing=0 stale=0`, exit 0) |
+| `check_focus_reachable_key_arms.sh` | created `src/widget/zz_probe.rs` with `Event::KeyPress { key, .. } if self.base().focus_reason().is_some()` on a `WidgetKind::Label` control and no `is_focusable` override | `FAIL: these keyboard arms are gated on focus, but the control can never become the focus owner` / `src/widget/zz_probe.rs: kind(s) Label answer \`wants_keyboard_focus() == false\`…`, `checked=44 failed=1`, exit 1. Probe deleted; re-run `checked=43 failed=0`, exit 0 |
+| `check_error_enums_implement_display_and_error.sh` | created `src/zz_probe_error.rs` declaring `pub enum ProbeError { A }` with no `Display`/`Error` impl | finding naming `src/zz_probe_error.rs` for the missing halves, exit 1 (probe deleted: `checked=30 failed=0`, exit 0) |
+| `check_large_file_ratchet.sh` | created `src/zz_probe_big.rs` with 2005 comment lines (a file over the 2000-line limit the budget does not name) | finding naming `src/zz_probe_big.rs`, exit 1 (probe deleted: `✅ the >2000-line census holds`, exit 0) |
+| `check_skill_copies_agree.sh` | appended `<!-- drift probe -->` to `dsh-plugin/assets/rust-widgets-maintainer/SKILL.md` | `skill copies have drifted; the two must say the same thing (W4-22):` / `+<!-- drift probe -->`, exit 1 (restored: `✅ skill copies agree`, exit 0) |
+| `check_suites_conventions.sh` | created `crates/rust-widgets-suites/src/zz_probe.rs` with a raw `32 => {}` key arm | `checked files=96 raw_key_arms=1 modules=16 findings=1`, exit 1 (probe deleted: `raw_key_arms=0 findings=0`, exit 0) |

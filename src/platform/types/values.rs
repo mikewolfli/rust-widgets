@@ -15,9 +15,64 @@ use crate::core::{ObjectId, Orientation, PlatformFamily, Rect};
 /// between frame deadlines must be the same, or every transition runs at the ratio between them.
 /// The backends used to declare `16` in nine separate files (with two different integer types),
 /// which is exactly the drift shape principle #54 forbids. `frame_wait` derives each deadline from
-/// the previous target plus this value, so frame work that fits the interval does not stretch the
-/// cadence. A backend that later runs at the display's own rate changes this one value.
+/// the previous target plus [`frame_interval_ms`], so frame work that fits the interval does not
+/// stretch the cadence. This constant is the **fallback** used when the backend cannot report the
+/// primary display's refresh rate; `frame_interval_ms` returns the panel's own period otherwise.
 pub(crate) const FRAME_INTERVAL_MS: u64 = 16;
+
+/// The frame period to schedule against, derived from the primary display when the backend can
+/// report one.
+///
+/// The fixed 16 ms grid capped every host at 60 fps even on a 120 Hz panel (W6-43). Every backend
+/// already publishes [`DisplayInfo::refresh_rate_mhz`] through `Platform::display_info`; this
+/// reads it and rounds **up** to whole milliseconds, so the loop never schedules faster than the
+/// panel can display. A refresh rate outside a plausible panel range, or a backend that answers
+/// `None`, falls back to [`FRAME_INTERVAL_MS`] — an honest "not measured" rather than a guess.
+///
+/// The answer is cached per [`display_generation`](crate::platform::display_generation), so a
+/// monitor change is observed without a platform call on every frame.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn frame_interval_ms() -> u64 {
+    use crate::compat::Cell;
+    thread_local! {
+        static CACHE: Cell<(u64, u64)> = const { Cell::new((u64::MAX, 0)) };
+    }
+    let generation = crate::platform::display_generation();
+    CACHE.with(|cache| {
+        let (cached_generation, cached) = cache.get();
+        if cached_generation == generation && cached != 0 {
+            return cached;
+        }
+        let value = refresh_derived_interval_ms();
+        cache.set((generation, value));
+        value
+    })
+}
+
+/// The profile without a platform registry keeps the fixed grid.
+#[cfg(alloc_frugal)]
+pub(crate) fn frame_interval_ms() -> u64 {
+    FRAME_INTERVAL_MS
+}
+
+/// Reads the primary display's refresh rate and converts it to a frame period.
+#[cfg(not(alloc_frugal))]
+fn refresh_derived_interval_ms() -> u64 {
+    let Some(display) = crate::platform::displays().first().copied() else {
+        return FRAME_INTERVAL_MS;
+    };
+    let Some(info) = crate::platform::get_platform().display_info(display.id) else {
+        return FRAME_INTERVAL_MS;
+    };
+    let Some(mhz) = info.refresh_rate_mhz else {
+        return FRAME_INTERVAL_MS;
+    };
+    if !(24_000..=480_000).contains(&mhz) {
+        return FRAME_INTERVAL_MS;
+    }
+    let period = (1_000_000u64 + u64::from(mhz) - 1) / u64::from(mhz);
+    period.clamp(4, FRAME_INTERVAL_MS)
+}
 
 /// How long an idle backend loop waits before looking again, in milliseconds.
 ///

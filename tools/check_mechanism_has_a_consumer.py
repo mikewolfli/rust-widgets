@@ -72,6 +72,8 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
 
@@ -147,15 +149,6 @@ ACKNOWLEDGED: dict[str, str] = {
 # cannot make it look consumed.
 TEST_ATTRIBUTE = re.compile(r"#\[cfg\(test\)\]")
 MOD_DECLARATION = re.compile(r"\bmod\s+[a-z0-9_]+\s*[;{]")
-
-LINE_COMMENT = re.compile(r"//[^\n]*")
-BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
-
-
-def strip_comments(text: str) -> str:
-    """Blanks comments while preserving offsets, so a doc mention is not read as a call."""
-    text = BLOCK_COMMENT.sub(lambda m: " " * len(m.group(0)), text)
-    return LINE_COMMENT.sub(lambda m: " " * len(m.group(0)), text)
 
 
 def blank_test_modules(text: str) -> str:

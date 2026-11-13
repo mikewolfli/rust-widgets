@@ -81,9 +81,7 @@ impl WidgetRegistry {
                 list.retain(|&x| x != id);
             }
             if let Some(parent) = old.parent {
-                if let Some(list) = self.children.get_mut(&parent) {
-                    list.retain(|&x| x != id);
-                }
+                Self::forget_child(&mut self.children, parent, id);
             }
         }
 
@@ -101,10 +99,31 @@ impl WidgetRegistry {
                 list.retain(|&x| x != id);
             }
             if let Some(parent) = entry.parent {
-                if let Some(list) = self.children.get_mut(&parent) {
-                    list.retain(|&x| x != id);
-                }
+                Self::forget_child(&mut self.children, parent, id);
             }
+        }
+    }
+
+    /// Drops `id` from `parent`'s child list, removing the key when that was the last child.
+    ///
+    /// The children index is keyed by parent id. Leaving an empty `Vec` behind after the last
+    /// child left meant every parent ever seen kept a key forever, so a long-lived registry grew
+    /// one entry per parent unregistered — a leak with no bound. A key with no children carries
+    /// no information (`children_of` answers the same either way), so it is removed.
+    fn forget_child(
+        children: &mut HashMap<ObjectId, Vec<ObjectId>>,
+        parent: ObjectId,
+        id: ObjectId,
+    ) {
+        let now_empty = match children.get_mut(&parent) {
+            Some(list) => {
+                list.retain(|&x| x != id);
+                list.is_empty()
+            }
+            None => false,
+        };
+        if now_empty {
+            children.remove(&parent);
         }
     }
 
@@ -230,5 +249,46 @@ mod tests {
             1,
             "child 2 still names 3 as its parent; the index mirrors the entries, it does not cascade"
         );
+    }
+
+    /// W6-48: removing the last child must remove the parent's key, not leave an empty `Vec`.
+    ///
+    /// The old `unregister` retained the child list but never removed the key, so every parent
+    /// that ever had a child kept an entry in the children index forever. A host that rebuilds its
+    /// widget tree repeatedly grew that map one key per unregistered child.
+    #[test]
+    fn repeated_parent_unregister_register_does_not_grow_the_children_index() {
+        let mut registry = WidgetRegistry::new();
+        registry.register(entry(1, None));
+
+        // One round trip: register the child, unregister it, and the key is gone.
+        registry.register(entry(2, Some(1)));
+        assert_eq!(registry.children.len(), 1);
+        registry.unregister(2);
+        assert_eq!(registry.children.len(), 0, "the last child leaving must remove the parent key");
+
+        // Repeated mounting/unmounting must stay flat rather than accumulating one key per pass.
+        for _ in 0..100 {
+            registry.register(entry(2, Some(1)));
+            registry.unregister(2);
+        }
+        assert_eq!(
+            registry.children.len(),
+            0,
+            "repeated unregister/register must not grow the map"
+        );
+    }
+
+    /// Re-registering a child under a new parent must also drop the old parent's now-empty key.
+    #[test]
+    fn moving_the_last_child_removes_the_old_parent_key() {
+        let mut registry = WidgetRegistry::new();
+        registry.register(entry(3, None));
+        registry.register(entry(2, Some(1)));
+
+        registry.register(entry(2, Some(3)));
+
+        assert_eq!(registry.children.len(), 1, "parent 1 has no children left, so its key is gone");
+        assert_eq!(registry.children_of(3).len(), 1);
     }
 }

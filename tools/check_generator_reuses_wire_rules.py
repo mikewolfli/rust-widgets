@@ -37,6 +37,10 @@ import pathlib
 import re
 import sys
 
+# Comments are stripped by the shared helper (tools/lib_source_scan.py) so the deletion
+# spelling here cannot drift from the sweep of the other gates (W6-36).
+from lib_source_scan import strip_comments
+
 GENERATOR = pathlib.Path("src/designer/generator.rs")
 WIRE_RULES = pathlib.Path("src/widget/capability/wire_rules.rs")
 
@@ -60,12 +64,6 @@ def production_code(text: str) -> str:
     marker = "\n#[cfg(test)]\nmod tests {"
     cut = text.find(marker)
     return text if cut == -1 else text[:cut]
-
-
-def strip_comments(text: str) -> str:
-    """Drop `//` line comments and `/* */` blocks, so prose cannot satisfy a code check."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"//[^\n]*", "", text)
 
 
 # A verdict *constructed* in production code. `matches!`/`assert_eq!` on a verdict is a consumer;

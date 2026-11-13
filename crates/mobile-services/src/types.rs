@@ -77,26 +77,45 @@ pub enum Orientation {
     Landscape,
 }
 
-/// The three states an application service can be in.
+/// The states an application service can be in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     /// The platform exposes the API and the app is allowed to use it.
     Available,
     /// The platform exposes the API, but the user (or the system) denied it.
+    ///
+    /// This is a **refusal**, so the caller may take a permission-recovery path
+    /// (explain the permission, offer to open Settings). It is never the answer
+    /// for invalid caller input: that is [`ServiceError::InvalidInput`].
     Denied,
     /// This target has no binding for the service, or the service is out of scope for this crate.
     Unsupported,
+    /// The platform could not answer the query (for example its settings callback timed out).
+    ///
+    /// Not a refusal: the caller must not start a permission-recovery flow, because no
+    /// decision has been reported. A later query may produce a definitive `Available` or
+    /// `Denied`.
+    Unknown,
 }
 
 /// Why an action did not happen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceError {
     /// The user or the system denied the operation.
+    ///
+    /// This means an actual refusal. Invalid caller input — an empty notification, an
+    /// empty share payload — is [`ServiceError::InvalidInput`], not `Denied`, so callers
+    /// do not try to recover a permission that was never the problem.
     Denied,
     /// This target has no binding, or the Android host has not attached its Context.
     Unsupported,
     /// The platform call failed (a JNI exception, a missing view controller, …).
     Failed,
+    /// The request itself is invalid (empty title/body, empty share payload, …).
+    ///
+    /// Returned before any platform call, so the failure is attributable to the
+    /// caller rather than to the OS, the user, or the binding.
+    InvalidInput,
 }
 
 impl std::fmt::Display for ServiceError {
@@ -107,6 +126,7 @@ impl std::fmt::Display for ServiceError {
                 write!(f, "the service is not supported on this target")
             }
             ServiceError::Failed => write!(f, "the platform call failed"),
+            ServiceError::InvalidInput => write!(f, "the request is invalid"),
         }
     }
 }

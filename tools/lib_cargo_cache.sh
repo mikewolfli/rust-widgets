@@ -63,6 +63,12 @@
 #
 # Exit status is the cargo invocation's own, or 124 when the bound fired.
 
+# `rw_run_bounded` (and its default budget) comes from `tools/lib_timeout.sh`. Sourced here so
+# this file's own probes (`rustc -Vv`) are bounded whether or not the caller sourced the timeout
+# helper first; sourcing it twice is harmless because it only defines functions and a default.
+# shellcheck source=tools/lib_timeout.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_timeout.sh"
+
 # Where the cache lives. Inside `target/` so `cargo clean` removes it too, and so it is already
 # excluded from the source digest below.
 #
@@ -194,7 +200,9 @@ _rw_digest_stream() {
 _rw_cache_key() {
   local toolchain
   # `rustc -Vv` rather than `cargo -V`: the compiler is what produces the artifacts.
-  toolchain="$(rustc -Vv 2>/dev/null | tr '\n' ' ')"
+  # Bounded: this runs on every `rw_cargo_cached` call, so an unbounded probe here would
+  # hang every gate that uses the cache (principle #58).
+  toolchain="$(rw_run_bounded 120 rustc -Vv 2>/dev/null | tr '\n' ' ')"
   # The cargo binary is part of the identity: a different one can resolve a
   # different compiler, wrapper or default profile even when `rustc -Vv` matches.
   local argv_digest

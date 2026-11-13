@@ -14,8 +14,34 @@ use super::*;
 use crate::core::Point;
 use crate::event::types::EventHandler;
 use crate::event::Event;
+use crate::widget::view_widgets::data_grid::EditTriggers;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+// R-26: `TableEditTriggers` must stay a re-export of the data grid's type. If a future change
+// re-adds a `struct TableEditTriggers`, this assignment stops compiling and the duplicate fails
+// before any runtime test runs.
+const _: fn(EditTriggers) -> TableEditTriggers = |triggers| triggers;
+
+/// The table's trigger name and the data-grid type are one type, not two copies.
+///
+/// # What this pins
+///
+/// R-26 found `TableEditTriggers` and `data_grid::EditTriggers` byte-identical (same bits, same
+/// constants, same methods, same `Default`), so the table side is now a re-export. This test
+/// exercises the alias through the authoritative type: a renewed duplicate would fail the
+/// compile-time assignment above, and a bit/default drift would fail these assertions.
+#[test]
+fn table_edit_triggers_are_the_data_grid_triggers() {
+    assert_eq!(TableEditTriggers::ALL, EditTriggers::ALL);
+    assert_eq!(TableEditTriggers::NONE, EditTriggers::default());
+    assert!(TableEditTriggers::ALL.contains(EditTriggers::EDIT_KEY));
+    assert_eq!(TableEditTriggers::DOUBLE_CLICKED.or(EditTriggers::EDIT_KEY), EditTriggers::ALL);
+
+    // A value from the alias path is accepted where the authoritative type is expected.
+    fn accepts(_triggers: EditTriggers) {}
+    accepts(TableEditTriggers::DOUBLE_CLICKED);
+}
 
 /// A multi-row `Extended` selection survives a model change.
 ///

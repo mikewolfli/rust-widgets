@@ -35,8 +35,8 @@ use std::rc::Rc;
 ///
 /// The three names collide but their **bit layouts and vocabularies differ**, so they are not
 /// copies: this one has `SINGLE_CLICK`/`DOUBLE_CLICK`/`F2` (1/2/4) and defaults to a double click;
-/// `listbox::EditTriggers` has `DOUBLE_CLICK`/`F2` (1/2) and defaults to both; the data grid's has
-/// `DOUBLE_CLICKED`/`EDIT_KEY` (1/2) and defaults to none. Sharing one type would force each
+/// `listbox::EditTriggers` has `DOUBLE_CLICK`/`F2` (1/2) with no single-click arm; the data grid's
+/// has `DOUBLE_CLICKED`/`EDIT_KEY` (1/2) and defaults to none. Sharing one type would force each
 /// control to carry flags it cannot honour.
 pub struct EditTriggers(u8);
 

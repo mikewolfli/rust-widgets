@@ -35,6 +35,8 @@ import re
 import sys
 from typing import Dict, List, Set, Tuple
 
+from lib_source_scan import strip_line_comment as strip_comments
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 
@@ -65,21 +67,6 @@ REDRAW_HELPERS = (
     "invalidate",
     "mark_dirty",
 )
-
-def strip_comments(line: str) -> str:
-    """Drop a trailing `//` comment, so a doc sentence is not read as code."""
-    out = []
-    in_str = False
-    i = 0
-    while i < len(line):
-        ch = line[i]
-        if ch == '"' and (i == 0 or line[i - 1] != "\\"):
-            in_str = not in_str
-        if not in_str and line.startswith("//", i):
-            break
-        out.append(ch)
-        i += 1
-    return "".join(out)
 
 
 def brace_block(lines: List[str], start: int) -> Tuple[str, int]:

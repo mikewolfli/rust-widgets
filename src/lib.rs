@@ -757,26 +757,6 @@ fn backend_for_kind(kind: widget::WidgetKind) -> &'static dyn control_backend::C
 #[cfg(all(not(alloc_frugal), not(widgets_unstripped)))]
 const NO_SUCH_CONTROL: crate::core::ObjectId = 0;
 
-/// Mounts a widget object on the platform's surface, or reports why it cannot.
-///
-/// This is the **single implementation** of the register → mount → roll back on
-/// failure sequence, used by both [`create_widget_of_kind`] and
-/// [`app::WindowHandle::mount_surface`]. Keeping one
-/// copy is what stops the two paths from disagreeing about ownership: on any
-/// failure the widget is unregistered, so the registry never holds a widget the
-/// backend is not showing.
-///
-/// # Resolving the parent
-///
-/// `parent` may be either a **window widget** (what [`create_window`] returns and
-/// what `App::new_window` hands out) or a **host window** (what
-/// `Platform::create_window` returns). `mount_surface` is a `Platform` method, so
-/// it can only resolve the latter — the platform knows nothing of the widget
-/// registry. Translating here, at the one place that already owns both the widget
-/// registry and the platform handle, is what lets a caller mount controls on the
-/// window it created. Without it the library's own windows could not carry the
-/// library's own controls, because the two id spaces never met.
-///
 /// Applies the active theme to a widget that is about to be registered.
 ///
 /// # Why this shim exists at the crate root
@@ -803,6 +783,26 @@ fn apply_active_theme(widget: &mut Box<dyn widget::Widget>) {
     }
 }
 
+/// Mounts a widget object on the platform's surface, or reports why it cannot.
+///
+/// This is the **single implementation** of the register → mount → roll back on
+/// failure sequence, used by both [`create_widget_of_kind`] and
+/// [`app::WindowHandle::mount_surface`]. Keeping one
+/// copy is what stops the two paths from disagreeing about ownership: on any
+/// failure the widget is unregistered, so the registry never holds a widget the
+/// backend is not showing.
+///
+/// # Resolving the parent
+///
+/// `parent` may be either a **window widget** (what [`create_window`] returns and
+/// what `App::new_window` hands out) or a **host window** (what
+/// `Platform::create_window` returns). `mount_surface` is a `Platform` method, so
+/// it can only resolve the latter — the platform knows nothing of the widget
+/// registry. Translating here, at the one place that already owns both the widget
+/// registry and the platform handle, is what lets a caller mount controls on the
+/// window it created. Without it the library's own windows could not carry the
+/// library's own controls, because the two id spaces never met.
+///
 /// Returns `Ok(id)` with the widget live in the registry, or `Err(reason)`.
 #[cfg(not(alloc_frugal))]
 fn mount_widget_object(

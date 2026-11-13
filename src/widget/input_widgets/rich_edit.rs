@@ -438,6 +438,76 @@ fn match_query_at(haystack: &str, start: usize, query: &str, match_case: bool) -
     }
     Some(consumed)
 }
+
+/// The bidi levels, per-character byte ranges and advances of one display row, or `None` for a
+/// left-to-right row.
+///
+/// # Why the logical prefix is the wrong side for an RTL row
+///
+/// The renderer paints a right-to-left row in **visual** order
+/// ([`crate::render::text::line`] reorders its clusters), while the caret and the selection band
+/// were placed at "the width of the logical prefix". That width is the on-screen x only while
+/// the row paints left to right: in an RTL row logical offset 0 is the *right* end, so the
+/// markers landed at the opposite end of the row (W6-21, the document sibling of UX6-02).
+///
+/// The all-LTR row is the steady state and allocates nothing: [`has_rtl_char`] rejects it before
+/// any range or level table is built.
+///
+/// [`has_rtl_char`]: crate::render::text::bidi::has_rtl_char
+fn row_bidi_metrics(row: &str, font: &Font) -> Option<crate::render::text::bidi::RowBidiMetrics> {
+    if !crate::render::text::bidi::has_rtl_char(row) {
+        return None;
+    }
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(row.len());
+    let mut advances: Vec<f32> = Vec::with_capacity(row.len());
+    for (start, ch) in row.char_indices() {
+        let end = start + ch.len_utf8();
+        ranges.push((start, end));
+        advances.push(estimate_text_width(&row[start..end], font, 1.0) as f32);
+    }
+    if ranges.is_empty() {
+        return None;
+    }
+    let levels = crate::render::text::line::line_bidi_levels(row, &ranges, font, 1.0);
+    Some((levels, ranges, advances))
+}
+
+/// The **visual** advance of the caret at `byte` within a display row, or `None` for an
+/// all-left-to-right row.
+fn visual_caret_advance(row: &str, font: &Font, byte: usize) -> Option<i32> {
+    let (levels, ranges, advances) = row_bidi_metrics(row, font)?;
+    crate::render::text::bidi::caret_visual_advance_from_levels(
+        levels.as_ref(),
+        &ranges,
+        &advances,
+        byte,
+    )
+    .map(|x| x.round() as i32)
+}
+
+/// The **visual** `(left, width)` of the selection `from..to` within a display row, or `None`
+/// for an all-left-to-right row.
+///
+/// A reordered row paints its runs right to left, so the two mapped edges are ordered before the
+/// rectangle is built. The width is the band's bounding box: a range that a nested run splits
+/// into two visual pieces still paints as one rectangle, which is what a single `fill_rect` per
+/// row expresses.
+fn visual_selection_band(row: &str, font: &Font, from: usize, to: usize) -> Option<(i32, u32)> {
+    let (levels, ranges, advances) = row_bidi_metrics(row, font)?;
+    let edge = |byte: usize| {
+        crate::render::text::bidi::caret_visual_advance_from_levels(
+            levels.as_ref(),
+            &ranges,
+            &advances,
+            byte,
+        )
+    };
+    let start = edge(from)?;
+    let end = edge(to)?;
+    let (left, right) = if start <= end { (start, end) } else { (end, start) };
+    Some((left.round() as i32, (right - left).max(0.0).round() as u32))
+}
+
 impl RichEdit {
     /// Creates an empty rich editor.
     pub fn new(geometry: Rect) -> Self {
@@ -2103,7 +2173,9 @@ impl Draw for RichEdit {
         //
         // The band's two edges are measured with the same `estimate_text_width` the caret uses, so
         // highlighting a range cancels exactly to the caret at either end. Computing them `col * 7`
-        // apart would have reproduced the caret defect twice more.
+        // apart would have reproduced the caret defect twice more. A reordered (RTL) row maps both
+        // edges through the visual order, so the band lands on the glyphs it covers rather than on
+        // the logical span's mirrors (W6-21).
         //
         // The rows come from `visual_rows`, the same table the hit test reads, so a soft-wrapped
         // line is highlighted and clicked on the row it was painted on.
@@ -2148,9 +2220,14 @@ impl Draw for RichEdit {
                 let from = floor_char_boundary(row_text, from);
                 let to = floor_char_boundary(row_text, to);
                 if from < to {
-                    let left =
-                        rect.x + padding + estimate_text_width(&row_text[..from], font, 1.0) as i32;
-                    let width = estimate_text_width(&row_text[from..to], font, 1.0);
+                    let (advance, width) = visual_selection_band(row_text, font, from, to)
+                        .unwrap_or_else(|| {
+                            (
+                                estimate_text_width(&row_text[..from], font, 1.0) as i32,
+                                estimate_text_width(&row_text[from..to], font, 1.0),
+                            )
+                        });
+                    let left = rect.x + padding + advance;
                     context.fill_rect(
                         crate::core::Rect::new(
                             left,
@@ -2193,10 +2270,12 @@ impl Draw for RichEdit {
                 && !(cursor_before == row_start && wrapped_continuation)
             {
                 // The caret sits where the text **actually** ends, measured with the renderer's
-                // own advance model, rather than at `col * 7`.
+                // own advance model, rather than at `col * 7`. A reordered (RTL) row places it by
+                // visual order; the logical prefix would put it at the wrong end of the run.
                 let prefix_end = floor_char_boundary(&self.text, cursor_before);
                 let prefix = &self.text[row_start..prefix_end.max(row_start)];
-                let advance = estimate_text_width(prefix, font, 1.0) as i32;
+                let advance = visual_caret_advance(row_text, font, prefix.len())
+                    .unwrap_or_else(|| estimate_text_width(prefix, font, 1.0) as i32);
                 let cursor_x = rect.x + padding + advance;
                 // The caret is the selection indicator, so it carries the accent rather than a
                 // fixed black the user could not find on a dark page.
@@ -2769,6 +2848,139 @@ mod tests {
                     == Some(expected_left)
         });
         assert!(!still_painted, "with no selection there is no band");
+    }
+
+    /// The x of the caret the frame painted, read back from the SVG.
+    ///
+    /// The caret is a vertical line (`x1 == x2`) drawn after the text, so the last such line in
+    /// the frame is the caret.
+    #[cfg(feature = "text-bidi")]
+    fn painted_caret_x(svg: &str) -> i32 {
+        svg.lines()
+            .filter_map(|line| {
+                let rest = line.split("<line ").nth(1)?;
+                let x1: i32 = rest.split("x1=\"").nth(1)?.split('"').next()?.parse().ok()?;
+                let x2: i32 = rest.split("x2=\"").nth(1)?.split('"').next()?.parse().ok()?;
+                (x1 == x2).then_some(x1)
+            })
+            .next_back()
+            .expect("the caret is drawn as a vertical line")
+    }
+
+    /// W6-21: an RTL document places the caret by the **visual** order.
+    ///
+    /// # What this pins
+    ///
+    /// The caret was placed at "the measured width of the logical prefix", which is the caret's
+    /// on-screen x only while the row paints left to right. The renderer reorders a
+    /// right-to-left row, so logical offset 0 belongs at the row's *right* end; without the
+    /// mapping the marker sat at the left edge of the row the glyphs were not painted at.
+    #[cfg(feature = "text-bidi")]
+    #[test]
+    fn an_rtl_document_places_the_caret_at_its_visual_side() {
+        use crate::widget::metrics::estimate_text_width;
+        use crate::widget::svg::render_widget_to_svg;
+
+        let bounds = Rect::new(0, 0, 400, 300);
+        let font = crate::core::Font::default();
+        // אבג — one Hebrew (right-to-left) run.
+        let text = "\u{05d0}\u{05d1}\u{05d2}";
+        let mut re = RichEdit::new(bounds);
+        re.set_text(text.to_string());
+        re.set_cursor_position(0);
+        let caret_x = painted_caret_x(&render_widget_to_svg(&mut re, bounds));
+
+        // The per-character advances are the table the caret mapping sums, so the right edge is
+        // exact rather than approximate.
+        let mut glyph = [0u8; 4];
+        let row_width: i32 = text
+            .chars()
+            .map(|ch| estimate_text_width(ch.encode_utf8(&mut glyph), &font, 1.0) as i32)
+            .sum();
+        assert_eq!(
+            caret_x,
+            2 + row_width,
+            "logical offset 0 is the visual right end of an RTL row"
+        );
+    }
+
+    /// W6-21: an RTL selection band covers the glyphs it selects, not their logical mirror.
+    ///
+    /// The first logical character is painted at the row's right end, so its band starts after
+    /// the other two characters rather than at the row's left edge.
+    #[cfg(feature = "text-bidi")]
+    #[test]
+    fn an_rtl_selection_band_follows_the_visual_order() {
+        use crate::widget::metrics::estimate_text_width;
+        use crate::widget::svg::render_widget_to_svg;
+
+        let bounds = Rect::new(0, 0, 400, 300);
+        let font = crate::core::Font::default();
+        let text = "\u{05d0}\u{05d1}\u{05d2}";
+        let mut re = RichEdit::new(bounds);
+        re.set_text(text.to_string());
+        re.set_selection(0, 2); // the first logical character
+        let svg = render_widget_to_svg(&mut re, bounds);
+
+        let mut glyph = [0u8; 4];
+        let advance = |ch: char, glyph: &mut [u8; 4]| {
+            estimate_text_width(ch.encode_utf8(glyph), &font, 1.0) as i32
+        };
+        let chars: Vec<char> = text.chars().collect();
+        let first = advance(chars[0], &mut glyph);
+        let before: i32 = chars[1..].iter().map(|ch| advance(*ch, &mut glyph)).sum();
+        let expected_left = 2 + before;
+        let painted = svg.lines().any(|line| {
+            if !line.contains("<rect ") || line.contains("fill=\"none\"") {
+                return false;
+            }
+            let attr = |name: &str| -> Option<i32> {
+                line.split(&format!("{name}=\"")).nth(1)?.split('"').next()?.parse().ok()
+            };
+            attr("x") == Some(expected_left) && attr("width") == Some(first)
+        });
+        assert!(
+            painted,
+            "the first logical character is painted at the right end: band at x={expected_left} \
+             width={first}"
+        );
+    }
+
+    /// W6-21: an all-left-to-right document keeps the plain logical marker path.
+    ///
+    /// The bidi branch must be a strict addition: with the feature enabled an LTR value still
+    /// measures its caret and its band from the logical prefix, byte for byte as before.
+    #[cfg(feature = "text-bidi")]
+    #[test]
+    fn an_ltr_document_keeps_the_logical_marker_path() {
+        use crate::widget::metrics::estimate_text_width;
+        use crate::widget::svg::render_widget_to_svg;
+
+        let bounds = Rect::new(0, 0, 400, 300);
+        let font = crate::core::Font::default();
+        let mut re = RichEdit::new(bounds);
+        re.set_text("illwww".to_string());
+        re.set_cursor_position(3);
+        let caret_x = painted_caret_x(&render_widget_to_svg(&mut re, bounds));
+        assert_eq!(caret_x, 2 + estimate_text_width("ill", &font, 1.0) as i32);
+
+        re.set_selection(1, 4); // `llw`
+        let svg = render_widget_to_svg(&mut re, bounds);
+        let expected_left = 2 + estimate_text_width("i", &font, 1.0) as i32;
+        let expected_width = estimate_text_width("llw", &font, 1.0) as i32;
+        let painted = svg.lines().any(|line| {
+            if !line.contains("<rect ") || line.contains("fill=\"none\"") {
+                return false;
+            }
+            let attr = |name: &str| -> Option<i32> {
+                line.split(&format!("{name}=\"")).nth(1)?.split('"').next()?.parse().ok()
+            };
+            attr("x") == Some(expected_left) && attr("width") == Some(expected_width)
+        });
+        assert!(
+            painted,
+            "an LTR band stays at the logical x={expected_left} width={expected_width}"
+        );
     }
 
     #[test]

@@ -2187,6 +2187,11 @@
     ],
     "events": [
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "suggestion_selected",
         "payload": "string",
         "shape": "scalar"
@@ -2194,6 +2199,11 @@
       {
         "name": "text_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -8602,8 +8612,18 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "text_edited",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -14244,6 +14264,11 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "return_pressed",
         "payload": null,
         "shape": null
@@ -14251,6 +14276,11 @@
       {
         "name": "text_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -25644,6 +25674,11 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "return_pressed",
         "payload": null,
         "shape": null
@@ -25651,6 +25686,11 @@
       {
         "name": "text_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -26434,8 +26474,18 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "text_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -35397,6 +35447,11 @@
         "shape": "scalar"
       },
       {
+        "name": "editing_finished",
+        "payload": null,
+        "shape": null
+      },
+      {
         "name": "read_only_changed",
         "payload": "bool",
         "shape": "scalar"
@@ -36555,6 +36610,16 @@
     ],
     "events": [
       {
+        "name": "canceled",
+        "payload": null,
+        "shape": null
+      },
+      {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "search_submitted",
         "payload": "string",
         "shape": "scalar"
@@ -36562,6 +36627,11 @@
       {
         "name": "text_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -42637,6 +42707,11 @@
     ],
     "events": [
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "tag_overflow",
         "payload": "string",
         "shape": "scalar"
@@ -42650,6 +42725,11 @@
         "name": "tags_changed",
         "payload": "string",
         "shape": "list"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
+        "shape": "scalar"
       }
     ],
     "children": [],
@@ -43089,6 +43169,11 @@
         "name": "cursor_position_changed",
         "payload": "uint",
         "shape": "scalar"
+      },
+      {
+        "name": "editing_finished",
+        "payload": null,
+        "shape": null
       },
       {
         "name": "redo_available",

@@ -121,11 +121,6 @@ mod wire_prefix_agreement_tests {
             "events",
             "the runtime's events key is the one the generated `create_for` strips"
         );
-        let carrier = crate::compat::format!(
-            "{}{}.clicked",
-            super::generator::WIRE_PROP_PREFIX,
-            crate::json::EVENTS_KEY
-        );
         let carrier =
             format!("{}{}.clicked", super::generator::WIRE_PROP_PREFIX, crate::json::EVENTS_KEY);
         let suffix = carrier

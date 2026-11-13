@@ -44,6 +44,13 @@ thread_local! {
     static KEY_HANDLERS: RefCell<HashMap<ObjectId, WindowKeyHandler>> =
         RefCell::new(HashMap::new());
 
+    /// Bumped whenever the handler registry changes.
+    ///
+    /// Dispatch takes the handler out of the map before calling it so the callback cannot
+    /// re-enter the registry through a live borrow (W6-24). This revision is how the restore
+    /// tells "nobody touched the registry" from "the callback replaced or cleared itself".
+    static KEY_HANDLER_REVISION: Cell<u64> = const { Cell::new(0) };
+
     /// Whether an input method is currently composing.
     ///
     /// Driven by the preedit/commit stream rather than by a platform query, so the answer is
@@ -57,11 +64,18 @@ pub(crate) fn set_key_handler(window_id: ObjectId, handler: WindowKeyHandler) {
     KEY_HANDLERS.with(|handlers| {
         handlers.borrow_mut().insert(window_id, handler);
     });
+    KEY_HANDLER_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
 }
 
 /// Removes the window-level key handler for `window_id`, returning whether one was installed.
+///
+/// The revision is bumped even when the map held nothing to remove: a clear requested from inside
+/// a dispatch must still stop [`invoke_handler`] from putting the taken-out handler back
+/// (W6-24).
 pub(crate) fn clear_key_handler(window_id: ObjectId) -> bool {
-    KEY_HANDLERS.with(|handlers| handlers.borrow_mut().remove(&window_id).is_some())
+    let removed = KEY_HANDLERS.with(|handlers| handlers.borrow_mut().remove(&window_id).is_some());
+    KEY_HANDLER_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+    removed
 }
 
 /// Updates the composition flag from the input stream.
@@ -115,9 +129,29 @@ pub(crate) fn dispatch_window_key(target: ObjectId, event: &Event) -> bool {
     let info = FocusInfo::new(focused, Some(window))
         .with_text_input(text_input)
         .with_ime_composition(composing);
-    KEY_HANDLERS.with(|handlers| {
-        handlers.borrow().get(&window).map(|handler| handler(&shortcut, &info)).unwrap_or(false)
-    })
+    invoke_handler(window, &shortcut, &info)
+}
+
+/// Calls the handler installed for `window` without holding the registry's borrow.
+///
+/// Split from [`dispatch_window_key`] so the re-entrancy rule is testable without a mounted
+/// widget tree. The handler is taken out of the registry before it runs, and restored only when
+/// the callback left the registry alone (W6-24).
+fn invoke_handler(window: ObjectId, shortcut: &Shortcut, info: &FocusInfo) -> bool {
+    let revision = KEY_HANDLER_REVISION.with(Cell::get);
+    let handler = KEY_HANDLERS.with(|handlers| handlers.borrow_mut().remove(&window));
+    let Some(handler) = handler else {
+        return false;
+    };
+    let claimed = handler(shortcut, info);
+    // If the callback installed a replacement, that one owns the window from now on; if it
+    // cleared itself, the clear must stick.
+    if KEY_HANDLER_REVISION.with(Cell::get) == revision {
+        KEY_HANDLERS.with(|handlers| {
+            handlers.borrow_mut().insert(window, handler);
+        });
+    }
+    claimed
 }
 
 /// Whether a modifier set makes the chord a command rather than text.
@@ -210,6 +244,46 @@ mod tests {
         // Shift + Control on the desktop convention.
         let shortcut = canonical_shortcut_for_style(Key::Z, 0b0011, PlatformShortcutStyle::Desktop);
         assert_eq!(shortcut, Shortcut::primary_shift(Key::Z));
+    }
+
+    #[test]
+    fn a_window_key_handler_may_replace_itself_during_the_call() {
+        let window = 7701;
+        let calls = crate::compat::Rc::new(Cell::new(0));
+        let seen = calls.clone();
+        set_key_handler(
+            window,
+            Box::new(move |_, _| {
+                seen.set(seen.get() + 1);
+                set_key_handler(window, Box::new(|_, _| true));
+                false
+            }),
+        );
+        let info = FocusInfo::new(None, None);
+        assert!(!invoke_handler(window, &Shortcut::primary(Key::S), &info));
+        assert_eq!(calls.get(), 1, "the original handler ran once");
+        // The replacement owns the next key; the original must not be restored over it.
+        assert!(invoke_handler(window, &Shortcut::primary(Key::S), &info));
+        assert_eq!(calls.get(), 1, "the original must not run again");
+        clear_key_handler(window);
+    }
+
+    #[test]
+    fn a_window_key_handler_may_clear_itself_during_the_call() {
+        let window = 7702;
+        set_key_handler(
+            window,
+            Box::new(move |_, _| {
+                clear_key_handler(window);
+                true
+            }),
+        );
+        let info = FocusInfo::new(None, None);
+        assert!(invoke_handler(window, &Shortcut::primary(Key::S), &info));
+        assert!(
+            !invoke_handler(window, &Shortcut::primary(Key::S), &info),
+            "a handler that cleared itself during the call stays cleared"
+        );
     }
 
     #[test]

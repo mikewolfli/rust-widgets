@@ -64,6 +64,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_python.sh
+. "$ROOT_DIR/tools/lib_python.sh"
+
 PLAN="docs/plans/blue24.md"
 
 echo "[0/4] the plan exists and has the two sections this compares"
@@ -95,7 +98,7 @@ echo "[1/4] §13 states no hard-coded count word"
 # wired off — the failure mode BLUE22 §F.3 lesson 4 records. What is a defect is
 # the *sentence-opening* count ("三件事…", "四件事…"), because that is a number a
 # reader can check against the list that follows it.
-COUNT_WORDS="$(python3 - "$PLAN" <<'PY'
+COUNT_WORDS="$("$PYTHON" - "$PLAN" <<'PY'
 import re, sys
 
 path = sys.argv[1]
@@ -132,7 +135,7 @@ echo "  PASS  no sentence-opening count word in §13"
 echo "[2/4] every non-meta §0B row is locatable in §13"
 echo "[3/4] §5 (adaptive layout) is named in §13"
 echo "[4/4] §13 anchors back to §0B"
-python3 - "$PLAN" <<'PY'
+"$PYTHON" - "$PLAN" <<'PY'
 import re, sys
 
 path = sys.argv[1]

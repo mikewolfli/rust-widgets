@@ -44,8 +44,8 @@ fn main() {
 ///   companion to `alloc_frugal` for the stripped case.
 ///
 /// Two further aliases are declared (and emitted) here for the same reason, but
-/// are gated by a *feature conjunction* rather than by the profile matrix. One
-/// more, `apple_uikit`, is a *target* alias rather than a profile or feature one:
+/// are gated by a *feature conjunction* rather than by the profile matrix. Three
+/// more are *target* aliases rather than profile or feature ones:
 ///
 /// - `designer_tooling` — `full_widgets` and the `designer` feature. See its own
 ///   note below for why it is not folded into `full_widgets`.
@@ -57,6 +57,10 @@ fn main() {
 /// - `unix_desktop` — a Unix-family target with an X11/Wayland session: Linux and
 ///   the BSDs, but not Apple, Android, Redox, OpenHarmony or wasm. This is winit's
 ///   `free_unix`, named once so the X11/Wayland gates cannot drift.
+/// - `wasm_browser` — `wasm32` and not WASI. A browser page and WASI disagree on
+///   nearly every capability question (clock, filesystem, threads), and the
+///   conjunction was hand-written at 37 sites inside `src/platform/wasm/`; a site
+///   that lost its WASI half would silently compile the browser arm for WASI.
 ///
 /// Before these aliases existed, `widget/mod.rs` used
 /// `not(any(mini, embedded)) + any(desktop, tablet, mobile)` while several
@@ -140,6 +144,18 @@ fn declare_cfg_aliases() {
         );
     if unix_desktop {
         println!("cargo:rustc-cfg=unix_desktop");
+    }
+
+    // `wasm_browser` — `wasm32` and not WASI: the build runs inside a browser page.
+    //
+    // This is the single spelling of `all(target_arch = "wasm32", not(target_os = "wasi"))`,
+    // which appeared 37 times in `src/platform/wasm/` before the alias existed (rule #47). The
+    // comparison is `== "wasm32"`, not `starts_with("wasm")`, because the predicate it replaces
+    // names that exact arch: a `wasm64` target is not the browser build these arms describe.
+    println!("cargo:rustc-check-cfg=cfg(wasm_browser)");
+    let wasm_browser = target_arch == "wasm32" && target_os != "wasi";
+    if wasm_browser {
+        println!("cargo:rustc-cfg=wasm_browser");
     }
 
     let has_profile =
@@ -319,6 +335,12 @@ fn declare_cfg_aliases() {
         // becomes an `rustc-cfg`, so without the directive, toggling it on an
         // already-built tree would reuse the cached aliases and appear to do nothing.
         "designer",
+        // `gtk-native` and `wasm` each become an `rustc-cfg` (`gtk_probe` and
+        // `browser_clock`), so they belong here for the same reason: an out-of-tree build that
+        // sets `CARGO_FEATURE_*` directly must not reuse the alias cached for the previous
+        // feature set.
+        "gtk-native",
+        "wasm",
         // `cjk_outline` (the `cjk_outline_face` rustc-cfg) is derived from the single
         // face **or any shard**, so all six inputs belong here.
         "fonts-cjk",

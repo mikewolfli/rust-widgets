@@ -65,6 +65,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 echo "[1/3] the announcement entry point exists"
 if ! grep -qE '^pub fn notify_platform_surface_repaint' src/widget/runtime/window_map.rs; then
     echo "  FAIL  src/widget/runtime/window_map.rs no longer defines \`pub fn notify_platform_surface_repaint\`"
@@ -76,7 +79,7 @@ echo "  PASS  notify_platform_surface_repaint is the platform's entry into the f
 echo "[2/3] every toolkit redraw call site is announced or is the library's own"
 # Collect the raw call sites, with their enclosing file, then decide by file.
 RAW="$(grep -rn 'queue_draw()\|setNeedsDisplay: YES' src/platform/ --include=*.rs \
-    | sed -e 's://.*::' || true)"
+    | rw_strip_line_comments || true)"
 
 if [ -z "$RAW" ] || [ "$(printf '%s' "$RAW" | tr -d '[:space:]' | wc -c)" -eq 0 ]; then
     echo "  FAIL  no toolkit redraw call sites found under src/platform/"
@@ -104,26 +107,33 @@ while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     file="${hit%%:*}"
     ln="${hit#*:}"; ln="${ln%%:*}"
-    # The name of the nearest preceding `fn` declaration is the enclosing function.
-    enclosing="$(awk -v upto="$ln" '
-        NR <= upto && match($0, /fn[[:space:]]+[A-Za-z0-9_]+/) {
-            s = substr($0, RSTART, RLENGTH); sub(/fn[[:space:]]+/, "", s); name = s
-        }
-        END { print name }
-    ' "$file")"
+    # The enclosing function is found structurally: brace depth plus an anchored `fn`
+    # declaration. The old "nearest preceding line mentioning fn" search also matched doc
+    # comments and named the wrong function when a comment explained a sibling.
+    enclosing="$(rw_enclosing_function_name "$file" "$ln")"
+    if [ -z "$enclosing" ]; then
+        unannounced="${unannounced}${file}:${ln} is outside every function, so it has no announcement pairing
+"
+        continue
+    fi
     case "$enclosing" in
         *repaint_canvas|*repaint_canvas_rect|*invalidate_surface*) continue ;;
     esac
-    # The enclosing function must mention an announcement somewhere in its body. Reading
-    # from the function's `fn` line to the next one is enough for the flat module layout
-    # these backends use, and it is the shape a review reads anyway.
-    body="$(awk -v name="$enclosing" '
-        index($0, "fn " name "(") { inside = 1 }
-        inside { print }
-        inside && /^}$/ { exit }
-    ' "$file")"
-    if ! printf '%s' "$body" | grep -E 'note_canvas_redraw\(|note_platform_surface_repaint\(' \
-        | sed -e 's://.*::' | grep -q .; then
+    # The enclosing function must mention an announcement somewhere in its *own* body.
+    # The body is sliced by brace balance (tools/lib_source_scan.sh): the previous slice ran
+    # from the `fn` line to a column-0 `}`, which a method never has, so it ran to end of
+    # file and let a neighbouring function's announcement vouch for this one (W6-15).
+    start="$(rw_enclosing_function_line "$file" "$ln")"
+    body=""
+    if [ "${start:-0}" -gt 0 ]; then
+        body="$(rw_slice_function_body "$file" "$start" || true)"
+    fi
+    # `grep -q` cannot end this pipeline: with `pipefail` set, its early exit closes the
+    # pipe, the awk in `rw_strip_line_comments` dies of SIGPIPE, and the pipeline reports
+    # failure for text that was present. Read the matches, then test the variable.
+    announced="$(printf '%s\n' "$body" | rw_strip_line_comments \
+        | grep -E 'note_canvas_redraw\(|note_platform_surface_repaint\(' || true)"
+    if [ -z "$announced" ]; then
         unannounced="${unannounced}${file}:${ln} in ${enclosing}()
 "
     fi
@@ -146,14 +156,18 @@ echo "[3/3] the library's own invalidation path does not double-count"
 double=""
 while IFS= read -r file; do
     [ -f "$file" ] || continue
-    # Extract each invalidate_surface* body and look for an announcement inside.
+    # Extract each invalidate_surface* body and look for an announcement inside. Same
+    # brace-aware slice as [2/3]: a fixed four-space `    }` window ends at the first nested
+    # block that happens to close at that indent, which is not the function's boundary.
     for fn in invalidate_surface_impl invalidate_surface_rect_impl; do
-        body="$(awk -v name="$fn" '
-            $0 ~ "fn " name "\\(" { inside=1 }
-            inside { print }
-            inside && /^    }$/ { exit }
-        ' "$file" 2>/dev/null || true)"
-        if printf '%s' "$body" | grep -qE 'note_canvas_redraw\(|note_platform_surface_repaint\('; then
+        start="$(rw_function_line "$file" "$fn" || true)"
+        [ -n "$start" ] || continue
+        body="$(rw_slice_function_body "$file" "$start" || true)"
+        [ -n "$body" ] || continue
+        # Same SIGPIPE-free shape as [2/3].
+        announced="$(printf '%s\n' "$body" | rw_strip_line_comments \
+            | grep -E 'note_canvas_redraw\(|note_platform_surface_repaint\(' || true)"
+        if [ -n "$announced" ]; then
             double="${double}${file}: ${fn} announces a redraw the library already counted
 "
         fi

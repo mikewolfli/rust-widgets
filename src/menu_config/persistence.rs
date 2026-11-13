@@ -30,8 +30,9 @@ pub struct ConfigPersistence {
 /// Error returned when loading a menu configuration file fails.
 ///
 /// A parse failure on a **known** field is reported with the field name and its
-/// line number, so a corrupt or hand-edited file never silently drops a preference.
-/// Unknown keys are deliberately ignored (a separate, extension-friendly policy).
+/// line number, and a line that is not `key=value` at all is reported with its
+/// line number, so a corrupt or hand-edited file never silently drops a
+/// preference. Unknown keys are deliberately ignored (a separate, extension-friendly policy).
 #[derive(Debug)]
 pub enum ConfigLoadError {
     /// The file could not be opened or read.
@@ -52,6 +53,16 @@ pub enum ConfigLoadError {
         /// The offending value.
         value: String,
     },
+    /// A non-comment, non-empty line was not a `key=value` entry.
+    ///
+    /// Reported rather than skipped: skipping it would silently drop whatever the line was
+    /// meant to set, which is exactly the failure the module contract promises not to have.
+    MalformedLine {
+        /// 1-based line number where the malformed entry appeared.
+        line: usize,
+        /// The offending line, trimmed.
+        text: String,
+    },
 }
 
 impl fmt::Display for ConfigLoadError {
@@ -60,6 +71,9 @@ impl fmt::Display for ConfigLoadError {
             ConfigLoadError::Io(err) => write!(f, "failed to read menu config: {err}"),
             ConfigLoadError::Parse { line, field, value } => {
                 write!(f, "menu config line {line}: field `{field}` has invalid value `{value}`")
+            }
+            ConfigLoadError::MalformedLine { line, text } => {
+                write!(f, "menu config line {line} is not a `key=value` entry: `{text}`")
             }
             ConfigLoadError::UnsupportedVersion { found, supported } => write!(
                 f,
@@ -73,7 +87,9 @@ impl std::error::Error for ConfigLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ConfigLoadError::Io(err) => Some(err),
-            ConfigLoadError::Parse { .. } | ConfigLoadError::UnsupportedVersion { .. } => None,
+            ConfigLoadError::Parse { .. }
+            | ConfigLoadError::UnsupportedVersion { .. }
+            | ConfigLoadError::MalformedLine { .. } => None,
         }
     }
 }
@@ -198,9 +214,10 @@ impl ConfigPersistence {
     /// Loads menu configuration from disk.
     ///
     /// A known field that cannot be parsed is an explicit [`ConfigLoadError::Parse`]
-    /// (with the field and line number) rather than a silently dropped `None`; a whole
-    /// file that fails to parse is rejected so the caller can keep its previous
-    /// configuration. Unknown keys are ignored independently of that policy.
+    /// (with the field and line number) and a non-`key=value` line is an explicit
+    /// [`ConfigLoadError::MalformedLine`] (with its line number), rather than a silently
+    /// dropped `None`; a whole file that fails to parse is rejected so the caller can keep
+    /// its previous configuration. Unknown keys are ignored independently of that policy.
     pub fn load(&self) -> Result<UserOverrides, ConfigLoadError> {
         let path = if self.config_file_path().exists() {
             self.config_file_path()
@@ -220,51 +237,51 @@ impl ConfigPersistence {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if let Some((key, value)) = line.split_once('=') {
-                let key = key.trim();
-                let value = value.trim();
-                match key {
-                    "version" => {
-                        let version: u32 = Self::parse_field(key, value, line_number)?;
-                        if version > CURRENT_CONFIG_VERSION {
-                            return Err(ConfigLoadError::UnsupportedVersion {
-                                found: version,
-                                supported: CURRENT_CONFIG_VERSION,
-                            });
-                        }
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(ConfigLoadError::MalformedLine {
+                    line: line_number,
+                    text: line.to_string(),
+                });
+            };
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "version" => {
+                    let version: u32 = Self::parse_field(key, value, line_number)?;
+                    if version > CURRENT_CONFIG_VERSION {
+                        return Err(ConfigLoadError::UnsupportedVersion {
+                            found: version,
+                            supported: CURRENT_CONFIG_VERSION,
+                        });
                     }
-                    "enabled" => {
-                        overrides.enabled = Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    "animations_enabled" => {
-                        overrides.animations = Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    "transparency_enabled" => {
-                        overrides.transparency = Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    "shadows_enabled" => {
-                        overrides.shadows = Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    "blur_enabled" => {
-                        overrides.blur = Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    "animation_speed" => {
-                        overrides.animation_speed =
-                            Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    "max_visible_items" => {
-                        overrides.max_visible_items =
-                            Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    "hardware_acceleration" => {
-                        overrides.hardware_acceleration =
-                            Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    "caching_enabled" => {
-                        overrides.caching = Some(Self::parse_field(key, value, line_number)?)
-                    }
-                    _ => { /* Unknown key: ignored so files can carry forward extensions. */ }
                 }
+                "enabled" => overrides.enabled = Some(Self::parse_field(key, value, line_number)?),
+                "animations_enabled" => {
+                    overrides.animations = Some(Self::parse_field(key, value, line_number)?)
+                }
+                "transparency_enabled" => {
+                    overrides.transparency = Some(Self::parse_field(key, value, line_number)?)
+                }
+                "shadows_enabled" => {
+                    overrides.shadows = Some(Self::parse_field(key, value, line_number)?)
+                }
+                "blur_enabled" => {
+                    overrides.blur = Some(Self::parse_field(key, value, line_number)?)
+                }
+                "animation_speed" => {
+                    overrides.animation_speed = Some(Self::parse_field(key, value, line_number)?)
+                }
+                "max_visible_items" => {
+                    overrides.max_visible_items = Some(Self::parse_field(key, value, line_number)?)
+                }
+                "hardware_acceleration" => {
+                    overrides.hardware_acceleration =
+                        Some(Self::parse_field(key, value, line_number)?)
+                }
+                "caching_enabled" => {
+                    overrides.caching = Some(Self::parse_field(key, value, line_number)?)
+                }
+                _ => { /* Unknown key: ignored so files can carry forward extensions. */ }
             }
         }
         Ok(overrides)
@@ -298,3 +315,38 @@ impl ConfigPersistence {
     }
 }
 crate::impl_default_via_new!(ConfigPersistence);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    /// W6-47: a line that is not `key=value` must be reported, not silently skipped.
+    ///
+    /// The module contract promises that a hand-edited file never silently drops a
+    /// preference. Before this test the loop used `if let Some(..) = split_once('=')`,
+    /// so a typo such as a missing `=` produced a clean `Ok` with the setting missing.
+    #[test]
+    fn a_line_without_equals_is_reported_with_its_line_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistence = ConfigPersistence::with_dir(dir.path().to_path_buf());
+        std::fs::write(persistence.path(), "version=2\nenabled=true\nthis line has no separator\n")
+            .unwrap();
+
+        match persistence.load() {
+            Err(ConfigLoadError::MalformedLine { line, text }) => {
+                assert_eq!(line, 3, "the reported line must be the 1-based offending line");
+                assert_eq!(text, "this line has no separator");
+            }
+            other => panic!("expected MalformedLine for line 3, got {other:?}"),
+        }
+    }
+
+    /// The malformed-line error is readable, so a host can show it verbatim.
+    #[test]
+    fn malformed_line_error_names_the_line_and_its_text() {
+        let error = ConfigLoadError::MalformedLine { line: 7, text: "oops".to_string() };
+        let message = error.to_string();
+        assert!(message.contains("line 7"), "{message}");
+        assert!(message.contains("oops"), "{message}");
+    }
+}

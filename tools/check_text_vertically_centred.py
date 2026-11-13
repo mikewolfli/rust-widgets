@@ -58,6 +58,8 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 SRC = pathlib.Path("src")
 
 # The wrong shape, in the spellings the crate actually uses:
@@ -82,8 +84,6 @@ MEASURED_LINE = re.compile(
 # elsewhere in the function cannot be attributed to the call.
 DRAW = re.compile(r"\b(draw_text|draw_text_fitted|draw_text_line)\s*\(")
 
-LINE_COMMENT = re.compile(r"//[^\n]*")
-
 # Sites that are correct and why. Keyed `relative/path.rs::<needle>`, where the needle is a
 # distinctive fragment of the reported line. Keep this list short and justified: it is not a
 # mute button, it is a record of the reasoning.
@@ -94,11 +94,6 @@ ALLOWED: dict[str, str] = {
         "polar anchor: the label is centred on a point on the arc; `- metrics.height / 2` is "
         "the centring term, and the enclosing band is incidental",
 }
-
-
-def strip_comments(text: str) -> str:
-    """Blanks line comments while preserving byte offsets, so line numbers stay exact."""
-    return LINE_COMMENT.sub(lambda m: " " * len(m.group(0)), text)
 
 
 def y_expression(text: str, call_start: int) -> str:

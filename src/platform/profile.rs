@@ -428,7 +428,7 @@ pub fn text_scale() -> f32 {
     {
         1.0
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         crate::platform::get_platform().text_scale().clamp(1.0, 3.0)
     }
@@ -447,7 +447,7 @@ pub fn system_theme() -> Option<bool> {
     {
         None
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         crate::platform::get_platform().system_theme()
     }
@@ -465,7 +465,7 @@ pub fn environment_generation() -> u64 {
     {
         crate::platform::environment_notify::combine(0)
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         let base = crate::platform::get_platform().environment_generation();
         crate::platform::environment_notify::combine(base)
@@ -483,7 +483,7 @@ pub fn notify_environment_changed() {
     {
         crate::platform::environment_notify::bump();
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         crate::platform::get_platform().notify_environment_changed();
     }
@@ -509,7 +509,7 @@ pub fn runtime_init() {
     {
         log::info!("rust_widgets: mini mode init (no platform runtime)");
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         if has_os_runtime() {
             crate::platform::init();
@@ -526,7 +526,7 @@ pub fn runtime_run() {
     {
         log::info!("rust_widgets: mini mode run (no platform event loop)");
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         if has_os_runtime() {
             crate::platform::run();
@@ -544,7 +544,7 @@ pub fn runtime_quit() -> bool {
         // No profile owns a loop here, so there is no request that could go unheeded.
         true
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         if has_os_runtime() {
             crate::platform::quit()
@@ -584,7 +584,7 @@ pub fn init_optional_subsystems() {
     #[cfg(feature = "i18n")]
     if has_os_runtime() {
         crate::i18n::init();
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         start_i18n_hot_reload_from_env();
         return;
     }
@@ -609,7 +609,7 @@ pub fn init_optional_subsystems() {
 /// A configured-but-unusable directory is logged and skipped rather than fatal: the
 /// embedded catalogue is still loaded, so the application has readable (if
 /// unlocalised) text, which is strictly better than refusing to start.
-#[cfg(all(feature = "i18n", not(feature = "mini")))]
+#[cfg(all(feature = "i18n", not(alloc_frugal)))]
 fn start_i18n_hot_reload_from_env() {
     let Ok(dir) = std::env::var(crate::i18n::HOT_RELOAD_ENV_VAR) else {
         return;

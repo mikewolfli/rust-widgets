@@ -118,21 +118,16 @@ impl TabWidgetHandle {
         F: FnMut(Point) + Send + 'static,
     {
         let id = self.raw_id();
-        let held: std::sync::Arc<std::sync::Mutex<F>> =
-            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let held: std::sync::Arc<std::sync::Mutex<Option<F>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
         let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
             let held = std::sync::Arc::clone(&held);
             (widget as &mut dyn core::any::Any).downcast_mut::<crate::widget::TabWidget>().map(
                 |tabs| {
                     tabs.context_menu_requested.connect_ref(move |pos: &Point| {
-                        if let Ok(mut callback) = held.lock() {
-                            callback(*pos);
-                        } else {
-                            log::warn!(
-                                "the tab-strip context-menu callback for widget {id} could not be \
-                                 locked; skipping this request rather than panicking"
-                            );
-                        }
+                        run_shared_callback(&held, "tab-strip context-menu", id, |callback| {
+                            callback(*pos)
+                        });
                     })
                 },
             )

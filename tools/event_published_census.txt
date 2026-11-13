@@ -190,7 +190,7 @@ safe_area:
 scroll_area: scroll_position_changed
 scroll_bar: value_changed, slider_moved, slider_pressed, slider_released
 search_bar: text_changed, search_submitted, canceled
-search_box: text_changed, search_submitted, undo_available, redo_available
+search_box: text_changed, search_submitted, canceled, undo_available, redo_available
 segmented_button: current_changed
 segmented_control: selection_changed
 shape_canvas: shape_added, shape_removed, shape_selected, shape_modified

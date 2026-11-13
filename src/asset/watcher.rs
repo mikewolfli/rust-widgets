@@ -144,7 +144,15 @@ type EventMap = HashMap<PathBuf, AssetEvent>;
 /// events via a `crossbeam_channel` so consumers can poll for events without
 /// blocking indefinitely.
 pub struct AssetWatcher {
-    watcher: Option<notify::RecommendedWatcher>,
+    /// One notify watcher per watched directory.
+    ///
+    /// Each watch carries its own filter predicate, and that predicate is baked into the
+    /// watcher's callback closure, so two watches cannot share one `RecommendedWatcher`.
+    /// Keying them by path also makes the set explicit: a second watch on the same path is
+    /// rejected instead of silently replacing the first filter, and [`Self::unwatch`] names
+    /// exactly which registration it removes. Before this map a second `watch` overwrote the
+    /// single `watcher` field, stopping the first watch with no way for the caller to know.
+    watchers: HashMap<PathBuf, RecommendedWatcher>,
     sender: Sender<AssetEvent>,
     receiver: Receiver<AssetEvent>,
 }
@@ -158,7 +166,7 @@ impl AssetWatcher {
     /// path changed is never dropped.
     pub fn new() -> Self {
         let (sender, receiver) = bounded(ASSET_EVENT_CAPACITY);
-        Self { watcher: None, sender, receiver }
+        Self { watchers: HashMap::new(), sender, receiver }
     }
 
     /// Start watching `dir` for file changes filtered by `filter`.
@@ -168,8 +176,9 @@ impl AssetWatcher {
     ///
     /// # Errors
     ///
-    /// Returns an error if the `notify` watcher cannot be created or if
-    /// `dir` does not exist or is not readable.
+    /// Returns an error if the `notify` watcher cannot be created, if
+    /// `dir` does not exist or is not readable, or if `dir` is already being watched
+    /// (call [`Self::unwatch`] first to replace its filter).
     pub fn watch_directory<P>(&mut self, dir: &Path, filter: P) -> Result<(), String>
     where
         P: Fn(&Path) -> bool + Send + 'static,
@@ -179,6 +188,9 @@ impl AssetWatcher {
 
     /// Start watching `directory` with recursive option.
     /// Only files passing `filter` will produce events.
+    ///
+    /// A directory that is already watched is an error rather than a silent replacement of
+    /// the existing filter; call [`Self::unwatch`] first to change it.
     pub fn watch<F>(&mut self, directory: &Path, recursive: bool, filter: F) -> Result<(), String>
     where
         F: Fn(&Path) -> bool + Send + Sync + 'static,
@@ -201,6 +213,14 @@ impl AssetWatcher {
     where
         P: Fn(&Path) -> bool + Send + 'static,
     {
+        // A second watch on the same path would replace the filter the caller installed first,
+        // and silently change which events the host sees. Reject it and say how to replace it.
+        if self.watchers.contains_key(dir) {
+            return Err(format!(
+                "'{0}' is already being watched; call unwatch() first to change its filter",
+                dir.display()
+            ));
+        }
         let sender = self.sender.clone();
         // Coalesced pending events live in the notify callback closure, which is
         // owned by the watcher and runs on the notify backend thread (D09-WATCH-01).
@@ -264,8 +284,26 @@ impl AssetWatcher {
             )
         })?;
 
-        self.watcher = Some(watcher);
+        self.watchers.insert(dir.to_path_buf(), watcher);
         Ok(())
+    }
+
+    /// Stop watching `dir`, returning an error when it is not currently watched.
+    ///
+    /// Dropping the per-directory `RecommendedWatcher` releases every OS watch it owns, and
+    /// removing its map entry is what makes the rest of it unreachable. This is the counterpart
+    /// the type did not have: before it, the only way to stop a watch was to drop the whole
+    /// [`AssetWatcher`], and a second `watch` call silently replaced the first with no report.
+    pub fn unwatch(&mut self, dir: &Path) -> Result<(), String> {
+        match self.watchers.remove(dir) {
+            Some(watcher) => {
+                drop(watcher);
+                Ok(())
+            }
+            None => {
+                Err(format!("'{0}' is not being watched, so it cannot be unwatched", dir.display()))
+            }
+        }
     }
 
     /// Take up to `ASSET_POLL_BATCH_LIMIT` buffered events from the channel.
@@ -674,5 +712,63 @@ mod tests {
             |e| matches!(e, AssetEvent::FileChanged { path, .. } if path.ends_with("ignored.txt")),
         );
         assert!(!matched, "Filtered file should not produce event, got {events:?}");
+    }
+
+    /// W6-48: two watches coexist, and `unwatch` removes exactly the named one.
+    ///
+    /// A second `watch` used to overwrite the single `watcher` field, stopping the first watch
+    /// without telling the caller, and there was no API to stop a watch at all. This watches two
+    /// directories, unwatches the first, and proves the second still reports a change.
+    #[test]
+    fn watching_two_directories_then_unwatching_one() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+
+        let mut watcher = AssetWatcher::new();
+        watcher.watch_directory(first.path(), |_| true).unwrap();
+        watcher.watch(second.path(), false, |_| true).unwrap();
+
+        watcher.unwatch(first.path()).unwrap();
+        assert!(
+            watcher.unwatch(first.path()).is_err(),
+            "a removed watch cannot be unwatched twice"
+        );
+
+        // The second watch is still live: the first `watch` call was not replaced by the second.
+        let file = second.path().join("still-watched.txt");
+        std::fs::write(&file, b"bytes").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let events = watcher.drain();
+        assert!(
+            events.iter().any(
+                |e| matches!(e, AssetEvent::FileChanged { path, .. } if path.ends_with("still-watched.txt"))
+            ),
+            "unwatching the first directory must leave the second watched; got {events:?}"
+        );
+
+        watcher.unwatch(second.path()).unwrap();
+    }
+
+    /// W6-48: a duplicate watch is reported, not a silent replacement of the first filter.
+    #[test]
+    fn watching_the_same_directory_twice_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut watcher = AssetWatcher::new();
+        watcher.watch_directory(dir.path(), |_| true).unwrap();
+
+        let error = watcher.watch_directory(dir.path(), |_| false).unwrap_err();
+        assert!(error.contains("already being watched"), "{error}");
+
+        // The original allow-all filter is still the one in effect.
+        let file = dir.path().join("kept.txt");
+        std::fs::write(&file, b"bytes").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let events = watcher.drain();
+        assert!(
+            events.iter().any(
+                |e| matches!(e, AssetEvent::FileChanged { path, .. } if path.ends_with("kept.txt"))
+            ),
+            "the rejected second watch must not replace the first filter; got {events:?}"
+        );
     }
 }

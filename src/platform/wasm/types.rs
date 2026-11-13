@@ -96,7 +96,7 @@ pub struct WasmPlatform {
     ///
     /// `Mutex` rather than `RefCell` because `Platform` is `Send + Sync`; the browser
     /// runs this on one thread anyway, so the lock is never contended.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    #[cfg(wasm_browser)]
     pub(crate) resize_observer: crate::compat::Mutex<Option<web_sys::ResizeObserver>>,
 }
 
@@ -107,7 +107,7 @@ impl WasmPlatform {
             state: alloc::sync::Arc::new(BackendState::new()),
             runtime: WasmRuntime::new(),
             canvas_id: "wgpu-canvas".to_string(),
-            #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+            #[cfg(wasm_browser)]
             resize_observer: crate::compat::Mutex::new(None),
         }
     }
@@ -118,7 +118,7 @@ impl WasmPlatform {
             state: alloc::sync::Arc::new(BackendState::new()),
             runtime: WasmRuntime::new(),
             canvas_id: canvas_id.to_string(),
-            #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+            #[cfg(wasm_browser)]
             resize_observer: crate::compat::Mutex::new(None),
         }
     }
@@ -158,7 +158,7 @@ impl WasmPlatform {
     /// `ResizeObserver` (an older engine), in which case the host must report resizes
     /// through [`crate::queue_resize_trigger`] itself. `false` is also the answer on a
     /// non-wasm host, where there is no DOM to observe.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    #[cfg(wasm_browser)]
     pub fn observe_canvas_resize(&self, window_id: crate::core::ObjectId) -> bool {
         use wasm_bindgen::JsCast;
 
@@ -251,13 +251,13 @@ impl WasmPlatform {
     /// Always `false` on a non-wasm host: there is no DOM canvas to observe, so the
     /// honest answer is that the library cannot watch for resizes here — a host that
     /// knows its own size reports it through [`crate::queue_resize_trigger`].
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+    #[cfg(not(wasm_browser))]
     pub fn observe_canvas_resize(&self, _window_id: crate::core::ObjectId) -> bool {
         false
     }
 
     /// Returns this backend's canvas element, if the document has one.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    #[cfg(wasm_browser)]
     fn canvas_element(&self) -> Option<web_sys::HtmlCanvasElement> {
         use wasm_bindgen::JsCast;
         web_sys::window()?

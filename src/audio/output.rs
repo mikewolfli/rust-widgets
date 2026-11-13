@@ -11,6 +11,39 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::audio::samples::AudioBuffer;
 
+/// Number of [`AudioOutput::prepare_samples`] calls in this process.
+///
+/// Exists so the engine's prepared-buffer cache can be tested for a real cache
+/// hit (no second conversion) instead of only inspecting the cache entry.
+#[cfg(test)]
+static PREPARE_SAMPLES_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Number of [`AudioOutput::new`] calls in this process, used to prove that an
+/// existing output is reused instead of a second device being constructed.
+#[cfg(test)]
+static CONSTRUCTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn prepare_samples_call_count() -> usize {
+    PREPARE_SAMPLES_CALLS.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_prepare_samples_call_count() {
+    PREPARE_SAMPLES_CALLS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn construction_count() -> usize {
+    CONSTRUCTIONS.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_construction_count() {
+    CONSTRUCTIONS.store(0, Ordering::SeqCst);
+}
+
 /// Audio output device that plays audio through the system speakers.
 pub struct AudioOutput {
     device: Option<cpal::Device>,
@@ -30,6 +63,8 @@ pub struct AudioOutput {
 impl AudioOutput {
     /// Create a new audio output connected to the default output device.
     pub fn new() -> Result<Self, String> {
+        #[cfg(test)]
+        CONSTRUCTIONS.fetch_add(1, Ordering::SeqCst);
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or_else(|| {
             "no default audio output device: the host reported no audio device, so playback \
@@ -37,10 +72,7 @@ impl AudioOutput {
                 .to_string()
         })?;
         let supported = device.default_output_config().map_err(|e| {
-            format!(
-                "default output device '{}' has no usable output config: {e}",
-                device.name().unwrap_or_else(|_| "<unnamed>".to_string())
-            )
+            format!("default output device '{device}' has no usable output config: {e}")
         })?;
         // Capture the sample format before consuming the supported config; the
         // plain StreamConfig carries sample rate/channels but not the format.
@@ -68,14 +100,65 @@ impl AudioOutput {
     ///
     /// Playback continues until the buffer finishes or the stream is dropped.
     /// When the buffer runs out of samples the callback sets [`Self::is_finished`]
-    /// and emits silence: cpal 0.15's `Stream` is neither `Send` nor `Sync`, so
+    /// and emits silence: cpal 0.18's `Stream` is neither `Send` nor `Sync`, so
     /// the audio callback cannot hold a handle back to pause the stream itself.
     /// Callers should observe [`Self::is_finished`] and call [`Self::stop`] (or
     /// drop the stream) when playback is done.
+    ///
+    /// A caller that keeps its own prepared copy (the engine's buffer cache) should
+    /// use [`Self::play_prepared`] instead, which skips the conversion work.
     pub fn play(&mut self, buffer: &AudioBuffer) -> Result<(), String> {
-        let device = self.device.as_ref().ok_or("No audio device")?;
-        let config = self.config.as_ref().ok_or("No audio config")?;
+        let (sample_rate, channels) = self.f32_layout()?;
+        let prepared = prepare_buffer(buffer, sample_rate, channels);
+        self.start_stream(Arc::new(prepared.samples))
+    }
 
+    /// Play samples that are already in the device's sample rate and channel layout.
+    ///
+    /// This is the cache-aware entry point: it performs no resampling or channel
+    /// remapping, and the `Arc` is shared with the stream callback instead of
+    /// copied, so replaying a prepared buffer costs neither a conversion nor a
+    /// full-track copy (see W6-29).
+    pub(crate) fn play_prepared(&mut self, samples: Arc<Vec<f32>>) -> Result<(), String> {
+        self.f32_layout()?;
+        self.start_stream(samples)
+    }
+
+    /// The device layout from this output's config, if it carries one.
+    ///
+    /// In production an `AudioOutput` is stored only after [`Self::new`] succeeded, so
+    /// `Some` also means the device is live. `None` means there is nothing to prepare
+    /// for; the engine uses this to decide whether an existing output can be reused
+    /// rather than constructing a new device.
+    pub(crate) fn prepared_layout(&self) -> Option<(u32, u8)> {
+        let config = self.config.as_ref()?;
+        // `AudioBuffer` stores the channel count as `u8`; a device reporting more
+        // channels than that cannot be described by the buffer type, so it is not
+        // a usable layout rather than a silently truncated one.
+        let channels = u8::try_from(config.channels).ok()?;
+        Some((config.sample_rate, channels))
+    }
+
+    /// Prepare `buffer` for `(sample_rate, channels)` and return its samples.
+    ///
+    /// Shared by the engine's prepared-buffer cache so the conversion decision
+    /// (and its tests) still live in one place.
+    pub(crate) fn prepare_samples(
+        buffer: &AudioBuffer,
+        sample_rate: u32,
+        channels: u8,
+    ) -> Arc<Vec<f32>> {
+        #[cfg(test)]
+        PREPARE_SAMPLES_CALLS.fetch_add(1, Ordering::SeqCst);
+        Arc::new(prepare_buffer(buffer, sample_rate, channels).samples)
+    }
+
+    /// Validate the device/config/sample-format prerequisites and return the
+    /// device layout. Keeps the error messages and their order identical for
+    /// [`Self::play`] and [`Self::play_prepared`].
+    fn f32_layout(&self) -> Result<(u32, u8), String> {
+        let _device = self.device.as_ref().ok_or("No audio device")?;
+        let config = self.config.as_ref().ok_or("No audio config")?;
         if self.sample_format != cpal::SampleFormat::F32 {
             return Err(format!(
                 "output device '{}' reports sample format {:?}, but only F32 is supported: \
@@ -84,15 +167,21 @@ impl AudioOutput {
                 self.sample_format
             ));
         }
+        let channels = u8::try_from(config.channels).map_err(|_| {
+            format!(
+                "output device '{}' reports {} channels, but the audio buffer layout supports at \
+                 most 255",
+                self.device_name().unwrap_or_else(|| "<unnamed>".to_string()),
+                config.channels
+            )
+        })?;
+        Ok((config.sample_rate, channels))
+    }
 
-        // Convert to the device's sample rate/channels so the samples are read
-        // at the correct speed and layout. Without this a 24 kHz mono buffer
-        // played through a 48 kHz stereo device would run at half speed with
-        // only one of the two channels populated.
-        let prepared = prepare_buffer(buffer, config.sample_rate.0, config.channels as u8);
-        // `prepare_buffer` returns a fresh owned buffer and `prepared` is not used again, so
-        // moving the samples avoids a full PCM copy (≈100 MB for a 5-minute stereo track).
-        let samples = prepared.samples;
+    /// Build and start the output stream over `samples`.
+    fn start_stream(&mut self, samples: Arc<Vec<f32>>) -> Result<(), String> {
+        let device = self.device.as_ref().ok_or("No audio device")?;
+        let config = self.config.as_ref().ok_or("No audio config")?;
         let volume = Arc::clone(&self.volume);
         let finished = Arc::clone(&self.finished);
         finished.store(false, Ordering::Relaxed);
@@ -103,8 +192,9 @@ impl AudioOutput {
         let mut warned_exhausted = false;
         let err_fn = |err| log::error!("Audio stream error: {}", err);
         let stream = device
+            // cpal 0.18 takes the config by value.
             .build_output_stream(
-                config,
+                *config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     // Copy samples in order across callbacks; once the buffer
                     // is exhausted, emit silence and report it exactly once so
@@ -170,6 +260,15 @@ impl AudioOutput {
         self.paused
     }
 
+    /// Whether a stream is currently held (playing or paused).
+    ///
+    /// `paused` alone is not enough to resume: [`Self::pause`] also sets it when
+    /// there is no stream yet, and resuming that would report playback that is
+    /// not happening.
+    pub(crate) fn has_stream(&self) -> bool {
+        self.stream.is_some()
+    }
+
     /// Set playback volume (0.0 to 1.0).
     pub fn set_volume(&mut self, volume: f32) {
         self.volume.store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
@@ -194,7 +293,9 @@ impl AudioOutput {
 
     /// Returns the name of the default output device, if available.
     pub fn device_name(&self) -> Option<String> {
-        self.device.as_ref().and_then(|d| d.name().ok())
+        // cpal 0.18 models the device itself as `Display`; there is no separate
+        // fallible `name()` method.
+        self.device.as_ref().map(|d| d.to_string())
     }
 
     /// Build an output with no device attached. Used by tests to exercise the
@@ -218,6 +319,28 @@ impl AudioOutput {
     #[cfg(test)]
     pub(crate) fn mark_finished_for_test(&self) {
         self.finished.store(true, Ordering::Relaxed);
+    }
+
+    /// An output with a device layout but no device attached.
+    ///
+    /// The engine's cache/reuse tests need `prepared_layout()` to answer `Some`
+    /// so they exercise the reuse path, while `play_prepared` still fails at the
+    /// explicit "No audio device" check — no sound card required.
+    #[cfg(test)]
+    pub(crate) fn new_with_layout_for_test(sample_rate: u32, channels: u16) -> Self {
+        Self {
+            device: None,
+            config: Some(cpal::StreamConfig {
+                channels,
+                sample_rate,
+                buffer_size: cpal::BufferSize::Default,
+            }),
+            sample_format: cpal::SampleFormat::F32,
+            stream: None,
+            finished: Arc::new(AtomicBool::new(false)),
+            volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+            paused: false,
+        }
     }
 }
 

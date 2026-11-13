@@ -29,7 +29,16 @@
 //! direction is a property of the line's own content, which a control holding a label cannot
 //! know in advance, so it is resolved from the text here (UAX #9 P2/P3) rather than passed in.
 
-use crate::compat::Vec;
+use crate::compat::{Rc, Vec};
+
+/// The per-row tables a caret/selection mapping needs.
+///
+/// The renderer shapes a row into glyphs (`Rc<[u8]>`), records one byte range per cluster in
+/// **logical** order and one advance per cluster. The three travel together because a caller that
+/// has one has asked the shaping pass for the row and needs the other two to map a logical caret
+/// offset into the **visual** order it paints (W6-21). Naming the tuple keeps the two editor
+/// paint paths from spelling the same three-field type inline.
+pub type RowBidiMetrics = (Rc<[u8]>, Vec<(usize, usize)>, Vec<f32>);
 
 /// The cluster order to paint, given the clusters' byte ranges in logical order.
 ///

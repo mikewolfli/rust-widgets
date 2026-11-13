@@ -255,29 +255,13 @@ pub use vec_model::VecTableModel;
 use vec_model::{shift_column_map, unshift_column_map, TableWindow};
 
 /// Gestures that start an in-place edit in a [`TableWidget`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct TableEditTriggers(u8);
-
-impl TableEditTriggers {
-    /// No gesture starts an edit.
-    pub const NONE: Self = Self(0);
-    /// A double-click starts an edit.
-    pub const DOUBLE_CLICKED: Self = Self(1 << 0);
-    /// The edit key (Enter) starts an edit on the focused row.
-    pub const EDIT_KEY: Self = Self(1 << 1);
-    /// Any of the above.
-    pub const ALL: Self = Self(0b11);
-
-    /// Whether `other`'s flags are all present.
-    pub fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    /// The union of two sets.
-    pub fn or(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-}
+///
+/// This is the data grid's `EditTriggers` re-exported under the table's historical name, not a
+/// second definition (R-26, principles #54/#101): the table and the grid accept the same two
+/// gestures (`DOUBLE_CLICKED`, `EDIT_KEY`) on the same bits, with the same `contains`/`or` and the
+/// same `Default` of `NONE`. Two copies could only drift apart. A trigger value is therefore
+/// interchangeable between [`TableWidget::set_edit_triggers`] and the grid's setter.
+pub use crate::widget::view_widgets::data_grid::EditTriggers as TableEditTriggers;
 
 impl TableWidget {
     /// Creates an empty table widget.

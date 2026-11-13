@@ -925,7 +925,8 @@ thread_local! {
     /// This is safe rather than an `unsafe impl`: a cross-thread emit looks up *that* thread's
     /// table, finds nothing, warns and skips. It cannot tear the closure. A host that really does
     /// need a callback reachable from another thread asks for it explicitly with
-    /// `on_click_cross_thread` / `on_close_cross_thread`, which keep the `Arc<Mutex<F>>` shape.
+    /// `on_click_cross_thread` / `on_close_cross_thread`, which keep a shared
+    /// `Arc<Mutex<Option<F>>>` slot so another thread can reach the closure.
     #[allow(clippy::missing_const_for_thread_local)]
     static LOCAL_CALLBACKS: LocalCallbackMap =
         RefCell::new(HashMap::new());
@@ -1082,16 +1083,81 @@ pub(crate) fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: Ob
     }
 }
 
-/// The cross-thread form of [`register_click_callback`], keeping the `Arc<Mutex<F>>` shape.
+/// Runs a callback that lives in a shared slot without holding the slot's mutex.
+///
+/// # Why the callback is taken out instead of locked
+///
+/// The slot is a std `Mutex`, which is not reentrant. Calling the user callback behind its guard
+/// put user code inside the critical section: a callback that re-entered the handle API —
+/// re-registering itself, or re-emitting the signal it is handling — ran while the lock was held,
+/// and a callback that panicked poisoned the lock so every later emission was skipped with a
+/// warning. The closure is therefore moved out of the slot, the guard dropped, and the closure put
+/// back once it returns (on an unwind too, through `Drop`). Restoring is what keeps a second
+/// emission working; a callback that unregisters itself has already dropped the signal slot that
+/// owns this closure, so the restore is unobservable in that case.
+///
+/// `run` receives the callback instead of its arguments, which keeps each site's own call shape
+/// (`FnMut(String)`, `FnMut(Point)`, `FnMut()`) without a tuple in the middle.
+pub(crate) fn run_shared_callback<F>(
+    slot: &Arc<Mutex<Option<F>>>,
+    label: &str,
+    widget_id: ObjectId,
+    run: impl FnOnce(&mut F),
+) {
+    // Hold our own handle to the slot: a callback that disconnects the signal drops the closure
+    // and the `Arc` it captured, and the restore below still needs the mutex to be alive.
+    let slot = Arc::clone(slot);
+    let taken = match slot.lock() {
+        Ok(mut slot) => slot.take(),
+        // Nothing but this helper locks the slot, and it never holds the lock across user code, so
+        // poison cannot be observed here in practice. Recovering keeps the callback usable rather
+        // than silently losing it.
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+    let Some(callback) = taken else {
+        // A same-thread nested emission is skipped by the signal layer before it reaches here, so
+        // an empty slot means another thread is already inside this callback. Running it again
+        // would need exactly the lock this helper exists to avoid taking.
+        log::warn!(
+            "the {label} callback for widget {widget_id} is already running; skipping this \
+             emission rather than blocking on it"
+        );
+        return;
+    };
+
+    let mut restore = SharedCallbackRestore { slot: &slot, callback: Some(callback) };
+    if let Some(callback) = restore.callback.as_mut() {
+        run(callback);
+    }
+}
+
+/// Puts a taken callback back when its dispatch ends, on the normal path and on an unwind.
+struct SharedCallbackRestore<'a, F> {
+    slot: &'a Mutex<Option<F>>,
+    callback: Option<F>,
+}
+
+impl<F> Drop for SharedCallbackRestore<'_, F> {
+    fn drop(&mut self) {
+        let Some(callback) = self.callback.take() else {
+            return;
+        };
+        match self.slot.lock() {
+            Ok(mut slot) => *slot = Some(callback),
+            Err(poisoned) => *poisoned.into_inner() = Some(callback),
+        }
+    }
+}
+
+/// The cross-thread form of [`register_click_callback`].
+///
+/// The closure stays behind an `Arc<Mutex<Option<F>>>` because it must be reachable from another
+/// thread; [`run_shared_callback`] is what keeps the lock off the call itself.
 fn register_click_callback_cross_thread<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) {
-    let held: Arc<Mutex<F>> = Arc::new(Mutex::new(f));
+    let held: Arc<Mutex<Option<F>>> = Arc::new(Mutex::new(Some(f)));
     let connected = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
-        widget.base().clicked.connect(move || match held.lock() {
-            Ok(mut callback) => callback(),
-            Err(_) => log::warn!(
-                "the click callback for widget {widget_id} could not be locked; \
-                 skipping this click rather than panicking"
-            ),
+        widget.base().clicked.connect(move || {
+            run_shared_callback(&held, "click", widget_id, |callback| callback());
         })
     });
     if let Some(handle) = connected {
@@ -1248,16 +1314,15 @@ pub(crate) fn register_close_callback<F: FnMut() + Send + 'static>(widget_id: Ob
     }
 }
 
-/// The cross-thread form of [`register_close_callback`], keeping the `Arc<Mutex<F>>` shape.
+/// The cross-thread form of [`register_close_callback`].
+///
+/// Same shape and same reason as [`register_click_callback_cross_thread`]: the closure lives in a
+/// shared slot for cross-thread reach, and [`run_shared_callback`] keeps the lock out of the call.
 fn register_close_callback_cross_thread<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) {
-    let held: Arc<Mutex<F>> = Arc::new(Mutex::new(f));
+    let held: Arc<Mutex<Option<F>>> = Arc::new(Mutex::new(Some(f)));
     let connected = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
-        widget.base().closed.connect(move || match held.lock() {
-            Ok(mut callback) => callback(),
-            Err(_) => log::warn!(
-                "the close callback for widget {widget_id} could not be locked; skipping this \
-                 close rather than panicking"
-            ),
+        widget.base().closed.connect(move || {
+            run_shared_callback(&held, "close", widget_id, |callback| callback());
         })
     });
     if let Some(handle) = connected {

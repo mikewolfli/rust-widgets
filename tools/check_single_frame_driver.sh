@@ -51,6 +51,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 RUNTIME="src/widget/runtime/frame.rs"
 
 echo "[1/3] the frame driver exists"
@@ -77,7 +80,7 @@ echo "[2/3] the animation bus has exactly one driver"
 # entry point it replaced was `tick_animations`, so the scan has to accept both spellings or it
 # reports the refactor (not the defect) and stops guarding anything.
 BUS_CALLS="$(grep -rEn 'tick_animations(_sweep)?\(' src/ --include=*.rs \
-    | sed -e 's://.*::' \
+    | rw_strip_line_comments \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*$' \
     | grep -vE '^src/[^:]*/(tests|[^/:]*_tests)\.rs:')"
 
@@ -102,22 +105,31 @@ if [ -n "$OUTSIDE" ]; then
     exit 1
 fi
 
-# Within runtime.rs, the calls must be inside drive_frame. The function body is
-# sliced from its signature to the closing brace at its own indent; a call
-# anywhere else in the file (a test is allowed, a second public driver is not).
-DRIVER_BODY="$(awk '/^pub fn drive_frame\(/{inside=1} inside{print} inside && /^}$/ {exit}' "$RUNTIME")"
+# Within runtime.rs, the calls must be inside drive_frame. The function body and the
+# `tick_animations` wrapper's body are sliced by brace balance (tools/lib_source_scan.sh),
+# so a nested `}` cannot end the slice early and a reordered file cannot move the window.
+# The old form matched `^pub fn drive_frame\(` and scanned for a column-0 `}`; that is
+# right today only because both functions are free functions at column 0, and it reported
+# the wrong range the moment either gains an indent (W6-35).
+DRIVER_START="$(rw_function_line "$RUNTIME" drive_frame || true)"
+DRIVER_BODY=""
+if [ -n "$DRIVER_START" ]; then
+    DRIVER_BODY="$(rw_slice_function_body "$RUNTIME" "$DRIVER_START" || true)"
+fi
 if [ -z "$DRIVER_BODY" ]; then
     echo "  FAIL  could not extract drive_frame's body"
     exit 1
 fi
 IN_DRIVER="$(printf '%s\n' "$DRIVER_BODY" | grep -cE 'tick_animations(_sweep)?\(' || true)"
 # Locate calls by line number so the "inside the driver" test is positional.
-DRIVER_START="$(grep -n '^pub fn drive_frame(' "$RUNTIME" | head -n 1 | cut -d: -f1)"
 DRIVER_END="$((DRIVER_START + $(printf '%s\n' "$DRIVER_BODY" | wc -l) - 1))"
 # `tick_animations` is the public entry and is allowed to call the sweep; that call is the
 # bus delegating to itself, not a second driver.
-TICK_START="$(awk '/^pub fn tick_animations\(/{print NR; exit}' "$RUNTIME")"
-TICK_END="$(awk -v s="$TICK_START" 'NR>=s && /^}$/{print NR; exit}' "$RUNTIME")"
+TICK_START="$(rw_function_line "$RUNTIME" tick_animations || true)"
+TICK_END=0
+if [ -n "$TICK_START" ]; then
+    TICK_END="$((TICK_START + $(rw_slice_function_body "$RUNTIME" "$TICK_START" | wc -l) - 1))"
+fi
 STRAY="$(printf '%s\n' "$BUS_CALLS_CODE" \
     | awk -F: -v lo="$DRIVER_START" -v hi="$DRIVER_END" -v tlo="$TICK_START" -v thi="$TICK_END" \
         '!/#\[test\]/ && !(($2 >= lo && $2 <= hi) || ($2 >= tlo && $2 <= thi)) { print }' || true)"
@@ -160,7 +172,7 @@ echo "[3/3] the frame driver owns the input drain"
 # own, the order "input, then advance, then report" is split across two places
 # and nothing checks which ran first.
 DRAIN_CALLS="$(grep -rnE 'crate::drain_triggers\(\)|[^_a-z]drain_triggers\(\)' src/ --include=*.rs \
-    | sed -e 's://.*::' \
+    | rw_strip_line_comments \
     | grep -vE 'fn drain_triggers\(' \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*$' || true)"
 
@@ -180,7 +192,8 @@ if [ -n "$DRAIN_OUTSIDE" ]; then
     exit 1
 fi
 
-if ! printf '%s\n' "$DRIVER_BODY" | grep -q 'drain_triggers()'; then
+DRAINED="$(printf '%s\n' "$DRIVER_BODY" | grep -E 'drain_triggers\(\)' || true)"
+if [ -z "$DRAINED" ]; then
     echo "  FAIL  drive_frame does not drain input"
     exit 1
 fi

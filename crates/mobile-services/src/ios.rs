@@ -47,26 +47,54 @@ use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
     UNNotificationRequest, UNNotificationSettings, UNNotificationSound, UNUserNotificationCenter,
 };
-use std::sync::atomic::{AtomicI8, Ordering};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// The iOS backend. Construct through [`crate::services`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IosServices;
 
-/// Last known notification authorization: `-1` unknown, `0` denied, `1` available.
-static NOTIFICATION_STATUS: AtomicI8 = AtomicI8::new(-1);
+/// How long a notification-authorization answer is reused.
+///
+/// The query crosses to the notification centre and its callback may run on any queue.
+/// Without a cache every call repeats that hop, and the first call on a busy main thread
+/// pays the full 250 ms timeout. Authorization changes only when the user edits settings or
+/// the app prompts, which is not a per-frame event, so 30 seconds is short enough to notice
+/// a change and long enough that a burst of layout queries does not re-query.
+const NOTIFICATION_STATUS_TTL: Duration = Duration::from_secs(30);
 
-fn store_notification_status(granted: bool) {
-    NOTIFICATION_STATUS.store(if granted { 1 } else { 0 }, Ordering::SeqCst);
+/// Last notification-authorization answer and when it was recorded.
+///
+/// [`Status::Unknown`] is cached like any other answer: a timed-out query is a fact about
+/// that call, not a refusal, and re-blocking every caller for another timeout would make an
+/// already-busy main thread worse.
+static NOTIFICATION_STATUS: Mutex<Option<(Status, Instant)>> = Mutex::new(None);
+
+/// Lock the cache, recovering a poisoned guard.
+///
+/// A panic while holding this lock cannot leave the cached pair half-written (the value is
+/// replaced as a whole), so poison recovery is the same rule the other process-wide caches
+/// in this crate follow (`android::ATTACHMENT`, `harmony::HOST`).
+fn notification_cache() -> std::sync::MutexGuard<'static, Option<(Status, Instant)>> {
+    NOTIFICATION_STATUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn cached_notification_status() -> Option<Status> {
-    match NOTIFICATION_STATUS.load(Ordering::SeqCst) {
-        1 => Some(Status::Available),
-        0 => Some(Status::Denied),
+fn store_notification_status(status: Status) {
+    *notification_cache() = Some((status, Instant::now()));
+}
+
+fn cached_notification_status(now: Instant) -> Option<Status> {
+    match *notification_cache() {
+        Some((status, recorded)) if status_is_fresh(recorded, now) => Some(status),
         _ => None,
     }
+}
+
+/// Whether an answer recorded at `recorded` is still inside [`NOTIFICATION_STATUS_TTL`].
+fn status_is_fresh(recorded: Instant, now: Instant) -> bool {
+    // `saturating_duration_since` answers zero when `now` precedes `recorded`, so a
+    // non-monotonic clock is treated as "just recorded" instead of panicking.
+    now.saturating_duration_since(recorded) < NOTIFICATION_STATUS_TTL
 }
 
 fn map_av_status(status: AVAuthorizationStatus) -> Status {
@@ -181,27 +209,44 @@ impl MobileServices for IosServices {
                 })
             }
             Permission::Notifications => {
-                if let Some(status) = cached_notification_status() {
+                if let Some(status) = cached_notification_status(Instant::now()) {
                     return status;
                 }
                 // The settings callback runs on a queue of the framework's choosing. A 250 ms
-                // wait is enough for a local query; a timeout answers `Denied`, the honest
-                // "not granted" reading rather than a fabricated `Available`.
+                // wait is enough for a local query; a timeout is **not** a refusal, so it is
+                // reported as `Unknown` and cached under the TTL above instead of being
+                // permanently recorded as `Denied` (W6-31).
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let handler = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
                     // SAFETY: UserNotifications hands a live settings object to this callback for
                     // the duration of the call.
                     let status = unsafe { settings.as_ref() }.authorizationStatus();
-                    let _ = sender.send(map_notification_status(status));
+                    let mapped = map_notification_status(status);
+                    // Store from the callback as well, so a late answer still refreshes the
+                    // cache even if the caller below already timed out.
+                    store_notification_status(mapped);
+                    let _ = sender.send(mapped);
                 });
                 UNUserNotificationCenter::currentNotificationCenter()
                     .getNotificationSettingsWithCompletionHandler(&handler);
-                let answer =
-                    receiver.recv_timeout(Duration::from_millis(250)).unwrap_or(Status::Denied);
-                if answer == Status::Available {
-                    store_notification_status(true);
+                match receiver.recv_timeout(Duration::from_millis(250)) {
+                    Ok(status) => status,
+                    Err(_) => {
+                        // The callback may have stored a real answer between the timeout
+                        // firing and this point; prefer it over inventing `Unknown`, and
+                        // otherwise record the unknown outcome under the same TTL so the
+                        // next caller does not block for another timeout.
+                        let now = Instant::now();
+                        let mut cache = notification_cache();
+                        if let Some((status, recorded)) = *cache {
+                            if status_is_fresh(recorded, now) {
+                                return status;
+                            }
+                        }
+                        *cache = Some((Status::Unknown, now));
+                        Status::Unknown
+                    }
                 }
-                answer
             }
         }
     }
@@ -241,7 +286,11 @@ impl MobileServices for IosServices {
                     | UNAuthorizationOptions::Sound
                     | UNAuthorizationOptions::Badge;
                 let handler = RcBlock::new(|granted: Bool, _error: *mut NSError| {
-                    store_notification_status(granted.as_bool());
+                    store_notification_status(if granted.as_bool() {
+                        Status::Available
+                    } else {
+                        Status::Denied
+                    });
                 });
                 UNUserNotificationCenter::currentNotificationCenter()
                     .requestAuthorizationWithOptions_completionHandler(options, &handler);
@@ -251,10 +300,14 @@ impl MobileServices for IosServices {
     }
 
     fn notify(&self, request: &NotificationRequest) -> Result<(), ServiceError> {
-        if request.title.is_empty() && request.body.is_empty() {
-            return Err(ServiceError::Denied);
+        if request.title.trim().is_empty() && request.body.trim().is_empty() {
+            // Invalid caller input, not a refusal: `Denied` would send the caller down a
+            // permission-recovery path that cannot help.
+            return Err(ServiceError::InvalidInput);
         }
-        if NOTIFICATION_STATUS.load(Ordering::SeqCst) == 0 {
+        // Only a known refusal blocks the post; an unknown status is not evidence that
+        // notifications are disabled.
+        if cached_notification_status(Instant::now()) == Some(Status::Denied) {
             return Err(ServiceError::Denied);
         }
         let content = UNMutableNotificationContent::new();
@@ -275,8 +328,9 @@ impl MobileServices for IosServices {
     }
 
     fn share(&self, request: &ShareRequest) -> Result<(), ServiceError> {
-        if request.text.is_empty() && request.url.is_none() {
-            return Err(ServiceError::Denied);
+        if request.text.trim().is_empty() && request.url.is_none() {
+            // Invalid caller input, not a refusal (see `notify`).
+            return Err(ServiceError::InvalidInput);
         }
         let Some(mtm) = MainThreadMarker::new() else {
             return Err(ServiceError::Failed);
@@ -371,6 +425,20 @@ mod tests {
         assert_eq!(map_photo_status(PHAuthorizationStatus::Restricted), Status::Denied);
         assert_eq!(map_notification_status(UNAuthorizationStatus::Provisional), Status::Available);
         assert_eq!(map_notification_status(UNAuthorizationStatus::Denied), Status::Denied);
+    }
+
+    /// W6-31: a cached answer must expire after the documented TTL, so a change the
+    /// user makes in Settings is observed without a manual restart.
+    #[test]
+    fn a_notification_answer_expires_after_the_documented_ttl() {
+        let recorded = Instant::now();
+        assert!(status_is_fresh(recorded, recorded));
+        assert!(status_is_fresh(
+            recorded,
+            recorded + NOTIFICATION_STATUS_TTL - Duration::from_millis(1)
+        ));
+        assert!(!status_is_fresh(recorded, recorded + NOTIFICATION_STATUS_TTL));
+        assert!(!status_is_fresh(recorded, recorded + NOTIFICATION_STATUS_TTL * 2));
     }
 
     #[test]

@@ -31,15 +31,27 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/tools/lib_cargo_cache.sh"
 cd "$ROOT" || exit 1
 
-HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+HOST_TARGET="$(rw_run_bounded 120 rustc -vV | sed -n 's/^host: //p')"
 PROFILES=(desktop tablet mobile mini embedded)
 FAIL=0
 RUN=0
 SKIP=0
 
+# Whether rustup has rust-std for `$1`.
+#
+# Bounded (a cold rustup directory can block) and read-then-test: under `pipefail`,
+# `rustup … | grep -q` reports "not installed" for a target that IS installed when
+# `grep`'s early exit kills `rustup` with SIGPIPE — which would turn a covered cell into
+# a silent SKIP, the one outcome a matrix gate must never fake.
+target_installed() {
+    local installed
+    installed="$(rw_run_bounded 120 rustup target list --installed 2>/dev/null || true)"
+    printf '%s\n' "$installed" | grep -qx "$1"
+}
+
 run_cell() {
     local label="$1" target="$2" features="$3" expectation="$4"
-    if ! rustup target list --installed | grep -qx "$target"; then
+    if ! target_installed "$target"; then
         echo "SKIP $label: target $target is not installed"
         SKIP=$((SKIP + 1))
         return
@@ -72,10 +84,11 @@ if [ "${1:-}" != "--host-only" ]; then
     # `widgets_unstripped` half of the Windows backend, and neither cell above compiles that half —
     # the stripped profiles do not, and the `desktop@windows` cell's feature list names no device
     # profile. A `u16`/`u32` mismatch in `(wparam & 0xFFFF) as u32 != WA_INACTIVE` therefore
-    # survived every Windows cell here. `tablet` is a non-stripped profile **and** pulls no C audio
-    # dependency, so it builds without the Windows SDK headers `cargo check` lacks on a non-Windows
-    # host, while still compiling the unstripped branches (the full `desktop` profile needs
-    # `minimp3-sys`, whose headers only `cargo xwin` supplies).
+    # survived every Windows cell here. `tablet` is a non-stripped profile that adds nothing a
+    # cross-target check cannot compile, so it is the smallest net for the unstripped branches.
+    # (This comment used to say the full `desktop` profile needs `minimp3-sys`, whose headers only
+    # `cargo xwin` supplies. It does not: `cargo tree --no-default-features --features desktop -e
+    # normal` contains no `minimp3` — `audio` is the only feature that enables `minimp3_fixed`.)
     run_cell "tablet@windows" "x86_64-pc-windows-msvc" "tablet" "compiles the unstripped widget tree on Windows"
     run_cell "desktop@linux-gnu" "x86_64-unknown-linux-gnu" "wayland-native" "compiles the Wayland path"
     run_cell "ios@ios" "aarch64-apple-ios" "ios-uikit-ffi,mobile,controls-custom,controls-native,serde,serde_json" "compiles the UIKit path"

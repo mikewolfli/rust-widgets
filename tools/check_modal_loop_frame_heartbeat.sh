@@ -54,6 +54,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 HEARTBEAT="src/platform/macos_heartbeat.rs"
 COCOA="src/platform/macos/canvas.rs"
 OBJC2="src/platform/macos_objc2/platform_impl.rs"
@@ -64,21 +67,21 @@ failures=0
 ok() { printf '  ✅ %s\n' "$*"; }
 bad() { printf '  ❌ %s\n' "$*" >&2; failures=$((failures + 1)); }
 
-# The source with `//` comments removed.
+# The source with `//` comments removed — the shared helper, so this gate and its siblings
+# strip comments with identical semantics (W6-36).
 #
 # The negative assertions below must not read prose: these files *describe* the defect they fixed
 # (`scheduledTimerWithTimeInterval:` in `NSDefaultRunLoopMode`), and a gate that matched its own
 # documentation would report the module as broken for explaining itself.
-strip_comments() { sed -E 's|//.*$||' "$1"; }
 
 # Whether `$1`'s code (comments stripped) matches the extended regex `$2`.
 #
-# Written as "read the output, then test it" rather than `strip_comments … | grep -q`: with
-# `pipefail` set, `grep -q` exiting at its first match closes the pipe, `sed` dies of SIGPIPE, and
-# the *pipeline* reports failure — so a `grep -q` here answered "no match" for text that was
-# present. That is the exact shape the reverse-injection run caught.
+# Written as "read the output, then test it" rather than `rw_strip_line_comments … | grep -q`:
+# with `pipefail` set, `grep -q` exiting at its first match closes the pipe, the stripper dies
+# of SIGPIPE, and the *pipeline* reports failure — so a `grep -q` here would answer "no match"
+# for text that was present. That is the exact shape the reverse-injection run caught.
 code_has() {
-  [ -n "$(strip_comments "$1" | grep -E "$2")" ]
+  [ -n "$(rw_strip_line_comments "$1" | grep -E "$2")" ]
 }
 
 for file in "$HEARTBEAT" "$COCOA" "$OBJC2" "$WINDOWS" "$GUARD"; do

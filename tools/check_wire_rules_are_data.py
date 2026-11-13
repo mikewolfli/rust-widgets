@@ -39,13 +39,9 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 RULES = pathlib.Path("src/widget/capability/wire_rules.rs")
-
-
-def strip_comments(text: str) -> str:
-    """Drop `//` line comments and `/* */` blocks, so prose cannot satisfy a code check."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"//[^\n]*", "", text)
 
 
 def rule_entries(rules: str) -> list[str]:

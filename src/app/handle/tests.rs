@@ -1219,3 +1219,257 @@ fn the_message_box_handle_reaches_button_text_overrides() {
 
     crate::widget::runtime::unregister(id);
 }
+
+/// A menu-bar trigger callback may re-register itself, and its registration survives a panic.
+///
+/// # The defect this closes
+///
+/// `on_triggered` keeps the user closure behind `Arc<Mutex<F>>` and used to call it while holding
+/// the lock (W6-39). Re-entering the handle API from inside the callback is ordinary — a host may
+/// wire a second observer — and a callback that panicked poisoned the mutex, after which every
+/// later trigger was skipped with a warning: the binding died silently. The closure is now taken
+/// out of the slot, the lock released, and the closure put back, so neither the re-entry nor the
+/// unwind runs under a held lock.
+#[cfg(full_widgets)]
+#[test]
+fn a_menu_bar_callback_survives_reentry_and_a_panic() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let id = crate::widget::runtime::register(Box::new(
+        crate::widget::menu_toolbar::menu_bar::MenuBar::new(crate::core::Rect::new(0, 0, 200, 24)),
+    ))
+    .expect("a menu bar mounts");
+    let handle = MenuBarHandle::from_raw(id);
+    // Emit the bar's own signal from outside any registry borrow, so the callback really can
+    // re-enter the handle API the way a host would.
+    let triggered = crate::widget::runtime::read_widget(id, |widget| {
+        (widget as &dyn core::any::Any)
+            .downcast_ref::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
+            .map(|bar| bar.triggered.clone())
+    })
+    .flatten()
+    .expect("the bar's trigger signal is readable");
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let later = Arc::new(AtomicUsize::new(0));
+    let first = Arc::clone(&calls);
+    let second = Arc::clone(&later);
+    let reentered = handle.clone();
+    handle.on_triggered(move |_title: String| {
+        if first.fetch_add(1, Ordering::SeqCst) == 0 {
+            // Re-register from inside the running callback: this must not need the first slot's
+            // lock, and the second observer must be installed for the next trigger.
+            let second = Arc::clone(&second);
+            reentered.on_triggered(move |_title: String| {
+                second.fetch_add(1, Ordering::SeqCst);
+            });
+            panic!("menu callback body panics on purpose");
+        }
+    });
+
+    let first_emit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        triggered.emit(String::from("File"));
+    }));
+    assert!(first_emit.is_err(), "the callback's panic must reach the test harness");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // A poisoned callback lock used to make this emission skip the original callback entirely.
+    // The take-and-restore guard leaves nothing locked, so both the restored callback and the one
+    // registered during the first call run.
+    let second_emit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        triggered.emit(String::from("Edit"));
+    }));
+    assert!(second_emit.is_ok(), "the second trigger must not panic");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "the original callback is still installed");
+    assert_eq!(later.load(Ordering::SeqCst), 1, "the re-registered callback runs");
+
+    remove_callbacks(id);
+    crate::widget::runtime::unregister(id);
+}
+
+/// A list-box context-menu callback has the same re-entry and unwind contract as the menu one.
+///
+/// `ListBoxHandle::on_context_menu_requested` is one of the sites that keeps its closure behind
+/// `Arc<Mutex<F>>`; it used to invoke the closure under the lock, so a re-entering or panicking
+/// handler either deadlocked the same API or lost the binding to a poisoned mutex (W6-39).
+#[test]
+fn a_list_box_context_menu_callback_survives_reentry_and_a_panic() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let id = crate::widget::runtime::register(Box::new(crate::widget::ListBox::new(
+        crate::core::Rect::new(0, 0, 120, 90),
+    )))
+    .expect("a list box mounts");
+    let handle = ListBoxHandle::from_raw(id);
+    let requested = crate::widget::runtime::read_widget(id, |widget| {
+        (widget as &dyn core::any::Any)
+            .downcast_ref::<crate::widget::input_widgets::listbox::ListBox>()
+            .map(|list| list.context_menu_requested.clone())
+    })
+    .flatten()
+    .expect("the list box's context-menu signal is readable");
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let later = Arc::new(AtomicUsize::new(0));
+    let first = Arc::clone(&calls);
+    let second = Arc::clone(&later);
+    let reentered = handle.clone();
+    handle.on_context_menu_requested(move |_pos: crate::core::Point| {
+        if first.fetch_add(1, Ordering::SeqCst) == 0 {
+            let second = Arc::clone(&second);
+            reentered.on_context_menu_requested(move |_pos: crate::core::Point| {
+                second.fetch_add(1, Ordering::SeqCst);
+            });
+            panic!("list-box callback body panics on purpose");
+        }
+    });
+
+    let point = crate::core::Point { x: 8, y: 12 };
+    let first_emit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        requested.emit(point);
+    }));
+    assert!(first_emit.is_err(), "the callback's panic must reach the test harness");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let second_emit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        requested.emit(point);
+    }));
+    assert!(second_emit.is_ok(), "the second request must not panic");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "the original callback is still installed");
+    assert_eq!(later.load(Ordering::SeqCst), 1, "the re-registered callback runs");
+
+    remove_callbacks(id);
+    crate::widget::runtime::unregister(id);
+}
+
+/// A tab-strip context-menu callback has the same re-entry and unwind contract as the other two.
+///
+/// `TabWidgetHandle::on_context_menu_requested` held the same `Arc<Mutex<F>>` across its call
+/// (W6-39); a handler that re-entered the API or panicked either deadlocked or lost its binding.
+#[cfg(widgets_unstripped)]
+#[test]
+fn a_tab_strip_context_menu_callback_survives_reentry_and_a_panic() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let id = crate::widget::runtime::register(Box::new(crate::widget::TabWidget::new(
+        crate::core::Rect::new(0, 0, 300, 200),
+    )))
+    .expect("a tab widget mounts");
+    let handle = TabWidgetHandle::from_raw(id);
+    let requested = crate::widget::runtime::read_widget(id, |widget| {
+        (widget as &dyn core::any::Any)
+            .downcast_ref::<crate::widget::TabWidget>()
+            .map(|tabs| tabs.context_menu_requested.clone())
+    })
+    .flatten()
+    .expect("the tab strip's context-menu signal is readable");
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let later = Arc::new(AtomicUsize::new(0));
+    let first = Arc::clone(&calls);
+    let second = Arc::clone(&later);
+    let reentered = handle.clone();
+    handle.on_context_menu_requested(move |_pos: crate::core::Point| {
+        if first.fetch_add(1, Ordering::SeqCst) == 0 {
+            let second = Arc::clone(&second);
+            reentered.on_context_menu_requested(move |_pos: crate::core::Point| {
+                second.fetch_add(1, Ordering::SeqCst);
+            });
+            panic!("tab-strip callback body panics on purpose");
+        }
+    });
+
+    let point = crate::core::Point { x: 16, y: 6 };
+    let first_emit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        requested.emit(point);
+    }));
+    assert!(first_emit.is_err(), "the callback's panic must reach the test harness");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let second_emit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        requested.emit(point);
+    }));
+    assert!(second_emit.is_ok(), "the second request must not panic");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "the original callback is still installed");
+    assert_eq!(later.load(Ordering::SeqCst), 1, "the re-registered callback runs");
+
+    remove_callbacks(id);
+    crate::widget::runtime::unregister(id);
+}
+
+/// The cross-thread click and close callbacks survive a re-entry and an unwind.
+///
+/// # The defect this closes
+///
+/// These are the two sites that keep a std `Mutex` on purpose, so another thread can reach the
+/// closure (`on_click_cross_thread` / `on_close_cross_thread`). Both used to lock it across the
+/// user call: a callback that re-registered itself ran under the lock, and a callback that
+/// panicked poisoned it, after which every later click or close was skipped with a warning. The
+/// closure is now taken out of the slot before it runs and restored afterwards.
+#[test]
+fn cross_thread_callbacks_survive_reentry_and_a_panic() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let id = crate::widget::runtime::register(Box::new(crate::widget::Button::new(
+        String::from("probe"),
+        crate::core::Rect::new(0, 0, 80, 24),
+    )))
+    .expect("a button mounts");
+    let handle = ButtonHandle::from_raw(id);
+    let clicked = crate::widget::runtime::read_widget(id, |widget| widget.base().clicked.clone())
+        .expect("the button's click signal is readable");
+    let closed = crate::widget::runtime::read_widget(id, |widget| widget.base().closed.clone())
+        .expect("the button's close signal is readable");
+
+    let clicks = Arc::new(AtomicUsize::new(0));
+    let later = Arc::new(AtomicUsize::new(0));
+    let first = Arc::clone(&clicks);
+    let second = Arc::clone(&later);
+    let reentered = handle.clone();
+    handle.on_click_cross_thread(move || {
+        if first.fetch_add(1, Ordering::SeqCst) == 0 {
+            let second = Arc::clone(&second);
+            reentered.on_click_cross_thread(move || {
+                second.fetch_add(1, Ordering::SeqCst);
+            });
+            panic!("cross-thread click callback panics on purpose");
+        }
+    });
+
+    let first_click = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        clicked.emit();
+    }));
+    assert!(first_click.is_err(), "the callback's panic must reach the test harness");
+    assert_eq!(clicks.load(Ordering::SeqCst), 1);
+
+    let second_click = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        clicked.emit();
+    }));
+    assert!(second_click.is_ok(), "the second click must not panic");
+    assert_eq!(clicks.load(Ordering::SeqCst), 2, "the original callback is still installed");
+    assert_eq!(later.load(Ordering::SeqCst), 1, "the re-registered callback runs");
+
+    // The close site has the same shape and the same guarantee.
+    let closes = Arc::new(AtomicUsize::new(0));
+    let close_count = Arc::clone(&closes);
+    handle.on_close_cross_thread(move || {
+        close_count.fetch_add(1, Ordering::SeqCst);
+        panic!("cross-thread close callback panics on purpose");
+    });
+    let first_close = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        closed.emit();
+    }));
+    assert!(first_close.is_err(), "the close callback's panic must reach the test harness");
+    let second_close = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        closed.emit();
+    }));
+    assert!(second_close.is_err(), "the close callback must still be installed");
+    assert_eq!(closes.load(Ordering::SeqCst), 2, "the close callback ran twice, not once");
+
+    remove_callbacks(id);
+    crate::widget::runtime::unregister(id);
+}

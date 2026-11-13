@@ -304,13 +304,23 @@ pub fn diff(
     // compares the 20 rows ahead of the change and the walk compares them again. Idle is the
     // case a re-evaluated `View` spends its frames in, so the probe stays, and the walk it
     // guards no longer builds a positional-match map it has no keyless child to fill.
+    // The derived `PartialEq` below (and the walk after it) are recursive, so an over-deep tree
+    // has to be rejected *before* either runs. This is an explicit-stack walk, so the check
+    // itself cannot overflow (W6-32).
+    if !tree_within_depth(old) || !tree_within_depth(new) {
+        log::warn!(
+            "[view] a tree deeper than {MAX_TREE_DEPTH} levels cannot be diffed; returning no \
+             patches rather than recursing into a stack overflow"
+        );
+        return DiffReport::default();
+    }
     if old == new {
         return DiffReport::default();
     }
     let mut report = DiffReport::default();
     let mut root_path = Vec::new();
     let mut root_new_path = Vec::new();
-    diff_node(old, new, &mut root_path, &mut root_new_path, None, 0, id_of, &mut report);
+    diff_node(old, new, &mut root_path, &mut root_new_path, None, 0, id_of, &mut report, 0);
     report
 }
 
@@ -344,6 +354,11 @@ pub fn diff_scoped(
     if old_path != new_path {
         return None;
     }
+    // A scoped diff descends just like the full one, so it obeys the same bound; the caller's
+    // fallback is a full diff, which rejects the same tree for the same reason (W6-32).
+    if !tree_within_depth(old) || !tree_within_depth(new) {
+        return None;
+    }
     // An equal pair has nothing to say *inside* the container; answering here spares the walk.
     if old == new {
         return Some(DiffReport::default());
@@ -362,7 +377,17 @@ pub fn diff_scoped(
     let mut report = DiffReport::default();
     let mut path = old_path;
     let mut new_path = new_path;
-    diff_node(old_node, new_node, &mut path, &mut new_path, parent_id, index, id_of, &mut report);
+    diff_node(
+        old_node,
+        new_node,
+        &mut path,
+        &mut new_path,
+        parent_id,
+        index,
+        id_of,
+        &mut report,
+        0,
+    );
     Some(report)
 }
 
@@ -515,6 +540,28 @@ impl<'a> PositionalKeys<'a> {
 /// The two paths are tracked separately because a keyed match may move: the old path is how
 /// `id_of` addresses the mounted control, while the new path is what the emitted
 /// `Insert`/`Replace` carries for the engine (G-166).
+/// The deepest tree the recursive walk will descend into.
+///
+/// The JSON loader has the same bound (`crate::json::MAX_DEPTH`), but a **programmatic** view
+/// builds its `Node` tree directly, so the engine must not assume the bound was applied. A tree
+/// tens of thousands of levels deep otherwise overflows the stack in the first diff (W6-32).
+const MAX_TREE_DEPTH: u32 = 64;
+
+/// Whether every node of `node`'s tree sits at or below [`MAX_TREE_DEPTH`], walked with an
+/// explicit stack so the check itself cannot overflow.
+fn tree_within_depth(node: &Node) -> bool {
+    let mut stack: Vec<(&Node, u32)> = vec![(node, 0)];
+    while let Some((node, depth)) = stack.pop() {
+        if depth > MAX_TREE_DEPTH {
+            return false;
+        }
+        for child in &node.children {
+            stack.push((child, depth + 1));
+        }
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 fn diff_node(
     old: &Node,
@@ -525,7 +572,15 @@ fn diff_node(
     index: usize,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
     report: &mut DiffReport,
+    depth: u32,
 ) {
+    if depth > MAX_TREE_DEPTH {
+        log::warn!(
+            "[view] the declared tree is deeper than {MAX_TREE_DEPTH} levels; the diff stops \
+             here rather than recursing into a stack overflow"
+        );
+        return;
+    }
     // ── Transparent nodes ──────────────────────────────
     //
     // A transparent node produces no control, so neither side has an id to read or write:
@@ -539,7 +594,7 @@ fn diff_node(
     // address; the arm below reports the "no control on either side" case as before.
     if super::is_transparent_node(old) && super::is_transparent_node(new) {
         if let Some(parent) = parent_id {
-            diff_children(old, new, old_path, new_path, parent, index, id_of, report);
+            diff_children(old, new, old_path, new_path, parent, index, id_of, report, depth);
         }
         return;
     }
@@ -654,7 +709,7 @@ fn diff_node(
     }
 
     // ── Children ──────────────────────────────────────────
-    diff_children(old, new, old_path, new_path, old_id, 0, id_of, report);
+    diff_children(old, new, old_path, new_path, old_id, 0, id_of, report, depth);
 }
 
 /// Emit the patches that create `node`'s controls under `parent`, starting at `slot`.
@@ -784,6 +839,7 @@ fn children_to_move(matches: &[Option<usize>]) -> std::collections::HashSet<usiz
 ///
 /// Reordering is detected by comparing the matched indices' relative order, which is what
 /// makes a reorder a `Move` rather than a remove-plus-insert.
+#[allow(clippy::too_many_arguments)]
 fn diff_children(
     old: &Node,
     new: &Node,
@@ -793,6 +849,7 @@ fn diff_children(
     base: usize,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
     report: &mut DiffReport,
+    depth: u32,
 ) {
     // Step 1: key → index in the old child list.
     //
@@ -1017,6 +1074,7 @@ fn diff_children(
                     slot,
                     id_of,
                     report,
+                    depth + 1,
                 );
                 old_path.pop();
                 new_path.pop();
@@ -2108,6 +2166,28 @@ mod tests {
         let mut ids = FixtureIds::default();
         ids.assign(&old);
         assert!(diff_scoped(&old, &new, "no-such-key", &ids.lookup()).is_none());
+    }
+
+    /// W6-32: a programmatically built tree deeper than the loader's bound must not recurse the
+    /// engine (or `Node`'s derived `PartialEq`) into a stack overflow.
+    #[test]
+    fn an_over_deep_tree_is_refused_before_the_recursive_walk() {
+        let mut old = Node::new("container");
+        for depth in 0..(MAX_TREE_DEPTH + 20) {
+            let mut parent = Node::new("container");
+            parent.props.insert(
+                "depth".into(),
+                crate::widget::capability::CapabilityValue::Int(i64::from(depth)),
+            );
+            parent.children.push(old);
+            old = parent;
+        }
+        // `new` is left shallow: the depth check runs before the equality probe, so an over-deep
+        // tree is rejected even when the two trees differ.
+        let mut new = Node::new("container");
+        new.children = vec![Node::new("label")];
+        let report = diff(&old, &new, &|_, _| None);
+        assert_eq!(report.patches.len(), 0, "no patch may be emitted from an unbounded walk");
     }
 
     impl Default for FixtureIds {

@@ -372,7 +372,7 @@ Rust API → extern "C" (C ABI)
 
 | Category | Count |
 |----------|-------|
-| Rust source files | 1,020 |
+| Rust source files | 1,021 |
 | Widget kinds (`WidgetKind` variants) | 231 |
 | Layout managers | 15 |
 | Platform backends | 12 |
@@ -381,6 +381,7 @@ Rust API → extern "C" (C ABI)
 | Gesture recognizers | 11 |
 | Integration test files | 76 |
 | Benchmark files | 9 |
+
 
 Counts are generated, not hand-maintained: `python3 tools/gen_codemap_counts.py` rewrites this
 block and `--check` is the gate. Each row's derivation lives in that script (layout managers

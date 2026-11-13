@@ -653,8 +653,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `default` is exactly `desktop` and is already tested in quality-gates.
-        # Keep distinct feature graphs here to avoid compiling and running that
+        # `default` is `desktop` plus the three editor switches, and is already tested in
+        # quality-gates. Keep distinct feature graphs here to avoid compiling and running that
         # same suite twice.
         profile: [full, embedded, mini]
     steps:
@@ -677,6 +677,46 @@ jobs:
 
       - name: Cargo test (${{ matrix.profile }})
         run: cargo test --no-default-features --features "${{ matrix.profile }}" -q
+
+  # W6-41: five opt-in capabilities had **no compile coverage at all** - not in CI, not in a
+  # gate. `all-desktop-features` leaves them out on purpose (they have no in-repo consumer), the
+  # profile matrix only builds the five device profiles, and `--all-features` cannot compile. So
+  # ~16k lines plus the AES/CBC/SHA-2 stack could rot without a single red check - and one of
+  # them is in fact broken at the time of writing (`print`, see the findings in
+  # `docs/issues/issue-20261113.md`).
+  #
+  # Each feature is its own step, so a failure names the feature in the job summary instead of
+  # hiding inside a loop. The command is the documented opt-in spelling from `Cargo.toml`'s
+  # `desktop` note and principle #48: `--no-default-features` plus an explicit feature list.
+  # A failing step is **not** to be deleted: it is the coverage this job exists to provide.
+  desktop-capability-features:
+    name: Desktop capability features (print, pdf, video, audio, raw-window-handle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check (desktop + print)
+        run: cargo check --no-default-features --features "desktop,print"
+
+      - name: Cargo check (desktop + pdf)
+        run: cargo check --no-default-features --features "desktop,pdf"
+
+      - name: Cargo check (desktop + video)
+        run: cargo check --no-default-features --features "desktop,video"
+
+      - name: Cargo check (desktop + audio)
+        run: cargo check --no-default-features --features "desktop,audio"
+
+      - name: Cargo check (desktop + raw-window-handle)
+        run: cargo check --no-default-features --features "desktop,raw-window-handle"
 
   security-audit:
     runs-on: ubuntu-latest

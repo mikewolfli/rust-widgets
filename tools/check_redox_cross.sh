@@ -13,11 +13,17 @@
 #
 # # The feature set is part of the judgement
 #
-# The backend itself only needs `desktop-runtime` + `controls-custom`; the full `desktop` profile
-# additionally pulls `minimp3_fixed -> slice-ring-buffer`, which uses SysV IPC constants that
-# Redox's libc does not define. That is a dependency incompatibility, not a defect in this crate, so
-# the gate checks the surface the backend actually uses and says which set it checked. A future
-# audio backend on Redox will need a different dependency, and this line is where that shows up.
+# The backend itself only needs `desktop-runtime` + `controls-custom`, so that is what the gate
+# checks: it answers "does the Orbital backend type-check for this target", not "does every
+# capability in the desktop profile". The reduced set also keeps the build to crates this Tier 3
+# cross-compile can compile at all.
+#
+# This paragraph used to say the full `desktop` profile pulls `minimp3_fixed -> slice-ring-buffer`,
+# whose SysV IPC constants Redox's libc does not define. That is no longer true of the graph:
+# `audio` is the only feature that enables `minimp3_fixed`, and `cargo tree --no-default-features
+# --features desktop -e normal` contains no `minimp3` on any target. A full-`desktop` Redox cell has
+# not been measured, so this gate does not claim one would pass — it checks the surface the backend
+# actually uses and says which set it checked.
 #
 # # Host limitation is a SKIP, not a timeout
 #

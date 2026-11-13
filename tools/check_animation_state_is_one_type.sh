@@ -65,6 +65,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 DRIVER="src/style/animation.rs"
 
 echo "[1/3] the one animation-state type exists"
@@ -90,7 +93,7 @@ echo "[2/3] no control caches a second copy of the target"
 # used for a cached target. Test fixtures are excluded by scope: a test that names
 # the concept is documenting it, not duplicating it.
 CACHE_HITS="$(grep -rnE '^\s+(interaction_target|target_progress|[a-z_]*_target_progress)\s*:' \
-    src/widget/ --include=*.rs | sed -e 's://.*::' || true)"
+    src/widget/ --include=*.rs | rw_strip_line_comments || true)"
 CACHE_HITS="$(printf '%s\n' "$CACHE_HITS" | grep -vE ':\s*$' || true)"
 
 if [ -n "$CACHE_HITS" ] && [ "$(printf '%s' "$CACHE_HITS" | tr -d '[:space:]' | wc -c)" -gt 0 ]; then
@@ -113,7 +116,7 @@ echo "[3/3] no control holds a Transition as its animation state"
 #   * `Transition::...` in an expression (a method call, a local);
 #   * comments and test modules.
 TRANSITION_FIELDS="$(grep -rnE '^\s+[a-z_]+:\s*(crate::style::)?Transition\s*,' \
-    src/widget/ --include=*.rs | sed -e 's://.*::' || true)"
+    src/widget/ --include=*.rs | rw_strip_line_comments || true)"
 if [ -n "$TRANSITION_FIELDS" ] && [ "$(printf '%s' "$TRANSITION_FIELDS" | tr -d '[:space:]' | wc -c)" -gt 0 ]; then
     echo "  FAIL  a control holds a bare Transition as its animated state:"
     printf '%s\n' "$TRANSITION_FIELDS" | sed 's/^/          /'

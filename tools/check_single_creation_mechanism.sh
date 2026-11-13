@@ -32,6 +32,9 @@ cd "$ROOT_DIR"
 
 ERRORS=0
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 # Backends allowed to override a `create_*` beyond `create_window`.
 #   * `create_menu*` — not control construction: no platform has a standalone menu
 #     View, so the in-process menu tree plus its injectable trigger queue is a host
@@ -78,8 +81,14 @@ while IFS= read -r hit; do
   # This is checked on the *body* rather than by adding the name to ALLOWED: an override that
   # built a real dialog control would still fail here, on every backend including these.
   if [[ "$fn" == "create_file_dialog" ]]; then
-      fn_body="$(awk -v start="$line" 'NR >= start { print; if (NR > start && $0 == "    }") exit }' "$file")"
-      if printf '%s' "$fn_body" | grep -qE 'insert_widget|register_state_only_handle|state\.create_widget'; then
+      # The body is the function's own, sliced by brace balance (tools/lib_source_scan.sh).
+      # The previous slice stopped at the first `    }` after the signature, so a nested
+      # block that closes at four spaces ended it early — the record of the state handle
+      # further down was then invisible and a correct override was reported as a control.
+      fn_body="$(rw_slice_function_body "$file" "$line" || true)"
+      handle_call="$(printf '%s\n' "$fn_body" | rw_strip_line_comments \
+          | grep -E '\.?(insert_widget|register_state_only_handle)\(|\.create_widget\(' || true)"
+      if [ -n "$handle_call" ]; then
           echo "  ✅ $file:$line create_file_dialog records a logical state handle (P-204), not a control"
           continue
       fi

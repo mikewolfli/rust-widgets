@@ -182,16 +182,21 @@ pub(super) fn present_through_target(
         // The pixels the canvas already holds are the reference picture, so nothing is lost.
     }
 
-    // `None` from the dirty-range helper means "no usable dirty rect", which covers both a full
-    // repaint and an unparseable rect. Reporting a full upload is correct for both and never
-    // uploads less than what changed.
+    // The paint's own damage rectangles are preferred: they carry the horizontal extent, which
+    // the AppKit row band throws away (W6-43). The band stays as the fallback for a frame the
+    // paint recorded no damage for (a cached frame, or a paint path that reports none).
+    let damage_regions = crate::widget::runtime::last_frame_damage(intent_key);
     let band;
-    let damage = match dirty_rows {
-        Some((first_row, last_row)) if last_row > first_row => {
-            band = [(0i32, first_row as i32, width, (last_row - first_row) as u32)];
-            Some(&band[..])
+    let damage = if !damage_regions.is_empty() {
+        Some(damage_regions.as_slice())
+    } else {
+        match dirty_rows {
+            Some((first_row, last_row)) if last_row > first_row => {
+                band = [(0i32, first_row as i32, width, (last_row - first_row) as u32)];
+                Some(&band[..])
+            }
+            _ => None,
         }
-        _ => None,
     };
     let outcome = present::present_window_frame(
         intent_key,

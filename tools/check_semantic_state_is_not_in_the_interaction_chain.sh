@@ -58,6 +58,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 TRAIT="src/widget/widget_trait.rs"
 SEMANTIC_ENUM="src/style/theme_state.rs"
 
@@ -79,15 +82,19 @@ echo "[2/3] every widget_state implementation is free of the semantic variants"
 # close brace, then look for a semantic variant in *live* code (comments stripped).
 # The three variants are named with their enum qualifier so that a passing mention in
 # prose or a doc-link is not a finding.
+#
+# The slice is `rw_slice_function_body`, which actually counts braces outside literals
+# and comments. The previous slice stopped at the first line that was exactly `    }` —
+# for a trait default with an `if` block that closes at four spaces it ended early (a
+# false negative), and for an impl method whose own brace is also at four spaces the
+# stop line was indistinguishable from the function's (W6-35).
 found=""
 while IFS= read -r start; do
     file="${start%%:*}"
     line="${start#*:}"
     line="${line%%:*}"
-    # Slice from the signature line to the file end, then stop at brace balance.
-    body="$(awk -v from="$line" 'NR>=from{print} NR>=from && /^    }$/ {exit}' "$file" \
-        | sed -e 's://.*::')"
-    hits="$(printf '%s\n' "$body" \
+    body="$(rw_slice_function_body "$file" "$line" || true)"
+    hits="$(printf '%s\n' "$body" | rw_strip_line_comments \
         | grep -nE 'WidgetState::(Error|Warning|Success)' || true)"
     if [ -n "$hits" ]; then
         while IFS= read -r hit; do

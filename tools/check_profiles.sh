@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 # SPDX-License-Identifier: MIT
 #
-check_profiles.sh -- every non-default feature profile must compile, and its named tests run.
+# check_profiles.sh -- every non-default feature profile must compile, and its named tests run.
 #
 # Runs the profile matrix CI uses (`mini`, `embedded`, `tablet`, `desktop+gpu-wgpu`, ...) with one
 # bounded `cargo` step each, and fails when a filter matches no test at all.
@@ -140,9 +140,9 @@ rw_cargo_cached "$PROFILE_TIMEOUT" check \
 #
 # **The linker alone is not enough**, which is why the second half exists. A host
 # with a linker but no way to compile C for the target takes the non-skip path and
-# then fails inside `minimp3-sys`'s build script:
+# then fails inside a C dependency's build script:
 #
-#     cargo:warning=minimp3/minimp3.h:46:10: fatal error: 'stdlib.h' file not found
+#     cargo:warning=<crate>/<header>.h:46:10: fatal error: 'stdlib.h' file not found
 #     error occurred in cc-rs: command did not execute successfully ...
 #
 # That message names a C header in a build script, so it reads as a defect in the
@@ -164,12 +164,22 @@ rw_cargo_cached "$PROFILE_TIMEOUT" check \
 #
 # With that splat present this script arms the toolchain itself (clang-cl for the
 # target, `llvm-lib` to archive, `-Lnative=` to the splat's lib dirs) and the step
-# runs for real. Measured on this host:
+# runs for real. Measured on this host, back when the desktop graph still carried
+# `minimp3-sys`:
 #
 #   * before: `cargo check --target x86_64-pc-windows-msvc --no-default-features
-#     --features desktop` → `'stdlib.h' file not found` inside `minimp3-sys`;
+#     --features desktop` → `'stdlib.h' file not found` inside that crate;
 #   * after: the same command finishes clean, and this step covers three profiles
 #     plus the no-profile feature set.
+#
+# # What the desktop graph contains today
+#
+# `audio` is the only feature that enables `minimp3_fixed`, so the crate that produced the
+# failure above is no longer in this gate's graph:
+# `cargo tree --no-default-features --features desktop -e normal` contains no `minimp3`
+# on any target, and none of the four [6b] steps compile C at all. The probe is kept
+# because it asks the right question for a capability set that does — and because the SKIP
+# it then produces is a conservative choice, not a necessary one.
 #
 # The splat lives outside the repository (`$XWIN_SPLAT`, else `~/xwin-splat`), so
 # the gate reads it rather than owning it; a host without one still gets an honest
@@ -272,9 +282,11 @@ if rustc --print target-list 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc' \
    && rustup target list --installed 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc'; then
   if ! have_c_for_windows_target || ! require_windows_linker; then
     echo "[6b/9] SKIPPED: unsupported host -- the x86_64-pc-windows-msvc target"
-    echo "   is installed but this host cannot compile C for it, so the Windows C"
-    echo "   dependency in the tree (minimp3-sys) cannot build. Not a defect in the"
-    echo "   code under test. To run this step off Windows, fetch the CRT and SDK:"
+    echo "   is installed but this host cannot compile C for it. Not a defect in the"
+    echo "   code under test. (The four steps draw no C dependency today -- `audio` is"
+    echo "   the only feature that pulls `minimp3_fixed` -- so this SKIP is the"
+    echo "   conservative choice, not a necessary one.) To run this step off Windows,"
+    echo "   fetch the CRT and SDK:"
     echo "       cargo install xwin"
     echo "       xwin --accept-license splat --output ~/xwin-splat"
     echo "   (or set CC_x86_64_pc_windows_msvc to a compiler that finds the headers,"

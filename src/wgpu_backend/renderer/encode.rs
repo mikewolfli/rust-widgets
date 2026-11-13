@@ -1771,12 +1771,12 @@ impl WgpuRenderer {
                     // chunks with the widths is what keeps the pass count and the width list from
                     // drifting apart — a radius below two yields fewer than three widths, and the
                     // target is rebuilt for exactly that many passes.
-                    for (chunk, width) in target.passes.chunks(2).zip(&widths) {
+                    for (chunk, width) in target.passes.chunks(2).zip(widths) {
                         for (index, (_, params)) in chunk.iter().enumerate() {
                             // The shader's parameter is the window's **half** width, the same unit
                             // `blur_row` divides its box width by; passing the width would double
                             // the window and blur the region twice as far.
-                            let half = (*width / 2) as u32;
+                            let half = (width / 2) as u32;
                             let direction = if index % 2 == 0 { [1.0f32, 0.0] } else { [0.0, 1.0] };
                             let bytes = super::resources::shadow_blur_params(direction, half);
                             self.queue.write_buffer(params, 0, &bytes);

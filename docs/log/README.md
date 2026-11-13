@@ -13,7 +13,7 @@ is a claim with no evidence behind it).
   `bash tools/check_log_archive_has_index.sh` fails when one is not.
 - `docs/log/assets/` — images a log embeds.
 
-## Live logs (24)
+## Live logs (26)
 
 | date | seq | file |
 |---|---|---|
@@ -41,6 +41,8 @@ is a claim with no evidence behind it).
 | 2026-11-12 | 1 | [`log-20261112-1.md`](log-20261112-1.md) |
 | 2026-11-12 | 2 | [`log-20261112-2.md`](log-20261112-2.md) |
 | 2026-11-12 | 3 | [`log-20261112-3.md`](log-20261112-3.md) |
+| 2026-11-13 | 1 | [`log-20261113-1.md`](log-20261113-1.md) |
+| 2026-11-13 | 2 | [`log-20261113-2.md`](log-20261113-2.md) |
 
 ## Archived logs (118)
 

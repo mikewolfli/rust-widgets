@@ -178,6 +178,7 @@
     "src/widget/input_widgets/listbox.rs",
     "src/widget/input_widgets/rich_edit.rs",
     "src/widget/input_widgets/spinbox.rs",
+    "src/widget/input_widgets/tag_input.rs",
     "src/widget/input_widgets/text_entry/lineedit/model.rs",
     "src/widget/input_widgets/textedit/model.rs",
     "src/widget/menu_toolbar/menu/dropdown_menu.rs",

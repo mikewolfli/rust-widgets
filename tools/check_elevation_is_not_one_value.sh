@@ -47,6 +47,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=tools/lib_source_scan.sh
+. "$ROOT_DIR/tools/lib_source_scan.sh"
+
 MANAGER="src/theme/manager.rs"
 
 echo "[1/3] the resolution path exists and is addressable"
@@ -61,38 +64,58 @@ if ! grep -q 'fn role_base_style' "$MANAGER"; then
 fi
 
 echo "[2/3] the resolution path does not bake one shadow for every control"
-# Slice out just `role_base_style`'s body: from its signature to the closing
-# brace of the function, found by the first line that is exactly `    }` at the
-# function's own indent. `awk`'s range form is the portable way to do this.
+# ---------------------------------------------------------------------------
+# Locating and slicing `role_base_style`
 #
-# The signature is matched at the START OF A LINE, not anywhere in it. A bare
-# `/fn role_base_style/` also matches the *doc comments* of neighbouring
-# functions which mention the name, and starting the slice there swallows the
-# text between them — including the comment below that quotes the old literal
-# to explain why it changed. That made this gate report the presence of its own
-# explanation as the defect it was written to prevent (measured: the extractor
-# began 30 lines above the real `fn` and ran past its closing brace, so [2/3]
-# failed with "6: // This used to build one `Shadow { x: 0, y: 2, blur: 6, .. }`").
-# Anchoring on `^    fn ` fixes the slice, which is what the gate actually means.
-BODY="$(awk '/^    fn role_base_style/{inside=1} inside{print} inside && /^    }$/ && NR>1 {if (seen) exit; seen=1}' "$MANAGER")"
-
-# `awk` exits at the first `    }` it prints *after* entering the slice, so the
-# body ends at the function's own closing brace. Guard against the failure mode
-# above returning: if the slice did not start at the attribute line, the first
-# line is not a `fn` signature and the extraction is untrustworthy.
-if [ -z "$BODY" ] || ! printf '%s\n' "$BODY" | head -n 1 | grep -qE '^    fn role_base_style'; then
-    echo "  FAIL  could not extract role_base_style's body (slice did not start at its signature)"
+# The signature is found at the START OF A LINE (an anchored `fn` declaration),
+# not anywhere in the line: a bare `/fn role_base_style/` also matches the *doc
+# comments* of neighbouring functions which mention the name, and starting the
+# slice there swallows the text between them — including the comment below that
+# quotes the old literal to explain why it changed. That made this gate report
+# the presence of its own explanation as the defect it was written to prevent.
+#
+# The body is then sliced by brace balance (`rw_slice_function_body`). The old
+# awk stopped one `    }` too late: its `seen` latch exited on the *second* line
+# that was exactly `    }`, so the slice ran into the next function (measured:
+# the function closes at relative line 102 and the slice was 138 lines). A
+# `Shadow { … }` literal in that neighbour would have been reported as a shadow
+# baked onto the resolution path (W6-35).
+# ---------------------------------------------------------------------------
+START="$(rw_function_line "$MANAGER" role_base_style || true)"
+if [ -z "$START" ]; then
+    echo "  FAIL  could not locate role_base_style's declaration in $MANAGER"
     exit 1
 fi
+BODY="$(rw_slice_function_body "$MANAGER" "$START" || true)"
+
+# Guard against the failure mode above returning: the slice must begin at the
+# function's own signature, or the extraction is untrustworthy.
+FIRST_LINE=""
+if [ -n "$BODY" ]; then
+    FIRST_LINE="$(printf '%s\n' "$BODY" | sed -n '1p')"
+fi
+case "$FIRST_LINE" in
+    '    fn role_base_style('*) ;;
+    *)
+        echo "  FAIL  could not extract role_base_style's body (slice did not start at its signature)"
+        exit 1
+        ;;
+esac
 
 # The exact shape of the defect: a `Shadow { … }` literal *in live code* on the
 # resolution path. Comments are stripped first, because the function's own
 # documentation quotes the offending literal to explain what changed — a gate
-# that reads its own explanation as a finding can never be satisfied.
-CODE="$(printf '%s\n' "$BODY" | sed -e 's://.*::' -e '/^[[:space:]]*\/\//d')"
-if printf '%s\n' "$CODE" | grep -qE '\bShadow\s*\{'; then
+# that reads its own explanation as a finding can never be satisfied. Stripping
+# keeps every line in place (`rw_strip_line_comments`), so the `grep -n` hits
+# printed below are relative to the slice's first line.
+CODE="$(printf '%s\n' "$BODY" | rw_strip_line_comments)"
+# Read the matches into a variable before testing it: `grep -q` at the end of a
+# pipeline can fail a *matching* pipeline under `pipefail` when the upstream
+# writer dies of SIGPIPE on the early exit.
+SHADOW_HITS="$(printf '%s\n' "$CODE" | grep -nE '\bShadow\s*\{' || true)"
+if [ -n "$SHADOW_HITS" ]; then
     echo "  FAIL  role_base_style builds a Shadow literal instead of reading a level:"
-    printf '%s\n' "$CODE" | grep -nE '\bShadow\s*\{' | sed 's/^/          /'
+    printf '%s\n' "$SHADOW_HITS" | sed 's/^/          /'
     echo "        Elevation must come from Theme::elevation(n) so a theme can restate"
     echo "        it and a control can ask for a level (BLUE24 §10A.6 criterion 4)."
     exit 1

@@ -59,6 +59,8 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 SRC = pathlib.Path("src")
 
 # An `ascent` term, however it is spelled: `metrics.ascent`, `x.ascent as i32`,
@@ -76,7 +78,6 @@ CALL = re.compile(r"\b(draw_text|draw_text_fitted)\s*\(")
 # term in a comment ("the old `+ ascent` began the box half a line low"), and flagging the
 # documentation of a fix would make this gate unusable — the checker asks what the code
 # does, not what its comment says about what it used to do.
-LINE_COMMENT = re.compile(r"//[^\n]*")
 
 # Sites that are correct and why. Keyed `relative/path.rs::<needle>`, where the needle is
 # a distinctive fragment of the reported line. Keep this list short and justified: it is
@@ -86,11 +87,6 @@ ALLOWED: dict[str, str] = {
     "src/widget/misc_widgets/avatar.rs::text_height":
         "reads `ascent + descent` to obtain a text height; no origin arithmetic",
 }
-
-
-def strip_comments(text: str) -> str:
-    """Blanks line comments while preserving byte offsets, so line numbers stay exact."""
-    return LINE_COMMENT.sub(lambda m: " " * len(m.group(0)), text)
 
 
 def call_windows(text: str, start: int) -> str:

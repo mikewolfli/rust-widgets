@@ -84,7 +84,13 @@ pub struct RangeSlider {
     /// Whether numeric labels are painted beside the ticks (I-108).
     tick_labels: bool,
     /// Whether the active handle shows its value while being dragged (I-108).
+    /// Whether the value hint above the dragged handle is shown (I-108).
     value_hint_enabled: bool,
+    /// The drag hint's formatted value, reused across frames.
+    ///
+    /// The hint is repainted on every frame of a drag; building it with `format!` allocated a
+    /// `String` each time for a number that fits in a few bytes (W6-23).
+    hint_text: String,
 }
 
 /// The radius of a range slider's handle, in logical pixels.
@@ -131,6 +137,7 @@ impl RangeSlider {
             tick_interval: None,
             tick_labels: false,
             value_hint_enabled: false,
+            hint_text: String::new(),
         }
     }
 
@@ -1009,9 +1016,12 @@ impl Draw for RangeSlider {
                 if let Some(is_lower) = self.dragging {
                     let value = if is_lower { self.lower_value } else { self.upper_value };
                     let x = self.value_to_pixel(value, &rect);
+                    self.hint_text.clear();
+                    let _ =
+                        core::fmt::Write::write_fmt(&mut self.hint_text, format_args!("{value}"));
                     context.draw_text(
                         Point::new(x, rect.y.saturating_sub(font.effective_line_height() as i32)),
-                        &format!("{value}"),
+                        &self.hint_text,
                         font,
                         ink,
                         HorizontalAlignment::Center,

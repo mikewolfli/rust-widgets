@@ -49,6 +49,26 @@ cd "$ROOT_DIR"
 OHOS_CHECK_TIMEOUT=1800
 OHOS_BUILD_TIMEOUT=2400
 
+# Budget for the *probes* below (rustup / rustc / `cargo ohos --version`). They are
+# seconds-scale when the toolchain is present, but each one can block: `rustup` on a cold
+# toolchain directory, `rustc --print cfg` on a broken target spec, `cargo ohos` on the
+# plugin's own discovery. Unbounded, one of those would take the gate with it and report
+# nothing (principle #58). A probe that times out is treated as "not available", which is
+# exactly what the HOST-GATED paths below already express.
+HOST_PROBE_TIMEOUT=120
+
+# Whether rustup has rust-std for target `$1`.
+#
+# Bounded, and read-then-test rather than `rustup … | grep -q`: with `pipefail` set,
+# `grep -q` closing the pipe early makes `rustup` die of SIGPIPE and the pipeline report
+# failure for a target that *is* installed — which reads as "not installed" and turns
+# the whole gate into a HOST-GATED exit for a correct host.
+rustup_target_installed() {
+    local installed
+    installed="$(rw_run_bounded "$HOST_PROBE_TIMEOUT" rustup target list --installed 2>/dev/null || true)"
+    printf '%s\n' "$installed" | grep -qx "$1"
+}
+
 PRIMARY="aarch64-unknown-linux-ohos"
 LINKABLE=(armv7-unknown-linux-ohos x86_64-unknown-linux-ohos)
 BUILD_STD_ONLY="loongarch64-unknown-linux-ohos"
@@ -100,13 +120,13 @@ if [[ -z "${OHOS_SDK_NATIVE:-}" ]]; then
 fi
 export OHOS_SDK_NATIVE
 
-if ! rustup target list --installed 2>/dev/null | grep -q "^${PRIMARY}$"; then
+if ! rustup_target_installed "$PRIMARY"; then
     echo "HOST-GATED: rust target ${PRIMARY} is not installed"
     echo "  install with: rustup target add ${PRIMARY}"
     exit 2
 fi
 
-if ! cargo ohos --version >/dev/null 2>&1; then
+if ! rw_run_bounded "$HOST_PROBE_TIMEOUT" cargo ohos --version >/dev/null 2>&1; then
     echo "HOST-GATED: cargo-ohos is not installed"
     echo "  install with: cargo install cargo-ohos"
     exit 2
@@ -127,7 +147,7 @@ note() { printf '  %s\n' "$*"; }
 # ---------------------------------------------------------------------------
 echo "[1/6] target-identification premise (all OpenHarmony triples)"
 for triple in "${ALL_TARGETS[@]}"; do
-    cfg_out="$(rustc --target "$triple" --print cfg 2>/dev/null || true)"
+    cfg_out="$(rw_run_bounded "$HOST_PROBE_TIMEOUT" rustc --target "$triple" --print cfg 2>/dev/null || true)"
     if [[ -z "$cfg_out" ]]; then
         note "$triple: rustc cannot describe this target — skipped"
         continue
@@ -151,7 +171,7 @@ done
 # [2]-[4] The targets rustup ships std for: build, and then LINK.
 # ---------------------------------------------------------------------------
 for triple in "$PRIMARY" "${LINKABLE[@]}"; do
-    if ! rustup target list --installed 2>/dev/null | grep -q "^${triple}$"; then
+    if ! rustup_target_installed "$triple"; then
         echo "[skip] ${triple}: rust-std not installed (rustup target add ${triple})"
         continue
     fi
@@ -217,7 +237,11 @@ for triple in "$PRIMARY" "${LINKABLE[@]}"; do
     # with `unable to find library`.
     xso="target/${triple}/debug/librust_widgets.so"
     if command -v readelf >/dev/null 2>&1 && [[ -f "$xso" ]]; then
-        if readelf -d "$xso" 2>/dev/null | grep -q 'libace_ndk\.z\.so'; then
+        # `grep -c` rather than `grep -q`: it reads all of `readelf`'s output, so a short
+        # read cannot make `readelf` die of SIGPIPE under `pipefail` and turn a linked
+        # library into a reported miss.
+        linked="$(readelf -d "$xso" 2>/dev/null | grep -c 'libace_ndk\.z\.so' || true)"
+        if [[ "${linked:-0}" -gt 0 ]]; then
             xrefs=$(readelf -sW "$xso" 2>/dev/null | grep -c 'OH_NativeXComponent_\|OH_ArkUI_' || true)
             # The C entry point must be *exported* and not merely linked: it is what the
             # ArkTS side calls, and it is compiled out when no device profile opens the
@@ -289,21 +313,21 @@ echo "[6/6] ${BUILD_STD_ONLY}: Tier 3 target (no prebuilt std, SDK libc incomple
 LOONG_LIB_DIR="${OHOS_SDK_NATIVE}/sysroot/usr/lib/loongarch64-linux-ohos"
 if [[ ! -d "$LOONG_LIB_DIR" ]]; then
     note "SDK has no ${LOONG_LIB_DIR} — cannot compile C, let alone link"
-    if rustc --target "$BUILD_STD_ONLY" --print cfg >/dev/null 2>&1; then
+    if rw_run_bounded "$HOST_PROBE_TIMEOUT" rustc --target "$BUILD_STD_ONLY" --print cfg >/dev/null 2>&1; then
         note "rustc knows the triple — Tier 3, so no prebuilt std ✓"
     else
         echo "  FAIL: rustc no longer recognises ${BUILD_STD_ONLY}"
         fail=1
     fi
-    if rustup target list --installed 2>/dev/null | grep -q "^${BUILD_STD_ONLY}$"; then
+    if rustup_target_installed "$BUILD_STD_ONLY"; then
         echo "  FAIL: rust-std is now installed for ${BUILD_STD_ONLY} — strengthen step [2] to cover it"
         fail=1
     else
         note "rustup has no std for it (Tier 3: 'official builds are not available') ✓"
     fi
-elif ! rustc +nightly -vV >/dev/null 2>&1; then
+elif ! rw_run_bounded "$HOST_PROBE_TIMEOUT" rustc +nightly -vV >/dev/null 2>&1; then
     note "nightly toolchain unavailable — skipped (needs -Zbuild-std)"
-elif [[ -z "$(rustup component list --installed --toolchain nightly 2>/dev/null | grep rust-src || true)" ]]; then
+elif [[ -z "$(rw_run_bounded "$HOST_PROBE_TIMEOUT" rustup component list --installed --toolchain nightly 2>/dev/null | grep rust-src || true)" ]]; then
     note "nightly rust-src unavailable — skipped (rustup component add rust-src --toolchain nightly)"
 else
     note "SDK now ships a loongarch64 lib dir — full build expected"

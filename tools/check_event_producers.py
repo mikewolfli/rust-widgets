@@ -41,6 +41,8 @@ import pathlib
 import re
 import sys
 
+from lib_source_scan import strip_comments
+
 GESTURE_DIR = pathlib.Path("src/gesture")
 EVENT_FILE = pathlib.Path("src/event/types.rs")
 
@@ -102,29 +104,6 @@ def strip_test_modules(text: str) -> str:
     """
     match = re.search(r"#\[cfg\(test\)\]", text)
     return text[: match.start()] if match else text
-
-
-def strip_comments(text: str) -> str:
-    """`text` with line comments replaced by spaces, preserving offsets.
-
-    # Why comments must not count
-
-    Documentation mentions variants by name: `pinch.rs` has a doc comment reading
-    `Recognizes a two-finger pinch gesture and emits `Event::Pinch { scale }`.`` A
-    regex over the raw source matched that sentence and reported `Pinch` as produced even
-    with the real construction deleted — the gate answered PASS in exactly the case it
-    exists to catch. A comment is a *claim* about a producer, not a producer.
-
-    Length-preserving so that offsets from a match still address the original text.
-    """
-    out: list[str] = []
-    for line in text.splitlines(keepends=True):
-        stripped = line.lstrip()
-        if stripped.startswith("//"):
-            out.append(" " * (len(line) - 1) + ("\n" if line.endswith("\n") else ""))
-        else:
-            out.append(line)
-    return "".join(out)
 
 
 def production_construction_sites(path: pathlib.Path) -> set[str]:
