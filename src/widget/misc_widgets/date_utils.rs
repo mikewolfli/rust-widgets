@@ -18,6 +18,8 @@
 //! `(year, month, day)` components, and introducing a type would mean rewriting
 //! their state for no gain.
 
+use core::fmt::{self, Formatter};
+
 /// Three-letter English month names, `Jan` through `Dec`.
 ///
 /// Indexed by `month - 1`. Callers must clamp before indexing; use
@@ -83,6 +85,18 @@ pub enum IsoDateError {
     /// The day was outside `1..=days_in_month(year, month)`.
     DayOutOfRange,
 }
+
+impl core::fmt::Display for IsoDateError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed => f.write_str("the text is not three `-`-separated numeric fields"),
+            Self::MonthOutOfRange => f.write_str("the month is outside 1..=12"),
+            Self::DayOutOfRange => f.write_str("the day is outside the range valid for the month"),
+        }
+    }
+}
+
+impl core::error::Error for IsoDateError {}
 
 /// Parses an ISO `YYYY-MM-DD` date into `(year, month, day)`.
 ///

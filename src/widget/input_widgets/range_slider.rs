@@ -636,6 +636,22 @@ impl Widget for RangeSlider {
         )
     }
 
+    /// A two-thumb track may shrink to the same draggable floor as the single-thumb slider while
+    /// keeping its row height (W5-41).
+    fn minimum_size_hint(&self) -> crate::core::Size {
+        let extent = crate::widget::metrics::dimensions::BAR_MIN_EXTENT;
+        let thickness = crate::widget::metrics::dimensions::RANGE_SLIDER_DEFAULT_HEIGHT;
+        match self.orientation() {
+            RangeSliderOrientation::Horizontal => crate::core::Size::new(extent, thickness),
+            RangeSliderOrientation::Vertical => crate::core::Size::new(thickness, extent),
+        }
+    }
+
+    /// A range control absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     /// Announces **both** handles, because a range has two values.
     ///
     /// # Why this control needs its own answer

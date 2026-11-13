@@ -558,6 +558,21 @@ impl Widget for ProgressBar {
             Orientation::Vertical => Size::new(thickness, extent),
         }
     }
+
+    /// A bar may be compressed along its travel axis to a readable floor (W5-41).
+    fn minimum_size_hint(&self) -> Size {
+        let extent = crate::widget::metrics::dimensions::BAR_MIN_EXTENT;
+        let thickness = crate::widget::metrics::dimensions::BAR_DEFAULT_THICKNESS;
+        match self.orientation() {
+            Orientation::Horizontal => Size::new(extent, thickness),
+            Orientation::Vertical => Size::new(thickness, extent),
+        }
+    }
+
+    /// A progress bar absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     // The indeterminate sweep is the animation; a determinate bar owes no frames.

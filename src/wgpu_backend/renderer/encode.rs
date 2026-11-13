@@ -1113,7 +1113,7 @@ impl WgpuRenderer {
                         else {
                             continue;
                         };
-                        if super::resources::frame_blur_pass_widths(radius).is_empty() {
+                        if super::resources::frame_blur_pass_count(radius) == 0 {
                             continue;
                         }
                         let reach = super::resources::frame_blur_reach(radius) as i64;

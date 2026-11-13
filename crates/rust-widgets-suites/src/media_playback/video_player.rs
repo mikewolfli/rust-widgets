@@ -2353,6 +2353,10 @@ impl Draw for VideoPlayer {
             Color::WHITE,
             IconName::Fullscreen,
         );
+        // The player takes keyboard focus (arrows / space / M), so Tab focus must be visible
+        // on the control itself (W5-38).
+        let ring_radius = self.base.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, ring_radius);
     }
 }
 

@@ -1300,8 +1300,7 @@ impl Draw for InputDialog {
                 // One row per explicit line; Enter inserts `\n` in this mode (DLG-14).
                 let line_h = context.text_line(input_band, input_font).height.max(1);
                 let rows = self.display_cache.split('\n');
-                let lines: Vec<&str> = rows.collect();
-                for (row_index, line_text) in lines.iter().enumerate() {
+                for (row_index, line_text) in rows.enumerate() {
                     let y = input_band.y + 2 + row_index as i32 * line_h as i32;
                     if y + line_h as i32 > input_band.y + input_band.height as i32 {
                         break;

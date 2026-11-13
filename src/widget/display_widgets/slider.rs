@@ -1333,6 +1333,21 @@ impl Widget for Slider {
         }
     }
 
+    /// The track may shrink to a draggable floor while the thickness stays fixed (W5-41).
+    fn minimum_size_hint(&self) -> Size {
+        let extent = crate::widget::metrics::dimensions::BAR_MIN_EXTENT;
+        let thickness = crate::widget::metrics::dimensions::BAR_DEFAULT_THICKNESS;
+        match self.orientation() {
+            Orientation::Horizontal => Size::new(extent, thickness),
+            Orientation::Vertical => Size::new(thickness, extent),
+        }
+    }
+
+    /// A slider is a form control: it takes the free room along the form's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     /// One frame of the animated hover/drag halo.
     fn tick(&mut self, delta_ms: u32) -> bool {
         Slider::tick(self, delta_ms)

@@ -509,8 +509,10 @@ impl Draw for Spinner {
         let chart_surface =
             crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let disabled_arc = self.base.disabled_ink_on(arc_color, chart_surface);
-        let effective_track =
-            if is_enabled { track_color } else { Color::rgba(200, 200, 200, 100) };
+        // The track recedes by the same rule as the arc; a literal grey made the disabled
+        // track a second grey that ignored the surface it was drawn on (W5-40).
+        let disabled_track = self.base.disabled_ink_on(track_color, chart_surface);
+        let effective_track = if is_enabled { track_color } else { disabled_track };
         let effective_arc = if is_enabled { arc_color } else { disabled_arc };
 
         match self.style {

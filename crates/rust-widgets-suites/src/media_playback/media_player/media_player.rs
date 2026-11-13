@@ -264,7 +264,7 @@ impl MediaPlayer {
     /// Creates empty media player.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::WebEngineView, geometry, "MediaPlayer"),
+            base: BaseWidget::new(WidgetKind::VideoPlayer, geometry, "MediaPlayer"),
             source: None,
             clock: MediaClock::new(),
             duration_ms: 0,
@@ -1073,8 +1073,9 @@ impl Widget for MediaPlayer {
 /// Read/write semantics are carried over unchanged from the centralised
 /// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
 /// the same coercions and the same errors as before. `MediaPlayer` reports
-/// `WidgetKind::WebEngineView`, shared with `WebEngineView`; dispatching on the
-/// concrete type here is what keeps the two contracts separate.
+/// `WidgetKind::VideoPlayer`, the same media bucket `VideoPlayer` reports, so the
+/// accessibility role says what the control is; dispatching on the concrete type here is
+/// what keeps the two property contracts separate (W5-13).
 impl WidgetProperties for MediaPlayer {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
@@ -1675,6 +1676,14 @@ mod tests {
         let shared = Arc::new(vec![0; 3 * 4 + 8]);
         assert!(MediaFrame::from_shared(3, 1, shared).is_some());
         assert!(MediaFrame::new(3, 1, vec![0; 11]).is_none(), "a short buffer is refused");
+    }
+
+    /// The player reports the media kind, so its accessibility role is `media` rather than the
+    /// engine's `external` bucket (W5-13).
+    #[test]
+    fn the_player_reports_the_media_kind() {
+        let player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        assert_eq!(player.kind(), WidgetKind::VideoPlayer);
     }
 
     /// The rate is the clock's, so a write through `clock_mut` cannot leave it stale.

@@ -25,6 +25,16 @@ use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+thread_local! {
+    /// The empty button-row list, shared so a dialog with no actions allocates nothing on a
+    /// frame (W5-43, the same shape `message_box::empty_buttons` uses).
+    static EMPTY_BUTTON_RECTS: Rc<Vec<Rect>> = Rc::new(Vec::new());
+}
+
+fn empty_button_rects() -> Rc<Vec<Rect>> {
+    EMPTY_BUTTON_RECTS.with(Rc::clone)
+}
+
 /// The height of the dialog's title bar, in pixels.
 ///
 /// Also the amount the content area is inset by when a title is present, so the two
@@ -205,7 +215,7 @@ impl Dialog {
             buttons: Vec::new(),
             default_button: None,
             cancel_button: None,
-            button_rects: RefCell::new(Rc::new(Vec::new())),
+            button_rects: RefCell::new(empty_button_rects()),
             resizable: false,
             resize_origin: None,
             resize_geometry: None,
@@ -1253,7 +1263,7 @@ impl Draw for Dialog {
             }
             *self.button_rects.borrow_mut() = row.buttons;
         } else {
-            *self.button_rects.borrow_mut() = Rc::new(Vec::new());
+            *self.button_rects.borrow_mut() = empty_button_rects();
         }
 
         // The resize grip is painted before the title-bar early return so a titleless dialog

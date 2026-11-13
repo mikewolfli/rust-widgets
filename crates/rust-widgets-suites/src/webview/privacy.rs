@@ -347,16 +347,33 @@ impl Cookie {
 pub struct CookieJar {
     /// The stored cookies, keyed by `"{domain}:{name}"`.
     cookies: HashMap<String, Cookie>,
+    /// Insertion order of the keys, oldest first, so the store can evict instead of growing
+    /// without bound when a caller writes through [`CookieJar::add`] directly (W5-39).
+    insertion_order: Vec<String>,
 }
 impl CookieJar {
     /// Creates an empty jar.
     pub fn new() -> Self {
-        Self { cookies: HashMap::new() }
+        Self { cookies: HashMap::new(), insertion_order: Vec::new() }
     }
     /// Stores `cookie`, overwriting any existing cookie with the same domain and name.
+    ///
+    /// A new key past [`MAX_COOKIE_ENTRIES`](crate::webview::web_engine::MAX_WEB_COOKIE_ENTRIES)
+    /// evicts the oldest insertion. The engine's write path already enforced that cap; the
+    /// primitive now does too, so a caller that holds the jar cannot bypass it.
     pub fn add(&mut self, cookie: Cookie) {
         let key = cookie_key(&cookie.domain, &cookie.name);
-        self.cookies.insert(key, cookie);
+        if self.cookies.insert(key.clone(), cookie).is_none() {
+            self.insertion_order.push(key);
+        }
+        let limit = crate::webview::web_engine::MAX_WEB_COOKIE_ENTRIES;
+        while self.cookies.len() > limit {
+            let Some(oldest) = self.insertion_order.first().cloned() else {
+                break;
+            };
+            self.insertion_order.remove(0);
+            self.cookies.remove(&oldest);
+        }
     }
     /// Looks up the cookie for `domain` and `name`, or `None` if absent.
     ///
@@ -367,15 +384,22 @@ impl CookieJar {
     }
     /// Removes and returns the cookie for `domain` and `name`, or `None` if absent.
     pub fn remove(&mut self, domain: &str, name: &str) -> Option<Cookie> {
-        self.cookies.remove(&cookie_key(domain, name))
+        let key = cookie_key(domain, name);
+        let removed = self.cookies.remove(&key);
+        if removed.is_some() {
+            self.insertion_order.retain(|stored| stored != &key);
+        }
+        removed
     }
     /// Discards every cookie, expired ones included.
     pub fn clear(&mut self) {
         self.cookies.clear();
+        self.insertion_order.clear();
     }
     /// Discards only the cookies for which [`Cookie::is_expired`] is true.
     pub fn clear_expired(&mut self) {
         self.cookies.retain(|_, cookie| !cookie.is_expired());
+        self.insertion_order.retain(|key| self.cookies.contains_key(key));
     }
     /// Discards every cookie that applies to `domain`: the cookies stored for it and for its
     /// parents.
@@ -393,6 +417,7 @@ impl CookieJar {
     /// boundary) removes exactly the intended set.
     pub fn clear_for_domain(&mut self, domain: &str) {
         self.cookies.retain(|_, cookie| !domain_matches(domain, &cookie.domain));
+        self.insertion_order.retain(|key| self.cookies.contains_key(key));
     }
     /// Returns the unexpired cookies that apply to `domain`.
     ///
@@ -780,6 +805,25 @@ mod tests {
         let retrieved = jar.get("example.com", "session");
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().value, "abc");
+    }
+
+    /// The primitive caps its own store, so a caller writing through the jar cannot grow it
+    /// without bound (W5-39). The oldest insertion is the one evicted.
+    #[test]
+    fn test_cookie_jar_add_evicts_the_oldest_past_the_cap() {
+        use crate::webview::web_engine::MAX_WEB_COOKIE_ENTRIES;
+        let mut jar = CookieJar::new();
+        for index in 0..MAX_WEB_COOKIE_ENTRIES + 5 {
+            jar.add(Cookie::new(
+                format!("cookie{index}"),
+                "v".to_string(),
+                "example.com".to_string(),
+            ));
+        }
+        assert_eq!(jar.len(), MAX_WEB_COOKIE_ENTRIES);
+        assert!(jar.get("example.com", "cookie0").is_none(), "the oldest row was evicted");
+        assert!(jar.get("example.com", "cookie4").is_none());
+        assert!(jar.get("example.com", &format!("cookie{}", MAX_WEB_COOKIE_ENTRIES + 4)).is_some());
     }
 
     #[test]

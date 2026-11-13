@@ -486,7 +486,7 @@ pub struct FileDialog {
     /// Each visible row used to run `format_size` and `format_modified`, two `String`s per row per
     /// frame. Those strings are a pure function of the entries, so they are built once per change
     /// alongside the rectangles and invalidated wherever `visible_cache` is.
-    detail_text_cache: RefCell<Option<(VisibleRowsKey, Rc<Vec<(String, String)>>)>>,
+    detail_text_cache: DetailTextCache,
     /// Cached measured line height, keyed by the resolved font size's bits (G-P07).
     ///
     /// `list_rect` and `list_row_height` are read by every event and frame. The measurement
@@ -497,6 +497,8 @@ pub struct FileDialog {
 
 /// The cached visible-row rectangles and the key they were built for.
 type VisibleRowsCache = RefCell<Option<(VisibleRowsKey, Rc<Vec<(usize, Rect)>>)>>;
+/// The cached formatted size/modified strings and the key they were built for (W5-33).
+type DetailTextCache = RefCell<Option<(VisibleRowsKey, Rc<Vec<(String, String)>>)>>;
 impl FileDialog {
     /// Creates an open-file dialog in `geometry`.
     ///

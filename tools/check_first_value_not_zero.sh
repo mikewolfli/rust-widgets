@@ -177,12 +177,14 @@ while IFS= read -r line; do
     # test asserting `is_visible()` after `hide()` is evidence *for* the control, not
     # against it.
     #
-    # `sed`/`awk` stop at the first `#[cfg(test)]`, which is where the module begins, so
-    # everything after it is excluded.
+    # `sed`/`awk` stop at the first line that is exactly `#[cfg(test)]`, which is where a
+    # top-level test module begins. The end anchor is the whole line rather than a prefix: an
+    # inline `#[cfg(test)] use ...` (or an attribute on a nested item) is not the module
+    # boundary and must not truncate the production scan (W5-37).
     # `self\.visible\b`: a word boundary, so `self.visible_count()` (a row count in
     # `timeline_widget`) is not read as a visibility fact. Without it a read-only count
     # made a shown-at-rest timeline look like a hidden-at-rest control.
-    if sed -n '1,/^#\[cfg(test)\]/p' "$file" | grep -qE 'is_visible\(\)|self\.visible\b'; then
+    if sed -n '1,/^#\[cfg(test)\]$/p' "$file" | grep -qE 'is_visible\(\)|self\.visible\b'; then
         FINDINGS="${FINDINGS}${line}
 "
     else

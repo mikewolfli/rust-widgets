@@ -467,7 +467,9 @@ pub(super) struct ValueReadings {
     pub(super) revision: u64,
     pub(super) limit: Option<usize>,
     pub(super) count: usize,
-    pub(super) counter: Option<String>,
+    // Shared rather than cloned on every frame: the painted counter is read once per frame and
+    // used to be deep-copied out of the cache (W5-44).
+    pub(super) counter: Option<Rc<String>>,
 }
 
 /// Memoised advances for the value, the selection edges and the caret prefix.
@@ -959,7 +961,7 @@ impl LineEdit {
                 cache.revision = self.text_revision;
                 cache.limit = self.max_length;
                 cache.count = count;
-                cache.counter = DecorationLayout::counter_text(count, self.max_length);
+                cache.counter = DecorationLayout::counter_text(count, self.max_length).map(Rc::new);
             }
             return cache.count;
         }
@@ -967,19 +969,22 @@ impl LineEdit {
     }
 
     /// The character count and usage counter text for the current value, memoised per revision.
-    pub(super) fn value_readings(&self) -> (usize, Option<String>) {
+    ///
+    /// The counter is returned as a shared handle so a per-frame paint does not clone the
+    /// `String` out of the cache (W5-44).
+    pub(super) fn value_readings(&self) -> (usize, Option<Rc<String>>) {
         if let Ok(mut cache) = self.value_readings.try_borrow_mut() {
             if cache.revision != self.text_revision || cache.limit != self.max_length {
                 let count = self.text.chars().count();
                 cache.revision = self.text_revision;
                 cache.limit = self.max_length;
                 cache.count = count;
-                cache.counter = DecorationLayout::counter_text(count, self.max_length);
+                cache.counter = DecorationLayout::counter_text(count, self.max_length).map(Rc::new);
             }
             return (cache.count, cache.counter.clone());
         }
         let count = self.text.chars().count();
-        (count, DecorationLayout::counter_text(count, self.max_length))
+        (count, DecorationLayout::counter_text(count, self.max_length).map(Rc::new))
     }
 
     /// Snaps the caret and the selection anchor to a real character boundary inside the value.

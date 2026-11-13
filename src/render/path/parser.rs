@@ -50,6 +50,7 @@
 //! there is **one** arc conversion in the crate (principle #101) instead of one per consumer.
 
 use crate::compat::Vec;
+use core::fmt::{self, Formatter};
 
 /// Maximum on-curve points one parsed path may yield.
 ///
@@ -144,6 +145,25 @@ pub enum PathError {
     /// The path would need more than [`MAX_PATH_POINTS`] points.
     TooManyPoints,
 }
+
+impl fmt::Display for PathError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownCommand(command) => {
+                write!(f, "`{command}` is not a supported path command")
+            }
+            Self::ExpectedNumber => {
+                write!(f, "a number was expected but the path data ended or held something else")
+            }
+            Self::SegmentsBeforeMove => write!(
+                f,
+                "a subpath's segments appeared before any `M`/`m` established a start point"
+            ),
+            Self::TooManyPoints => write!(f, "the path needs more than {MAX_PATH_POINTS} points"),
+        }
+    }
+}
+impl core::error::Error for PathError {}
 
 /// Parses SVG path data into subpaths.
 ///

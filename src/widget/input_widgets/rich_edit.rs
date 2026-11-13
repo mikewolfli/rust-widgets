@@ -9,7 +9,9 @@
 //! including strikeout and font family/size overrides. `textedit::CharFormat` is the plain-text
 //! editor's smaller set, and `render::rich_text::TextSpan` is a paint-time text/style pair. The
 //! three describe different roles, not duplicate definitions (principles #49 and #51).
-use crate::compat::{lock, Arc, Mutex};
+#[cfg(full_widgets)]
+use crate::compat::lock;
+use crate::compat::{Arc, Mutex};
 use crate::core::{Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::wheel::WheelScroll;
@@ -350,6 +352,7 @@ pub struct RichEdit {
     /// the composition beside the value, and painting it inline, is what makes CJK input legible
     /// without pretending the value changed (IN2-04).
     /// The attached shared find/replace strip, when a host bound one (W5-12).
+    #[cfg_attr(not(full_widgets), allow(dead_code))]
     find_replace_bar: Option<FindReplaceBinding>,
     composition: Option<String>,
 }
@@ -359,6 +362,7 @@ pub struct RichEdit {
 /// The bar owns no document, so its four intents are queued here and applied by
 /// [`RichEdit::poll_find_replace_bar`]; the context and counters are the bar's own handles, so the
 /// editor never holds a stale copy (W5-12, the same shape `TextEdit` uses).
+#[cfg_attr(not(full_widgets), allow(dead_code))]
 struct FindReplaceBinding {
     /// The intents reported since the last poll.
     intents: Arc<Mutex<Vec<FindRequest>>>,
@@ -373,6 +377,7 @@ struct FindReplaceBinding {
 }
 
 /// One intent reported by an attached `FindReplaceBar` and not yet applied.
+#[cfg_attr(not(full_widgets), allow(dead_code))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FindRequest {
     Next,
@@ -1777,6 +1782,21 @@ impl Widget for RichEdit {
         let height = self.display_row_count() as f32 * line_height;
         let strip = if self.format_toolbar.is_some() { FORMAT_TOOLBAR_HEIGHT } else { 0 };
         Size::new((width + 16.0).max(120.0) as u32, ((height + 12.0).max(60.0) as u32) + strip)
+    }
+
+    /// A rich document's floor is one line plus the optional format strip, not the whole
+    /// document's measured height (W5-41).
+    fn minimum_size_hint(&self) -> Size {
+        let strip = if self.format_toolbar.is_some() { FORMAT_TOOLBAR_HEIGHT } else { 0 };
+        Size::new(
+            crate::widget::metrics::dimensions::TEXT_FIELD_MIN_WIDTH,
+            crate::widget::metrics::dimensions::TEXT_EDIT_DEFAULT_HEIGHT + strip,
+        )
+    }
+
+    /// A rich editor absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
     }
 
     /// Lays the control out and keeps the hosted strip's hit-test box on its rectangle.

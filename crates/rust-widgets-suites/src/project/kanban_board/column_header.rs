@@ -468,5 +468,8 @@ impl Draw for KanbanColumnHeader {
         }
         self.base.paint_hover_wash(context, rect);
         crate::veil_if_disabled(&self.base, context);
+        // The header is focusable (it starts a column drag / edit by keyboard), so it paints
+        // the shared ring (W5-38).
+        self.base.draw_focus_ring(context, rect, style.border_radius.unwrap_or(0));
     }
 }

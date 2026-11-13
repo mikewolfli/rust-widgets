@@ -69,6 +69,9 @@ pub(super) fn next_layer_cache_key() -> u64 {
 /// How many commands one replay chunk covers.
 pub(super) const COMMAND_CHUNK_SIZE: usize = 32;
 
+/// Per-axis grid coordinates, reused across frames (W5-36).
+type GridScratch = RefCell<(Vec<(i32, i32)>, Vec<(i32, i32)>)>;
+
 /// Canvas widget for custom drawing operations.
 pub struct Canvas {
     base: BaseWidget,
@@ -109,7 +112,7 @@ pub struct Canvas {
     /// multiple of the grid step, so the lists are derived state: the two buffers keep their
     /// capacity and `clear()` is the only reuse protocol, the same discipline
     /// `viewport_lines_scratch` uses in the code editor.
-    grid_scratch: RefCell<(Vec<(i32, i32)>, Vec<(i32, i32)>)>,
+    grid_scratch: GridScratch,
     /// Whether the wheel zooms the transform.
     zoom_enabled: bool,
     /// Global anti-aliasing switch applied to every stored command.

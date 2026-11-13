@@ -16,6 +16,12 @@ use crate::widget::{Draw, Widget};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+thread_local! {
+    /// The empty row table, shared so painting a placeholder-only field does not allocate a
+    /// fresh `Rc<Vec<_>>` every frame (W5-43).
+    static EMPTY_ROWS: Rc<Vec<super::model::RowSpan>> = Rc::new(Vec::new());
+}
+
 impl TextEdit {
     /// The format runs the paint path consumes, merged into contiguous equal formats.
     ///
@@ -221,7 +227,8 @@ impl Draw for TextEdit {
         // read the table, so every frame laid the document out twice and the two could disagree
         // about where a row ended. It is empty for the placeholder, which is not the document and
         // therefore has no table of its own.
-        let rows = if self.text.is_empty() { Rc::new(Vec::new()) } else { self.layout_rows() };
+        let rows =
+            if self.text.is_empty() { EMPTY_ROWS.with(Rc::clone) } else { self.layout_rows() };
         // Resolved once for the ink, the selection band and the caret: all three place markers
         // with the same font, and the marker block below runs after the ink block's scope.
         let font = self.text_font();

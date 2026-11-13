@@ -614,6 +614,19 @@ pub enum PathPickerError {
     Unavailable,
 }
 
+impl core::fmt::Display for PathPickerError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unsupported => write!(f, "this backend has no path picker"),
+            Self::Unavailable => {
+                write!(f, "the path picker cannot be shown from this thread or session")
+            }
+        }
+    }
+}
+
+impl core::error::Error for PathPickerError {}
+
 /// The answer to an asynchronous path request (BLUE28 B28.08 decision A).
 ///
 /// # Why a separate contract from `choose_path`
@@ -657,6 +670,20 @@ pub enum OpenError {
     /// The host has no default handler for this target on `PATH`.
     NoHandler,
 }
+
+impl core::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unsupported => write!(f, "this backend cannot hand a target to the host"),
+            Self::InvalidTarget => {
+                write!(f, "the target is empty or shaped like a command-line option")
+            }
+            Self::NoHandler => write!(f, "the host has no default handler for this target"),
+        }
+    }
+}
+
+impl core::error::Error for OpenError {}
 /// Capability contract a **hosted** (desktop-oriented) backend negotiates.
 ///
 /// This is the same flag set as [`PlatformCapabilities`], and deliberately so:

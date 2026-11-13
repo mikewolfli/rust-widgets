@@ -1474,6 +1474,19 @@ impl Widget for ListView {
         )
     }
 
+    /// A scrolling list's floor is a gesture-sized box, not its content's preferred size (W5-41).
+    fn minimum_size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::ELASTIC_MIN_WIDTH,
+            crate::widget::metrics::dimensions::ELASTIC_MIN_HEIGHT,
+        )
+    }
+
+    /// A scrollable list absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     /// Selects the row under the pointer, then asks the host for a menu about it.
     ///
     /// The signal alone left the host acting on the previous selection, because a right press did
@@ -1952,6 +1965,10 @@ impl Draw for ListView {
             }
         }
         self.base.paint_disabled_veil(context, rect);
+        // The list is keyboard reachable (rows move with the arrows), so focus must be visible
+        // on the control itself as well as on the focused row (W5-16).
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, ring_radius);
     }
 }
 impl crate::event::EventHandler for ListView {

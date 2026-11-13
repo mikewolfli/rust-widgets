@@ -82,6 +82,8 @@ impl core::fmt::Display for ResourceIdError {
     }
 }
 
+impl core::error::Error for ResourceIdError {}
+
 impl ResourceId {
     /// Parses and normalises a logical resource name.
     ///
@@ -188,6 +190,8 @@ impl core::fmt::Display for ResolveError {
         }
     }
 }
+
+impl core::error::Error for ResolveError {}
 
 /// One place bytes for a logical id can come from.
 ///

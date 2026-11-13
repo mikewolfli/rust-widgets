@@ -36,6 +36,8 @@
 //! data as a bundled one, so it goes through the identical draw path. What the registry adds is
 //! *reach* — a host's own icons — for the cost of one small table.
 
+use core::fmt::{self, Formatter};
+
 use crate::widget::display_widgets::icon::{IconPaintError, IconRef};
 use crate::widget::display_widgets::icon_data_set::{
     lookup_registered, register_icon_data, register_icon_data_with_density,
@@ -237,6 +239,29 @@ pub enum IconRegistrationError {
     /// a registration is refused exactly when a draw would fail.
     Undrawable(IconPaintError),
 }
+
+impl core::fmt::Display for IconRegistrationError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyName => f.write_str("the icon name is empty"),
+            Self::NoPaths => f.write_str("no path data was supplied"),
+            Self::ZeroGrid => {
+                f.write_str("the design grid is zero, so no device scale can be derived")
+            }
+            Self::BlankPath => f.write_str("a path entry is blank, so it would draw nothing"),
+            Self::RegistryFull { capacity } => write!(
+                f,
+                "the icon registry is full (capacity {capacity}) and this source is not already \
+                 registered"
+            ),
+            Self::Undrawable(error) => {
+                write!(f, "the icon geometry cannot be drawn: {error}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for IconRegistrationError {}
 
 /// [`register_icon`], reporting **why** a registration was refused.
 ///

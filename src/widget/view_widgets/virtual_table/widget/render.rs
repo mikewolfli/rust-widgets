@@ -287,5 +287,8 @@ impl Draw for VirtualTable {
         ) {
             context.fill_rect(band, accent.with_alpha(120));
         }
+        // A disabled virtual table refuses every gesture; the painted grid recedes by the shared
+        // veil so the input gate is visible (W5-03).
+        self.base.paint_disabled_veil(context, rect);
     }
 }

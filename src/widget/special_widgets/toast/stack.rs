@@ -1129,6 +1129,9 @@ impl Draw for ToastStack {
                 );
             }
         }
+        // A disabled toast refuses its action/close presses; the picture must recede too
+        // (W5-03).
+        self.base.paint_disabled_veil(context, band);
     }
 }
 

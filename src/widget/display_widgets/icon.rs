@@ -8,6 +8,8 @@
 //! Warning, Error, etc.). Each icon is drawn using basic shapes — lines, circles,
 //! rectangles, and paths — through the render context.
 
+use core::fmt::{self, Formatter};
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 #[cfg(widgets_unstripped)]
 use crate::event::{Event, EventHandler};
@@ -38,10 +40,13 @@ pub use rust_widgets_icons::{designer_alias, is_designer_alias, DESIGNER_ALIASES
 
 /// BT.601 luma — the single greyscale formula the disabled paths share.
 ///
-/// The vector outline and the bitmap frame used to desaturate with two different rules (a channel
-/// mean and BT.601), so one colour had two "disabled" greys depending on whether the icon came
-/// from a path table or a picture. Both now call this function.
-#[cfg(any(feature = "icons", feature = "image"))]
+/// The BT.601 luma one disabled icon grey is derived from.
+///
+/// Unconditional rather than gated on `icons`/`image`: `Icon::disabled_tint` is part of the
+/// control's draw on every profile, and the vector and bitmap sources must share one formula.
+/// `cargo check --target x86_64-pc-windows-gnu --no-default-features --features windows ...`
+/// found this as a cross-feature break: the helper was compiled out while the tint was not.
+#[cfg_attr(not(any(feature = "icons", feature = "image")), allow(dead_code))]
 fn disabled_luma(r: u8, g: u8, b: u8) -> u8 {
     ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
 }
@@ -179,6 +184,28 @@ pub enum IconPaintError {
     /// The render command rejected the prepared compound path.
     Backend(crate::render::CompoundPathError),
 }
+
+impl core::fmt::Display for IconPaintError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedSourceForProfile => {
+                f.write_str("static path geometry is unavailable in this build profile")
+            }
+            Self::ZeroGrid => {
+                f.write_str("the design grid is zero, so no device scale can be derived")
+            }
+            Self::InvalidGeometry(_) => {
+                f.write_str("the path data is malformed or exceeds a geometry budget")
+            }
+            Self::EmptyGeometry => f.write_str("the path data contains no drawable contours"),
+            Self::Backend(_) => {
+                f.write_str("the render backend rejected the prepared compound path")
+            }
+        }
+    }
+}
+
+impl core::error::Error for IconPaintError {}
 
 /// The design facts about a source that can be checked **before** any slot size is known.
 ///

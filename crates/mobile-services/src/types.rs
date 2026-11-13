@@ -99,6 +99,20 @@ pub enum ServiceError {
     Failed,
 }
 
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServiceError::Denied => write!(f, "the operation was denied"),
+            ServiceError::Unsupported => {
+                write!(f, "the service is not supported on this target")
+            }
+            ServiceError::Failed => write!(f, "the platform call failed"),
+        }
+    }
+}
+
+impl std::error::Error for ServiceError {}
+
 /// The strength of a haptic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HapticKind {

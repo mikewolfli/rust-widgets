@@ -1798,6 +1798,9 @@ impl Draw for FontComboBox {
                 }
             });
         }
+        // A disabled family picker refuses the click but keeps the enabled picture; the shared
+        // veil is the control-level cue the per-row disabled logic does not provide (W5-03).
+        self.base.paint_disabled_veil(ctx, g);
     }
 }
 

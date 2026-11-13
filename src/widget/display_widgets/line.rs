@@ -118,9 +118,13 @@ impl Line {
         self.base.request_redraw();
     }
 
-    /// The colour the painter uses: the explicit override, then the style's border, then a literal.
+    /// The colour the painter uses: the explicit override, then the style's border, then the
+    /// palette's outline variant, then a no-theme literal.
     fn line_color(&self) -> Color {
-        self.color.or_else(|| Widget::style(self).border_color).unwrap_or(Color::rgb(180, 180, 180))
+        self.color
+            .or_else(|| Widget::style(self).border_color)
+            .or_else(|| crate::style::palette_shared().map(|colors| colors.outline_variant))
+            .unwrap_or(Color::rgb(180, 180, 180))
     }
 
     /// Paints the two-line [`LineStyle::Sunken`] / [`LineStyle::Raised`] treatment.

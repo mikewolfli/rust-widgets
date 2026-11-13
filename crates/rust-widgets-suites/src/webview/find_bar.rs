@@ -483,6 +483,9 @@ impl Draw for WebFindBar {
             if self.case_sensitive { ink } else { ink.with_alpha(90) },
             HorizontalAlignment::Center,
         );
+        // The bar's own buttons paint their states, but the strip itself answers the pointer
+        // with the shared wash so a hovered bar is distinguishable (W5-04).
+        self.base.paint_hover_wash(context, rect);
         crate::veil_if_disabled(&self.base, context);
     }
 }

@@ -45,6 +45,19 @@ impl Widget for DataGrid {
         )
     }
 
+    /// A scrolling grid's floor is a gesture-sized box (W5-41).
+    fn minimum_size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::ELASTIC_MIN_WIDTH,
+            crate::widget::metrics::dimensions::ELASTIC_MIN_HEIGHT,
+        )
+    }
+
+    /// A grid absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     /// Selects the cell under the pointer, then asks the host for a menu about it.
     ///
     /// The press path used to emit the request and return before any selection ran, and the

@@ -40,7 +40,8 @@ pub(crate) const DAMPING_DIVISOR: f32 = 3.0;
 ///
 /// A settle animation that stepped forever would keep the frame clock awake; below half a pixel
 /// the offset cannot change the painted picture, so it is the honest stopping point.
-pub const SETTLE_THRESHOLD: f32 = 0.5;
+/// Crate-internal: callers read [`OverscrollState::is_settled`] rather than the number (T3-37).
+pub(crate) const SETTLE_THRESHOLD: f32 = 0.5;
 
 /// The default duration of a spring-back from a released overscroll.
 ///

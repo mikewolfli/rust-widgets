@@ -838,6 +838,19 @@ impl Widget for VirtualList {
         )
     }
 
+    /// A virtualised list scrolls, so its floor is a gesture-sized box (W5-41).
+    fn minimum_size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::ELASTIC_MIN_WIDTH,
+            crate::widget::metrics::dimensions::ELASTIC_MIN_HEIGHT,
+        )
+    }
+
+    /// A scrollable list absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     /// Opts the list into the runtime's drag coordinator as a source.
     fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
         Some(self)
@@ -1218,6 +1231,9 @@ impl Draw for VirtualList {
         ) {
             context.fill_rect(band, accent.with_alpha(120));
         }
+        // A disabled virtual list refuses every gesture, so its painted rows must recede too
+        // (W5-03; the event gate alone leaves the picture indistinguishable).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

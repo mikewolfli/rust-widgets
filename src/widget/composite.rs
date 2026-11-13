@@ -240,6 +240,15 @@ impl CompositeBuilder {
         }
     }
 
+    /// The layout parameters registered for a child, or `None` when it is not a child.
+    ///
+    /// The read half of [`Self::set_child_params`]; a caller that adds through
+    /// [`Self::add_auto`] or [`Self::add_flexible`] can inspect the policy that was applied
+    /// rather than guessing it (W5-41).
+    pub fn child_params(&self, id: ObjectId) -> Option<LayoutParams> {
+        self.children.iter().find(|child| child.id == id).map(|child| child.params)
+    }
+
     /// Rewrites the layout's stretch weights from `children`.
     ///
     /// # Why the weights are rebuilt rather than patched
@@ -288,6 +297,27 @@ impl CompositeBuilder {
         // of the channel: nothing outside the child decides what the child wants.
         let hints = widget.hints();
         self.register(id, hints, params);
+        Some(widget)
+    }
+
+    /// Adds a child using the widget's **own** default layout treatment.
+    ///
+    /// [`Self::add`] takes an explicit [`LayoutParams`] because a composite's own intent may
+    /// differ from the control's; this entry is for the common case where it does not. It reads
+    /// [`Widget::default_layout_params`], which is what makes an elastic control (a slider, a
+    /// field, a scrolling list) absorb the free room without every host restating the policy
+    /// (W5-41).
+    pub fn add_auto(
+        &mut self,
+        factory: &WidgetFactory,
+        kind_or_name: &str,
+        text: &str,
+        geometry: Rect,
+    ) -> Option<Box<dyn Widget>> {
+        let widget = factory.create(kind_or_name, geometry, text)?;
+        let id = widget.id();
+        let info = widget.layout_child_info(id);
+        self.register(id, info.hints, info.params);
         Some(widget)
     }
 
@@ -786,6 +816,19 @@ mod tests {
         let factory = WidgetFactory::new_with_defaults();
         let builder = CompositeBuilder::new(row(8), EdgeOffsets::all(0), Size::new(64, 40));
         (factory, builder)
+    }
+
+    /// `add_auto` reads the control's own layout policy instead of asking the host to restate it
+    /// (W5-41).
+    #[test]
+    fn add_auto_applies_the_controls_own_layout_policy() {
+        let (factory, mut builder) = builder();
+        let slider = builder
+            .add_auto(&factory, "slider", "", Rect::new(0, 0, 120, 20))
+            .expect("slider is published");
+        let params = builder.child_params(slider.id()).expect("the child is registered");
+        assert!(params.fill, "a slider absorbs free room through its own default policy");
+        assert!(builder.hints(true).width.min <= 120);
     }
 
     /// A child's size wish reaches the composite's own `Hints`.

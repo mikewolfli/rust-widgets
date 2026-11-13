@@ -207,6 +207,20 @@ impl Widget for TextArea {
         Size::new(w, h)
     }
 
+    /// A multi-line area's floor is one editable line, not the whole document.
+    ///
+    /// Its preferred height grows with the content; using that as the floor made a ten-line
+    /// document refuse to be laid out shorter than ten lines. The width floor is one short word
+    /// plus padding, the same rule the single-line field uses (W5-41).
+    fn minimum_size_hint(&self) -> Size {
+        Size::new(dimensions::TEXT_FIELD_MIN_WIDTH, LINE_H as u32 + 10)
+    }
+
+    /// A text area absorbs free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     /// Advances the caret blink and reports whether another frame is owed (I-116).
     fn tick(&mut self, delta_ms: u32) -> bool {
         TextArea::tick(self, delta_ms)

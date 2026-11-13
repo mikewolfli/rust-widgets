@@ -21,6 +21,8 @@
 //! it when its scale factor calls for it. That keeps the *name* the identity and the
 //! density an attribute of the stored source.
 
+use core::fmt::{self, Formatter};
+
 use crate::compat::String;
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 use crate::compat::Vec;
@@ -326,6 +328,26 @@ pub enum IconItemError {
         id: crate::compat::String,
     },
 }
+
+impl core::fmt::Display for IconItemError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IndexOutOfBounds { index, len } => {
+                write!(f, "item index {index} is out of bounds for a collection of {len} items")
+            }
+            Self::ItemNotFound { id } => write!(f, "no item with id {id} exists"),
+            Self::AmbiguousItemId { id } => write!(f, "more than one item uses id {id}"),
+            Self::UnknownItemId { id } => {
+                write!(f, "no item with string identifier '{id}' exists")
+            }
+            Self::DuplicateItemId { id } => {
+                write!(f, "more than one item uses string identifier '{id}'")
+            }
+        }
+    }
+}
+
+impl core::error::Error for IconItemError {}
 
 impl IconSource {
     /// Creates a source for a built-in token.

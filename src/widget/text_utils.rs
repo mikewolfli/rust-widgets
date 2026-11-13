@@ -241,6 +241,30 @@ pub fn elide_end(text: &str, max_chars: usize) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// [`elide_end`] writing into a caller-owned buffer, for a per-frame paint path.
+///
+/// A paint that redraws an over-long label every frame otherwise allocates a new
+/// `String` each time. The buffer is cleared and refilled, so its capacity is
+/// reused; the result has the same shape and guarantees as [`elide_end`].
+///
+/// Returns `true` when the text was elided, `false` when it already fitted (the
+/// buffer then holds the input verbatim).
+pub fn elide_end_into(text: &str, max_chars: usize, out: &mut String) -> bool {
+    out.clear();
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        out.push_str(text);
+        return false;
+    }
+    if max_chars <= 1 {
+        out.push_str(ELLIPSIS);
+        return true;
+    }
+    out.extend(text.chars().take(max_chars - 1));
+    out.push('\u{2026}');
+    true
+}
+
 /// Shortens `text` to at most `max_chars` **characters**, eliding the middle.
 ///
 /// Paths and URLs keep their identifying head **and** tail, which end-elision throws

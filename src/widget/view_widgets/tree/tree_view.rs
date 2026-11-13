@@ -2507,6 +2507,19 @@ impl Widget for TreeView {
         )
     }
 
+    /// A scrolling tree's floor is a gesture-sized box (W5-41).
+    fn minimum_size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::ELASTIC_MIN_WIDTH,
+            crate::widget::metrics::dimensions::ELASTIC_MIN_HEIGHT,
+        )
+    }
+
+    /// A tree absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     /// Advances the expansion fade by `delta_ms`; `true` while it is still moving.
     fn tick(&mut self, delta_ms: u32) -> bool {
         self.expansion_progress.tick(delta_ms)

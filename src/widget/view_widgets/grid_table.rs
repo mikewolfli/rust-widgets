@@ -2132,6 +2132,19 @@ impl Widget for GridTableWidget {
         let h = (rows as u32).saturating_mul(self.row_height).saturating_add(self.header_height);
         Size::new(w, h)
     }
+
+    /// A scrolling grid's floor is a gesture-sized box, not its full column sum (W5-41).
+    fn minimum_size_hint(&self) -> Size {
+        Size::new(
+            crate::widget::metrics::dimensions::ELASTIC_MIN_WIDTH,
+            crate::widget::metrics::dimensions::ELASTIC_MIN_HEIGHT,
+        )
+    }
+
+    /// A grid absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.

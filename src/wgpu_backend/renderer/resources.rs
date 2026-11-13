@@ -1240,7 +1240,7 @@ impl RenderCache {
                 targets.targets.len() == specs.len()
                     && targets.targets.iter().zip(specs).all(|(target, (rect, radius))| {
                         target.rect == *rect
-                            && target.passes.len() == frame_blur_pass_widths(*radius).len() * 2
+                            && target.passes.len() == frame_blur_pass_count(*radius) * 2
                     })
             })
             .unwrap_or(false);
@@ -1510,9 +1510,17 @@ pub(crate) fn rgba_buffer_len(width: u32, height: u32) -> Result<usize, String> 
 /// The reference skips a pass whose width is below two (`box_blur_region`'s `if width < 2`), which
 /// happens for a radius so small that `box_blur_widths` returns `(1, 1, 3)`. The expansion is
 /// computed from **all three** widths regardless, because `box_blur_region` sums their reaches.
-pub(crate) fn frame_blur_pass_widths(radius: u32) -> Vec<usize> {
+pub(crate) fn frame_blur_pass_widths(radius: u32) -> impl Iterator<Item = usize> {
     let (b0, b1, b2) = crate::render::box_blur_widths(radius as f32 / 2.0);
-    [b0, b1, b2].into_iter().filter(|width| *width >= 2).collect()
+    [b0, b1, b2].into_iter().filter(|width| *width >= 2)
+}
+
+/// How many passes [`frame_blur_pass_widths`] yields.
+///
+/// Derived from the same filter, so a caller that needs only the count does not build a
+/// `Vec` just to read its length (W5-43).
+pub(crate) fn frame_blur_pass_count(radius: u32) -> usize {
+    frame_blur_pass_widths(radius).count()
 }
 
 /// How far a frame-region blur reaches beyond its region, in pixels.

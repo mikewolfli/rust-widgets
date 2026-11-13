@@ -648,6 +648,9 @@ impl Draw for MapAttributionOverlay {
                 HorizontalAlignment::Left,
             );
         }
+        // The attribution strip is the clickable credit line; the shared wash answers the
+        // pointer (W5-04).
+        self.base.paint_hover_wash(context, panel);
         crate::veil_if_disabled(&self.base, context);
     }
 }

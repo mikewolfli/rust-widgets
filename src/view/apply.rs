@@ -257,6 +257,8 @@ impl core::fmt::Display for ViewError {
     }
 }
 
+impl core::error::Error for ViewError {}
+
 /// What [`apply`] did.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ApplyReport {

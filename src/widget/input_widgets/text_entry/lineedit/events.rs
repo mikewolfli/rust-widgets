@@ -68,6 +68,21 @@ impl Widget for LineEdit {
         let text_w = estimate_text_width(self.text(), font, 1.0) + LINE_EDIT_CARET_ROOM;
         Size::new(text_w.max(LINE_EDIT_MIN_WIDTH), LINE_EDIT_HEIGHT)
     }
+
+    /// A field's floor is the field chrome, not the text it currently holds.
+    ///
+    /// The default made the preferred size the floor, so a long value reserved its full width as
+    /// the layout minimum. A text field remains usable at its declared minimum width, which is
+    /// what lets a form shrink it (W5-41).
+    fn minimum_size_hint(&self) -> Size {
+        Size::new(LINE_EDIT_MIN_WIDTH, LINE_EDIT_HEIGHT)
+    }
+
+    /// A field absorbs the free room on its parent's major axis, so a form row aligns its fields
+    /// instead of leaving a ragged right edge (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     // The caret blink is the whole animation: without a trait-visible `tick` a host holding

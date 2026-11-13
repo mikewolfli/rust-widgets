@@ -9,6 +9,7 @@ use crate::render::math3d::Mat4;
 #[cfg(feature = "3d")]
 use crate::render::mesh3d::{Camera, Mesh3D};
 use crate::style::Gradient;
+use core::fmt::{self, Formatter};
 
 /// A packed set of closed contours used by a non-zero winding fill.
 ///
@@ -29,6 +30,19 @@ pub enum CompoundPathError {
     /// range. The contained value is its zero-based index.
     InvalidContour(usize),
 }
+
+impl fmt::Display for CompoundPathError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoContours => write!(f, "a compound path needs at least one contour"),
+            Self::InvalidContour(index) => write!(
+                f,
+                "contour {index} is invalid: empty, too short to enclose an area, overlapping its predecessor, or out of range"
+            ),
+        }
+    }
+}
+impl core::error::Error for CompoundPathError {}
 
 impl CompoundPath {
     /// Creates a compound path after validating its packed contour ranges.

@@ -40,6 +40,7 @@
 //! translation is a property of the axes, not a rewrite of the outline.
 
 use crate::core::Point;
+use core::fmt::{self, Formatter};
 
 use super::parser::{parse, Segment, Subpath};
 
@@ -142,6 +143,21 @@ pub enum FlattenError {
     /// The outline needs more contours than the caller's slice holds.
     TooManyContours,
 }
+
+impl fmt::Display for FlattenError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(error) => write!(f, "the path data could not be parsed: {error}"),
+            Self::TooManyPoints => {
+                write!(f, "the flattened outline needs more than {MAX_OUTLINE_POINTS} points")
+            }
+            Self::TooManyContours => {
+                write!(f, "the outline needs more than {MAX_OUTLINE_CONTOURS} contours")
+            }
+        }
+    }
+}
+impl core::error::Error for FlattenError {}
 
 impl From<super::parser::PathError> for FlattenError {
     fn from(error: super::parser::PathError) -> Self {

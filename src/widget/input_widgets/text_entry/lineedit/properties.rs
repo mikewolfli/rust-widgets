@@ -356,7 +356,7 @@ impl LineEdit {
     /// Derived from the value's length and `max_length` rather than stored, so it cannot go stale: a
     /// counter the caller has to keep in step with the text is a counter that will disagree with it.
     pub fn counter_text(&self) -> Option<String> {
-        self.value_readings().1
+        self.value_readings().1.map(|counter| (*counter).clone())
     }
 
     /// Returns whether the current value exceeds `max_length`.

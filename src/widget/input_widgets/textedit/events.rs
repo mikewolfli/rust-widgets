@@ -37,6 +37,16 @@ impl Widget for TextEdit {
         Size::new(dimensions::TEXT_EDIT_DEFAULT_WIDTH, dimensions::TEXT_EDIT_DEFAULT_HEIGHT)
     }
 
+    /// A multi-line editor's floor is one editable line, not its current content (W5-41).
+    fn minimum_size_hint(&self) -> Size {
+        Size::new(dimensions::TEXT_FIELD_MIN_WIDTH, dimensions::TEXT_EDIT_DEFAULT_HEIGHT)
+    }
+
+    /// An editor absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     /// Advances the caret blink and reports whether another frame is owed (I-119).
     fn tick(&mut self, delta_ms: u32) -> bool {
         TextEdit::tick(self, delta_ms)

@@ -79,7 +79,7 @@ fi
 # that opens before it, and read the identifiers out of the array literal.
 declared="$(
     head -n "$error_line" "$PRESETS" \
-        | awk 'BEGIN { last = 0 } /for kind in \[/ { last = NR } { lines[NR] = $0 } END { for (i = last; i <= NR; i++) print lines[i] }' \
+        | awk 'BEGIN { last = 0 } /^    for kind in \[/ { last = NR } { lines[NR] = $0 } END { for (i = last; i <= NR; i++) print lines[i] }' \
         | sed -n '1,/\]/p' \
         | sed -e 's/.*\[//' -e 's/\]/ /' -e 's/"//g' -e 's/,/ /g' \
         | tr ' ' '\n' \

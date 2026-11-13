@@ -25,6 +25,7 @@
 use super::math3d::Mat4;
 use crate::compat::Vec;
 use crate::core::{Color, Rect, Size};
+use core::fmt::{self, Formatter};
 
 /// The default vertical field of view of [`Camera::new`], in radians (60 degrees).
 pub const DEFAULT_FOV_Y: f32 = core::f32::consts::FRAC_PI_3;
@@ -134,6 +135,22 @@ pub enum Mesh3DError {
         vertex_count: usize,
     },
 }
+
+impl fmt::Display for Mesh3DError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IndexCountNotMultipleOfThree(count) => write!(
+                f,
+                "the index count {count} is not a multiple of three, so the list cannot be read as triangles"
+            ),
+            Self::IndexOutOfRange { index, vertex_count } => write!(
+                f,
+                "index {index} is out of range for a mesh with {vertex_count} vertices"
+            ),
+        }
+    }
+}
+impl core::error::Error for Mesh3DError {}
 
 /// An indexed triangle mesh.
 ///

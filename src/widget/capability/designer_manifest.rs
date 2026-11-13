@@ -453,6 +453,8 @@ impl core::fmt::Display for ManifestExportError {
     }
 }
 
+impl core::error::Error for ManifestExportError {}
+
 // ── Reading ────────────────────────────────────────────────────────────────────────
 
 /// A minimal JSON reader for the documents this module writes.

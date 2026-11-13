@@ -1726,6 +1726,31 @@ pub mod dimensions {
     /// [`SLIDER_TRACK_HEIGHT`] track — the row is the thumb, not the line.
     pub const BAR_DEFAULT_THICKNESS: u32 = 20;
 
+    /// The floor a `progressbar` / `slider` / `range_slider` may be squeezed to along the
+    /// direction of travel: 48.
+    ///
+    /// Distinguished from [`Self::BAR_DEFAULT_EXTENT`] (the preferred extent): the bar keeps its
+    /// thickness, but a form may shrink the track to the length a thumb can still be dragged
+    /// across without the control becoming unusable.
+    pub const BAR_MIN_EXTENT: u32 = 48;
+
+    /// The smallest box a scrollable collection may be compressed to: 64 x 64.
+    ///
+    /// A collection that scrolls has no content floor the way a label does — any smaller box is
+    /// still usable by scrolling — so the floor is one gesture-sized square rather than the
+    /// content measurement. Controls that override `minimum_size_hint` with this pair stop a long
+    /// row from reserving its full width as the layout's minimum.
+    pub const ELASTIC_MIN_WIDTH: u32 = 64;
+
+    /// The vertical half of [`Self::ELASTIC_MIN_WIDTH`].
+    pub const ELASTIC_MIN_HEIGHT: u32 = 64;
+
+    /// The smallest width a single-line text field may be squeezed to: 80.
+    ///
+    /// Matches `LINE_EDIT_MIN_WIDTH`, and is shared by the multi-line editors where the floor is
+    /// one short word plus the caret room.
+    pub const TEXT_FIELD_MIN_WIDTH: u32 = 80;
+
     /// A `scrollbar`'s intrinsic long axis: 100.
     ///
     /// Distinct from [`SCROLLBAR_MIN_LENGTH`] (48), which is the floor a *proportional* thumb is

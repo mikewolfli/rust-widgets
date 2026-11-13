@@ -360,7 +360,7 @@ pub fn chapter_list_panel_capability() -> WidgetCapability {
 
 pub fn media_player_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::WebEngineView,
+        kind: WidgetKind::VideoPlayer,
         canonical_name: "media_player",
         aliases: &[],
         properties: MEDIA_PLAYER_PROPERTIES,
@@ -557,7 +557,7 @@ pub fn default_property_value(kind: &str, name: &str) -> Option<CapabilityValue>
         ("video_player", "playback_rate") => Some(CapabilityValue::Float(1.0)),
         ("video_player", "controls_visible") => Some(CapabilityValue::Bool(true)),
         ("video_player", "pipeline") => Some(CapabilityValue::String("Idle".to_string())),
-        // `media_player` borrows `WidgetKind::WebEngineView`; these are its own rows.
+        // `media_player` shares `WidgetKind::VideoPlayer`; these are its own rows.
         ("media_player", "source") => Some(CapabilityValue::Null),
         ("media_player", "playing" | "muted" | "fullscreen") => Some(CapabilityValue::Bool(false)),
         ("media_player", "duration_ms" | "position_ms" | "track_count") => {

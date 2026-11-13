@@ -1340,7 +1340,11 @@ impl Draw for Keyboard {
             context.fill_rect(popup, board.blend(&ink, 0.25));
             context.draw_rect(popup, key_border);
             let line = context.text_line(popup, font);
+            let mut glyph = [0u8; 4];
             for (index, variant) in variants.iter().enumerate() {
+                // A `char` encodes into a stack buffer; `to_string()` allocated one `String`
+                // per candidate glyph on every frame the popup was open (W5-43).
+                let text = variant.encode_utf8(&mut glyph);
                 context.draw_text_fitted_ellipsis(
                     Rect::new(
                         popup_x + index as i32 * cell_width,
@@ -1348,7 +1352,7 @@ impl Draw for Keyboard {
                         cell_width as u32,
                         line.height,
                     ),
-                    &variant.to_string(),
+                    text,
                     font,
                     text_color,
                     HorizontalAlignment::Center,

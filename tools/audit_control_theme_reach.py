@@ -34,6 +34,17 @@ in a helper. Reporting a control that is already correct is not a harmless extra
 the failure mode this repo has paid for twice.
 
 Usage: python3 tools/audit_control_theme_reach.py [--theme-blind-only]
+
+# Attribution caveats (W5-42)
+
+# A control's implementation is often split across sibling files (`button/api.rs`, `button/paint.rs`,
+# `lineedit/paint.rs`). The scan walks the *resolved implementation set*, so a hit in any sibling
+# counts; a `NO-THEME` row means none of the resolved files reached a theme entry point. It is still
+# a **candidate**, not a defect: read the named files before filing. Earlier runs attributed
+# `button/paint.rs` and `lineedit/paint.rs` as theme-blind when both read the resolved style.
+
+# Controls that live in the optional suites crates are not in this table at all; they are measured
+# by their own crate's tests, so their absence here is not a gap (W5-42).
 """
 
 import glob

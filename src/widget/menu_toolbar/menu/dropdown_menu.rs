@@ -441,6 +441,14 @@ pub struct DropdownMenu {
     /// The level is stored because a child panel has its own row space: index 1 of the list and
     /// index 1 of the open panel are different rows.
     hovered_row: Option<(usize, usize)>,
+    /// A branch the pointer is resting on, and how long it has rested there.
+    ///
+    /// The menu popup opens a submenu after [`SUBMENU_HOVER_DELAY_MS`] instead of on every
+    /// pass-over; this control opened one only on click, so the two menu rows behaved
+    /// differently under the pointer (W5-29).
+    hover_open_pending: Option<(usize, usize)>,
+    /// Milliseconds the pointer has rested on `hover_open_pending`.
+    hover_open_elapsed_ms: u32,
     /// How the field's value and each item's label are aligned within their own row.
     ///
     /// Both runs take the same value because they are the same column of text seen twice -- what the
@@ -492,6 +500,8 @@ impl DropdownMenu {
             submenus: Vec::new(),
             active_index: None,
             hovered_row: None,
+            hover_open_pending: None,
+            hover_open_elapsed_ms: 0,
             alignment: crate::core::Alignment::Left,
             item_selected: Signal1::new(),
             item_toggled: Signal1::new(),
@@ -1431,6 +1441,13 @@ impl DropdownMenu {
         }
         self.hit_test_item(pos).map(|index| (0, index))
     }
+
+    /// Whether the row at `(level, index)` opens a child panel.
+    fn row_has_children(&self, level: usize, index: usize) -> bool {
+        self.items_at(level)
+            .and_then(|items| items.get(index))
+            .is_some_and(|item| !item.children.is_empty())
+    }
 }
 
 impl Widget for DropdownMenu {
@@ -1479,11 +1496,25 @@ impl Widget for DropdownMenu {
     /// mounted control and asks `tick`/`is_animating`, so a control that keeps its tick inherent
     /// is a control the host cannot advance — the defect the trait method exists to remove.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.reveal.tick(delta_ms)
+        let mut changed = self.reveal.tick(delta_ms);
+        if let Some((level, index)) = self.hover_open_pending {
+            self.hover_open_elapsed_ms = self.hover_open_elapsed_ms.saturating_add(delta_ms);
+            if self.hover_open_elapsed_ms >= super::super::effects::SUBMENU_HOVER_DELAY_MS {
+                self.hover_open_pending = None;
+                self.hover_open_elapsed_ms = 0;
+                if self.row_has_children(level, index) {
+                    self.open_submenu_at(level, index);
+                }
+                changed = true;
+            } else {
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn is_animating(&self) -> bool {
-        self.reveal.is_animating()
+        self.reveal.is_animating() || self.hover_open_pending.is_some()
     }
 
     impl_draw_bridge!();
@@ -1902,6 +1933,11 @@ impl EventHandler for DropdownMenu {
                 let hovered = self.hover_row_at(*pos);
                 if hovered != self.hovered_row {
                     self.hovered_row = hovered;
+                    // Resting on a branch starts the shared delay; leaving it for a leaf
+                    // cancels the pending open (W5-29).
+                    self.hover_open_pending =
+                        hovered.filter(|(level, index)| self.row_has_children(*level, *index));
+                    self.hover_open_elapsed_ms = 0;
                     self.base.request_redraw();
                 }
                 self.base.handle_event(event);
@@ -1909,6 +1945,8 @@ impl EventHandler for DropdownMenu {
             // The pointer leaving the control clears the row highlight, exactly as the menu popup
             // does; without it the last hovered row stayed lit after the pointer had gone.
             Event::MouseLeave { .. } => {
+                self.hover_open_pending = None;
+                self.hover_open_elapsed_ms = 0;
                 if self.hovered_row.take().is_some() {
                     self.base.request_redraw();
                 }
@@ -2601,6 +2639,33 @@ mod tests {
         dm.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
         let after_leave = render_to_svg(&mut dm);
         assert_eq!(resting, after_leave, "leaving the control clears the row highlight");
+    }
+
+    /// W5-29: resting on a branch opens its panel after the shared menu delay.
+    ///
+    /// The menu popup delays a hover-open; the dropdown opened a branch only on click, so the
+    /// two sibling menu controls disagreed under the pointer. This pins the delay on both sides
+    /// of the threshold.
+    #[test]
+    fn resting_on_a_branch_opens_its_panel_after_the_shared_delay() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(
+            DropdownItem::new("parent", "Parent")
+                .with_children(vec![DropdownItem::new("child", "Child")]),
+        );
+        dm.expand();
+        dm.reveal.jump_to(true);
+
+        let row = dm.item_rect(0);
+        dm.handle_event(&Event::MouseMove { pos: Point::new(row.x + 5, row.y + 5) });
+        assert!(dm.submenus.is_empty(), "hovering must not open immediately");
+
+        let delay = crate::widget::menu_toolbar::effects::SUBMENU_HOVER_DELAY_MS;
+        assert!(dm.tick(delay - 1), "the pending open keeps the frame clock alive");
+        assert!(dm.submenus.is_empty(), "the panel opens only after the full delay");
+
+        assert!(dm.tick(1));
+        assert_eq!(dm.submenus.len(), 1, "the rested branch opens its child panel");
     }
 
     /// M-011: selection and its label address rows at any nesting depth.

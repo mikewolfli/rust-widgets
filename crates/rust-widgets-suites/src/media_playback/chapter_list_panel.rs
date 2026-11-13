@@ -756,6 +756,9 @@ impl Draw for ChapterListPanel {
                 border,
             );
         }
+        // Rows answer the pointer through selection, but the panel had no hover state at all;
+        // the shared wash is the control-level cue (W5-04).
+        self.base.paint_hover_wash(context, rect);
         crate::veil_if_disabled(&self.base, context);
     }
 }

@@ -53,6 +53,44 @@ STYLE_READ = re.compile(
 PIXEL_READ = re.compile(r"render_frame_tree|frame_rgba|blit_rgba|render_widget_to_svg")
 
 
+def production_text(text: str) -> str:
+    """`text` with every `#[cfg(test)] mod` block removed.
+
+    A test fixture's `Color::rgb(..)` is evidence *about* a control, not a hardcoded colour
+    in it. Counting test literals made the "only literals" list name controls whose draw is
+    driven by caller-supplied colours (a swatch's colour, a calendar mark's colour) and
+    whose production literals were zero (W5-40). The cut is lexical by block structure, the
+    same shape the focus-ring scanner uses.
+    """
+    lines = text.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        is_test_module = False
+        if re.match(r"^#\[cfg\(test\)\]\s*$", lines[i]):
+            # The attribute must belong to a module, not to an inline import or item.
+            next_index = i + 1
+            while next_index < len(lines) and not lines[next_index].strip():
+                next_index += 1
+            is_test_module = next_index < len(lines) and re.match(
+                r"\s*(?:pub\s+)?mod\s", lines[next_index]
+            ) is not None
+        if is_test_module:
+            depth = 0
+            started = False
+            while i < len(lines):
+                depth += lines[i].count("{") - lines[i].count("}")
+                if "{" in lines[i]:
+                    started = True
+                i += 1
+                if started and depth <= 0:
+                    break
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
 def main() -> int:
     # `glob` yields host-native separators on Windows (`src\\widget\\...`); the coverage
     # comparison below matches those paths against the ones collected from the same walk,
@@ -66,7 +104,7 @@ def main() -> int:
     for path in sorted(glob.glob(WIDGET_GLOB, recursive=True)):
         text = open(path, encoding="utf-8", errors="ignore").read()
         if "impl Draw for" in text:
-            draw_files.append((normalise(path), text))
+            draw_files.append((normalise(path), production_text(text)))
 
     print(f"=== files with a Draw impl: {len(draw_files)} ===")
 
@@ -85,6 +123,11 @@ def main() -> int:
     )
     for literals, path in sorted(hardcoded_only, reverse=True):
         print(f"  {literals:3d} literals  {path}")
+    print(
+        "  note: a draw whose colours come from caller-supplied fields (swatch, calendar\n"
+        "        mark, reference line) is data-driven, not theme-blind; read the file before\n"
+        "        filing it (W5-40/W5-42)."
+    )
 
     # How much of the drawing code any test actually looks at as pixels.
     pixel_files = set()

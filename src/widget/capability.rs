@@ -1318,6 +1318,9 @@ impl core::fmt::Display for SharedFactoryError {
     }
 }
 
+#[cfg(full_widgets)]
+impl core::error::Error for SharedFactoryError {}
+
 /// The extension list, and whether it has been frozen by a build of the shared table.
 #[cfg(full_widgets)]
 #[derive(Default)]

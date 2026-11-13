@@ -553,6 +553,13 @@ impl Draw for Avatar {
             }
         }
 
+        // ── Disabled state ──
+        //
+        // A disabled avatar refuses the click but used to keep the enabled picture, so the cue
+        // was the silent refusal alone. The veil sits over the disc and its badge, before the
+        // focus ring, so a disabled control still shows where the keyboard is (W5-03).
+        self.base.paint_disabled_veil(context, rect);
+
         // ── Focus ring ──
         //
         // The keyboard path is only discoverable if focus is visible. Same predicate and same

@@ -217,8 +217,20 @@ fi
 # body (from its `fn` line to the next line that starts a new item) and look for any guard idiom.
 objc2_unguarded=0
 while IFS= read -r start_line; do
-  body="$(sed -n "${start_line},\$p" "$OBJC2_IMPL" \
-    | awk 'NR>1 && /^    (fn |pub\(crate\) fn |#\[)/ { exit } { print }')"
+  # Slice the whole function body by brace depth rather than stopping at the first line that
+  # looks like the next item. A nested closure or an attribute-bearing arm at the same
+  # indentation used to end the body early, which could hide an unguarded entry point (W5-37).
+  body="$(awk -v start="$start_line" '
+    NR < start { next }
+    {
+      line = $0
+      sub(/\/\/.*/, "", line)
+      gsub(/"[^"]*"/, "", line)
+      opens += gsub(/\{/, "", line)
+      closes += gsub(/\}/, "", line)
+      print
+      if (NR > start && opens > 0 && opens <= closes) exit
+    }' "$OBJC2_IMPL")"
   if ! echo "$body" | grep -qE 'MainThreadMarker::new\(\)|on_main_thread\(\)|mtm: MainThreadMarker'; then
     objc2_unguarded=$((objc2_unguarded + 1))
     error "$OBJC2_IMPL:$start_line: AppKit entry point in the guard scope has no main-thread guard"

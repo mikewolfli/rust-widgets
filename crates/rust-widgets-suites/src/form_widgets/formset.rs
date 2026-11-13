@@ -1309,6 +1309,9 @@ impl Draw for FormSet {
         // The active page's form is a linked child: the tree painter draws it. Re-writing its box
         // here keeps a cached layout frame in step with the current page.
         self.apply_page_visibility();
+        // A form set is keyboard reachable through its page tabs, so focus must be visible
+        // (W5-38).
+        self.base.draw_focus_ring(context, rect, radius);
     }
 }
 

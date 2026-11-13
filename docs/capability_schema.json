@@ -11154,6 +11154,11 @@
     ],
     "events": [
       {
+        "name": "context_menu_requested",
+        "payload": "string",
+        "shape": "scalar"
+      },
+      {
         "name": "drag_finished",
         "payload": "string",
         "shape": "scalar"

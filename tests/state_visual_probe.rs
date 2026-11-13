@@ -68,6 +68,8 @@ fn disabled_controls_paint_a_different_frame() {
         ("progress_bar", 200, 20),
         ("tag", 120, 32),
         ("badge", 80, 32),
+        ("avatar", 64, 64),
+        ("font_combo_box", 200, 36),
         ("scroll_bar", 16, 200),
         // Inputs.
         ("combo_box", 200, 36),
@@ -82,6 +84,10 @@ fn disabled_controls_paint_a_different_frame() {
         ("tab_widget", 240, 160),
         ("tool_box", 240, 160),
         ("list_view", 240, 160),
+        ("virtual_list", 240, 160),
+        ("virtual_table", 240, 160),
+        ("toast", 240, 80),
+        ("toast_stack", 240, 160),
         ("scroll_area", 240, 160),
         ("safe_area", 240, 120),
         // Overlays / dialogs.

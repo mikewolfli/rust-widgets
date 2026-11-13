@@ -1391,6 +1391,10 @@ impl Draw for TabView {
         // (W5-04, W5-03).
         self.base.paint_hover_wash(context, rect);
         self.base.paint_disabled_veil(context, rect);
+        // The strip selects tabs by keyboard, so the control paints its own focus ring rather
+        // than relying on the focused tab header alone (W5-16).
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, rect, ring_radius);
     }
 }
 

@@ -1621,6 +1621,16 @@ impl Widget for ScrollArea {
         )
     }
 
+    /// A scroll area's floor is a gesture-sized viewport, not its content's size (W5-41).
+    fn minimum_size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(dimensions::ELASTIC_MIN_WIDTH, dimensions::ELASTIC_MIN_HEIGHT)
+    }
+
+    /// A scroll area absorbs the free room on the parent's major axis (W5-41).
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::filled()
+    }
+
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.viewport.width = geometry.width;

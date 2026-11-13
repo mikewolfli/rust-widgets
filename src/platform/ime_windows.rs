@@ -160,6 +160,23 @@ mod tsf {
         Init(i32),
     }
 
+    impl core::fmt::Display for ComStaError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self {
+                Self::Multithreaded(hr) => write!(
+                    f,
+                    "the thread is already in the multithreaded apartment (HRESULT 0x{hr:08X}), so the single-threaded apartment TSF requires cannot be entered"
+                ),
+                Self::Init(hr) => write!(
+                    f,
+                    "CoInitializeEx could not enter the single-threaded apartment (HRESULT 0x{hr:08X})"
+                ),
+            }
+        }
+    }
+
+    impl core::error::Error for ComStaError {}
+
     unsafe extern "system" {
         /// `HRESULT CoInitializeEx(void* pvReserved, DWORD dwCoInit)`.
         fn CoInitializeEx(pv_reserved: *mut c_void, dw_coinit: u32) -> i32;
@@ -219,6 +236,21 @@ mod tsf {
         /// `ITfThreadMgr::Activate` returned a failure `HRESULT`.
         Activate(i32),
     }
+
+    impl core::fmt::Display for TsfCreateError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self {
+                Self::CoCreate(hr) => {
+                    write!(f, "CoCreateInstance(CLSID_TF_ThreadMgr) failed (HRESULT 0x{hr:08X})")
+                }
+                Self::Activate(hr) => {
+                    write!(f, "ITfThreadMgr::Activate failed (HRESULT 0x{hr:08X})")
+                }
+            }
+        }
+    }
+
+    impl core::error::Error for TsfCreateError {}
 
     /// A live TSF connection: the activated `ITfThreadMgr`. The pointer is `*mut c_void` at the
     /// boundary so the struct can live on any target shape; it is cast to the concrete interface

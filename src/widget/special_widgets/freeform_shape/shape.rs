@@ -168,6 +168,10 @@ pub struct FreeformShapeWidget {
     /// over four steady-state frames. One buffer serves both variants because only one of them
     /// paints per draw, and `clear()` keeps the capacity.
     polygon_scratch: RefCell<Vec<Point>>,
+    /// Scratch table for the resize handles drawn each frame; the public
+    /// [`Self::handle_rects`] still returns an owned list, but the paint path refills this
+    /// buffer instead of allocating a `Vec` per frame (W5-43).
+    handle_scratch: RefCell<Vec<(ShapeHandle, Rect)>>,
 }
 
 impl FreeformShapeWidget {
@@ -206,6 +210,7 @@ impl FreeformShapeWidget {
             path_revision: 1,
             outline_cache: RefCell::new(None),
             polygon_scratch: RefCell::new(Vec::new()),
+            handle_scratch: RefCell::new(Vec::new()),
         }
     }
 
@@ -468,20 +473,25 @@ impl FreeformShapeWidget {
     /// A polygon exposes one handle per vertex, because its own anchors are what a
     /// user adjusts; every other path shape exposes the eight box handles.
     pub fn handle_rects(&self) -> Vec<(ShapeHandle, Rect)> {
+        let mut out = Vec::new();
+        self.handle_rects_into(&mut out);
+        out
+    }
+
+    /// Fills `out` with the editable handles' rectangles, reusing the buffer.
+    fn handle_rects_into(&self, out: &mut Vec<(ShapeHandle, Rect)>) {
+        out.clear();
         let rect = self.base.geometry();
         const SIDE: u32 = 8;
         let half = SIDE as i32 / 2;
         if let ShapePath::Polygon(vertices) = &self.path {
-            return vertices
-                .iter()
-                .enumerate()
-                .map(|(index, vertex)| {
-                    (
-                        ShapeHandle::Vertex(index),
-                        Rect::new(rect.x + vertex.x - half, rect.y + vertex.y - half, SIDE, SIDE),
-                    )
-                })
-                .collect();
+            out.extend(vertices.iter().enumerate().map(|(index, vertex)| {
+                (
+                    ShapeHandle::Vertex(index),
+                    Rect::new(rect.x + vertex.x - half, rect.y + vertex.y - half, SIDE, SIDE),
+                )
+            }));
+            return;
         }
         let positions = [
             (ShapeHandle::TopLeft, rect.x, rect.y),
@@ -493,10 +503,11 @@ impl FreeformShapeWidget {
             (ShapeHandle::BottomLeft, rect.x, rect.y + rect.height as i32),
             (ShapeHandle::Left, rect.x, rect.y + rect.height as i32 / 2),
         ];
-        positions
-            .into_iter()
-            .map(|(handle, x, y)| (handle, Rect::new(x - half, y - half, SIDE, SIDE)))
-            .collect()
+        out.extend(
+            positions
+                .into_iter()
+                .map(|(handle, x, y)| (handle, Rect::new(x - half, y - half, SIDE, SIDE))),
+        );
     }
 
     /// The handle under `pos`, if the shape is editable.
@@ -1321,9 +1332,11 @@ impl FreeformShapeWidget {
         // Resize handles are chrome, drawn over the shape so they stay reachable even on an
         // opaque fill.
         if self.editable {
-            for (_, handle) in self.handle_rects() {
-                context.fill_rect(handle, text_color.contrast_color());
-                context.draw_rect(handle, text_color);
+            let mut handles = self.handle_scratch.borrow_mut();
+            self.handle_rects_into(&mut handles);
+            for (_, handle) in handles.iter() {
+                context.fill_rect(*handle, text_color.contrast_color());
+                context.draw_rect(*handle, text_color);
             }
         }
         if !self.base.is_enabled() {

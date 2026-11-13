@@ -286,6 +286,8 @@ impl core::fmt::Display for DpiScaleError {
     }
 }
 
+impl core::error::Error for DpiScaleError {}
+
 impl BaseWidget {
     /// Create base widget state and core signals.
     ///

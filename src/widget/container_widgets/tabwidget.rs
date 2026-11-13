@@ -2873,6 +2873,10 @@ impl Draw for TabWidget {
         // Over the content page and the tab strip. A disabled tab's own muting above is a
         // per-tab fact and does not stand in for the control-level disabled cue.
         self.base.paint_disabled_veil(context, _rect);
+        // The tab strip is keyboard reachable, so Tab focus must be visible on the control
+        // itself, not only on the focused tab header (W5-16).
+        let ring_radius = self.style().resolved_corner_radii().to_array()[0];
+        self.base.draw_focus_ring(context, _rect, ring_radius);
     }
 }
 

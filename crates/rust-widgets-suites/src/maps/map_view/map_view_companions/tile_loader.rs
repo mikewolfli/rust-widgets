@@ -63,6 +63,21 @@ pub enum TileLoadError {
     TileOutOfWorld,
 }
 
+impl std::fmt::Display for TileLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TileLoadError::ZoomOutOfRange => {
+                write!(f, "tile zoom level is outside the loader's configured range")
+            }
+            TileLoadError::TileOutOfWorld => {
+                write!(f, "tile column or row does not exist at this zoom")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TileLoadError {}
+
 /// A tile the host should fetch, or reuse from the cache.
 ///
 /// The loader never performs the transfer: the host resolves the request and

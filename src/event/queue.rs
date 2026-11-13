@@ -46,6 +46,18 @@ pub enum QueueError {
     Closed,
 }
 
+impl core::fmt::Display for QueueError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Full => write!(f, "the queue is at capacity and the item was not stored"),
+            Self::Empty => write!(f, "no item was available within the caller's deadline"),
+            Self::Closed => write!(f, "the queue is closed and accepts no further pushes or pops"),
+        }
+    }
+}
+
+impl core::error::Error for QueueError {}
+
 /// The mutable state shared by every operation on a [`BlockingQueue`].
 ///
 /// # Why the queue and the closed flag live in one mutex

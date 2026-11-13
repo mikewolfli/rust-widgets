@@ -88,6 +88,10 @@ pub struct FindBar {
     current: Option<usize>,
     /// The painted `current/total` counter, keyed by the pair it was formatted from.
     counter_cache: RefCell<Option<((usize, usize), String)>>,
+    /// Reused buffers for the elided query and replacement rows, so an over-long field does
+    /// not allocate a `String` on every frame (W5-43).
+    query_elide: RefCell<String>,
+    replacement_elide: RefCell<String>,
     /// The painted `"N replaced"` receipt, keyed by the count it was formatted from.
     replaced_cache: (usize, String),
     /// Which field typing goes to.
@@ -117,6 +121,8 @@ impl FindBar {
             matches: Vec::new(),
             current: None,
             counter_cache: RefCell::new(None),
+            query_elide: RefCell::new(String::new()),
+            replacement_elide: RefCell::new(String::new()),
             replaced_cache: (0, String::new()),
             focus: FindFocus::Query,
             preedit: String::new(),
@@ -782,13 +788,16 @@ impl Draw for FindBar {
         }
         let counter = counter_cache.as_ref().map(|(_, text)| text.as_str()).unwrap_or_default();
         let counter_width = context.measure_text(counter, font).width as i32;
-        let query_shown = crate::widget::text_utils::elide_end(
+        let mut query_elide = self.query_elide.borrow_mut();
+        crate::widget::text_utils::elide_end_into(
             &self.query,
             ((text_rect.width as i32 - counter_width - 8) / 7).max(1) as usize,
+            &mut query_elide,
         );
+        let query_shown = query_elide.as_str();
         context.draw_text(
             Point::new(text_rect.x, text_rect.y + 7),
-            &query_shown,
+            query_shown,
             font,
             if self.query.is_empty() { ink.with_alpha(120) } else { ink },
             HorizontalAlignment::Left,
@@ -805,7 +814,7 @@ impl Draw for FindBar {
                 (text_rect.width as i32 - counter_width - 8).max(1) as u32,
                 text_rect.height,
             );
-            let painted = context.measure_text(&query_shown, font).width as i32;
+            let painted = context.measure_text(query_shown, font).width as i32;
             let preedit_x = crate::widget::text_utils::composition_x(painted, query_box);
             let preedit_width = (context.measure_text(&self.preedit, font).width as i32)
                 .min(query_box.right() - preedit_x)
@@ -867,13 +876,16 @@ impl Draw for FindBar {
                 border,
             );
             if let Some(text_rect) = self.replace_text_rect() {
-                let replacement_shown = crate::widget::text_utils::elide_end(
+                let mut replacement_elide = self.replacement_elide.borrow_mut();
+                crate::widget::text_utils::elide_end_into(
                     &self.replacement,
                     (text_rect.width as i32 / 7).max(1) as usize,
+                    &mut replacement_elide,
                 );
+                let replacement_shown = replacement_elide.as_str();
                 context.draw_text(
                     Point::new(text_rect.x, text_rect.y + 7),
-                    &replacement_shown,
+                    replacement_shown,
                     font,
                     if self.replacement.is_empty() { ink.with_alpha(120) } else { ink },
                     HorizontalAlignment::Left,
@@ -882,7 +894,7 @@ impl Draw for FindBar {
                 // second one. Same bounds as the query row: anchored on the drawn text and
                 // clipped to the field's own box.
                 if matches!(self.focus, FindFocus::Replace) && !self.preedit.is_empty() {
-                    let painted = context.measure_text(&replacement_shown, font).width as i32;
+                    let painted = context.measure_text(replacement_shown, font).width as i32;
                     let preedit_x = crate::widget::text_utils::composition_x(painted, text_rect);
                     let preedit_width = (context.measure_text(&self.preedit, font).width as i32)
                         .min(text_rect.right() - preedit_x)

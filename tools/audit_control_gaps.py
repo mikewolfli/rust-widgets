@@ -74,13 +74,38 @@ EXPECTED = {
 }
 
 missing_total = []
+
+# Attribution caveats (W5-42)
+#
+# `EXPECTED` names are matched against the **main package's** capability table. Several controls a
+# reviewer expects in that list are implemented by the optional suites crate (`video_player`,
+# `audio_visualizer`, `camera_preview`, `lottie_widget`, `rive_widget`, …). Reporting them as
+# "missing" without checking the suites crate is the false attribution this comment exists to stop:
+# the next automated audit would then file a defect against a control that is already shipped.
+SUITES_SRC = pathlib.Path('crates/rust-widgets-suites/src')
+
+def suites_impl(name: str):
+    """Files in the suites crate that implement `name`, in either file or directory form."""
+    if not SUITES_SRC.is_dir():
+        return []
+    found = []
+    for candidate in SUITES_SRC.rglob(f'{name}.rs'):
+        found.append(candidate)
+    for candidate in SUITES_SRC.rglob(f'{name}/mod.rs'):
+        found.append(candidate)
+    return sorted(found)
+
 for family, items in EXPECTED.items():
     missing = [i for i in items if i not in names]
     if missing:
         print(f"{family}:")
         for m in missing:
-            print(f"    missing? {m}")
-        missing_total.extend(missing)
+            impl = suites_impl(m)
+            if impl:
+                print(f"    implemented in suites: {m}  ({impl[0].as_posix()})")
+            else:
+                print(f"    missing? {m}")
+                missing_total.append(m)
 
 print()
 print(f"candidate gaps: {len(missing_total)}")

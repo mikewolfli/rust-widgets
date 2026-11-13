@@ -1231,6 +1231,15 @@ pub trait Widget: EventHandler + Any {
         }
     }
 
+    /// The full [`ChildInfo`](crate::layout::ChildInfo) a parent layout consumes for this widget.
+    ///
+    /// `hints()` answers the size question and `default_layout_params()` the treatment question;
+    /// a consumer that has a live widget should not have to remember both, and the composite
+    /// builder's `add_auto` is the first production caller (W5-41).
+    fn layout_child_info(&self, id: ObjectId) -> crate::layout::ChildInfo {
+        crate::layout::ChildInfo::new(id, self.hints()).with_params(self.default_layout_params())
+    }
+
     /// The smallest size this widget's **content** can take without breaking.
     ///
     /// This is the 参考工具包 `minimumSizeHint` distinction: `size_hint` is the preferred size,
@@ -1344,7 +1353,9 @@ mod tests {
     use crate::core::{Point, Rect, Size};
     use crate::event::{mouse_button, Event, EventHandler};
     use crate::widget::base_widgets::button::Button;
+    use crate::widget::display_widgets::slider::Slider;
     use crate::widget::input_widgets::text_entry::lineedit::LineEdit;
+    use crate::widget::view_widgets::list_view::ListView;
 
     #[test]
     fn widget_accessible_name_prefers_the_label_then_the_tooltip() {
@@ -1382,6 +1393,49 @@ mod tests {
         let button = Button::new("Run".to_string(), Rect::new(10, 20, 120, 36));
         assert_eq!(button.kind(), crate::widget::WidgetKind::Button);
         assert_eq!(button.geometry(), Rect::new(10, 20, 120, 36));
+    }
+
+    /// Elastic controls state a content floor independent of their current content, and declare
+    /// that they absorb free room. Before W5-41 both answers were the trait default, so a long
+    /// value made a field's floor its full measured width and no control stretched by default.
+    #[test]
+    fn elastic_controls_declare_a_floor_and_a_stretch_policy() {
+        use crate::widget::metrics::dimensions;
+
+        let mut line = LineEdit::new(Rect::new(0, 0, 400, 24));
+        line.set_text("a value long enough that its preferred width is not a sane floor");
+        assert_eq!(
+            line.minimum_size_hint(),
+            Size::new(dimensions::TEXT_FIELD_MIN_WIDTH, line.size_hint().height),
+            "the field's floor is the chrome, not the current value"
+        );
+        assert!(line.default_layout_params().fill, "a field absorbs free room");
+
+        let slider = Slider::new(Rect::new(0, 0, 400, 20));
+        assert_eq!(slider.minimum_size_hint().width, dimensions::BAR_MIN_EXTENT);
+        assert!(slider.default_layout_params().fill, "a slider absorbs free room");
+
+        let list = ListView::new(Rect::new(0, 0, 400, 300));
+        assert_eq!(
+            list.minimum_size_hint(),
+            Size::new(dimensions::ELASTIC_MIN_WIDTH, dimensions::ELASTIC_MIN_HEIGHT),
+            "a scrolling list may be squeezed to a gesture-sized box"
+        );
+        assert!(list.default_layout_params().fill, "a list absorbs free room");
+
+        let button = Button::new(String::from("Run"), Rect::new(0, 0, 80, 32));
+        assert!(!button.default_layout_params().fill, "a button keeps its preferred size");
+    }
+
+    /// `layout_child_info` joins the two channels a layout consumes, and a control's own default
+    /// treatment flows through it (W5-41).
+    #[test]
+    fn layout_child_info_carries_the_widgets_own_policy() {
+        let slider = Slider::new(Rect::new(0, 0, 200, 20));
+        let info = slider.layout_child_info(7);
+        assert_eq!(info.id, 7);
+        assert_eq!(info.hints, slider.hints());
+        assert!(info.params.fill);
     }
 
     /// `hints()` is the single bridge from a widget's own floor/ceiling to the layout.

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use core::fmt::{self, Formatter};
+
 // Imports for the factory, which only exists where the full control set does.
 #[cfg(widgets_unstripped)]
 use crate::compat::HashMap;
@@ -334,6 +336,45 @@ pub enum CapabilityAccessError {
         reason: crate::compat::String,
     },
 }
+
+impl core::fmt::Display for CapabilityAccessError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownWidget => f.write_str("the id does not address a known widget"),
+            Self::UnknownProperty => {
+                f.write_str("the widget does not publish a property by that name")
+            }
+            Self::ResourceResolutionRequired => write!(
+                f,
+                "the property carries a persisted resource descriptor that must be resolved \
+                 through a project apply context before it can be written"
+            ),
+            Self::IconSourceNotPersistable => write!(
+                f,
+                "the current icon is runtime-only geometry and cannot be represented by a \
+                 persisted descriptor"
+            ),
+            Self::ReadOnlyProperty => f.write_str("the property exists but is not writable"),
+            Self::TypeMismatch => write!(
+                f,
+                "the supplied value's type does not match the property's declared value kind"
+            ),
+            Self::UnsupportedOnWidget => {
+                f.write_str("the property is not supported by this widget kind")
+            }
+            Self::OutOfRange => write!(
+                f,
+                "the supplied value addresses nothing: the index or position does not exist"
+            ),
+            Self::UnknownCommand => f.write_str("the control has no command by that name"),
+            Self::ConstraintViolation { property, reason } => {
+                write!(f, "property `{property}` violated its declared constraint: {reason}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for CapabilityAccessError {}
 
 /// A runtime-enforced constraint on a property's value (BLUE26 B26.02).
 ///
@@ -1310,6 +1351,8 @@ impl core::fmt::Display for RegistrationError {
         }
     }
 }
+
+impl core::error::Error for RegistrationError {}
 
 /// Factory + metadata registry for dynamic widget instantiation.
 ///

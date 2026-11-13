@@ -303,8 +303,11 @@ impl LineEdit {
         let metrics = DecorationMetrics::measure(&self.decorations, |text| {
             context.measure_text(text, font).width
         });
-        let counter_width =
-            self.counter_text().map(|text| context.measure_text(&text, font).width).unwrap_or(0);
+        let counter_width = self
+            .value_readings()
+            .1
+            .map(|text| context.measure_text(&text, font).width)
+            .unwrap_or(0);
         let line_height = font.effective_line_height().max(1.0) as u32;
         let layout = DecorationLayout::compute(
             field,
@@ -722,7 +725,7 @@ impl Draw for LineEdit {
                 if let Some(counter) = counter {
                     context.draw_text(
                         Point::new(counter_box.x, counter_line.y),
-                        &counter,
+                        counter.as_str(),
                         font,
                         counter_color,
                         HorizontalAlignment::Right,

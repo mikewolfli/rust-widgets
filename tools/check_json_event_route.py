@@ -44,9 +44,23 @@ import pathlib
 import re
 import sys
 
-LOADER = pathlib.Path("src/json/loader.rs")
+LOADER = pathlib.Path("src/json/loader")
+LOADER_LEGACY = pathlib.Path("src/json/loader.rs")
 ROUTE = pathlib.Path("src/json/event_route.rs")
 CAPABILITY_EVENTS = pathlib.Path("src/widget/capability/event_payloads.rs")
+
+
+def loader_text() -> str:
+    """The loader module as one text.
+
+    `loader` was a single file and became a directory (`mod.rs`, `nodes.rs`, `wiring.rs`).
+    Reading only `loader.rs` made this gate report the route as missing rather than checking
+    it (found while closing W5-10). Both layouts are accepted so a future move is not a false
+    failure; the directory is the current one.
+    """
+    if LOADER_LEGACY.exists():
+        return LOADER_LEGACY.read_text()
+    return "\n".join(path.read_text() for path in sorted(LOADER.glob("*.rs")))
 
 # The compatibility keys, as the route module declares them. Read from source rather than copied,
 # so a key added to the table is automatically covered here.
@@ -64,7 +78,7 @@ def marker_table() -> dict[str, str]:
 def check_route_uses_the_capability_table() -> list[str]:
     """[1] The published route must resolve names against the capability events."""
     findings: list[str] = []
-    text = LOADER.read_text()
+    text = loader_text()
     if "control_publishes" not in text:
         findings.append(
             "src/json/loader.rs no longer calls `control_publishes`, so nothing validates a "
@@ -96,7 +110,7 @@ def check_marker_keys_are_declared() -> list[str]:
     table = marker_table()
     if not table:
         return ["src/json/event_route.rs declares no `MARKER_KEYS` entries"]
-    for key in sorted(set(LOADER_KEY_RE.findall(LOADER.read_text()))):
+    for key in sorted(set(LOADER_KEY_RE.findall(loader_text()))):
         if key not in table:
             findings.append(
                 f"`{key}` is read by src/json/loader.rs but is not in MARKER_KEYS, so the "
@@ -118,7 +132,7 @@ def check_single_source_of_keys() -> list[str]:
     the literals coming back.
     """
     findings: list[str] = []
-    text = LOADER.read_text()
+    text = loader_text()
 
     # The loader must consult the one table.
     if "is_marker_key" not in text and "MARKER_KEYS" not in text:
@@ -211,7 +225,7 @@ def check_callback_choice_is_payload_derived() -> list[str]:
     """
     findings: list[str] = []
     route = ROUTE.read_text()
-    loader = LOADER.read_text()
+    loader = loader_text()
 
     if "pub fn uses_value_callback" not in route:
         findings.append(
@@ -300,7 +314,7 @@ def check_mounted_documents_are_wired() -> list[str]:
     A gate cannot run the loader, but it can require the one call that makes the ids real.
     """
     findings: list[str] = []
-    loader = LOADER.read_text()
+    loader = loader_text()
     if "mount_widget_box" not in loader:
         findings.append(
             "src/json/loader.rs no longer mounts its widgets (no `mount_widget_box`), so the "
@@ -357,7 +371,7 @@ def check_binding_handles_do_not_unwire_themselves() -> list[str]:
 
 
 def main() -> int:
-    if not LOADER.exists() or not ROUTE.exists():
+    if not (LOADER.exists() or LOADER_LEGACY.exists()) or not ROUTE.exists():
         print("❌ src/json/loader.rs or src/json/event_route.rs not found (run from the repo root)")
         return 1
 
