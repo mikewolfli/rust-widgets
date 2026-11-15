@@ -12,6 +12,22 @@ The round is recorded in `docs/log/log-20261115-1.md` and closes the 50 items of
 
 ### Fixed
 
+- **Snapshot cards no longer depend on the viewer's raster support** — the SVG backend embedded
+  every `<image>` payload as BMP. `resvg`/`usvg`, which is what this crate's **own** SVG decoder
+  and a Rust previewer use, supports PNG/JPEG/GIF/WebP there and silently **drops** a BMP, so
+  `image_gallery`, `image_view` and the pair snapshots decoded to a complete canvas with the
+  photograph missing while WebKit happened to draw it — "the file has a picture, the screen does
+  not". The payload is now a PNG from the encoder the crate already ships, snapshots included
+  (~3x smaller), and `check_svg_snapshots` gained a step that fails when a committed snapshot
+  embeds anything else.
+- **A comment-led SVG is recognised as an SVG** — `detect_format` required the payload to *start*
+  with `<svg`/`<?xml`/`<!DOCTYPE`, so every snapshot the library exports (`<!-- GENERATED … -->`
+  first) decoded as `Unsupported image format: Unknown`. Leading whitespace and comments are now
+  skipped, and an unterminated comment still answers `Unknown`.
+- **`SplashScreen` has a sample and keeps its subtitle off the progress bar** — the control had
+  no sample arm at all (no brand mark, no progress), and once a sample supplied both, the centred
+  text stack painted the subtitle *through* the bar because the stack did not reserve the bar's
+  band.
 - **Images decoded at runtime are painted** — `ImageView::draw` decided "has pixels" from the
   source *format name*, so every JPEG/PNG/BMP loaded through `from_bytes`/`from_file` drew the
   "?" placeholder while its RGBA bytes were in hand. The check is now by **data variant**, the
