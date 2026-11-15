@@ -1,7 +1,7 @@
 [
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "about_dialog",
@@ -281,7 +281,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "accordion",
@@ -429,7 +429,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "action",
@@ -657,7 +657,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "adaptive_scaffold",
@@ -863,7 +863,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "alert_dialog",
@@ -1134,7 +1134,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "align",
@@ -1257,7 +1257,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "animated_image",
@@ -1414,7 +1414,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "app_bar",
@@ -1600,7 +1600,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "arc",
@@ -1851,7 +1851,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "aspect_ratio",
@@ -1993,7 +1993,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "auto_complete_edit",
@@ -2294,7 +2294,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "avatar",
@@ -2499,7 +2499,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "axis_picker",
@@ -2627,7 +2627,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "badge",
@@ -2780,7 +2780,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "banner",
@@ -2980,7 +2980,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "bar_chart",
@@ -3114,7 +3114,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "barcode_scanner",
@@ -3204,7 +3204,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "bezier_curve_editor",
@@ -3312,7 +3312,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "bottom_navigation_bar",
@@ -3450,7 +3450,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "bottom_sheet",
@@ -3545,7 +3545,17 @@
     ],
     "events": [
       {
+        "name": "closed",
+        "payload": null,
+        "shape": null
+      },
+      {
         "name": "dismissed",
+        "payload": null,
+        "shape": null
+      },
+      {
+        "name": "opened",
         "payload": null,
         "shape": null
       }
@@ -3579,7 +3589,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "breadcrumb",
@@ -3747,7 +3757,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "button",
@@ -4180,7 +4190,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "calendar",
@@ -4287,7 +4297,7 @@
         "readable": true,
         "writable": true,
         "tokens": [],
-        "default": "2026-11-13",
+        "default": "2026-11-16",
         "constraints": [    ]
       },
       {
@@ -4489,7 +4499,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "calendar_mark_layer",
@@ -4647,7 +4657,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "canvas",
@@ -4948,7 +4958,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "carousel",
@@ -5135,7 +5145,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "cascader",
@@ -5396,7 +5406,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "center",
@@ -5539,7 +5549,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "chart",
@@ -5701,7 +5711,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "chart_crosshair",
@@ -5832,7 +5842,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "chart_data_table",
@@ -5980,7 +5990,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "chart_reference_line",
@@ -6086,7 +6096,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "chart_tooltip",
@@ -6208,7 +6218,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "check_box",
@@ -6463,7 +6473,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "chip",
@@ -6641,7 +6651,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "chip_input",
@@ -6875,7 +6885,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "clock",
@@ -7069,7 +7079,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "code_editor",
@@ -7678,7 +7688,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "collapsible_pane",
@@ -7818,7 +7828,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "color_dialog",
@@ -8044,7 +8054,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "color_history",
@@ -8142,7 +8152,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "color_picker",
@@ -8296,7 +8306,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "color_well",
@@ -8413,7 +8423,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "combo_box",
@@ -8602,6 +8612,11 @@
         "shape": "scalar"
       },
       {
+        "name": "editing_finished",
+        "payload": null,
+        "shape": null
+      },
+      {
         "name": "highlighted",
         "payload": "uint",
         "shape": "scalar"
@@ -8764,7 +8779,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "command_link",
@@ -8905,7 +8920,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "command_palette",
@@ -9141,7 +9156,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "command_palette_host",
@@ -9276,7 +9291,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "confirm_dialog",
@@ -9566,7 +9581,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "context_menu",
@@ -9835,7 +9850,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "cupertino_alert_dialog",
@@ -9949,7 +9964,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "cupertino_date_picker",
@@ -10106,7 +10121,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "cupertino_navigation_bar",
@@ -10264,7 +10279,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "cupertino_segmented_control",
@@ -10364,7 +10379,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "cupertino_slider",
@@ -10492,7 +10507,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "cupertino_switch",
@@ -10619,7 +10634,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "data_grid",
@@ -11045,7 +11060,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "data_view",
@@ -11266,7 +11281,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "date_edit",
@@ -11490,7 +11505,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "date_range_picker",
@@ -11670,7 +11685,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "date_time_edit",
@@ -11885,7 +11900,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "dial",
@@ -12118,7 +12133,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "dialog",
@@ -12330,7 +12345,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "divider",
@@ -12473,7 +12488,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "dock_area",
@@ -12650,7 +12665,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "dock_widget",
@@ -12857,7 +12872,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "drag_ghost_layer",
@@ -13026,7 +13041,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "drawer_section_header",
@@ -13147,7 +13162,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "drop_down_popup_host",
@@ -13339,7 +13354,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "drop_zone",
@@ -13557,7 +13572,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "dropdown",
@@ -13711,6 +13726,11 @@
         "name": "highlighted",
         "payload": "uint",
         "shape": "scalar"
+      },
+      {
+        "name": "popup_visibility_changed",
+        "payload": "bool",
+        "shape": "scalar"
       }
     ],
     "children": [],
@@ -13800,7 +13820,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "dropdown_menu",
@@ -13997,7 +14017,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "drum_column",
@@ -14141,7 +14161,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "editable_combo_box",
@@ -14341,7 +14361,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "email_input",
@@ -14831,7 +14851,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "emoji_picker",
@@ -15047,7 +15067,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "empty_state",
@@ -15218,7 +15238,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "expanded",
@@ -15341,7 +15361,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "fab",
@@ -15441,7 +15461,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "file_dialog",
@@ -15753,7 +15773,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "filter_row",
@@ -15893,7 +15913,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "find_bar",
@@ -16080,7 +16100,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "find_replace_bar",
@@ -16301,7 +16321,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "find_replace_dialog",
@@ -16530,7 +16550,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "flex",
@@ -16687,7 +16707,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "flexible",
@@ -16829,7 +16849,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "floating_label",
@@ -16985,7 +17005,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "flow_layout",
@@ -17152,7 +17172,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "font_combo_box",
@@ -17304,6 +17324,11 @@
         "shape": "scalar"
       },
       {
+        "name": "canceled",
+        "payload": null,
+        "shape": null
+      },
+      {
         "name": "current_font_changed",
         "payload": "string",
         "shape": "scalar"
@@ -17312,6 +17337,11 @@
         "name": "current_index_changed",
         "payload": "int",
         "shape": "scalar"
+      },
+      {
+        "name": "editing_finished",
+        "payload": null,
+        "shape": null
       },
       {
         "name": "popup_hidden",
@@ -17436,7 +17466,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "font_dialog",
@@ -17637,7 +17667,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "font_preview",
@@ -17798,7 +17828,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "frame",
@@ -17999,7 +18029,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "freeform_shape",
@@ -18183,7 +18213,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "gauge",
@@ -18495,7 +18525,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "grid",
@@ -18669,6 +18699,11 @@
         "shape": "tuple2"
       },
       {
+        "name": "cell_unhovered",
+        "payload": "uint",
+        "shape": "tuple2"
+      },
+      {
         "name": "context_menu_requested",
         "payload": "uint",
         "shape": "tuple2"
@@ -18748,7 +18783,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "grid_status_bar",
@@ -18884,7 +18919,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "grid_table",
@@ -19297,7 +19332,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "grid_view_header",
@@ -19462,7 +19497,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "group_avatar",
@@ -19526,7 +19561,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "group_box",
@@ -19745,7 +19780,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "header_menu",
@@ -19910,7 +19945,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "heatmap",
@@ -20101,6 +20136,11 @@
         "shape": "tuple2"
       },
       {
+        "name": "cell_unhovered",
+        "payload": "uint",
+        "shape": "tuple2"
+      },
+      {
         "name": "region_selected",
         "payload": "uint",
         "shape": "tuple4"
@@ -20183,7 +20223,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "hero_animation",
@@ -20273,7 +20313,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "icon",
@@ -20444,7 +20484,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "image_gallery",
@@ -20681,7 +20721,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "image_view",
@@ -20938,7 +20978,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "ime_preedit",
@@ -21042,7 +21082,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "inplace_editor",
@@ -21136,6 +21176,16 @@
         "name": "edit_canceled",
         "payload": null,
         "shape": null
+      },
+      {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
+        "shape": "scalar"
       }
     ],
     "children": [],
@@ -21185,7 +21235,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "input_dialog",
@@ -21440,7 +21490,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "intrinsic_width",
@@ -21544,7 +21594,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "key_sequence_editor",
@@ -21676,7 +21726,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "keyboard",
@@ -21835,7 +21885,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "label",
@@ -22099,7 +22149,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "layer_panel",
@@ -22289,7 +22339,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "lcd_number",
@@ -22496,7 +22546,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "legend",
@@ -22646,7 +22696,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "line",
@@ -22788,7 +22838,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "line_chart",
@@ -22907,7 +22957,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "line_edit",
@@ -23400,7 +23450,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "line_number_gutter",
@@ -23541,7 +23591,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "list_box",
@@ -23838,7 +23888,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "list_state_host",
@@ -24005,7 +24055,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "list_view",
@@ -24246,7 +24296,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mac_segmented_control",
@@ -24343,7 +24393,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mac_source_list",
@@ -24492,7 +24542,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mac_stepper",
@@ -24694,7 +24744,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mac_toolbar",
@@ -24857,7 +24907,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mac_window_chrome",
@@ -25069,7 +25119,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "markdown_editor",
@@ -25315,7 +25365,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "markdown_outline_panel",
@@ -25442,7 +25492,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "markdown_toolbar",
@@ -25560,7 +25610,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "masked_edit",
@@ -25741,7 +25791,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "masonry_layout",
@@ -25859,7 +25909,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "material_navigation_rail",
@@ -25950,7 +26000,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "material_snackbar",
@@ -26110,7 +26160,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mdi_area",
@@ -26238,6 +26288,11 @@
         "shape": "mixed"
       },
       {
+        "name": "subwindow_removed",
+        "payload": "uint",
+        "shape": "scalar"
+      },
+      {
         "name": "subwindow_tab_moved",
         "payload": "uint",
         "shape": "tuple2"
@@ -26297,7 +26352,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mention",
@@ -26576,7 +26631,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "menu",
@@ -26845,7 +26900,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "menu_bar",
@@ -26994,7 +27049,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "menu_button",
@@ -27184,7 +27239,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "menu_panel",
@@ -27365,7 +27420,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "message_box",
@@ -27651,7 +27706,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "meter",
@@ -27873,7 +27928,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mini_canvas",
@@ -27962,7 +28017,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mini_chart",
@@ -28115,7 +28170,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "mobile_date_picker",
@@ -28222,7 +28277,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "modal_bottom_sheet",
@@ -28299,7 +28354,17 @@
     ],
     "events": [
       {
+        "name": "closed",
+        "payload": null,
+        "shape": null
+      },
+      {
         "name": "dismissed",
+        "payload": null,
+        "shape": null
+      },
+      {
+        "name": "opened",
         "payload": null,
         "shape": null
       }
@@ -28363,7 +28428,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "multi_select_combo_box",
@@ -28476,6 +28541,11 @@
     ],
     "events": [
       {
+        "name": "popup_visibility_changed",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "selection_changed",
         "payload": "uint",
         "shape": "list"
@@ -28528,7 +28598,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "navigation_drawer",
@@ -28693,7 +28763,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "navigation_stack",
@@ -28828,7 +28898,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "notification_center",
@@ -29092,7 +29162,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "number_picker",
@@ -29371,7 +29441,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "otp_input",
@@ -29629,7 +29699,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "padding",
@@ -29769,7 +29839,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "pagination",
@@ -30041,7 +30111,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "panel",
@@ -30260,7 +30330,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "password_edit",
@@ -30750,7 +30820,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "phone_input",
@@ -31240,7 +31310,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "pie_chart",
@@ -31368,7 +31438,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "pie_menu",
@@ -31556,7 +31626,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "playlist_panel",
@@ -31802,7 +31872,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "popover",
@@ -32005,7 +32075,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "popup_window",
@@ -32180,7 +32250,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "preset_chip_bar",
@@ -32358,7 +32428,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "progress_bar",
@@ -32626,7 +32696,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "progress_circle",
@@ -32843,7 +32913,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "progress_dialog",
@@ -33116,7 +33186,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "properties_panel",
@@ -33263,7 +33333,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "property_grid",
@@ -33461,7 +33531,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "qr_code",
@@ -33687,7 +33757,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "query_builder",
@@ -33975,7 +34045,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "radar_chart",
@@ -34121,6 +34191,11 @@
         "shape": "scalar"
       },
       {
+        "name": "axis_unhovered",
+        "payload": "uint",
+        "shape": "scalar"
+      },
+      {
         "name": "series_clicked",
         "payload": "uint",
         "shape": "scalar"
@@ -34137,6 +34212,11 @@
       },
       {
         "name": "vertex_hovered",
+        "payload": "uint",
+        "shape": "tuple2"
+      },
+      {
+        "name": "vertex_unhovered",
         "payload": "uint",
         "shape": "tuple2"
       }
@@ -34178,7 +34258,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "radio_button",
@@ -34404,7 +34484,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "range_preset_bar",
@@ -34531,7 +34611,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "range_slider",
@@ -34821,7 +34901,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "rating",
@@ -35011,7 +35091,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "refresh_control",
@@ -35101,7 +35181,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "ribbon_bar",
@@ -35320,7 +35400,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "rich_edit",
@@ -35544,7 +35624,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "roller",
@@ -35739,7 +35819,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "safe_area",
@@ -35883,7 +35963,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "scroll_area",
@@ -36113,7 +36193,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "scroll_bar",
@@ -36386,7 +36466,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "search_bar",
@@ -36477,6 +36557,11 @@
         "shape": null
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "search_submitted",
         "payload": "string",
         "shape": "scalar"
@@ -36484,6 +36569,11 @@
       {
         "name": "text_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -36524,7 +36614,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "search_box",
@@ -36682,7 +36772,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "segmented_button",
@@ -36838,7 +36928,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "segmented_control",
@@ -37018,7 +37108,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "shape_canvas",
@@ -37188,7 +37278,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "shortcut_editor",
@@ -37333,9 +37423,19 @@
         "shape": "mixed"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "shortcut_changed",
         "payload": "string",
         "shape": "mixed"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
+        "shape": "scalar"
       }
     ],
     "children": [],
@@ -37365,7 +37465,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "signature_pad",
@@ -37582,7 +37682,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "sized_box",
@@ -37704,7 +37804,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "skeleton_loader",
@@ -37828,7 +37928,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "slider",
@@ -38121,7 +38221,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "snackbar",
@@ -38233,6 +38333,11 @@
         "name": "dismissed",
         "payload": null,
         "shape": null
+      },
+      {
+        "name": "queue_overflow",
+        "payload": "uint",
+        "shape": "scalar"
       }
     ],
     "children": [],
@@ -38272,7 +38377,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "spacer",
@@ -38404,7 +38509,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "sparkline",
@@ -38534,6 +38639,11 @@
         "name": "value_hovered",
         "payload": "string",
         "shape": "mixed"
+      },
+      {
+        "name": "value_unhovered",
+        "payload": "string",
+        "shape": "mixed"
       }
     ],
     "children": [],
@@ -38603,7 +38713,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "speed_dial",
@@ -38769,7 +38879,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "spin_box",
@@ -39138,7 +39248,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "spinner",
@@ -39333,7 +39443,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "splash_screen",
@@ -39519,7 +39629,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "split_button",
@@ -39772,7 +39882,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "split_layout",
@@ -39902,7 +40012,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "splitter",
@@ -40033,7 +40143,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "stacked_widget",
@@ -40134,7 +40244,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "status_bar",
@@ -40229,7 +40339,207 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
+    "profile": "any",
+    "triple": "any",
+    "control": "step_strip",
+    "category": "display",
+    "alias_of": "",
+    "companion_of": [],
+    "aliases": [],
+    "properties": [
+      {
+        "name": "a11y_role",
+        "kind": "string",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": "",
+        "constraints": [    ]
+      },
+      {
+        "name": "band_color",
+        "kind": "color",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": null,
+        "constraints": [    ]
+      },
+      {
+        "name": "clickable",
+        "kind": "bool",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": false,
+        "constraints": [    ]
+      },
+      {
+        "name": "current",
+        "kind": "uint",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": 0,
+        "constraints": [    ]
+      },
+      {
+        "name": "enabled",
+        "kind": "bool",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": true,
+        "constraints": [    ]
+      },
+      {
+        "name": "geometry",
+        "kind": "string",
+        "readable": false,
+        "writable": false,
+        "tokens": [],
+        "default": "0,0,0,0",
+        "constraints": [    ]
+      },
+      {
+        "name": "inset",
+        "kind": "uint",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": 12,
+        "constraints": [    ]
+      },
+      {
+        "name": "step_count",
+        "kind": "uint",
+        "readable": true,
+        "writable": false,
+        "tokens": [],
+        "default": 0,
+        "constraints": [    ]
+      },
+      {
+        "name": "steps",
+        "kind": "records",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": [],
+        "constraints": [    ],
+        "fields": [
+          {"name":"title","kind":"string","required":true},
+                  {"name":"optional","kind":"bool","required":false},
+                  {"name":"completed","kind":"bool","required":false}
+        ],
+        "id_field": "title",
+        "ids_unique": false,
+        "ids_required": false
+      },
+      {
+        "name": "style",
+        "kind": "enum",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": "top_strip",
+        "constraints": [    ]
+      },
+      {
+        "name": "tooltip",
+        "kind": "string",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": "",
+        "constraints": [    ]
+      },
+      {
+        "name": "visible",
+        "kind": "bool",
+        "readable": true,
+        "writable": true,
+        "tokens": [],
+        "default": true,
+        "constraints": [    ]
+      }
+    ],
+    "events": [
+      {
+        "name": "step_activated",
+        "payload": "uint",
+        "shape": "scalar"
+      }
+    ],
+    "children": [],
+    "commands": [
+      {
+        "name": "set_band_color",
+        "signature": "value",
+        "parameter": "band_color",
+        "kind": "color",
+        "tokens": [],
+        "element": null,
+        "arity": null,
+        "effect": "mutates-control"
+      },
+      {
+        "name": "set_clickable",
+        "signature": "value",
+        "parameter": "clickable",
+        "kind": "bool",
+        "tokens": [],
+        "element": null,
+        "arity": null,
+        "effect": "mutates-control"
+      },
+      {
+        "name": "set_current",
+        "signature": "value",
+        "parameter": "current",
+        "kind": "uint",
+        "tokens": [],
+        "element": null,
+        "arity": null,
+        "effect": "mutates-control"
+      },
+      {
+        "name": "set_inset",
+        "signature": "value",
+        "parameter": "inset",
+        "kind": "uint",
+        "tokens": [],
+        "element": null,
+        "arity": null,
+        "effect": "mutates-control"
+      },
+      {
+        "name": "set_steps",
+        "signature": "value",
+        "parameter": "steps",
+        "kind": "records",
+        "tokens": [],
+        "element": null,
+        "arity": null,
+        "effect": "mutates-control"
+      },
+      {
+        "name": "set_style",
+        "signature": "value",
+        "parameter": "style",
+        "kind": "enum",
+        "tokens": [],
+        "element": null,
+        "arity": null,
+        "effect": "mutates-control"
+      }
+    ]
+  }
+  ,
+  {
+    "protocol": 9,
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "stepper",
@@ -40377,7 +40687,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "summary_row",
@@ -40500,7 +40810,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "swatch",
@@ -40653,7 +40963,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "swipe_actions",
@@ -40813,7 +41123,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "swipe_to_dismiss",
@@ -40920,7 +41230,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "switch",
@@ -41078,7 +41388,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tab_bar",
@@ -41318,7 +41628,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tab_view",
@@ -41503,7 +41813,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tab_widget",
@@ -41773,7 +42083,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "table",
@@ -41939,6 +42249,11 @@
         "name": "selection_changed",
         "payload": "uint",
         "shape": "scalar"
+      },
+      {
+        "name": "sort_requested",
+        "payload": "string",
+        "shape": "mixed"
       }
     ],
     "children": [],
@@ -42018,7 +42333,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "table_widget",
@@ -42184,6 +42499,11 @@
         "name": "selection_changed",
         "payload": "uint",
         "shape": "scalar"
+      },
+      {
+        "name": "sort_requested",
+        "payload": "string",
+        "shape": "mixed"
       }
     ],
     "children": [],
@@ -42263,7 +42583,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tag",
@@ -42434,7 +42754,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tag_group",
@@ -42612,7 +42932,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tag_input",
@@ -42769,7 +43089,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "text_area",
@@ -43041,7 +43361,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "text_edit",
@@ -43263,7 +43583,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "time_edit",
@@ -43478,7 +43798,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "time_picker",
@@ -43692,7 +44012,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "timeline_widget",
@@ -43934,7 +44254,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "toast",
@@ -44097,7 +44417,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "toast_host",
@@ -44311,7 +44631,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "toast_stack",
@@ -44530,7 +44850,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "toggle_button",
@@ -44862,7 +45182,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tool_bar",
@@ -45096,7 +45416,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tool_box",
@@ -45257,7 +45577,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tool_button",
@@ -45409,7 +45729,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tooltip",
@@ -45553,7 +45873,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tooltip_manager",
@@ -45715,7 +46035,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tree_find_bar",
@@ -45817,6 +46137,11 @@
     ],
     "events": [
       {
+        "name": "closed",
+        "payload": null,
+        "shape": null
+      },
+      {
         "name": "match_changed",
         "payload": "uint",
         "shape": "scalar"
@@ -45861,7 +46186,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tree_table",
@@ -46234,7 +46559,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "tree_view",
@@ -46577,7 +46902,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "virtual_list",
@@ -46798,7 +47123,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "virtual_table",
@@ -47123,7 +47448,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "window",
@@ -47295,7 +47620,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "wizard_dialog",
@@ -47495,7 +47820,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "wrap_layout",
@@ -47672,7 +47997,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "zoom_pan_controller",
@@ -47845,7 +48170,7 @@
   ,
   {
     "protocol": 9,
-    "library": "4.3.0",
+    "library": "4.4.0",
     "profile": "any",
     "triple": "any",
     "control": "zoom_strip",

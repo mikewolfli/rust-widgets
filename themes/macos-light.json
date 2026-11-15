@@ -4744,6 +4744,27 @@
         "material": null,
         "hairline": null
       },
+      "step_strip:disabled": {
+        "background": null,
+        "foreground": {
+          "r": 122,
+          "g": 122,
+          "b": 123,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "padding": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
       "stepper:disabled": {
         "background": null,
         "foreground": {

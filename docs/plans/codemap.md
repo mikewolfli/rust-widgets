@@ -79,23 +79,26 @@
 
 #### Widget Subfolders
 
-| Subfolder | Count | Description |
-|-----------|-------|-------------|
-| `base_widgets/` | 6 | Button, CheckBox, Frame, Label, RadioButton, ToggleButton |
-| `input_widgets/` | 18 | ComboBox, Dropdown, Keyboard, LineEdit, ListBox, SpinBox, TextArea, TextEdit, AutoCompleteEdit, CommandLink, EditableComboBox, FontComboBox, ImePreedit, InplaceEditor, MaskedEdit, MultiSelectComboBox, RangeSlider, RichEdit, SearchBar, SearchBox, ShortcutEditor, TagInput |
-| `container_widgets/` | 13 | Carousel, CollapsiblePane, DockWidget, GroupBox, MasonryLayout, MdiArea, SafeArea, ScrollArea, Splitter, StackedWidget, Stepper, TabWidget, ToolBox |
-| `display_widgets/` | 20 | Arc, Badge, ColorHistory, ColorWell, Divider, EmptyState, FloatingLabel, FontPreview, Icon, ImageView, LCDNumber, Line, Meter, MiniCanvas, MiniChart, ProgressBar, ProgressCircle, Rating, Roller, ScrollBar, SkeletonLoader, Slider, Spinner, Switch |
-| `nav_widgets/` | 7 | AdaptiveScaffold, AppBar, BottomNavigationBar, NavigationDrawer, NavigationStack, TabView |
-| `dialog/` | 12 | BottomSheet, ColorDialog, FileDialog, FindReplaceDialog, FontDialog, InputDialog, MessageBox, ModalBottomSheet, Popover, PopupWindow, ProgressDialog, Tooltip, WizardDialog |
-| `chart_widgets/` | 4 | BarChart, LineChart, PieChart, Sparkline + shared drawing engine (`charts/`, `layout.rs`, `svg.rs`, `types.rs`, `adapter.rs`) |
-| `media_widgets/` | 8 | AnimatedImage, AudioVisualizer, CameraPreview, HeroAnimation, LottieWidget, RiveWidget, VideoPlayer |
-| `menu_toolbar/` | 8 | Action, DropdownMenu, Menu, MenuBar, MenuButton, StatusBar, ToolBar, ToolButton |
-| `overlay_widgets/` | 3 | FAB, RefreshControl, SwipeToDismiss |
-| `view_widgets/` | 8 | DataGrid, ImageGallery, ListView, PropertiesPanel, PropertyGrid, TableWidget, TreeTable, TreeView, VirtualList, VirtualTable |
-| `special_widgets/` | 21 | Breadcrumb, Canvas, ChartWidget, Chip, CodeEditor, ColorPicker, CommandPalette, DiffViewer, FreeformShapeWidget, GanttWidget, GridWidget, MapView, MarkdownEditor, MediaPlayer, NotificationCenter, SegmentedControl, Snackbar, SplitButton, TerminalView, TimelineWidget, ToastStack |
-| `advanced_widgets/` | 10 | Calendar, DateEdit, DateTimeEdit, Dial, KeySequenceEdit, PieMenu, RibbonBar, TabBar, TimeEdit |
-| `cupertino/` | 6 | CupertinoAlertDialog, CupertinoSlider, CupertinoSwitch, CupertinoDatePicker, CupertinoNavigationBar, CupertinoSegmentedControl, MaterialNavigationRail, MaterialSnackbar |
-| `misc_widgets/` | 9 | Avatar, BarcodeScanner, BezierCurveEditor, DateRangePicker, MobileDatePicker, QRCode, SegmentedButton |
+| Subfolder | Count | Registered controls (canonical names, derived) |
+|-----------|-------|--------------------------------------------------|
+| `base_widgets/` | 6 | button, check_box, frame, label, radio_button, toggle_button |
+| `input_widgets/` | 29 | auto_complete_edit, cascader, combo_box, command_link, dropdown, editable_combo_box, email_input, font_combo_box, ime_preedit, inplace_editor, keyboard, line_edit, list_box, masked_edit, mention, multi_select_combo_box, number_picker, otp_input, password_edit, phone_input, range_slider, rich_edit, search_bar, search_box, shortcut_editor, spin_box, tag_input, text_area, text_edit |
+| `container_widgets/` | 28 | accordion, align, aspect_ratio, carousel, center, collapsible_pane, dock_area, dock_widget, expanded, flex, flexible, flow_layout, group_box, intrinsic_width, masonry_layout, mdi_area, padding, panel, safe_area, scroll_area, sized_box, spacer, split_layout, splitter, stacked_widget, stepper, tab_widget, wrap_layout |
+| `display_widgets/` | 28 | arc, badge, clock, color_history, color_well, divider, emoji_picker, empty_state, floating_label, font_preview, icon, image_view, lcd_number, line, meter, mini_canvas, mini_chart, progress_bar, progress_circle, rating, roller, scroll_bar, skeleton_loader, slider, spinner, switch, tag, tag_group |
+| `nav_widgets/` | 7 | adaptive_scaffold, app_bar, bottom_navigation_bar, navigation_drawer, navigation_stack, pagination, tab_view |
+| `dialog/` | 17 | about_dialog, alert_dialog, bottom_sheet, color_dialog, confirm_dialog, dialog, file_dialog, find_replace_dialog, font_dialog, input_dialog, message_box, modal_bottom_sheet, popover, popup_window, progress_dialog, tooltip, wizard_dialog |
+| `chart_widgets/` | 10 | bar_chart, chart, chart_crosshair, chart_reference_line, gauge, heatmap, line_chart, pie_chart, radar_chart, sparkline |
+| `media_widgets/` | 2 | animated_image, hero_animation |
+| `menu_toolbar/` | 9 | action, context_menu, dropdown_menu, menu, menu_bar, menu_button, status_bar, tool_bar, tool_button |
+| `overlay_widgets/` | 5 | banner, fab, refresh_control, splash_screen, swipe_to_dismiss |
+| `view_widgets/` | 15 | data_grid, data_view, grid_table, grid_view_header, image_gallery, list_view, properties_panel, property_grid, query_builder, table, table_widget, tree_table, tree_view, virtual_list, virtual_table |
+| `special_widgets/` | 22 | breadcrumb, canvas, chip, chip_input, code_editor, color_picker, command_palette, find_bar, freeform_shape, grid, markdown_editor, markdown_outline_panel, markdown_toolbar, notification_center, segmented_control, shape_canvas, signature_pad, snackbar, split_button, timeline_widget, toast, toast_stack |
+| `advanced_widgets/` | 10 | calendar, date_edit, date_time_edit, dial, key_sequence_editor, pie_menu, ribbon_bar, tab_bar, time_edit, time_picker |
+| `cupertino/` | 8 | cupertino_alert_dialog, cupertino_date_picker, cupertino_navigation_bar, cupertino_segmented_control, cupertino_slider, cupertino_switch, material_navigation_rail, material_snackbar |
+| `macos/` | 5 | mac_segmented_control, mac_source_list, mac_stepper, mac_toolbar, mac_window_chrome |
+| `misc_widgets/` | 12 | avatar, barcode_scanner, bezier_curve_editor, date_range_picker, drop_zone, drum_column, group_avatar, mobile_date_picker, preset_chip_bar, qr_code, range_preset_bar, segmented_button |
+| `companions/` | 28 | axis_picker, calendar_mark_layer, chart_data_table, chart_tooltip, command_palette_host, drag_ghost_layer, drawer_section_header, drop_down_popup_host, filter_row, find_replace_bar, grid_status_bar, header_menu, layer_panel, legend, line_number_gutter, list_state_host, menu_panel, playlist_panel, speed_dial, step_strip, summary_row, swatch, swipe_actions, toast_host, tooltip_manager, tree_find_bar, zoom_pan_controller, zoom_strip |
+| `root/` | 2 | tool_box, window |
 
 ### 2.4 Platform Layer (`src/platform/`)
 | File/Module | Purpose |
@@ -372,16 +375,15 @@ Rust API → extern "C" (C ABI)
 
 | Category | Count |
 |----------|-------|
-| Rust source files | 1,021 |
+| Rust source files | 1,023 |
 | Widget kinds (`WidgetKind` variants) | 231 |
 | Layout managers | 15 |
 | Platform backends | 12 |
 | IME implementations | 4 |
 | Clipboard backends | 9 |
 | Gesture recognizers | 11 |
-| Integration test files | 76 |
+| Integration test files | 77 |
 | Benchmark files | 9 |
-
 
 Counts are generated, not hand-maintained: `python3 tools/gen_codemap_counts.py` rewrites this
 block and `--check` is the gate. Each row's derivation lives in that script (layout managers
