@@ -1009,6 +1009,28 @@ fn gzip_compress(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Encodes straight RGBA8 pixels as a PNG.
+///
+/// A caller that has *pixels* rather than a [`DecodedImage`] — the SVG backend embedding a
+/// `<image>` raster — needs the PNG bytes only; wrapping them in a `DecodedImage` here keeps the
+/// encoder's one PNG implementation as the only one (a second hand-rolled encoder in the SVG
+/// backend is exactly the duplication that let the two disagree about alpha).
+///
+/// `None` for a zero dimension or a buffer that is not `width * height * 4` bytes, which is a
+/// caller bug the SVG backend turns into its "no data" placeholder rather than a panic.
+pub(crate) fn png_from_rgba(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let expected = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
+    if rgba.len() != expected {
+        return None;
+    }
+    let image =
+        DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(rgba.to_vec()), width, height);
+    encode_png(&image).ok()
+}
+
 fn encode_png(image: &DecodedImage) -> Result<Vec<u8>, String> {
     let rgba = image.as_rgba8();
     let pixels = rgba.as_bytes();

@@ -96,7 +96,7 @@ use crate::widget::display_widgets::mini_canvas::MiniCanvas;
 // `Arc` is the gauge, not the reference-counted pointer imported from `compat`.
 use crate::widget::display_widgets::arc::Arc as ArcGauge;
 use crate::widget::display_widgets::emoji_picker::{EmojiGlyph, EmojiPicker};
-use crate::widget::display_widgets::image_view::{ImageAlignment, ImageAspect, ImageView};
+use crate::widget::display_widgets::image_view::ImageView;
 use crate::widget::display_widgets::lcd_number::LCDNumber;
 use crate::widget::display_widgets::meter::Meter;
 use crate::widget::display_widgets::mini_chart::{DataPoint, MiniChart};
@@ -116,9 +116,7 @@ use crate::widget::input_widgets::shortcut_editor::{ShortcutEditor, ShortcutEntr
 use crate::widget::macos::segmented_control::MacSegmentedControl;
 use crate::widget::macos::source_list::{MacSourceList, SourceListRow, SourceListSection};
 use crate::widget::macos::toolbar::{MacToolbar, MacToolbarItem};
-use crate::widget::media_widgets::animated_image::{
-    AnimatedFrame, AnimatedImage, AnimatedImageFit,
-};
+use crate::widget::media_widgets::animated_image::AnimatedImage;
 use crate::widget::media_widgets::hero_animation::HeroAnimation;
 use crate::widget::menu_toolbar::dropdown_menu::{DropdownItem as MenuEntryItem, DropdownMenu};
 use crate::widget::menu_toolbar::menu::Menu;
@@ -136,6 +134,7 @@ use crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar;
 use crate::widget::nav_widgets::navigation_drawer::NavigationDrawer;
 use crate::widget::nav_widgets::tab_view::TabView;
 use crate::widget::overlay_widgets::refresh_control::RefreshControl;
+use crate::widget::overlay_widgets::splash_screen::SplashScreen;
 use crate::widget::overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
 use crate::widget::special_widgets::breadcrumb::{Breadcrumb, BreadcrumbSegment};
 use crate::widget::special_widgets::canvas::Canvas;
@@ -612,41 +611,7 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
         "image_gallery" => match widget_as_mut::<ImageGallery>(widget) {
             Some(gallery) => {
-                // A gallery whose own snapshot says "No images in gallery" teaches a reviewer nothing
-                // about the grid, the captions or the selection ring.
-                if gallery.images().is_empty() {
-                    // The samples are decoded from real bytes, so the snapshot exercises the
-                    // decode-and-paint path rather than drawing the placeholder well four times.
-                    #[cfg(feature = "image")]
-                    {
-                        use crate::widget::view_widgets::image_gallery::GalleryImage;
-                        const SAMPLES: [(&str, &str, &[u8]); 4] = [
-                            ("Coast", "coast.jpg", include_bytes!("sample_photos/coast.jpg")),
-                            ("Forest", "forest.jpg", include_bytes!("sample_photos/forest.jpg")),
-                            ("City", "city.jpg", include_bytes!("sample_photos/city.jpg")),
-                            ("Desert", "desert.jpg", include_bytes!("sample_photos/desert.jpg")),
-                        ];
-                        let mut images = Vec::with_capacity(SAMPLES.len());
-                        for (label, path, bytes) in SAMPLES {
-                            let mut image = GalleryImage::with_label(path, Some(label), 0, 0);
-                            if image.load_from_bytes(bytes).is_ok() {
-                                images.push(image);
-                            }
-                        }
-                        if !images.is_empty() {
-                            gallery.set_images(images);
-                        }
-                    }
-                    #[cfg(not(feature = "image"))]
-                    {
-                        for index in 1..=4 {
-                            gallery.add_image(
-                                &format!("sample-{index}.png"),
-                                Some(&format!("Image {index}")),
-                            );
-                        }
-                    }
-                }
+                media::fill_gallery(gallery);
                 true
             }
             None => false,
@@ -992,6 +957,20 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
+        // Empty, the control paints its title band and nothing else: no brand mark, no progress.
+        "splash_screen" => match widget_as_mut::<SplashScreen>(widget) {
+            Some(splash) => {
+                splash.set_title("rust-widgets");
+                splash.set_subtitle("Loading controls…");
+                splash.set_logo(Some(crate::widget::IconSource::Builtin(
+                    crate::widget::IconName::Star,
+                )));
+                splash.set_progress(Some(0.6));
+                true
+            }
+            None => false,
+        },
+
         // ── View controls with a lightweight data entry (VIEW-N05 unblocked these) ──
         //
         // `data_view` is an alias of `virtual_list` in the capability table, so one arm
@@ -1296,14 +1275,10 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
         "avatar" => match widget_as_mut::<Avatar>(widget) {
             Some(avatar) => {
-                // An avatar with empty initials paints only its disc, which is the empty frame
-                // `avatar.svg` used to be. The picture source is a runtime file path, so
-                // `include_bytes!` cannot feed it; initials are the honest sample state and
-                // `group_avatar` already proves they draw (W7-02).
-                //
-                // The disc colour is deliberately **not** set here: `Avatar::disc_fill` derives it
-                // from the theme, so an explicit colour would make the sample theme-blind and the
-                // census would (correctly) fail it as chrome that ignores the appearance.
+                // Empty initials painted only the disc. The picture source is a runtime path, so
+                // initials are the honest sample. The disc colour is deliberately not set:
+                // `Avatar::disc_fill` derives it from the theme, and an explicit colour would make
+                // the sample theme-blind (which the census correctly fails).
                 avatar.set_text("RW");
                 true
             }
@@ -1488,35 +1463,7 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         // of every control showed an empty box or its own "nothing here" placeholder. The data set
         // is the same small, fixed one the rest of this module uses.
         "animated_image" => match widget_as_mut::<AnimatedImage>(widget) {
-            Some(image) => {
-                // Two frames at a size the control can show. The default `Original` fit draws at
-                // the frame's own pixels, so the previous 24×24 frames were a speck in the middle
-                // of the box; a 120×80 two-colour gradient plus `Contain` makes the picture read
-                // as a picture (W7-02).
-                const WIDTH: u32 = 120;
-                const HEIGHT: u32 = 80;
-                let mut frames = Vec::new();
-                for phase in [0u32, 1] {
-                    let mut data = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
-                    for y in 0..HEIGHT {
-                        for x in 0..WIDTH {
-                            let t = (x + phase * WIDTH / 2) % WIDTH;
-                            let r = (33 + (t * 180 / WIDTH)) as u8;
-                            let g = (150 - (y * 90 / HEIGHT)) as u8;
-                            let b = (243 - (t * 60 / WIDTH)) as u8;
-                            data.extend_from_slice(&[r, g, b, 255]);
-                        }
-                    }
-                    frames.push(AnimatedFrame {
-                        data,
-                        width: WIDTH,
-                        height: HEIGHT,
-                        delay_ms: 400,
-                    });
-                }
-                image.set_fit(AnimatedImageFit::Contain);
-                image.load_frames(frames).is_ok()
-            }
+            Some(image) => media::fill_animated_image(image),
             None => false,
         },
         "arc" => match widget_as_mut::<ArcGauge>(widget) {
@@ -1835,44 +1782,7 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             }
         }
         "image_view" => match widget_as_mut::<ImageView>(widget) {
-            Some(view) => {
-                // A real photograph, decoded from the same asset set `image_gallery` consumes, so
-                // the snapshot exercises the decode-and-paint path instead of photographing a
-                // 32×32 checkerboard in the corner of the frame (W7-02). `Fit` plus centre
-                // alignment states how the picture should be seen: the default
-                // `Stretch`/unscaled pair paints only the source's own pixel count.
-                #[cfg(feature = "image")]
-                {
-                    let loaded = view
-                        .set_image_from_bytes(include_bytes!("sample_photos/coast.jpg"))
-                        .is_ok();
-                    view.set_aspect(ImageAspect::Fit);
-                    view.set_image_alignment(ImageAlignment::Center);
-                    loaded
-                }
-                // Without the `image` feature there is no decoder to feed, so the arm keeps a
-                // generated checkerboard: no asset needed and visible at any size.
-                #[cfg(not(feature = "image"))]
-                {
-                    const SIDE: u32 = 32;
-                    let mut pixels = Vec::with_capacity((SIDE * SIDE * 4) as usize);
-                    for y in 0..SIDE {
-                        for x in 0..SIDE {
-                            let light = (x / 8 + y / 8) % 2 == 0;
-                            let (r, g, b) = if light { (33, 150, 243) } else { (236, 240, 245) };
-                            pixels.extend_from_slice(&[r, g, b, 255]);
-                        }
-                    }
-                    view.set_image(crate::image::Image::from_raw(
-                        crate::image::ImageData::Rgba8(pixels),
-                        SIDE,
-                        SIDE,
-                    ));
-                    view.set_aspect(ImageAspect::Fit);
-                    view.set_image_alignment(ImageAlignment::Center);
-                    true
-                }
-            }
+            Some(view) => media::fill_image_view(view),
             None => false,
         },
         "hero_animation" => {
@@ -1986,6 +1896,12 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
 }
 
 mod helpers;
+/// The sample arms that build pixel buffers (`W7-02`).
+///
+/// The three pixel arms and their `feature = "image"` split are the one part of `apply` that
+/// encodes assets rather than scalars, so they live beside the photographs they name instead of
+/// inside a 200-arm `match`.
+mod media;
 
 pub use helpers::compose_container;
 use helpers::{

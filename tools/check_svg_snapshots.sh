@@ -233,5 +233,26 @@ if ! diff -u "$GALLERY_SCRATCH/committed.md" control.md > "$GALLERY_SCRATCH/gall
 fi
 echo "  PASS  control.md matches the generated index ($(grep -v 'pair_' control.md | grep -c 'light\.svg) |$') control rows + $(grep -c '^| `pair_' control.md) pair rows)"
 
+echo "[6/6] every embedded raster is a format an SVG renderer is required to understand"
+# A snapshot that embeds a picture in a format half the renderers ignore is a picture only some
+# viewers show. BMP is the concrete case: `resvg`/`usvg` — this crate's **own** SVG decoder, and
+# what a Rust previewer uses — supports PNG/JPEG/GIF/WebP in `<image>` and silently drops a BMP, so
+# the exported card decoded to a complete canvas with the photograph missing while WebKit happened
+# to draw it. Step [3/3] cannot catch a regression here: if someone switches the encoder back and
+# regenerates, the committed bytes match their producer and the byte comparison is green.
+#
+# The check is a string scan of the committed files, so it costs no build and states the contract
+# the gallery page depends on.
+NON_PNG="$(grep -l 'data:image/bmp' "$SNAPSHOT_DIR"/*.svg 2>/dev/null || true)"
+if [ -n "$NON_PNG" ]; then
+    echo "  FAIL  these snapshots embed a BMP raster, which most SVG renderers drop:"
+    printf '%s\n' "$NON_PNG" | sed 's/^/        /'
+    echo "        the SVG backend writes PNG when the image encoder is available; rebuild the"
+    echo "        exporter with the desktop profile and regenerate (step [3/3] does that)."
+    exit 1
+fi
+EMBEDDED="$(grep -l 'data:image/' "$SNAPSHOT_DIR"/*.svg 2>/dev/null | wc -l | tr -d ' ')"
+echo "  PASS  $EMBEDDED snapshot(s) embed a raster, all of them PNG"
+
 echo ""
 echo "check_svg_snapshots: checked=$CONTROLS skipped=0 failed=0 (each with a dark and a light snapshot)"

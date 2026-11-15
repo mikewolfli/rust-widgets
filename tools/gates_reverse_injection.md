@@ -759,3 +759,13 @@ checked-in fixture" while its loop covered only `default`/`dark`. It now checks 
 presets, because those files carry the host's system UI family). The committed macos fixtures were
 also missing the new `step_strip:disabled` row; it was inserted without the host-specific font
 change the local regeneration would have brought along.
+
+## Embedded-raster format (user-reported blank cards, 2026-11-16)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_svg_snapshots.sh` `[6/6]` | switched `encode_raster` back to BMP **and regenerated the snapshots**, so the committed bytes equalled their producer (step [3/3] green by construction) | `FAIL  these snapshots embed a BMP raster, which most SVG renderers drop:` naming all ten (`animated_image`, `image_gallery`, `image_view`, `pair_image_gallery`, …), exit 1. Restored: `PASS  10 snapshot(s) embed a raster, all of them PNG`, exit 0 |
+
+Two unit tests cover the same contract at the source: `embedded_rasters_use_a_format_every_svg_renderer_understands`
+(PNG signature, one encoder) and `detect_svg_format_after_a_prolog_comment` (a snapshot that starts with a
+`<!-- … -->` prolog is still an SVG to this crate's own detector).

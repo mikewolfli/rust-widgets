@@ -149,10 +149,10 @@ impl SvgPaintBackend {
         data: &[u8],
     ) {
         if !data.is_empty() && width > 0 && height > 0 && source_width > 0 && source_height > 0 {
-            let bmp = rgba_to_bmp(source_width, source_height, data);
-            let b64 = base64_encode(&bmp);
+            let (mime, raster) = encode_raster(source_width, source_height, data);
+            let b64 = base64_encode(&raster);
             self.push_element(format!(
-                r##"<image x="{x}" y="{y}" width="{width}" height="{height}" preserveAspectRatio="none" href="data:image/bmp;base64,{b64}" />"##
+                r##"<image x="{x}" y="{y}" width="{width}" height="{height}" preserveAspectRatio="none" href="data:{mime};base64,{b64}" />"##
             ));
         } else {
             self.push_element(format!(
@@ -671,7 +671,39 @@ fn edge_crossing(
     Some((start.0 + (end.0 - start.0) * t, start.1 + (end.1 - start.1) * t))
 }
 
-// ─── Helper: RGBA→BMP conversion ──────────────────────────────────────────
+// ─── Helper: RGBA→embedded-raster conversion ──────────────────────────────
+
+/// Encodes the pixels for one `<image>` element, returning `(mime, bytes)`.
+///
+/// # Why PNG when the encoder is available
+///
+/// This used to always write BMP. BMP is *not* one of the raster formats an SVG renderer has to
+/// understand, and the two that matter here do not agree about it: `resvg`/`usvg` — which is what
+/// this crate's **own** SVG decoder uses, and what a Rust-based previewer reaches for — supports
+/// PNG/JPEG/GIF/WebP in `<image>` and silently **drops** a BMP. A snapshot exported with the BMP
+/// payload therefore decoded to a complete canvas with the photograph missing: the exact
+/// "the file has a picture, the screen does not" report that led here. WebKit happens to accept
+/// BMP, which is why the file *looked* right in one viewer and blank in another.
+///
+/// PNG is understood by every renderer this project supports and by the encoder this crate already
+/// ships for `Image::encode`, so there is one implementation rather than a second hand-rolled one.
+/// The BMP writer stays as the fallback for a build without the `image` feature, where no encoder
+/// exists at all; the committed snapshots are the `desktop` profile's output, which has it.
+#[cfg(feature = "image")]
+fn encode_raster(width: u32, height: u32, rgba: &[u8]) -> (&'static str, Vec<u8>) {
+    match crate::image::png_from_rgba(width, height, rgba) {
+        Some(png) => ("image/png", png),
+        None => ("image/bmp", rgba_to_bmp(width, height, rgba)),
+    }
+}
+
+/// Encodes the pixels for one `<image>` element in a build with no image encoder.
+///
+/// See [`encode_raster`]'s `cfg(feature = "image")` half for why PNG is preferred where it exists.
+#[cfg(not(feature = "image"))]
+fn encode_raster(width: u32, height: u32, rgba: &[u8]) -> (&'static str, Vec<u8>) {
+    ("image/bmp", rgba_to_bmp(width, height, rgba))
+}
 
 /// Convert raw RGBA pixel data into an in-memory BMP file (32-bit BGRA).
 ///
@@ -1404,10 +1436,10 @@ impl PaintBackend for SvgPaintBackend {
                     let b = (p10.y - p00.y) as f64 / f64::from(*width);
                     let c = (p01.x - p00.x) as f64 / f64::from(*height);
                     let d = (p01.y - p00.y) as f64 / f64::from(*height);
-                    let bmp = rgba_to_bmp(*width, *height, data);
-                    let b64 = base64_encode(&bmp);
+                    let (mime, raster) = encode_raster(*width, *height, data);
+                    let b64 = base64_encode(&raster);
                     self.push_element(format!(
-                        r##"<image x="0" y="0" width="{width}" height="{height}" preserveAspectRatio="none" transform="matrix({a} {b} {c} {d} {} {})" href="data:image/bmp;base64,{b64}" />"##,
+                        r##"<image x="0" y="0" width="{width}" height="{height}" preserveAspectRatio="none" transform="matrix({a} {b} {c} {d} {} {})" href="data:{mime};base64,{b64}" />"##,
                         p00.x, p00.y
                     ));
                 } else {
@@ -1978,7 +2010,7 @@ mod tests {
     /// A scaled image is embedded at its **own** extent inside a destination-sized `<image>`.
     ///
     /// The raster and the element must not be the same number here: a 2x1 buffer drawn into an
-    /// 8x4 box is scaled by the viewer, and emitting the BMP at the destination size would read
+    /// 8x4 box is scaled by the viewer, and emitting the raster at the destination size would read
     /// past the buffer.
     #[test]
     fn svg_backend_embeds_a_scaled_image_at_its_destination_extent() {
@@ -2004,12 +2036,37 @@ mod tests {
         // End to end: the embedded raster must be the **source** grid. Encoding it at the
         // destination extent instead would read past a 2x1 buffer, and a viewer that stretches a
         // wrong-sized raster draws different pixels even though the element box looks right.
-        let expected =
-            format!("data:image/bmp;base64,{}", base64_encode(&rgba_to_bmp(2, 1, &data)));
+        let (mime, raster) = encode_raster(2, 1, &data);
+        let expected = format!("data:{mime};base64,{}", base64_encode(&raster));
         assert!(
             result.contains(&expected),
             "the raster is embedded at its source extent: {result}"
         );
+    }
+
+    /// The embedded raster is a format an SVG renderer is required to understand.
+    ///
+    /// BMP is not, and `resvg`/`usvg` — this crate's **own** SVG decoder, and what a Rust previewer
+    /// uses — drops a BMP `<image>` silently. A snapshot exported that way decoded to a complete
+    /// canvas with the photograph missing, which is exactly the "the file has a picture, the screen
+    /// does not" report this test exists to prevent from coming back.
+    ///
+    /// WebKit accepts BMP, so a person checking the file in a browser saw the picture and the
+    /// decoder did not — a viewer-dependent artifact is not a checked one.
+    #[cfg(feature = "image")]
+    #[test]
+    fn embedded_rasters_use_a_format_every_svg_renderer_understands() {
+        let data: [u8; 16] = [255, 120, 40, 255, 10, 20, 30, 255, 200, 30, 90, 255, 0, 0, 0, 255];
+        let (mime, raster) = encode_raster(2, 2, &data);
+        assert_eq!(mime, "image/png", "the `<image>` payload must be a PNG");
+        assert!(
+            raster.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "the payload carries the PNG signature, not a BMP \"BM\" header"
+        );
+        // And it must be decodable back to the same pixels, so "smaller and portable" did not
+        // cost the content.
+        let decoded = crate::image::png_from_rgba(2, 2, &data).expect("the RGBA encodes");
+        assert_eq!(decoded, raster, "one PNG implementation, not two encoders");
     }
 
     /// A quad is emitted as a closed four-corner path, not as its bounding rectangle.

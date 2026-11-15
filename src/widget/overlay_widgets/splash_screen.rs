@@ -707,7 +707,17 @@ impl Draw for SplashScreen {
         let logo = 48.min(rect.width).min(rect.height / 3);
         let logo_band = if logo >= 16 { logo as i32 + SECTION_GAP } else { 0 };
         let text_block = TITLE_GAP as i32 + if self.subtitle.is_empty() { 0 } else { BODY_GAP };
-        let stack_top = rect.y + ((rect.height as i32 - logo_band - text_block) / 2).max(0);
+        // The progress bar is anchored to the bottom edge (`bar_rect`), so the centred stack has to
+        // end above it. Without this reservation a screen that carries both a subtitle and progress
+        // painted the subtitle *through* the bar at the sizes this control is given — visible only
+        // once a sample supplied both (the empty sample had neither).
+        let bar_band = if self.bar_rect().is_some() {
+            BAR_HEIGHT as i32 + BAR_MARGIN as i32 + SECTION_GAP
+        } else {
+            0
+        };
+        let stack_top =
+            rect.y + ((rect.height as i32 - logo_band - text_block - bar_band) / 2).max(0);
         let text_y = stack_top + logo_band;
 
         if logo_band > 0 {

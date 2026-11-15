@@ -22,6 +22,7 @@ pub mod cache;
 mod color;
 pub mod decoder;
 mod encoder;
+pub(crate) use encoder::png_from_rgba;
 pub mod exif;
 pub mod format;
 pub mod image_impl;
