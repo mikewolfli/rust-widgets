@@ -60,7 +60,9 @@ The round is recorded in `docs/log/log-20261115-1.md` and closes the 50 items of
   `playlist_panel_mut` mirror the queue model, matching `VideoPlayer`.
 - **Signals**: `BottomSheet`/`ModalBottomSheet` open/close, `ComboBox` `editing_finished`,
   `FontComboBox` `editing_finished`/`canceled`, `SearchBar`/`InplaceEditor`/`ShortcutEditor`
-  undo/redo availability, `Dropdown`/`MultiSelectComboBox` popup visibility, `MdiArea`
+  undo/redo availability (and the same pair on `DateEdit`/`TimeEdit`/`DateTimeEdit`/
+  `KeySequenceEdit`, which publish `editing_finished` beside an undo stack but had no way to say
+  whether it was non-empty), `Dropdown`/`MultiSelectComboBox` popup visibility, `MdiArea`
   `subwindow_removed`, chart-family `*_unhovered` events, `TreeFindBar.closed`, and
   `Snackbar.queue_overflow`.
 - **`docs/plans/widget_classification.md`** — the issue §6 classification map (plan A): the family

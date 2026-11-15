@@ -300,6 +300,18 @@ pub struct TimeEdit {
     /// `time_changed` fires on every step — a held arrow key walks a minute at a time — so a host
     /// had no way to distinguish "still browsing" from "done".
     pub editing_finished: GenericSignal,
+    /// Emitted with the new value whenever undo availability changes (W7-13).
+    ///
+    /// The value is [`Self::can_undo`] after the change, so a host can bind an undo affordance's
+    /// enabled state without polling. Emitted only when the answer *changes*, the same contract
+    /// `search_bar` / `inplace_editor` / `combobox` publish.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes (W7-13).
+    pub redo_available: Signal1<bool>,
+    /// The availability last announced through [`Self::undo_available`].
+    undo_available_announced: bool,
+    /// The availability last announced through [`Self::redo_available`].
+    redo_available_announced: bool,
     /// The clock face numerals' centred offsets, rebuilt only when the radius or the font changes
     /// (K-P04).
     clock_numeral_cache: crate::compat::RefCell<ClockNumeralsCache>,
@@ -368,6 +380,10 @@ impl TimeEdit {
             digit_buffer: String::new(),
             clock_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(false),
             editing_finished: GenericSignal::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
+            undo_available_announced: false,
+            redo_available_announced: false,
             clock_numeral_cache: crate::compat::RefCell::new(ClockNumeralsCache::default()),
             value_text_scratch: crate::compat::RefCell::new(String::new()),
             section_zone_cache: crate::compat::RefCell::new(Default::default()),
@@ -898,6 +914,7 @@ impl TimeEdit {
                     "time_edit",
                 )));
             }
+            self.refresh_edit_capabilities();
             self.time_changed.emit(time);
             self.base.request_redraw();
         }
@@ -1043,6 +1060,7 @@ impl TimeEdit {
             return false;
         }
         self.restore_history_time();
+        self.refresh_edit_capabilities();
         true
     }
     /// Re-applies the most recently undone time change.
@@ -1055,8 +1073,27 @@ impl TimeEdit {
             return false;
         }
         self.restore_history_time();
+        self.refresh_edit_capabilities();
         true
     }
+    /// Announces the current undo/redo availability when it differs from the last announcement.
+    ///
+    /// One place derives "what a host should enable", so a new mutation site calls this instead of
+    /// comparing the stack itself. Emitted only on a change, the same contract `search_bar` /
+    /// `inplace_editor` / `combobox` publish (W7-13).
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
+    }
+
     /// Returns `true` when there is at least one time change to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
@@ -1198,6 +1235,16 @@ impl Widget for TimeEdit {
             }
             "editing_finished" => {
                 Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
             }
             _ => None,
         }
@@ -2629,4 +2676,29 @@ mod tests {
         edit.handle_event(&Event::MouseLeave { pos: crate::core::Point::new(0, 0) });
         assert_eq!(edit.hovered_hand, None);
     }
+    /// See `date_edit`'s test of the same name: the signal says what to enable, once per change.
+    #[test]
+    fn time_edit_announces_undo_and_redo_availability() {
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        editor.undo_available.connect(move |available| sink.lock().unwrap().push(*available));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        editor.redo_available.connect(move |available| sink.lock().unwrap().push(*available));
+
+        assert!(!editor.can_undo(), "a fresh editor has nothing to undo");
+        editor.set_time(Time::new(10, 0, 0, 0));
+        assert_eq!(*undo.lock().unwrap(), vec![true]);
+        assert_eq!(*redo.lock().unwrap(), Vec::<bool>::new(), "an edit does not touch redo");
+
+        assert!(editor.undo());
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "the stack is empty again");
+        assert_eq!(*redo.lock().unwrap(), vec![true]);
+
+        assert!(editor.redo());
+        assert_eq!(*redo.lock().unwrap(), vec![true, false]);
+        assert_eq!(*undo.lock().unwrap(), vec![true, false, true]);
+    }
+
 }

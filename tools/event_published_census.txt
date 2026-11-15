@@ -65,9 +65,9 @@ cupertino_slider: value_changed
 cupertino_switch: toggled
 data_grid: visible_window_changed, context_menu_requested, edit_requested, filter_changed, header_clicked, sort_changed, page_applied, selection_changed, current_changed, cell_clicked, cell_double_clicked, column_resized, column_changed, find_requested
 data_view: selection_changed, visible_window_changed, drag_finished, selected_rows_changed, context_menu_requested
-date_edit: date_changed, popup_visibility_changed, calendar_opened, calendar_closed, editing_finished
+date_edit: date_changed, popup_visibility_changed, calendar_opened, calendar_closed, editing_finished, undo_available, redo_available
 date_range_picker: range_changed, preset_selected
-date_time_edit: datetime_changed, popup_visibility_changed, date_changed, time_changed, editing_finished, calendar_opened, calendar_closed
+date_time_edit: datetime_changed, popup_visibility_changed, date_changed, time_changed, editing_finished, calendar_opened, calendar_closed, undo_available, redo_available
 dial: value_changed, slider_pressed, slider_released
 dialog: accepted, rejected, opened, closed, finished, help_requested, title_bar_action
 divider: 
@@ -116,7 +116,7 @@ ime_preedit:
 inplace_editor: edit_accepted, edit_canceled, undo_available, redo_available
 input_dialog: text_value_changed, int_value_changed, double_value_changed, accepted, rejected, focus_changed
 intrinsic_width: 
-key_sequence_editor: sequence_changed, key_sequence_changed, conflict_detected, editing_finished
+key_sequence_editor: sequence_changed, key_sequence_changed, conflict_detected, editing_finished, undo_available, redo_available
 keyboard: key_pressed, enter_pressed, backspace_pressed, space_pressed, text_committed
 label: link_activated, link_hovered
 layer_panel: layer_selected, visibility_toggled, reorder_requested, rename_requested, remove_requested
@@ -228,7 +228,7 @@ tag_group: tag_closed, selection_changed
 tag_input: tags_changed, tag_overflow, tag_rejected, undo_available, redo_available
 text_area: changed, context_menu_requested, selection_changed, cursor_position_changed, undo_available, redo_available, editing_finished
 text_edit: context_menu_requested, cursor_position_changed, redo_available, selection_changed, text_changed, undo_available, editing_finished
-time_edit: popup_visibility_changed, time_changed, editing_finished
+time_edit: popup_visibility_changed, time_changed, editing_finished, undo_available, redo_available
 time_picker: popup_visibility_changed, time_changed, editing_finished  [alias_of=time_edit]
 timeline_widget: item_selected, viewport_changed, item_hovered, item_moved, item_resized
 toast: dismissed, action_triggered

@@ -11426,6 +11426,16 @@
         "name": "popup_visibility_changed",
         "payload": "bool",
         "shape": "scalar"
+      },
+      {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
+        "shape": "scalar"
       }
     ],
     "children": [],
@@ -11838,8 +11848,18 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "time_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -21704,9 +21724,19 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "sequence_changed",
         "payload": "string",
         "shape": "list"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
+        "shape": "scalar"
       }
     ],
     "children": [],
@@ -43716,8 +43746,18 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "time_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],
@@ -43930,8 +43970,18 @@
         "shape": "scalar"
       },
       {
+        "name": "redo_available",
+        "payload": "bool",
+        "shape": "scalar"
+      },
+      {
         "name": "time_changed",
         "payload": "string",
+        "shape": "scalar"
+      },
+      {
+        "name": "undo_available",
+        "payload": "bool",
         "shape": "scalar"
       }
     ],

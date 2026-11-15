@@ -238,6 +238,18 @@ pub struct DateTimeEdit {
     pub time_changed: Signal1<Time>,
     /// Emitted when editing is committed: Enter, Escape, or focus leaving the field.
     pub editing_finished: GenericSignal,
+    /// Emitted with the new value whenever undo availability changes (W7-13).
+    ///
+    /// The value is [`Self::can_undo`] after the change, so a host can bind an undo affordance's
+    /// enabled state without polling. Emitted only when the answer *changes*, the same contract
+    /// `search_bar` / `inplace_editor` / `combobox` publish.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes (W7-13).
+    pub redo_available: Signal1<bool>,
+    /// The availability last announced through [`Self::undo_available`].
+    undo_available_announced: bool,
+    /// The availability last announced through [`Self::redo_available`].
+    redo_available_announced: bool,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<DateTime>>,
     restoring_history: bool,
@@ -304,6 +316,10 @@ impl DateTimeEdit {
             date_changed: Signal1::new(),
             time_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
+            undo_available_announced: false,
+            redo_available_announced: false,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(now)),
             restoring_history: false,
@@ -414,6 +430,7 @@ impl DateTimeEdit {
                     "date_time_edit",
                 )));
             }
+            self.refresh_edit_capabilities();
             self.datetime_changed.emit(dt);
             if before.date != dt.date {
                 self.date_changed.emit(dt.date);
@@ -1068,6 +1085,7 @@ impl DateTimeEdit {
             return false;
         }
         self.restore_history_datetime();
+        self.refresh_edit_capabilities();
         true
     }
     /// Re-applies the most recently undone value change.
@@ -1080,8 +1098,27 @@ impl DateTimeEdit {
             return false;
         }
         self.restore_history_datetime();
+        self.refresh_edit_capabilities();
         true
     }
+    /// Announces the current undo/redo availability when it differs from the last announcement.
+    ///
+    /// One place derives "what a host should enable", so a new mutation site calls this instead of
+    /// comparing the stack itself. Emitted only on a change, the same contract `search_bar` /
+    /// `inplace_editor` / `combobox` publish (W7-13).
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
+    }
+
     /// Returns `true` when there is at least one value change to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
@@ -1193,6 +1230,16 @@ impl Widget for DateTimeEdit {
             }
             "editing_finished" => {
                 Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
             }
             "popup_visibility_changed" => Some(EventSignalRef::mapped(
                 "popup_visibility_changed",
@@ -2403,4 +2450,29 @@ mod tests {
         assert_eq!(edit.datetime(), lower);
         assert_eq!(*announced.lock().unwrap(), Some(lower));
     }
+    /// See `date_edit`'s test of the same name: the signal says what to enable, once per change.
+    #[test]
+    fn date_time_edit_announces_undo_and_redo_availability() {
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        let undo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&undo);
+        editor.undo_available.connect(move |available| sink.lock().unwrap().push(*available));
+        let redo = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&redo);
+        editor.redo_available.connect(move |available| sink.lock().unwrap().push(*available));
+
+        assert!(!editor.can_undo(), "a fresh editor has nothing to undo");
+        editor.set_datetime(DateTime::new(Date::new(2026, 6, 8), Time::new(10, 0, 0, 0)));
+        assert_eq!(*undo.lock().unwrap(), vec![true]);
+        assert_eq!(*redo.lock().unwrap(), Vec::<bool>::new(), "an edit does not touch redo");
+
+        assert!(editor.undo());
+        assert_eq!(*undo.lock().unwrap(), vec![true, false], "the stack is empty again");
+        assert_eq!(*redo.lock().unwrap(), vec![true]);
+
+        assert!(editor.redo());
+        assert_eq!(*redo.lock().unwrap(), vec![true, false]);
+        assert_eq!(*undo.lock().unwrap(), vec![true, false, true]);
+    }
+
 }
