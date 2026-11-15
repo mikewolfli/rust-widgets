@@ -13,7 +13,7 @@
 
 ## 特点
 
-- **231 种控件 / 242 个核心控件名**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。可选 suites 另外提供 **7 组、40 个控件**，安装到同一个 `WidgetFactory`。
+- **231 种控件 / 243 个核心控件名**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。可选 suites 另外提供 **7 组、40 个控件**，安装到同一个 `WidgetFactory`。
 - **输出可复现**——每个控件、每种外观都有提交到仓库的 SVG 与像素快照，视觉变化因此是可审阅的 diff，
   而不是聊天窗口里的一张截图。
 - **能力诚实**——宿主提供不了的服务返回 `false` / `None`；不会先假装成功再报告“已完成”。
@@ -24,7 +24,7 @@
 
 ## 安装
 
-> **4.3.0** 是当前版本：在 **4.2.0**（完备性轮）之上的输入投递与代码健康轮，**4.2.0** 又承接
+> **4.4.0** 是当前版本：在 **4.2.0**（完备性轮）之上的输入投递与代码健康轮，**4.2.0** 又承接
 > **4.1.0**（闭环轮）。本版让所有后端的输入字符走同一条 `TextInput`/`ImeCommit` 路径，为控件层
 > 分支的每个键码命名，把 Windows 功能键归一到框架约定，恢复 macOS/Linux 上的首字母 type-ahead，
 > 闭合设计器模式 2 的列表/容器缺口，并让重绘的 `AreaChart` 与富文本 tooltip 在稳态零分配。未删除任何
@@ -32,19 +32,19 @@
 
 ```toml
 [dependencies]
-rust_widgets = "4.3.0"
+rust_widgets = "4.4.0"
 ```
 
 **必须且只能选择一个设备配置**。它们互斥：`mini` 与 `embedded` 会把 crate 的一部分*编译掉*，
 与 `desktop` 叠加不是“取最小公共集”，而是一个无法工作的构建。
 
 ```toml
-rust_widgets = "4.3.0"                                                             # 默认特性集
-rust_widgets = { version = "4.3.0", features = ["desktop"] }                       # 仅 desktop profile
-rust_widgets = { version = "4.3.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "4.3.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "4.3.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "4.3.0", default-features = false, features = ["mini"] }
+rust_widgets = "4.4.0"                                                             # 默认特性集
+rust_widgets = { version = "4.4.0", features = ["desktop"] }                       # 仅 desktop profile
+rust_widgets = { version = "4.4.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.4.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "4.4.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.4.0", default-features = false, features = ["mini"] }
 ```
 
 | 配置 | 适用场景 |

@@ -15,7 +15,7 @@ services at all.
 
 ## Highlights
 
-- **231 widget kinds / 242 core controls** — inputs, tables, trees, docks, dialogs, media, charts,
+- **231 widget kinds / 243 core controls** — inputs, tables, trees, docks, dialogs, media, charts,
   editors and more, with one implementation shared by every platform. The optional suites add
   **40 more controls in 7 groups**, installed into the same `WidgetFactory`.
 - **Cascading menus and real session state** — dropdowns, menu buttons and menus open up to four
@@ -32,7 +32,7 @@ services at all.
 
 ## Install
 
-> **4.3.0** is the current release: the input-delivery and code-health round on top of **4.2.0**
+> **4.4.0** is the current release: the input-delivery and code-health round on top of **4.2.0**
 > (the completeness round), which followed **4.1.0** (the closed-loop round). It makes typed
 > characters travel through one platform path (`TextInput`/`ImeCommit`) on every backend, names
 > every key code the widget layer branches on, normalises Windows function keys to the framework
@@ -42,7 +42,7 @@ services at all.
 
 ```toml
 [dependencies]
-rust_widgets = "4.3.0"
+rust_widgets = "4.4.0"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -50,12 +50,12 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = "4.3.0"                                                             # default set
-rust_widgets = { version = "4.3.0", features = ["desktop"] }                       # desktop profile only
-rust_widgets = { version = "4.3.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "4.3.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "4.3.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "4.3.0", default-features = false, features = ["mini"] }
+rust_widgets = "4.4.0"                                                             # default set
+rust_widgets = { version = "4.4.0", features = ["desktop"] }                       # desktop profile only
+rust_widgets = { version = "4.4.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.4.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "4.4.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.4.0", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |

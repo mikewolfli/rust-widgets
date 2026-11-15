@@ -1,7 +1,7 @@
 # docs/plans — 计划索引
 
-> **本文件是入口。** 目录里有 20 份 `.md`（4 份是**工具/门禁依赖**，不可移动），
-> 38 份历史计划已归档到 [`archive/`](archive/)。
+> **本文件是入口。** 目录里有 23 份 `.md`（4 份是**工具/门禁依赖**，不可移动），
+> 37 份历史计划已归档到 [`archive/`](archive/)。
 
 ---
 
@@ -43,8 +43,9 @@
 
 | 文件 | 是什么 | 谁在读 |
 |---|---|---|
-| [`principle.md`](principle.md) | 全仓工程原则（#1–#101），所有 BLUE 计划的依据 | 所有计划、`src/widget/special_widgets/code_editor/mod.rs` |
+| [`principle.md`](principle.md) | 全仓工程原则（#1–#106），所有 BLUE 计划的依据 | 所有计划、`src/widget/special_widgets/code_editor/mod.rs` |
 | [`codemap.md`](codemap.md) | 模块地图 | **门禁** `check_widget_kind_count.sh` |
+| [`widget_classification.md`](widget_classification.md) | 控件分类与场景推荐（**生成物**，`tools/gen_widget_classification.py`；家族成员/kind 与控件总数/模块门控全部派生，只含人工策展的场景建议） | 新 agent/新用户的第一小时地图；**门禁** `check_widget_classification.sh` |
 | [`platform_capability_matrix.md`](platform_capability_matrix.md) | 平台能力矩阵（**生成物**，不手改） | **三个门禁** + `tests/blue9_r6_platform_capability_test.rs` |
 | [`platform_differences.md`](platform_differences.md) | 平台差异说明 | 人读 |
 | [`whitepaper.md`](whitepaper.md) | 架构白皮书 | 人读 |
@@ -68,7 +69,7 @@
 
 ---
 
-## 4. 归档（38 份）
+## 4. 归档（37 份）
 
 [`archive/`](archive/) 里的计划**全部已完成**或**已被取代**，仅供追溯。
 **不要再从里面取「当前要求」**——那是 BLUE24 §9.1 要消除的失败形态
@@ -140,8 +141,8 @@
 ### 可复跑的检查
 
 ```text
-$ ls docs/plans/*.md | wc -l          # 20
-$ ls docs/plans/archive/*.md | wc -l  # 38
+$ ls docs/plans/*.md | wc -l          # 22
+$ ls docs/plans/archive/*.md | wc -l  # 37
 $ grep -rn "docs/plans/" --include=*.rs --include=*.sh --include=*.py . | grep -v archive
   # 零命中指向 archive/ 的路径（除刻意保留的历史引注）
 ```

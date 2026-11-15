@@ -596,7 +596,7 @@ crates/rust-widgets-suites/ 下不得出现：
 | 命令 | 方向 | 输入 | 输出 | 退出码 |
 |---|---|---|---|---|
 | `rwui check <bundle-or-json>` | — | 文档 + CSS | 诊断列表；不写文件 | 0 无错误 / 1 有错误（`--strict` 也把 unsupported 当错误） |
-| `rwui json2rust <in> [-o dir]` | JSON+CSS → Rust | 同上 | `ui_default.rs`、`ui_stripped.rs`（或 `--target default|stripped`） | 0/1 |
+| `rwui json2rust <in> [-o dir]` | JSON+CSS → Rust | 同上 | `ui_default.rs`、`ui_stripped.rs`（或 `--target default\|stripped`） | 0/1 |
 | `rwui json2rust --check` | 校验 | 同上 | 与已提交生成物逐字节比较，不写 | 0 一致 / 1 漂移 |
 | `rwui rust2json <file.rs...> [-o ui.json]` | Rust → JSON | 生成器方言 Rust | 文档 JSON（+ 可选 `--split-css` 输出 CSS） | 0/1 |
 | `rwui json2css <in> [-o theme.css]` | JSON → CSS | 文档（含/不含 CSS） | 聚类后的 CSS + 报告 | 0/1 |

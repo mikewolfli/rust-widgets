@@ -87,7 +87,7 @@ All file/line citations are relative to the crate root
 | No test that every `IconName` renders *distinct* ink | `icon_name_enum_roundtrip` (`icon.rs:1467-1506`) only checks string round-trip |
 | Unknown name is silently a placeholder with no diagnostic | `draw_unknown` `icon.rs:1264-1277`; `log`/`warn` absent |
 | No curve/arc support | every shape is lines/circles/`draw_path` polylines; no `Q`/`C`/`A` command is ever emitted |
-| 3 of 31 icons have snapshots | `icon_svg_output_check|star|warning` `icon.rs:1509-1536` |
+| 3 of 31 icons have snapshots | `icon_svg_output_check\|star\|warning` `icon.rs:1509-1536` |
 | No feature gate for icon data | no `icons-*` feature exists in `Cargo.toml` |
 | No licence record | `NOTICE` covers 5 font tables, zero icon material |
 
@@ -270,7 +270,7 @@ bundled strings are compiled into the binary. This is *precisely* the standard
 | Set | Licence | Verdict |
 |---|---|---|
 | **Tabler Icons** | **MIT** (`Copyright (c) 2020-2026 Paweł Kuna`), fetched 2026-09-27 | Viable alternate; single clean MIT, larger set, 24×24 grid. Choose Lucide for: equal grid, tighter `stroke-width:2` convention, and the Feather lineage matches the crate's existing semantic names (`check`, `x`, `arrow-*`, `trash`). |
-| **Material Symbols** | **Apache-2.0** (fetched `google/material-design-icons/master/LICENSE`, 2026-09-27: standard Apache 2.0 with the "APPENDIX"). Apache §4(d) also requires a NOTICE reproduction. **⚠️ CORRECTION (2026-09-27):** this row originally read "It is primarily a **font** … → lands in Option B's problems". **That is wrong, and the error was a category mistake.** Fetched `google/material-design-icons/contents/symbols/web` and it returns **one directory per icon** (`symbols/web/add/`, `symbols/web/close/`, …), i.e. Material Symbols ships **per-icon SVG outlines** as well as a font. It is therefore usable as an **Option A source** (bundled `d` strings), not confined to Option B. The `.codepoints` map is what the *font* distribution uses; it is not the only distribution. See `blue25.md` §6.1.4 for the retraction, and §6.1.1 for the two-axis framing that would have prevented the mistake (axis A = where data comes from, axis B = how data becomes pixels). |
+| **Material Symbols** | **Apache-2.0** (fetched `google/material-design-icons/master/LICENSE`, 2026-09-27: standard Apache 2.0 with the "APPENDIX"). Apache §4(d) also requires a NOTICE reproduction. **⚠️ CORRECTION (2026-09-27):** this row originally read "It is primarily a **font** … → lands in Option B's problems". **That is wrong, and the error was a category mistake.** Fetched `google/material-design-icons/contents/symbols/web` and it returns **one directory per icon** (`symbols/web/add/`, `symbols/web/close/`, …), i.e. Material Symbols ships **per-icon SVG outlines** as well as a font. It is therefore usable as an **Option A source** (bundled `d` strings), not confined to Option B. The `.codepoints` map is what the *font* distribution uses; it is not the only distribution. See `blue25.md` §6.1.4 for the retraction, and §6.1.1 for the two-axis framing that would have prevented the mistake (axis A = where data comes from, axis B = how data becomes pixels). | Usable as an Option A outline source (chosen). |
 
 ### 2.6 Recommendation
 

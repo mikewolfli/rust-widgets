@@ -5,6 +5,79 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 4.4.0 (2026-11-16) — image display, declaration truth, sister-contract closure
+
+The round is recorded in `docs/log/log-20261115-1.md` and closes the 50 items of
+`docs/issues/issue-20261115.md` (W7-01…32, W8-01…18).
+
+### Fixed
+
+- **Images decoded at runtime are painted** — `ImageView::draw` decided "has pixels" from the
+  source *format name*, so every JPEG/PNG/BMP loaded through `from_bytes`/`from_file` drew the
+  "?" placeholder while its RGBA bytes were in hand. The check is now by **data variant**, the
+  same rule `ImageGallery` and `Avatar` already used; a regression test pins a JPEG-named image
+  with RGBA data reaching the paint path.
+- **Sample arms show what they mean** — `image_view` uses a real photograph from
+  `sample_photos/` with `Fit` + centre alignment (checkerboard kept for builds without the
+  `image` feature), `animated_image` paints 120×80 gradient frames with `Contain`, and `avatar`
+  gains an initials sample.
+- **Custom colour presets are visible** — the preset row reserved all eight slots for the
+  built-ins, so `set_custom_colors` painted nothing. Custom colours now take the first slots,
+  most recent first.
+- **Pagination's page-size popup is the shared `MenuPanel`** (32 px rows, one hit-test
+  derivation); the option list is rebuilt only when it changes.
+- **Accessibility state follows the catalogue** — unlabelled controls announce the translated
+  `widget.<canonical>.label`, and `checked`/`selected`/`expanded` contribute the localized
+  `a11y.state.*` word.
+
+### Added
+
+- **`StepStrip`** — a numbered step indicator companion for multi-step pages (`StepEntry`,
+  `StepStripStyle::TopStrip`/`Sidebar`, `step_activated`), with clamping, hit testing and a
+  disabled veil. Registered as the `step_strip` factory control (borrowing `WidgetKind::Stepper`
+  behind a concrete-type tie-break) with a `steps` records property, so it has a capability row,
+  a snapshot pair and a designer schema like every other companion.
+- **Table companion bindings** — `TableWidget` and `VirtualTable` accept
+  `attach_grid_status_bar` (row/selection counts) and `attach_header_menu`
+  (`VirtualTable` applies the sort; `TableWidget` forwards it through `sort_requested`).
+- **`MediaPlayer` playlist binding** — `attach_playlist_panel` / `playlist_panel` /
+  `playlist_panel_mut` mirror the queue model, matching `VideoPlayer`.
+- **Signals**: `BottomSheet`/`ModalBottomSheet` open/close, `ComboBox` `editing_finished`,
+  `FontComboBox` `editing_finished`/`canceled`, `SearchBar`/`InplaceEditor`/`ShortcutEditor`
+  undo/redo availability, `Dropdown`/`MultiSelectComboBox` popup visibility, `MdiArea`
+  `subwindow_removed`, chart-family `*_unhovered` events, `TreeFindBar.closed`, and
+  `Snackbar.queue_overflow`.
+- **`docs/plans/widget_classification.md`** — the issue §6 classification map (plan A): the family
+  membership, the kind/control totals and every family's module gate are generated from the
+  registry and `src/widget/mod.rs`, and `check_widget_classification.sh` fails when the page goes
+  stale. Only the scenario advice is curated, and a family without an advice row fails the
+  generator.
+- **Cupertino getters**: `CupertinoAlertDialog::confirm_text` / `cancel_text`.
+
+### Changed
+
+- **Declaration layer is now checked** — module reachability validates `path:line` citations
+  against a ±5-line window and prints the nearest real mention; the i18n catalogue is reconciled
+  against the registered control names; `docs/plans/README.md` counts and the codemap family
+  table are derived and gated.
+- **61 stale language keys are gone** (34 spelling variants renamed to canonical names, 27 dead
+  or suite-only names removed); three languages remain key-for-key identical.
+- **Draw hot paths**: `CheckBox`/`RadioButton` cache wrapped lines with the shared
+  `WrapCacheKey` (text revision + width + whole font + DPI); the chart hover/legend caches carry
+  the full face and DPI; `Keyboard` caches its case-state label table instead of allocating a
+  `String` per letter key per frame.
+- **Bidi caret mapping** now covers `TagInput`, `InplaceEditor`, `Mention`,
+  `AutoCompleteEdit`, `EditableComboBox` and `ComboBox` through the shared
+  `text_utils::visual_caret_advance` / `visual_byte_at` helpers.
+- **Gates**: blend-mode API tests run in `check_profiles.sh`; icon-entry pairs survive a
+  file→directory split and report a missing control as a gate fault; local-gate coverage
+  ignores comments and requires an `unsupported host` marker for SKIP; Python gates are
+  checked for wrappers; plan tables cover every plan; five gate scripts whose first header line
+  was missing its `#` (so bash tried to execute the line) now read as comments, five advice
+  strings whose backticks were unescaped inside `echo "…"` no longer run the symbol names they
+  teach, and the theme-fixture gate checks presence for all four presets instead of claiming it
+  while looping over two.
+
 ## 4.3.0 (2026-11-12) — input delivery, key-code discipline, designer fixes and allocation closure
 
 The round is recorded in `docs/log/log-20261111-1.md`, `log-20261111-2.md`, `log-20261112-1.md`
