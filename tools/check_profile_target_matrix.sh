@@ -98,6 +98,14 @@ if [ "${1:-}" != "--host-only" ]; then
 fi
 
 echo "matrix: ran $RUN cell(s), skipped $SKIP"
+if [ "$RUN" -eq 0 ]; then
+    # W8-17: a matrix where no cell could run is a host limitation, not a pass.
+    echo "unsupported host (no matrix cell could run on this host)"
+    exit 2
+fi
+if [ "$SKIP" -gt 0 ]; then
+    echo "partial-skip: $SKIP cell(s) (missing cross targets; see the SKIP rows above)"
+fi
 if [ "$FAIL" -ne 0 ]; then
     echo "RESULT: FAIL ($FAIL cell(s))"
     exit 1

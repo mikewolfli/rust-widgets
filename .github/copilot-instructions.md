@@ -6,7 +6,7 @@
 **Repository map (read this before editing):**
 
 - `src/` — the library. Controls live in `src/widget/<family>/`; `WidgetKind` is `src/widget/kind.rs`; platform backends are `src/platform/`.
-- `crates/` — `rust-widgets-suites` (finance / webview / maps / project / devtools / media), `rust-widgets-icons`, `rust-widgets-font`, `mobile-services`.
+- `crates/` — `rust-widgets-suites` (finance / webview / maps / project / devtools / media), `rust-widgets-icons`, `rust-widgets-font`, `rust-widgets-cli` (`rwui`: check a designer bundle, generate Rust from it), `mobile-services`.
 - `tools/` — the gate scripts (`check_*.sh` and `check_*.py`; the live count is whatever `ls tools/check_*.sh | wc -l` and `ls tools/check_*.py | wc -l` print — do not trust a number written here). Run one directly (`bash tools/check_<name>.sh`); the batch runner is `tools/run_all_gates.sh`.
 - `docs/plans/principle.md` — the 106 engineering principles every change must follow.
 - `docs/issues/` — scan reports; `docs/log/` — per-round evidence logs.

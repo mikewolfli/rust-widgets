@@ -5,7 +5,9 @@ Every `pub mod` must be in exactly one of three states, and must say so in its
 own module documentation under a `# Reachability` heading:
 
 * **Production callers** — list `path:line` references. Each is verified to exist
-  and to mention the module.
+  and to mention the module within +/-5 lines of the cited line. A citation whose
+  line drifted is reported with the nearest real mention, because the pointer is
+  what a reader (human or agent) follows.
 * **Exposed over the C ABI** — a `rw_*` entry point must exist in
   `src/bindings/binding_impl/`.
 * **Reserved** — an experiment or deliberately kept module. Requires a non-empty
@@ -56,6 +58,14 @@ RESERVED_RE = re.compile(r"\bReserved\b", re.IGNORECASE)
 # example used the old single-file `handle.rs`; the handles are now a directory.)
 CALLER_RE = re.compile(r"([A-Za-z0-9_./-]+\.rs):(\d+)")
 
+# How many lines on either side of the cited line may contain the module token.
+# A `path:line` citation is a pointer for a reader; when unrelated edits move the
+# anchor, the gate must see the drift instead of verifying only "the file still
+# exists and mentions the module somewhere" (W7-03). Five lines is wide enough to
+# survive a nearby rustdoc rewrite and narrow enough that a citation pointing at
+# the wrong function still fails.
+CALLER_WINDOW = 5
+
 # `rw_foo` named in the State line of an ABI-exposed module.
 SYMBOL_RE = re.compile(r"\b(rw_[a-z0-9_]+)\b")
 
@@ -85,6 +95,54 @@ def state_bodies(docs: str) -> list[str]:
     return [match.group("body").strip() for match in STATE_RE.finditer(docs)]
 
 
+def _citation_problem(
+    root: pathlib.Path, source: pathlib.Path, name: str, relative: str, line_text: str
+) -> str | None:
+    """Checks one `path:line` citation and returns a problem, or None when it holds.
+
+    The check is a line window, not a whole-file substring: a citation is a pointer
+    for a human (and for an agent's next `read_file`), so a stale line number sends
+    the reader to unrelated code even though the file still mentions the module.
+    """
+    referenced = root / relative
+    if not referenced.exists():
+        return f"{source}: claims caller {relative}:{line_text}, which does not exist"
+    try:
+        cited = int(line_text)
+    except ValueError:  # pragma: no cover - CALLER_RE only matches digits
+        return f"{source}: claims caller {relative}:{line_text}, which is not a line number"
+
+    lines = referenced.read_text(encoding="utf-8").splitlines()
+    if cited < 1 or cited > len(lines):
+        return (
+            f"{source}: claims caller {relative}:{line_text}, which is past the end "
+            f"(the file has {len(lines)} lines)"
+        )
+
+    first = max(0, cited - 1 - CALLER_WINDOW)
+    last = min(len(lines), cited + CALLER_WINDOW)
+    if name in "\n".join(lines[first:last]):
+        return None
+
+    # Distinguish "moved" from "never there": a suggestion is actionable, and
+    # "never mentions" points at a citation for a different module entirely.
+    nearest: int | None = None
+    for index, line in enumerate(lines, start=1):
+        if name in line:
+            if nearest is None or abs(index - cited) < abs(nearest - cited):
+                nearest = index
+    if nearest is None:
+        return (
+            f"{source}: claims caller {relative}:{line_text}, which never mentions "
+            f"`{name}`"
+        )
+    return (
+        f"{source}: claims caller {relative}:{line_text}, but +/-{CALLER_WINDOW} lines "
+        f"there never mention `{name}`; the nearest mention is {relative}:{nearest} "
+        f"(line {abs(nearest - cited)} away)"
+    )
+
+
 def check_module(root: pathlib.Path, name: str, abi_symbols: set[str]) -> list[str]:
     """Returns a list of human-readable violations for one module."""
     problems: list[str] = []
@@ -112,19 +170,9 @@ def check_module(root: pathlib.Path, name: str, abi_symbols: set[str]) -> list[s
                 )
                 continue
             for relative, line_text in callers:
-                referenced = root / relative
-                if not referenced.exists():
-                    problems.append(
-                        f"{source}: claims caller {relative}:{line_text}, which does not exist"
-                    )
-                    continue
-                # The reference must really mention the module: a stale line number
-                # after unrelated edits is otherwise invisible.
-                if name not in referenced.read_text(encoding="utf-8"):
-                    problems.append(
-                        f"{source}: claims caller {relative}:{line_text}, which never "
-                        f"mentions `{name}`"
-                    )
+                problem = _citation_problem(root, source, name, relative, line_text)
+                if problem is not None:
+                    problems.append(problem)
         elif ABI_RE.search(body):
             symbols = SYMBOL_RE.findall(body)
             if not symbols:

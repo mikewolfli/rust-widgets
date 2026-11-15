@@ -10,8 +10,8 @@
 #           placeholder is not a lie, so it is not required to be answered
 # failed  = declarations that disagree with the implementation
 
-controls   242
-skipped    242
+controls   243
+skipped    243
 failed     0
 
 ## skipped entries (each with its reason)
@@ -222,6 +222,7 @@ failed     0
 - speed_dial::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - swipe_actions::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - drawer_section_header::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- step_strip::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - layer_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - playlist_panel::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - shape_canvas::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered

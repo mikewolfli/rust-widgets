@@ -206,6 +206,10 @@ GATE_LOG_DIR="${RW_GATE_LOG_DIR:-target/gate-logs}"
 PASS=0
 FAIL=0
 SKIPPED=0
+# Gates that passed but reported `partial-skip:` rows: some of their cells could not
+# run on this host. Reported as a count so "green" cannot hide it (W8-17).
+PARTIAL=0
+PARTIAL_GATES=()
 TIMED_OUT=0
 # How many gates the filter selected. Zero means the filter matched nothing — a
 # distinct failure from "all selected gates passed" (D08-G-01).
@@ -294,6 +298,11 @@ for gate in tools/check_*.sh; do
   end_ns="$(date +%s)"
   elapsed_s=$((end_ns - start_ns))
 
+  if [[ "$status" == "PASS" ]] && grep -q '^partial-skip:' "$log_file"; then
+    PARTIAL=$((PARTIAL + 1))
+    PARTIAL_GATES+=("$name")
+  fi
+
   case "$status" in
     PASS) PASS=$((PASS + 1)) ;;
     SKIP) SKIPPED=$((SKIPPED + 1)); SKIPPED_GATES+=("$name") ;;
@@ -323,7 +332,14 @@ for gate in tools/check_*.sh; do
 done
 
 echo
-echo "gates: PASS=$PASS FAIL=$FAIL TIMEOUT=$TIMED_OUT NOT-RUN=${#NOT_RUN_GATES[@]} SKIP(host-limited)=$SKIPPED"
+echo "gates: PASS=$PASS FAIL=$FAIL TIMEOUT=$TIMED_OUT NOT-RUN=${#NOT_RUN_GATES[@]} SKIP(host-limited)=$SKIPPED PARTIAL-SKIP=$PARTIAL"
+
+if [[ "${#PARTIAL_GATES[@]}" -gt 0 ]]; then
+  echo "partial-skip — passed with cells this host could not run:"
+  for g in "${PARTIAL_GATES[@]}"; do
+    echo "  - $g"
+  done
+fi
 
 if [[ "${#NOT_RUN_GATES[@]}" -gt 0 ]]; then
   echo "not run — the ${RUN_BUDGET}s whole-run budget was exhausted first:"

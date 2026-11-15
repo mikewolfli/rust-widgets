@@ -1,5 +1,11 @@
 """Sweeps the crate for error messages and reports the ones that are not actionable.
 
+# rw-report-only
+
+This file is a report, not a gate: it has no wrapper and no exit-1 verdict by design (see the
+closing paragraph). `check_gates_are_worth_running.sh` reads this marker rather than treating the
+missing wrapper as an orphan (W8-12).
+
 `docs/plans/TODO.md` asks to "ensure all error messages are user-friendly and
 actionable". As written that can neither pass nor fail, so it is restated as a
 checkable rule (principle #4) — an error a *caller* can see must do both of these:

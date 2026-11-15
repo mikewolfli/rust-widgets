@@ -323,6 +323,20 @@ jobs:
       - name: Cargo test (rust-widgets-suites, all groups)
         run: cargo test --manifest-path crates/rust-widgets-suites/Cargo.toml --all-features -q
 
+      # W8-04: the `form` group used to be compiled and registered unconditionally, so
+      # `default-features = false` still produced it and the feature was a ghost. This leg
+      # proves the gate is real: with no features the crate must build without the group,
+      # and `--features form` must add it back.
+      - name: Cargo check (rust-widgets-suites, no features)
+        run: >-
+          cargo check --manifest-path crates/rust-widgets-suites/Cargo.toml
+          --no-default-features --lib
+
+      - name: Cargo check (rust-widgets-suites, form only)
+        run: >-
+          cargo check --manifest-path crates/rust-widgets-suites/Cargo.toml
+          --no-default-features --features form --lib
+
       - name: Cargo clippy (rust-widgets-suites, deny warnings)
         run: >-
           cargo clippy --manifest-path crates/rust-widgets-suites/Cargo.toml
@@ -491,12 +505,16 @@ jobs:
           chmod +x tools/check_disabled_state_covers_kinds.sh
           chmod +x tools/check_error_enums_implement_display_and_error.sh
           chmod +x tools/check_codemap_counts.sh
+          chmod +x tools/check_widget_classification.sh
           chmod +x tools/check_large_file_ratchet.sh
           ./tools/check_focus_reachable_key_arms.sh
           ./tools/check_suites_conventions.sh
           ./tools/check_disabled_state_covers_kinds.sh
           ./tools/check_error_enums_implement_display_and_error.sh
           ./tools/check_codemap_counts.sh
+          # issue-20261115 §6.4 plan A: the classification page is generated from the
+          # registry, so this is a pure derivation check with no build behind it.
+          ./tools/check_widget_classification.sh
           ./tools/check_large_file_ratchet.sh
 
       - name: Cargo fmt check

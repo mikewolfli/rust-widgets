@@ -115,7 +115,7 @@ if [[ "$FOUND" -gt 0 ]]; then
     echo "  own text (src/style/primitives.rs, the field's own contract). A gap between two siblings"
     echo "  is the *layout's* fact and belongs in a layout's own \`gap\`, not in a control."
     echo "  Route the read through the accessor that names the role, the way"
-    echo "  base_widgets/checkbox.rs:109 does:"
+    echo "  \`CheckBox::label_gap\` / \`RadioButton::label_gap\` do:"
     echo "      fn label_gap(&self) -> i32 {"
     echo "          self.style().spacing.unwrap_or(dimensions::INDICATOR_TEXT_SPACING) as i32"
     echo "      }"

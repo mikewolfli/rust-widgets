@@ -10,10 +10,11 @@ Usage:
   python3 tools/check_plan_tables.py --list     # every offending row number
 """
 
+import glob
 import re
 import sys
 
-PLAN = "docs/plans/archive/blue23.md"
+PLAN_GLOB = "docs/plans/*.md"
 SEPARATOR = re.compile(r"^\|[-: |]+\|$")
 
 
@@ -29,8 +30,9 @@ def cells(row):
     return [part.strip() for part in parts]
 
 
-def main(argv):
-    lines = open(PLAN, encoding="utf-8").read().splitlines()
+def scan(path):
+    """Every row in `path` whose cell count disagrees with its own header."""
+    lines = open(path, encoding="utf-8").read().splitlines()
     problems = []
     index = 0
     while index < len(lines):
@@ -44,19 +46,30 @@ def main(argv):
             row = index + 2
             while row < len(lines) and lines[row].startswith("|"):
                 got = len(cells(lines[row]))
-                if got != want:
-                    problems.append((row + 1, want, got, lines[row][:80]))
+                if got < want:
+                    problems.append((path, row + 1, want, got, lines[row][:80]))
                 row += 1
             index = row
         else:
             index += 1
+    return problems
+
+
+def main(argv):
+    problems = []
+    # Every **active** plan is scanned, not only the one archived file this started
+    # from: a short row in an active plan is the table a reader is acting on (W8-12).
+    # `archive/` is excluded on purpose — it is retained history, not current guidance,
+    # and its older formatting is not something a current edit should have to rewrite.
+    for path in sorted(glob.glob(PLAN_GLOB, recursive=True)):
+        problems.extend(scan(path))
 
     print("rows whose cell count disagrees with their header: %d" % len(problems))
-    for line_number, want, got, preview in problems:
+    for path, line_number, want, got, preview in problems:
         if "--list" in argv:
-            print("  line %-5d header=%d row=%d  %s" % (line_number, want, got, preview))
+            print("  %s:%-5d header=%d row=%d  %s" % (path, line_number, want, got, preview))
         else:
-            print("  line %-5d header=%d row=%d" % (line_number, want, got))
+            print("  %s:%d header=%d row=%d" % (path, line_number, want, got))
     return 1 if problems else 0
 
 

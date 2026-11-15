@@ -15,12 +15,16 @@
 # gates CI already runs:
 #
 #   candidate  := tools/check_*.sh, excluding this file and the runner
-#   covered    := the file name appears in any `.github/workflows/*.yml`
-#              OR appears in another `tools/*.sh` (that script invokes it)
+#   covered    := the file name is **invoked** by any `.github/workflows/*.yml`
+#              OR invoked by another `tools/*.sh`
 #   action     := run every candidate that is not covered
 #
-# Both tests are textual, which is the right shape here: the claim is "some workflow
-# or gate names this script", and a name is exactly what a YAML/`bash` call contains.
+# "Invoked" means a call shape (`bash|sh|source|.` followed by the path), with
+# comments stripped first. The earlier text-only `grep -qF` counted a **comment**
+# that mentioned a gate as coverage, so 14 gates were neither run by CI nor by this
+# script — the exact hole this file exists to close (W8-11).
+#
+# `--list` prints the uncovered set and exits.
 #
 # Exit codes
 #   0  every gate ran and passed (or reported host-limited, exit 2)
@@ -44,21 +48,45 @@ cd "$ROOT_DIR" || exit 2
 
 MODE="${1:-run}"
 
+# True when `file` **invokes** `name`, not merely mentions it. Comments are removed
+# first, so a doc line that names a gate cannot count as coverage (W8-11).
+invokes() {
+  local name="$1" file="$2"
+  local escaped
+  escaped="$(printf '%s' "$name" | sed 's/[.[\*^$()+?{}|]/\\&/g')"
+  # A workflow names the script on a run line; any non-comment line is a step body
+  # there, so an exact name match is the right shape.
+  case "$file" in
+    *.yml|*.yaml)
+      sed 's/#.*//' "$file" 2>/dev/null | grep -qE "(^|[^A-Za-z0-9_.-])${escaped}([^A-Za-z0-9_.-]|$)"
+      ;;
+    *)
+      sed 's/#.*//' "$file" 2>/dev/null \
+        | grep -qE "(^|[;&|[:space:]])(bash|sh|source|\\.)[[:space:]]+[^[:space:]]*${escaped}([^A-Za-z0-9_.-]|$)"
+      ;;
+  esac
+}
+
 gates=()
 for path in tools/check_*.sh; do
   [ -f "$path" ] || continue
   name="$(basename "$path")"
-  # Workflow coverage: the name appears in a workflow file.
-  if grep -qF "$name" .github/workflows/*.yml 2>/dev/null; then
-    continue
-  fi
-  # Gate coverage: another tool script invokes it.
+  # Workflow coverage: a workflow step invokes the script.
   covered=0
+  for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
+    [ -f "$workflow" ] || continue
+    if invokes "$name" "$workflow"; then
+      covered=1
+      break
+    fi
+  done
+  [ "$covered" -eq 1 ] && continue
+  # Gate coverage: another tool script invokes it.
   while IFS= read -r caller; do
     [ "$caller" = "$path" ] && continue
     [ "$(basename "$caller")" = "run_all_gates.sh" ] && continue
     [ "$(basename "$caller")" = "run_local_gates.sh" ] && continue
-    if grep -qF "$name" "$caller" 2>/dev/null; then
+    if invokes "$name" "$caller"; then
       covered=1
       break
     fi
@@ -96,17 +124,29 @@ for gate in "${gates[@]}"; do
   fi
   printf '▶ %s\n' "$name"
   set +e
-  rw_run_bounded "${RW_GATE_TIMEOUT:-900}" bash "$gate"
+  gate_log="$(mktemp)"
+  rw_run_bounded "${RW_GATE_TIMEOUT:-900}" bash "$gate" 2>&1 | tee "$gate_log"
   status=$?
+  # W8-16: `exit 2` alone is not "host-limited"; the gate must say so. This is the
+  # same marker predicate `run_all_gates.sh` uses, so the two runners cannot classify
+  # the same event differently.
   case "$status" in
     0) pass=$((pass + 1)); printf '  PASS %s\n' "$name" ;;
-    2) skip=$((skip + 1)); printf '  SKIP(host-limited) %s\n' "$name" ;;
+    2)
+      if grep -q 'unsupported host' "$gate_log"; then
+        skip=$((skip + 1)); printf '  SKIP(host-limited) %s\n' "$name"
+      else
+        fail=$((fail + 1)); failed_names+=("$name")
+        printf '  FAIL %s (exit 2 without an `unsupported host` marker)\n' "$name"
+      fi
+      ;;
     *)
       fail=$((fail + 1))
       failed_names+=("$name")
       printf '  FAIL %s (exit %s)\n' "$name" "$status"
       ;;
   esac
+  rm -f "$gate_log"
 done
 
 echo

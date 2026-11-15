@@ -59,24 +59,54 @@ echo "[1/5] A1 every published icon_source owner refuses a non-persistable sourc
 # the refusal for each. Pairing by file is the check: a declared property with no refusal in the
 # control that owns it is the defect.
 a1_pairs=(
-  "src/widget/capability/properties_base.in.rs:src/widget/base_widgets/button.rs"
+  "src/widget/capability/properties_base.in.rs:src/widget/base_widgets/button/api.rs"
   "src/widget/capability/properties_menu.in.rs:src/widget/menu_toolbar/action.rs"
   "src/widget/capability/properties_menu.in.rs:src/widget/menu_toolbar/tool_button.rs"
   "src/widget/capability/properties_menu.in.rs:src/widget/menu_toolbar/menu_button.rs"
   "src/widget/capability/properties_other.in.rs:src/widget/overlay_widgets/fab.rs"
   "src/widget/capability/properties_other.in.rs:src/widget/display_widgets/icon.rs"
 )
+# W8-10 reverse injection: `RW_ICON_ENTRY_CONTRACT_INJECT_MISSING=1` adds a pair whose control
+# does not exist. The gate must say so rather than blaming a control.
+if [ "${RW_ICON_ENTRY_CONTRACT_INJECT_MISSING:-}" = "1" ]; then
+  a1_pairs+=("src/widget/capability/properties_base.in.rs:src/widget/base_widgets/__reverse_injection__.rs")
+fi
+
+# A control that was a single file may have been split into `<name>/api.rs`. The gate follows the
+# split instead of failing on an anchor that moved (W8-10).
+resolve_control() {
+  local control="$1"
+  if [ -f "$control" ]; then
+    printf '%s\n' "$control"
+    return 0
+  fi
+  local dir="${control%.rs}"
+  if [ -f "$dir/api.rs" ]; then
+    printf '%s\n' "$dir/api.rs"
+    return 0
+  fi
+  return 1
+}
+
 for pair in "${a1_pairs[@]}"; do
   table="${pair%%:*}"
   control="${pair##*:}"
+  if [ ! -f "$table" ]; then
+    bad "$table does not exist — the failure is the gate, not the control"
+    continue
+  fi
   if ! grep -q 'PropertySchema::new("icon_source"' "$table"; then
     bad "$table no longer declares icon_source (update this gate's pairing)"
     continue
   fi
-  if grep -qE '^[[:space:]]*(return[[:space:]]+)?Err\(CapabilityAccessError::IconSourceNotPersistable\)' "$control"; then
-    ok "$(basename "$control") refuses a borrowed source in its getter"
+  if ! control_path="$(resolve_control "$control")"; then
+    bad "$control does not exist (and no <name>/api.rs) — the failure is the gate, not the control"
+    continue
+  fi
+  if grep -qE '^[[:space:]]*(return[[:space:]]+)?Err\(CapabilityAccessError::IconSourceNotPersistable\)' "$control_path"; then
+    ok "$(basename "$control_path") refuses a borrowed source in its getter"
   else
-    bad "$(basename "$control") publishes icon_source but its getter never returns IconSourceNotPersistable"
+    bad "$control_path publishes icon_source but its getter never returns IconSourceNotPersistable"
   fi
 done
 

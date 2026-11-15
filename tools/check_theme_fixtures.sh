@@ -28,7 +28,13 @@ PROFILE="${PROFILE:-desktop}"
 fail=0
 
 echo "[1/3] preset fixtures are present"
-for preset in default dark; do
+# Every preset the generator writes, not just the two compared below.
+#
+# Presence is host-independent, so a missing (or deleted) `macos-*.json` is a finding here even
+# though those two files are excluded from the byte comparison in [3/3] for the reason recorded
+# there: they carry the host's system UI family. Without this row the step's own heading ("every
+# built-in preset has a checked-in fixture") was wider than the loop under it.
+for preset in default dark macos-light macos-dark; do
     if [[ -f "themes/${preset}.json" ]]; then
         echo "  themes/${preset}.json: present"
     else

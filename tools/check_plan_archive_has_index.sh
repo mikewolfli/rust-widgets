@@ -39,7 +39,7 @@ cd "$ROOT_DIR"
 ARCHIVE="docs/plans/archive"
 README="docs/plans/README.md"
 
-echo "[1/3] the archive and its index exist"
+echo "[1/4] the archive and its index exist"
 if [ ! -d "$ARCHIVE" ]; then
     echo "  FAIL  $ARCHIVE is missing"
     exit 1
@@ -57,7 +57,7 @@ if [ "$count" -eq 0 ]; then
 fi
 echo "  PASS  $count archived plan(s) found"
 
-echo "[2/3] every archived plan is named in the index"
+echo "[2/4] every archived plan is named in the index"
 unindexed=""
 while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -77,7 +77,7 @@ if [ -n "$unindexed" ]; then
 fi
 echo "  PASS  every archived plan is named in the index"
 
-echo "[3/3] the index names no file that is not archived"
+echo "[3/4] the index names no file that is not archived"
 # Read the `archive/`-linked names out of the index and check each exists. This is
 # the other direction: a dangling entry sends a reader to a file that moved again.
 dangling=""
@@ -95,6 +95,42 @@ if [ -n "$dangling" ]; then
     exit 1
 fi
 echo "  PASS  no dangling archive entry in the index"
+
+echo "[4/4] the counts stated in the index match the tree (W7-31)"
+# Three numbers in the README are claims about the tree, and all three had drifted.
+# A hand-maintained count is a fact nobody re-measures; deriving the expected value
+# from the tree makes the README's arithmetic part of the gate instead of a memory.
+live_root="$(find docs/plans -maxdepth 1 -name '*.md' -type f | grep -c . || true)"
+live_arch="$(find "$ARCHIVE" -maxdepth 1 -name '*.md' -type f | grep -c . || true)"
+live_principle="$(grep -oE '^[0-9]+\. ' docs/plans/principle.md | grep -oE '^[0-9]+' | sort -n | tail -1)"
+
+declared_root="$(grep -oE '目录里有 [0-9]+ 份' "$README" | grep -oE '[0-9]+' | head -1 || true)"
+declared_arch_one="$(grep -oE '[0-9]+ 份历史计划已归档' "$README" | grep -oE '^[0-9]+' | head -1 || true)"
+declared_arch_two="$(grep -oE '归档（[0-9]+ 份）' "$README" | grep -oE '[0-9]+' | head -1 || true)"
+declared_principle="$(grep -oE '#1–#[0-9]+' "$README" | grep -oE '[0-9]+$' | head -1 || true)"
+
+count_problems=0
+check_count() {
+    local label="$1" declared="$2" live="$3"
+    if [ -z "$declared" ]; then
+        echo "  FAIL  $label: the README states no count (nothing to check)"
+        count_problems=$((count_problems + 1))
+    elif [ "$declared" != "$live" ]; then
+        echo "  FAIL  $label: README says $declared, the tree has $live"
+        count_problems=$((count_problems + 1))
+    else
+        echo "  PASS  $label: $live"
+    fi
+}
+check_count "root plan files" "$declared_root" "$live_root"
+check_count "archived plan files (§ intro)" "$declared_arch_one" "$live_arch"
+check_count "archived plan files (§4 heading)" "$declared_arch_two" "$live_arch"
+check_count "principle range end" "$declared_principle" "$live_principle"
+if [ "$count_problems" -ne 0 ]; then
+    echo "        These numbers are claims about the tree; update the README prose with"
+    echo "        the live value instead of editing this gate."
+    exit 1
+fi
 
 echo
 echo "check_plan_archive_has_index: OK"

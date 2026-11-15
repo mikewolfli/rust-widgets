@@ -56,7 +56,7 @@ CEILING_SECS=3600   # 60 minutes — raised from 2700 when `check_android_runtim
                     # emulator boot + JNI probe, 86 s cold) joined the suite; see the budget
                     # comment in `run_all_gates.sh`. BLUE24 §9.2 criterion 2.
 
-echo "[1/4] every gate is reachable from the runner"
+echo "[1/5] every gate is reachable from the runner"
 if [ ! -f "$RUNNER" ]; then
     echo "  FAIL  $RUNNER is missing; there is no single entry point for the suite"
     exit 1
@@ -79,7 +79,33 @@ if [ "$gate_count" -eq 0 ]; then
 fi
 echo "  PASS  $gate_count gates, all reached by the runner's glob"
 
-echo "[2/4] the whole-run budget fits the ceiling"
+# W8-11: being on the glob is not enough — a gate must be **run** by CI or by
+# `run_local_gates.sh`. The local runner's uncovered set is the second half; a gate
+# in neither is the hole this reconciliation closes.
+if [ -x tools/run_local_gates.sh ]; then
+    local_uncovered="$(bash tools/run_local_gates.sh --list 2>/dev/null || true)"
+    unrun=""
+    for gate in tools/check_*.sh; do
+        [ -f "$gate" ] || continue
+        name="$(basename "$gate")"
+        if grep -qF "$name" .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null; then
+            continue
+        fi
+        if printf '%s\n' "$local_uncovered" | grep -qF "$gate"; then
+            continue
+        fi
+        unrun="${unrun}${name}
+"
+    done
+    if [ -n "$unrun" ]; then
+        echo "  FAIL  these gates are run by neither CI nor run_local_gates.sh:"
+        printf '%s' "$unrun" | sed 's/^/          /'
+        exit 1
+    fi
+    echo "  PASS  every gate is run by CI or by run_local_gates.sh"
+fi
+
+echo "[2/5] the whole-run budget fits the ceiling"
 # Read the default run budget out of the runner so this gate and the runner cannot
 # disagree about it. The literal default is what a plain invocation uses.
 run_budget="$(grep -oE 'RUN_BUDGET="\$\{RW_RUN_TIMEOUT:-[0-9]+\}"' "$RUNNER" \
@@ -97,7 +123,7 @@ if [ "$run_budget" -gt "$CEILING_SECS" ]; then
 fi
 echo "  PASS  run budget ${run_budget}s <= ${CEILING_SECS}s ceiling"
 
-echo "[3/4] every gate has reverse-injection evidence"
+echo "[3/5] every gate has reverse-injection evidence"
 if [ ! -f "$INJECTION" ]; then
     echo "  FAIL  $INJECTION is missing"
     echo "        Without it, no gate's ability to fail is on record."
@@ -131,7 +157,7 @@ echo "  PASS  all $gate_count gates are named in the record"
 echo "  NOTE  ${pending} gate(s) named but not yet injected (an honest backlog, not a pass):"
 grep -E '^\| .* \| — \| — \|' "$INJECTION" | sed -e 's/^| /          - /' -e 's/ | — | — |$//' || true
 
-echo "[4/4] every gate named in the record still exists"
+echo "[4/5] every gate named in the record still exists"
 # The forward direction above catches a gate with no row. This direction catches the
 # opposite drift: a row that names a gate which was renamed or deleted. Such a row reads
 # as evidence but describes a gate that cannot be run, so it must not count.
@@ -151,6 +177,36 @@ if [ -n "$missing_gates" ]; then
     exit 1
 fi
 echo "  PASS  every recorded .sh gate exists in tools/"
+
+# ── W8-12: the no-orphan judgement covers Python gates too ──
+#
+# `run_all_gates.sh` globs `check_*.sh`, so a `.py` gate without a wrapper is
+# invisible to both runners. Every `.py` is therefore either wrapped by the
+# same-named `.sh`, invoked by some `.sh`, or marked `# rw-report-only`.
+echo "[5/5] every check_*.py is wrapped, invoked, or a declared report"
+orphan_py=""
+for script in tools/check_*.py; do
+    [ -f "$script" ] || continue
+    base="$(basename "$script" .py)"
+    if [ -f "tools/${base}.sh" ]; then
+        continue
+    fi
+    if grep -qF "tools/$(basename "$script")" tools/*.sh 2>/dev/null; then
+        continue
+    fi
+    if grep -q 'rw-report-only' "$script"; then
+        continue
+    fi
+    orphan_py="${orphan_py}${script}
+"
+done
+if [ -n "$orphan_py" ]; then
+    echo "  FAIL  these Python gates have no wrapper, no caller, and no report marker:"
+    printf '%s' "$orphan_py" | sed 's/^/          /'
+    echo "        Add tools/check_<name>.sh, or the '# rw-report-only' header marker."
+    exit 1
+fi
+echo "  PASS  every Python gate is wrapped/invoked or declared a report"
 
 echo
 echo "check_gates_are_worth_running: OK"

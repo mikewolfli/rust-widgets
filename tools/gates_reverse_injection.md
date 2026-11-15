@@ -694,3 +694,68 @@ criterion 3 counts a missing record. Each was injected, observed red, and revert
 | `check_large_file_ratchet.sh` | created `src/zz_probe_big.rs` with 2005 comment lines (a file over the 2000-line limit the budget does not name) | finding naming `src/zz_probe_big.rs`, exit 1 (probe deleted: `✅ the >2000-line census holds`, exit 0) |
 | `check_skill_copies_agree.sh` | appended `<!-- drift probe -->` to `dsh-plugin/assets/rust-widgets-maintainer/SKILL.md` | `skill copies have drifted; the two must say the same thing (W4-22):` / `+<!-- drift probe -->`, exit 1 (restored: `✅ skill copies agree`, exit 0) |
 | `check_suites_conventions.sh` | created `crates/rust-widgets-suites/src/zz_probe.rs` with a raw `32 => {}` key arm | `checked files=96 raw_key_arms=1 modules=16 findings=1`, exit 1 (probe deleted: `raw_key_arms=0 findings=0`, exit 0) |
+
+## Declaration-layer and wiring round (2026-11-15, W7/W8)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_module_reachability.sh` | changed `src/compat.rs`'s citation `src/widget/base.rs:142` to `:43` (a line 99 away from every `compat` mention) | `claims caller src/widget/base.rs:43, but +/-5 lines there never mention \`compat\`; the nearest mention is src/widget/base.rs:142 (line 99 away)`, exit 1. Restored: `✅ module reachability: 41 \`pub mod\` declarations all state their state` |
+| `check_plan_archive_has_index.sh` | changed the §4 heading from `归档（37 份）` to `归档（38 份）` | `FAIL  archived plan files (§4 heading): README says 38, the tree has 37`, exit 1 (restored: four PASS rows, exit 0) |
+| `check_i18n_catalogue.sh` | added a `widget.no_such_control.label` key to `language/en.json` only | language key-set drift and `names no registered control`, exit 1 (restored: `✅ i18n catalogue: languages agree and every control label is canonical`) |
+| `check_plan_tables.sh` | removed one cell from a row of a table in `docs/plans/README.md` | `rows whose cell count disagrees with their header: 1` naming the file and line, exit 1 (restored: 0, exit 0) |
+| `check_icon_entry_contract.sh` | `RW_ICON_ENTRY_CONTRACT_INJECT_MISSING=1` adds a pair for `__reverse_injection__.rs` | `__reverse_injection__.rs does not exist (and no <name>/api.rs) — the failure is the gate, not the control`, exit 1 |
+
+## Repair round — gates that fired on the round's own change (2026-11-15/16, W7/W8)
+
+Six of these are *not* synthetic injections: each gate failed on a real defect the repair round had
+just introduced, and the fix changed the code rather than the judgement. They are recorded here
+because "the gate caught me" is the only evidence that a gate is load-bearing.
+
+| gate | what the round introduced | reported |
+|---|---|---|
+| `check_no_write_only_fields.sh` | `header_menu_scope: Option<ConnectionScope>` (held only for its `Drop`) in `table_widget/widget.rs` and `virtual_table/widget.rs` | `❌ write-only fields: 2` naming both fields (principle #99); fixed by renaming to `_header_menu_scope`, the `data_grid::bindings` `_scope` precedent |
+| `check_control_rendering.sh` | the `avatar` sample arm set an explicit indigo disc colour, so the control rendered identically in light and dark | `these controls render identically in light and dark and are not recorded as theme-blind …: ["avatar"]`; fixed by letting `Avatar::disc_fill()` derive the colour from the theme |
+| `check_capability_events_are_emitted.sh` | `TableWidget::sort_requested` was added to the census `table_widget:` row but not to the `table:` alias row | `❌ 1 emitted signal(s) are NOT published by their capability: table: sort_requested`; fixed by adding the name to both rows and re-deriving payloads |
+| `check_large_file_ratchet.sh` | the keyboard label cache pushed `input_widgets/keyboard.rs` to 2012 lines | `crossed 2000 lines (total_lines_over_2000); split it or record why`; fixed by extracting `input_widgets/keyboard_labels.rs` (back to 1994) |
+| `check_drawn_types_are_covered.sh` | `StepStrip` is a public `impl Draw` type with no factory row | `FAIL these impl Draw types are covered by no gate: StepStrip`; fixed by registering `step_strip` (capability, constructor, tie-break, census, snapshot) |
+| `check_capability_schema_is_current.sh` | the new control and its properties made the committed schema stale | `1080405 committed bytes, 1087394 regenerated`; fixed with `cargo run --example export_capability_schema` |
+
+Two follow-on gates fired inside the *fix* and are recorded with them:
+
+| gate | reported | resolution |
+|---|---|---|
+| `check_setter_census.sh` + `properties_tests` (`no derivable typed schema`, `UnknownCommand`) | `set_step_state(index, completed, optional)` was published as a command but is a three-argument write, so no `set_<property>` shape describes it | removed from `commands:`, added to `programmatic_setters.rs` as `C: composite write … the steps records property carries the same state` |
+| `check_event_signal_dyn.sh` | `step_strip` published `step_activated` with no `event_signal_dyn` arm | added the arm (`UInt(index)`), plus the two name maps in `check_event_signal_dyn.py` |
+
+Non-injectable defect found while running the gates: five gate scripts had their first header line
+outside the comment block (`check_behavior_matrix.sh`, `check_control_route_matrix.sh`,
+`check_embedded_demo_schema.sh`, `check_event_model_signal_first.sh`, `check_visual_regression.sh`),
+so bash printed `command not found` on every run and would have executed a same-named file from
+`PATH`. All five now start the line with `#`.
+
+## Classification page (issue-20261115 §6.4 plan A, 2026-11-16)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_widget_classification.sh` | changed the derived `base_widgets` count in `docs/plans/widget_classification.md` from `6` to `7` | `FAIL docs/plans/widget_classification.md is stale; run python3 tools/gen_widget_classification.py` plus `first difference at line 31` naming both spellings, exit 1. Regenerated: `✅ docs/plans/widget_classification.md matches its derivation`, exit 0 |
+
+Two more gates fired on the same round (per-control sweeps re-run after `step_strip` registered):
+
+| gate | what the round introduced | reported |
+|---|---|---|
+| `check_implicit_size_uses_metrics.sh` | `StepStrip::size_hint` returned literal sizes (`Size::new(240, 56)`) instead of deriving them | `these size hints derive an answer from literals … src/widget/companions/step_strip.rs:465`; fixed by routing through `ControlMetrics::implicit_size` + `estimate_line_height` (the `zoom_strip` precedent), and the now-unused `STRIP_HEIGHT` constant was deleted |
+| `check_theme_fixtures.sh` | `step_strip` joined `DISABLED_STATE_KINDS`, so `themes/default.json` and `themes/dark.json` were missing its `step_strip:disabled` entry | `themes/default.json: OUT OF DATE (regenerate with themes/generate.sh)` with the missing block in the diff; fixed with `themes/generate.sh` |
+
+While reading those failures, four gate scripts were found printing broken advice: the lines the
+W8-14 rewrite added put **unescaped backticks inside double-quoted `echo`**, so bash ran
+`Button::implicit_size`, `CheckBox::size_hint`, `CheckBox::label_gap`, … as commands and printed
+`command not found` instead of the guidance (`check_implicit_size_uses_metrics.sh`,
+`check_spacing_is_not_sibling_layout.sh`, `check_transition_durations_are_tokens.sh`,
+`check_focus_ring_respects_reason.sh`). All five lines now escape the backtick.
+
+Follow-up on the same gate: `check_theme_fixtures.sh` step [1] claimed "every built-in preset has a
+checked-in fixture" while its loop covered only `default`/`dark`. It now checks presence for
+`macos-light`/`macos-dark` too (presence is host-independent; only the byte comparison stays at two
+presets, because those files carry the host's system UI family). The committed macos fixtures were
+also missing the new `step_strip:disabled` row; it was inserted without the host-specific font
+change the local regeneration would have brought along.

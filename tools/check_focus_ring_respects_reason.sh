@@ -134,7 +134,7 @@ if [[ "$FOUND" -gt 0 ]]; then
     printf '%s\n' "$DETAIL"
     echo ""
     echo "  Ask the shared predicate before constructing the ring -- the way"
-    echo "  base_widgets/button/api.rs:144 does:"
+    echo "  \`Button::visual_focus\` in base_widgets/button/api.rs does:"
     echo "      pub fn visual_focus(&self) -> bool {"
     echo "          self.focused && self.focus_reason.draws_focus_ring()"
     echo "      }"

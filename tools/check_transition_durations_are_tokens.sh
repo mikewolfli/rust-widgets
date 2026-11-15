@@ -133,7 +133,7 @@ if [[ "$FOUND" -gt 0 ]]; then
     printf '%s\n' "$DETAIL"
     echo ""
     echo "  Read the duration from the motion tokens -- theme.motion.fast / .normal / .slow -- the"
-    echo "  way base_widgets/button.rs:182 does:"
+    echo "  way \`Button\`'s state transition and the accordion/carousel/overscroll transitions do:"
     echo "      let duration_ms = crate::style::theme_manager()"
     echo "          .current_theme()"
     echo "          .map(|theme| theme.motion.normal)"

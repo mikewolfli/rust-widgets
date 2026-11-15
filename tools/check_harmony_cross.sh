@@ -121,19 +121,19 @@ fi
 export OHOS_SDK_NATIVE
 
 if ! rustup_target_installed "$PRIMARY"; then
-    echo "HOST-GATED: rust target ${PRIMARY} is not installed"
+    echo "unsupported host (rust target ${PRIMARY} is not installed)"
     echo "  install with: rustup target add ${PRIMARY}"
     exit 2
 fi
 
 if ! rw_run_bounded "$HOST_PROBE_TIMEOUT" cargo ohos --version >/dev/null 2>&1; then
-    echo "HOST-GATED: cargo-ohos is not installed"
+    echo "unsupported host (cargo-ohos is not installed)"
     echo "  install with: cargo install cargo-ohos"
     exit 2
 fi
 
 if [[ -z "${OHOS_SDK_NATIVE:-}" || ! -d "${OHOS_SDK_NATIVE}/llvm/bin" ]]; then
-    echo "HOST-GATED: OHOS_SDK_NATIVE is unset or does not point at an OpenHarmony SDK"
+    echo "unsupported host (OHOS_SDK_NATIVE is unset or does not point at an OpenHarmony SDK)"
     echo "  expected the SDK's 'native' directory, containing llvm/bin"
     echo "  (got '${OHOS_SDK_NATIVE:-<unset>}')"
     exit 2

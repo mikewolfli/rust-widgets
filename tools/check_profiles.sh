@@ -304,6 +304,7 @@ if rustc --print target-list 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc' \
       --features "windows desktop-runtime controls-native controls-custom"
   fi
 else
+  echo "partial-skip: x86_64-pc-windows-msvc target not installed"
   echo "[6b/9] SKIPPED: x86_64-pc-windows-msvc target not installed"
   echo "   install it with: rustup target add x86_64-pc-windows-msvc"
 fi
@@ -353,6 +354,12 @@ run_test_case "gpu auto-compose mixed scene" \
 run_test_case "gpu auto-compose cpu fallback" \
   cargo test --lib --features gpu-wgpu render::tests::auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected
 rw_cargo_cached "$PROFILE_TIMEOUT" check --features gpu-wgpu --example demo_wgpu_control_parity
+# W8-01: the blend-mode public API contract was gated on `gpu-wgpu`, which is not in any
+# default/full list, so a plain `cargo test` compiled it as an empty crate and nothing else
+# ever ran it. Naming it here puts the two contracts on the CI path that already builds with
+# `gpu-wgpu` for the parity gate above.
+run_test_case "gpu blend-mode public api" \
+  cargo test --test wgpu_blend_modes_public_api_test --features gpu-wgpu
 
 # ── `mini` (no_std) × each OS backend ──
 #
