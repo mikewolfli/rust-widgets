@@ -16,7 +16,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/display_widgets/image_view.rs:7` (`use crate::image::{Image, ImageFormat}`).
+//! **State:** Production callers: `src/widget/display_widgets/image_view.rs:17` (`use crate::image::decoder::{decode_async, ImageDecodeJob}`) and `src/widget/display_widgets/image_view.rs:18` (`use crate::image::Image`).
 
 pub mod cache;
 mod color;

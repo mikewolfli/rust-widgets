@@ -212,6 +212,11 @@ pub struct Dropdown {
     /// Clearing the mark (the pointer leaving the list, or the list closing) has no row to
     /// name, so it is not emitted; [`Self::highlighted_index`] reports the cleared state.
     pub highlighted: Signal1<usize>,
+    /// Emitted with the new open state when the list is shown or hidden.
+    ///
+    /// Same name and payload as [`crate::widget::ComboBox`], so a host can close its own
+    /// popups when this one opens without polling (W7-14).
+    pub popup_visibility_changed: Signal1<bool>,
     /// The row `highlighted` last named, or `None` when nothing is marked.
     highlighted_index: Option<usize>,
     /// Maximum number of rows the expanded list shows at once, and the first painted row.
@@ -270,6 +275,7 @@ impl Dropdown {
             changed: GenericSignal::new(),
             activated: Signal1::new(),
             highlighted: Signal1::new(),
+            popup_visibility_changed: Signal1::new(),
             highlighted_index: None,
             window: PopupWindow::new(),
             type_ahead: String::new(),
@@ -533,6 +539,7 @@ impl Dropdown {
             #[cfg(not(alloc_frugal))]
             crate::widget::runtime::clear_popup_grab_for(self.id());
         }
+        self.popup_visibility_changed.emit(expanded);
         self.base.request_redraw();
     }
 
@@ -915,6 +922,11 @@ impl Widget for Dropdown {
             "highlighted" => Some(EventSignalRef::mapped("highlighted", &self.highlighted, |v| {
                 CapabilityValue::UInt(*v as u64)
             })),
+            "popup_visibility_changed" => Some(EventSignalRef::mapped(
+                "popup_visibility_changed",
+                &self.popup_visibility_changed,
+                |v| CapabilityValue::Bool(*v),
+            )),
             _ => None,
         }
     }
@@ -1278,6 +1290,19 @@ impl Draw for Dropdown {
             }
         };
         let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
+        // Hover wash for the collapsed field: `hovered_item` only names list rows, so a shut
+        // field painted its resting fill whatever the pointer did (W7-15). The weight comes
+        // from `StateOverlay::fill_blend`, matching the theme's `"<kind>:hover"` key.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let bg = if overlay.is_empty() {
+            bg
+        } else {
+            bg.blend(&bg.contrast_color(), overlay.fill_blend())
+        };
         let border = self.style().border_color.unwrap_or(Color::rgb(180, 180, 180));
         let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
         let placeholder_color = weak_ink.unwrap_or(Color::rgb(160, 160, 160));

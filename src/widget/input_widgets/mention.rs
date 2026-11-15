@@ -1364,7 +1364,15 @@ impl Draw for Mention {
         let widths = self.text_widths(&field_font, dpi_bits, &mut |text| {
             context.measure_text(text, &field_font).width
         });
-        let width_at = |offset: usize| -> u32 { widths.width_at(offset.min(self.text.len())) };
+        let width_at = |offset: usize| -> u32 {
+            let offset = offset.min(self.text.len());
+            // An RTL value paints in visual order, so every caret/selection/underline position
+            // derived from the logical prefix is mirrored (W7-18). All of those uses read this
+            // one closure, so fixing it here fixes them together.
+            crate::widget::text_utils::visual_caret_advance(&self.text, &field_font, offset)
+                .map(|x| x.max(0) as u32)
+                .unwrap_or_else(|| widths.width_at(offset))
+        };
         // The selection band sits under the glyphs, measured with the same shaper the text uses.
         if let Some((start, end)) = self.selection_range() {
             let from = start.min(self.text.len());
@@ -1397,8 +1405,8 @@ impl Draw for Mention {
         for mention in &self.completed {
             let start = mention.start.min(self.text.len());
             let end = mention.end.min(self.text.len());
-            let start_x = rect.x + 8 + width_at(start) as i32;
-            let width = width_at(end).saturating_sub(width_at(start)) as i32;
+            let start_x = rect.x + 8 + width_at(start).min(width_at(end)) as i32;
+            let width = (width_at(end) as i32 - width_at(start) as i32).unsigned_abs() as i32;
             // The underline sits just under the line box, so it tracks the effective font rather
             // than the fixed `rect.y + 22` that assumed a 12 px face.
             let underline_y = field_line.y + field_line.height as i32;

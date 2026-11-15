@@ -143,6 +143,8 @@ pub struct GridWidget {
     pub cell_clicked: Signal1<(u32, u32)>,
     /// Emitted when pointer hover changes to another cell.
     pub cell_hovered: Signal1<(u32, u32)>,
+    /// Emitted with the cell the pointer left, so a host can withdraw its read-out (W7-21).
+    pub cell_unhovered: Signal1<(u32, u32)>,
     /// Emitted when a context menu is requested over a cell.
     pub context_menu_requested: Signal1<(u32, u32)>,
     /// Emitted with the new page index when paging moves.
@@ -190,6 +192,7 @@ impl GridWidget {
             cell_edited: Signal1::new(),
             cell_clicked: Signal1::new(),
             cell_hovered: Signal1::new(),
+            cell_unhovered: Signal1::new(),
             context_menu_requested: Signal1::new(),
             page_changed: Signal1::new(),
             header_clicked: Signal1::new(),
@@ -234,6 +237,7 @@ impl GridWidget {
             cell_edited: Signal1::new(),
             cell_clicked: Signal1::new(),
             cell_hovered: Signal1::new(),
+            cell_unhovered: Signal1::new(),
             context_menu_requested: Signal1::new(),
             page_changed: Signal1::new(),
             header_clicked: Signal1::new(),
@@ -1200,6 +1204,14 @@ impl Widget for GridWidget {
                     ])
                 }))
             }
+            "cell_unhovered" => {
+                Some(EventSignalRef::mapped("cell_unhovered", &self.cell_unhovered, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
+                }))
+            }
             "context_menu_requested" => Some(EventSignalRef::mapped(
                 "context_menu_requested",
                 &self.context_menu_requested,
@@ -1856,7 +1868,9 @@ impl EventHandler for GridWidget {
                 // The hover wash is painted from `hovered_cell`; leaving the control has to drop
                 // it, or the last cell stays lit with no pointer over the grid.
                 if self.hovered_cell.is_some() {
-                    self.hovered_cell = None;
+                    if let Some(cell) = self.hovered_cell.take() {
+                        self.cell_unhovered.emit(cell);
+                    }
                     self.base.request_redraw();
                 }
             }

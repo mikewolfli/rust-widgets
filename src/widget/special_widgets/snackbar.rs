@@ -187,7 +187,16 @@ pub struct Snackbar {
     /// Emitted when action is triggered.
     pub action_triggered: Signal1<String>,
     /// Emitted when snackbar is dismissed.
+    ///
+    /// Only an item that was actually shown retires through this signal; a queued message that
+    /// is never displayed reports through [`Self::queue_overflow`] instead (W7-23).
     pub dismissed: Signal1<()>,
+    /// Emitted with the number of queued messages dropped because the queue is full.
+    ///
+    /// The `ToastHost` three-way split (`toast_expired` / `toast_dismissed` / `queue_overflow`)
+    /// is the sister precedent: a host counting deliveries must not read a dropped message as a
+    /// dismissed one.
+    pub queue_overflow: Signal1<usize>,
 }
 
 impl Snackbar {
@@ -215,6 +224,7 @@ impl Snackbar {
             overlay_offset: 0,
             action_triggered: Signal1::new(),
             dismissed: Signal1::new(),
+            queue_overflow: Signal1::new(),
         }
     }
 
@@ -267,12 +277,12 @@ impl Snackbar {
             if self.max_queued == 0 {
                 // No room to wait: the message is dropped, and the drop is reported rather
                 // than hidden, so a host can count what it lost.
-                self.dismissed.emit(());
+                self.queue_overflow.emit(1);
                 return;
             }
             while self.queue.len() >= self.max_queued {
                 self.queue.remove(0);
-                self.dismissed.emit(());
+                self.queue_overflow.emit(1);
             }
             self.queue.push((message, action_label, action_id));
             return;
@@ -291,8 +301,8 @@ impl Snackbar {
         self.max_queued
     }
 
-    /// Caps the queue; when full, the oldest waiting message is dropped and `dismissed` is
-    /// emitted for it.
+    /// Caps the queue; when full, the oldest waiting message is dropped and
+    /// `queue_overflow` is emitted for it.
     pub fn set_max_queued(&mut self, max_queued: usize) {
         let max_queued = max_queued.min(64);
         if self.max_queued == max_queued {
@@ -301,7 +311,7 @@ impl Snackbar {
         self.max_queued = max_queued;
         while self.queue.len() > self.max_queued {
             self.queue.remove(0);
-            self.dismissed.emit(());
+            self.queue_overflow.emit(1);
         }
         self.base.request_redraw();
     }
@@ -622,6 +632,11 @@ impl Widget for Snackbar {
             "dismissed" => Some(EventSignalRef::mapped("dismissed", &self.dismissed, |_| {
                 CapabilityValue::Null
             })),
+            "queue_overflow" => {
+                Some(EventSignalRef::mapped("queue_overflow", &self.queue_overflow, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -996,12 +1011,16 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// The queue is bounded; overflow drops the oldest waiting message and says so.
+    /// The queue is bounded; overflow drops the oldest waiting message and says so through
+    /// `queue_overflow`, not `dismissed` (a dropped waiter was never on screen).
     #[test]
     fn the_queue_drops_the_oldest_message_when_full() {
         let mut bar = Snackbar::new(Rect::new(0, 0, 420, 120));
         bar.set_queueing(true);
         bar.set_max_queued(2);
+        let overflowed = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&overflowed);
+        bar.queue_overflow.connect(move |dropped| *sink.lock().unwrap() += *dropped);
         let dismissed = Arc::new(Mutex::new(0usize));
         let sink = Arc::clone(&dismissed);
         bar.dismissed.connect(move |_| *sink.lock().unwrap() += 1);
@@ -1011,7 +1030,12 @@ mod tests {
         bar.show("third");
         bar.show("fourth");
         assert_eq!(bar.queued_count(), 2, "the queue stays at its cap");
-        assert_eq!(*dismissed.lock().unwrap(), 1, "each dropped message is reported");
+        assert_eq!(
+            *overflowed.lock().unwrap(),
+            1,
+            "each dropped message is reported through queue_overflow"
+        );
+        assert_eq!(*dismissed.lock().unwrap(), 0, "a message that never showed is not 'dismissed'");
 
         // The two most recent waiters survive, in order.
         bar.dismiss();

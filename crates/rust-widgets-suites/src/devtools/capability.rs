@@ -133,6 +133,10 @@ const DIFF_FILE_LIST_EVENTS: &[EventSchema] = &[
 const TERMINAL_FIND_BAR_EVENTS: &[EventSchema] =
     &[EventSchema { name: "matches_changed", payload: Some(K::UInt), shape: Some(S::Tuple2) }];
 
+/// `terminal_view` capability.
+///
+/// Borrowed kind: it declares `WidgetKind::TextEdit` but registers the canonical name
+/// `terminal_view`; `capability_for_kind_instance` is what tells the two apart (W8-08).
 pub fn terminal_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TextEdit,
@@ -148,6 +152,10 @@ pub fn terminal_view_capability() -> WidgetCapability {
     }
 }
 
+/// `diff_viewer` capability.
+///
+/// Borrowed kind: it declares `WidgetKind::Table` but registers the canonical name `diff_viewer`;
+/// `capability_for_kind_instance` is what tells the two apart (W8-08).
 pub fn diff_viewer_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,

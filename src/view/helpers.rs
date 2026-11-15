@@ -20,17 +20,18 @@ use super::node::Node;
 /// drew a `PropertyRefused` for every wired node). One predicate, called from every writer, is the
 /// shape that cannot drift.
 ///
-/// # Why the literal, and not `crate::designer::WIRE_PROP_PREFIX`
+/// # Why the literal lives here
 ///
 /// `crate::designer` is gated on `designer_tooling` (it parses a project document, so it needs
-/// `serde_json`), while `crate::view` exists on every device profile. Reading the constant from
-/// there made `view` fail to compile on `tablet`/`mobile`, where the generator's module is absent —
-/// the probe crate in `check_generator_output_compiles.sh` caught it. `tools/check_generator_agrees_with_registry.sh`
-/// is not enough on its own here: it runs under `desktop`, where `designer` *is* present.
+/// `serde_json`), while `crate::view` exists on every device profile. The literal therefore has
+/// to live on the `view` side, and the generator aliases
+/// `crate::view::GENERATED_WIRE_PROP_PREFIX` instead of spelling it a second time (W7-27). The
+/// reverse direction — `view` reading `crate::designer` — is what broke the `tablet`/`mobile`
+/// builds, because the generator's module is absent there; the probe crate in
+/// `check_generator_output_compiles.sh` caught it.
 ///
-/// The literal is therefore duplicated deliberately, and `tests/`-level agreement is what keeps the
-/// two in step: `crate::designer` asserts in its own tests that
-/// `is_generated_wire_prop(WIRE_PROP_PREFIX)` is true, so changing one without the other fails.
+/// The equality test in `crate::designer` stays as a guard: it now compares an alias with its
+/// source, so it fails if someone reintroduces a literal on the generator side.
 ///
 /// Kept as a free `pub(crate)` function rather than a method on `Node`, because the carrier is the
 /// generator's vocabulary and not part of the declarative model: a caller of `crate::view` never

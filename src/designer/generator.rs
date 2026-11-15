@@ -2949,7 +2949,14 @@ pub fn is_wire_key(name: &str) -> bool {
 /// The prefix is not a public vocabulary: nothing outside this module and the generated
 /// `create_for` reads it, and a prop with this prefix is stripped before the node is used as a
 /// control description.
-pub const WIRE_PROP_PREFIX: &str = "__wire_";
+///
+/// # One source, not two
+///
+/// The literal lives in [`crate::view::GENERATED_WIRE_PROP_PREFIX`], where the layer that strips
+/// the carrier can see it on every profile. `view` compiles where `designer` does not, so this
+/// direction of the dependency is the only safe one; the generator therefore aliases that
+/// constant rather than spelling `"__wire_"` a second time (W7-27).
+pub const WIRE_PROP_PREFIX: &str = crate::view::GENERATED_WIRE_PROP_PREFIX;
 
 /// How many wire rules the generator shares with the runtime (T-3's "reuse, not rewrite").
 ///

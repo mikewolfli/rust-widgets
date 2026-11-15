@@ -63,6 +63,7 @@
 // does not put in the extern prelude.
 extern crate alloc;
 
+#[cfg(feature = "form")]
 pub mod form_widgets;
 
 #[cfg(feature = "webview")]
@@ -145,6 +146,8 @@ pub(crate) fn veil_if_disabled(
 use rust_widgets::widget::capability::types::RegistrationError;
 use rust_widgets::widget::capability::WidgetFactory;
 
+#[cfg(feature = "form")]
+#[cfg(feature = "form")]
 pub use form_widgets::{
     create_form, create_form_set, default_property_value, form_capability, form_set_capability,
     published_event_names, published_property_names, Form, FormField, FormFieldLayout,
@@ -170,6 +173,7 @@ pub use finance::{
 /// Installs the form group into `factory`.
 ///
 /// The per-group entry point, so a host that wants one group can install exactly that one.
+#[cfg(feature = "form")]
 pub fn install_form_group(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
     form_widgets::install(factory)
 }
@@ -227,6 +231,10 @@ pub fn install_media_playback_group(factory: &mut WidgetFactory) -> Result<(), R
 /// The order is the registration order, and `try_register` makes a duplicate name an error rather
 /// than a silent last-writer-wins. A group compiled out by its feature contributes no names.
 pub fn install(factory: &mut WidgetFactory) -> Result<(), RegistrationError> {
+    // With every suite feature off there is nothing to install; the reference still counts as
+    // used so a no-feature build stays warning-free (the CI leg added for W8-04).
+    let _ = &*factory;
+    #[cfg(feature = "form")]
     install_form_group(factory)?;
     #[cfg(feature = "webview")]
     install_webview_group(factory)?;

@@ -24,7 +24,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 mod events;
 mod properties;
@@ -51,6 +51,22 @@ const HEADER_ROW_HEIGHT: u32 = 20;
 /// arm — and they did not even measure from the same origin. [`TableWidget::row_rect`] is now the
 /// one derivation, which is what makes the row a click selects the row a hover highlights.
 const TABLE_ROW_HEIGHT: u32 = 20;
+
+/// Resolves a [`crate::widget::HeaderMenu`] column token to a header index.
+///
+/// A token is either the header title, a numeric index, or a `ColumnSpec::to_token()` spelling
+/// (`title|width|flags|…`). A token this table does not know is ignored rather than guessed at,
+/// which is the rule the `DataGrid` chooser binding documents.
+fn resolve_column_token(token: &str, titles: &HashMap<String, usize>) -> Option<usize> {
+    if let Some(index) = titles.get(token) {
+        return Some(*index);
+    }
+    if let Ok(index) = token.parse::<usize>() {
+        return Some(index);
+    }
+    let title = token.split('|').next()?;
+    titles.get(title).copied()
+}
 
 /// Table model abstraction for table-like views.
 pub trait TableModel: Send + Sync {
@@ -211,6 +227,22 @@ pub struct TableWidget {
     section_clicked: Signal1<usize>,
     /// Emitted when the context menu is requested at a point.
     pub context_menu_requested: Signal1<crate::core::Point>,
+    /// Emitted when an attached [`crate::widget::HeaderMenu`] asks to sort a column (W7-07).
+    ///
+    /// A `TableWidget` is a view over a model it does not own, so it cannot reorder rows itself;
+    /// the request travels to the host, which applies it to the model. `false` is ascending.
+    pub sort_requested: Signal1<(usize, bool)>,
+    /// The status bar this table keeps its counts current in, when one is attached.
+    status_bar: Option<(Arc<Mutex<(u64, u64)>>, GenericSignal)>,
+    /// The `(rows, selected)` pair last written to the status bar.
+    status_bar_pushed: (u64, u64),
+    /// Sort intents reported by an attached header menu, drained by [`Self::poll_header_menu`].
+    header_sort_requests: Arc<Mutex<Vec<(usize, bool)>>>,
+    /// The attached header menu's subscription, dropped with the attachment.
+    ///
+    /// Held for its `Drop` only: the connection lives as long as the scope, so no reader is
+    /// needed (the `_` prefix says so, matching `data_grid::bindings`' `_scope`).
+    _header_menu_scope: Option<ConnectionScope>,
     /// Labels supplied through [`TableWidget::set_header_labels`].
     header_labels: Vec<String>,
     /// Whether the header band is painted and reserved.
@@ -289,6 +321,11 @@ impl TableWidget {
             cell_double_clicked: Signal1::new(),
             section_clicked: Signal1::new(),
             context_menu_requested: Signal1::new(),
+            sort_requested: Signal1::new(),
+            status_bar: None,
+            status_bar_pushed: (u64::MAX, u64::MAX),
+            header_sort_requests: Arc::new(Mutex::new(Vec::new())),
+            _header_menu_scope: None,
             header_labels: Vec::new(),
             header_visible: true,
             editable: true,
@@ -637,6 +674,107 @@ impl TableWidget {
     pub fn set_header_labels(&mut self, labels: &[&str]) {
         self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
         self.base.request_redraw();
+    }
+
+    /// Keeps `bar`'s row and selection counts current for this table (W7-07).
+    ///
+    /// The `DataGrid` binding is the precedent: the strip consumes no table signal, so the table
+    /// writes the shared count cell and emits the strip's own repaint request. A widget cannot hold
+    /// a borrow of another, so the link is that cell rather than a reference.
+    pub fn attach_grid_status_bar(&mut self, bar: &crate::widget::companions::GridStatusBar) {
+        let handle = bar.counts_handle();
+        self.status_bar = Some(handle);
+        // Force the first poll to write, even for an empty table.
+        self.status_bar_pushed = (u64::MAX, u64::MAX);
+        self.poll_grid_status_bar();
+    }
+
+    /// Detaches the status bar, if one is attached.
+    pub fn detach_grid_status_bar(&mut self) {
+        self.status_bar = None;
+    }
+
+    /// Writes the current `(rows, selected)` counts to the attached strip.
+    ///
+    /// Called at the top of every paint and after a selection change; the last-write record makes
+    /// a steady frame a no-op instead of a repaint request.
+    pub fn poll_grid_status_bar(&mut self) {
+        let Some((counts, redraw)) = self.status_bar.as_ref() else {
+            return;
+        };
+        let rows = self.row_count() as u64;
+        let selected = self.selected_rows().len() as u64;
+        let next = (rows, selected.min(rows));
+        if next == self.status_bar_pushed {
+            return;
+        }
+        self.status_bar_pushed = next;
+        let mut guard = counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = next;
+        drop(guard);
+        redraw.emit();
+    }
+
+    /// Attaches `menu` so its sort requests reach [`Self::sort_requested`] (W7-07).
+    ///
+    /// A table is a view over a model it does not own, so a sort request is forwarded to the host
+    /// rather than reordering rows here; the queue is drained by [`Self::poll_header_menu`].
+    pub fn attach_header_menu(&mut self, menu: &crate::widget::companions::HeaderMenu) {
+        let titles = self.column_title_lookup();
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&self.header_sort_requests);
+        let redraw = self.base.redraw_requested_signal().clone();
+        menu.sort_requested.connect_scoped(&scope, move |reported| {
+            let (token, state) = &*reported;
+            let Some(column) = resolve_column_token(token, &titles) else {
+                return;
+            };
+            let descending = match state {
+                crate::widget::companions::SortState::Asc => false,
+                crate::widget::companions::SortState::Desc => true,
+                crate::widget::companions::SortState::None => return,
+            };
+            sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((column, descending));
+            redraw.emit();
+        });
+        self._header_menu_scope = Some(scope);
+    }
+
+    /// Detaches the header menu, if one is attached.
+    pub fn detach_header_menu(&mut self) {
+        self._header_menu_scope = None;
+    }
+
+    /// Emits the sort requests an attached header menu has reported since the last poll.
+    pub fn poll_header_menu(&mut self) {
+        let requests = {
+            let mut guard =
+                self.header_sort_requests.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guard.is_empty() {
+                return;
+            }
+            core::mem::take(&mut *guard)
+        };
+        for (column, descending) in requests {
+            self.sort_requested.emit((column, descending));
+        }
+    }
+
+    /// Header titles keyed for a [`crate::widget::HeaderMenu`] column token.
+    fn column_title_lookup(&self) -> HashMap<String, usize> {
+        let mut titles = HashMap::new();
+        for index in 0..self.column_count() {
+            let title = self
+                .columns
+                .get(index)
+                .map(|spec| spec.title.clone())
+                .filter(|title| !title.is_empty())
+                .or_else(|| self.header_labels.get(index).cloned());
+            if let Some(title) = title {
+                titles.entry(title).or_insert(index);
+            }
+        }
+        titles
     }
 
     // ── Column structure (RW-5, RW-6) ──
@@ -1508,6 +1646,14 @@ impl Widget for TableWidget {
                             v.kind.as_str(),
                         )),
                         crate::widget::capability::CapabilityValue::UInt(v.index as u64),
+                    ]))
+                }))
+            }
+            "sort_requested" => {
+                Some(EventSignalRef::mapped("sort_requested", &self.sort_requested, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::Bool(v.1),
                     ]))
                 }))
             }

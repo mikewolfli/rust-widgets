@@ -70,7 +70,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: src/event/loop.rs:1304 calls `reactive_pump_event()` to wake the host that drives this engine, and src/designer/mod.rs:104 shares `GENERATED_WIRE_PROP_PREFIX` / `is_generated_wire_prop` with the code generator. The engine's own mounting entry points are `ViewEngine::mount`, `ViewEngine::update`, and — for a caller that already owns a `Node` tree — `ViewEngine::mount_tree` / `ViewEngine::update_tree`.
+//! **State:** Production callers: `src/event/loop.rs:1790` posts `crate::view::REACTIVE_PUMP_EVENT` to wake the host that drives this engine, and `src/designer/generator.rs:2952` aliases `crate::view::GENERATED_WIRE_PROP_PREFIX`, so the wire carrier has a single definition that the stripping layer owns. The engine's own mounting entry points are `ViewEngine::mount`, `ViewEngine::update`, and — for a caller that already owns a `Node` tree — `ViewEngine::mount_tree` / `ViewEngine::update_tree`.
 //!
 //! Not duplicated by `crate::json`: the JSON loader parses *one* tree and instantiates it once,
 //! with no previous tree to compare against, so it cannot preserve an identity across an
@@ -150,11 +150,11 @@ pub(crate) use helpers::{
     generated_wire_prop, generated_wire_suffix, is_generated_wire_prop, is_transparent_node,
     mounted_slots,
 };
-// The prefix itself has exactly one consumer: the designer's test asserting that
-// `designer::generator::WIRE_PROP_PREFIX` and this one cannot drift. Re-exporting it only
-// for that build keeps the non-test build warning-free (principle #10), and the
-// `designer_tooling` half keeps it warning-free on the profiles that have no designer at all
-// (tablet/mobile/mini/embedded), where the only reader is compiled out.
-#[cfg(all(test, designer_tooling))]
+// The prefix itself has two readers: the stripping predicates in this module and
+// `designer::generator::WIRE_PROP_PREFIX`, which aliases it rather than spelling a second
+// literal (W7-27). The re-export is gated on `designer_tooling` because that is the only build
+// that has a designer to read it, which keeps the non-designer profiles warning-free
+// (principle #10).
+#[cfg(designer_tooling)]
 pub(crate) use helpers::GENERATED_WIRE_PROP_PREFIX;
 pub use helpers::VIEW_GATE_PROBE;

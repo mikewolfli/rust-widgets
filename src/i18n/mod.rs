@@ -21,8 +21,8 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/base.rs:1175` (`crate::translate_key`, the
-//! capability-correct entry point behind built-in tooltips), `src/widget/dialog/file_dialog.rs`
+//! **State:** Production callers: `src/widget/base.rs:1378` (`crate::translate_key`, the
+//! capability-correct entry point behind built-in tooltips), `src/widget/dialog/file_dialog.rs:79`
 //! (`tr!()` for built-in strings), `src/platform/profile.rs:586` (`crate::i18n::init`).
 mod global;
 mod macros;

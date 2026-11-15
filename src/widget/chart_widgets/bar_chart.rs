@@ -214,7 +214,7 @@ struct AxisPickerBinding {
 
 /// The cached hover overlay: `(category index, data revision, font size bits)` followed by the
 /// formatted lines (text and ink) and their widest measured width.
-type HoverReadout = (usize, u64, u32, Vec<(String, Color)>, i32);
+type HoverReadout = (usize, u64, crate::core::Font, u32, Vec<(String, Color)>, i32);
 
 /// A vertical bar chart widget for categorical data.
 pub struct BarChart {
@@ -2656,15 +2656,18 @@ impl BarChart {
         let font = role_font(self.base.style(), 10.0);
         let surface = self.base.style().background_color.unwrap_or_else(|| axis_chrome_color(0.96));
         let ink = surface.contrast_color();
-        let font_size_bits = font.size().to_bits();
         let revision = self.data_revision;
+        let dpi_bits = context.dpi_scale().to_bits();
         let mut cache = self.hover_readout.borrow_mut();
+        // The whole face and the device scale enter the key: `measure_text` scales by DPI, and a
+        // family change moves the advance at the same size (W7-10).
         let fresh = matches!(
             cache.as_ref(),
-            Some((cached_index, cached_revision, cached_font, _, _))
+            Some((cached_index, cached_revision, cached_font, cached_dpi, _, _))
                 if *cached_index == index
                     && *cached_revision == revision
-                    && *cached_font == font_size_bits
+                    && *cached_font == font
+                    && *cached_dpi == dpi_bits
         );
         if !fresh {
             let category_label = self
@@ -2705,9 +2708,9 @@ impl BarChart {
                 .map(|(line, _)| context.measure_text(line, &font).width as i32)
                 .max()
                 .unwrap_or(0);
-            *cache = Some((index, revision, font_size_bits, lines, widest));
+            *cache = Some((index, revision, font.clone(), dpi_bits, lines, widest));
         }
-        let Some((_, _, _, lines, widest)) = cache.as_ref() else {
+        let Some((_, _, _, _, lines, widest)) = cache.as_ref() else {
             return;
         };
         let line_height = context.measure_text("0", &font).height.max(1) as i32 + 2;

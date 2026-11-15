@@ -21719,17 +21719,21 @@ impl IconName {
     /// placeholder. A `None` here would be a lie about a value that cannot be absent.
     #[cfg(feature = "data")]
     pub fn data(self) -> IconData {
-        use crate::data::ICON_DATA;
-        // Indexed by the enum's declaration order, which is also `ICON_DATA`'s order: both
+        // Read through the public accessor rather than the `data` module directly: `icon_data()`
+        // was a second path to the same static table with no caller (W8-09). This makes the
+        // accessor the one route the crate itself uses, so its index contract is exercised by
+        // every icon draw.
+        let table = crate::icon_data();
+        // Indexed by the enum's declaration order, which is also `icon_data()`'s order: both
         // come from the same token list. The `debug_assert!` catches a reorder in a debug
         // build; `tests/icon_data_integrity_test.rs` checks the names in every build.
         let index = self as usize;
         debug_assert_eq!(
-            ICON_DATA[index].name,
+            table[index].name,
             self.as_str(),
             "ICON_DATA order must match IconName declaration order"
         );
-        ICON_DATA[index]
+        table[index]
     }
 
     /// [`Self::data`], available whether or not the feature is on.

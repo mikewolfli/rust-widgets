@@ -26,6 +26,23 @@ pub struct InputMethodQuery {
     pub caret_byte: Option<usize>,
 }
 
+/// Resolves one `a11y.state.*` catalogue word, falling back to the English token.
+///
+/// A build without the `i18n` feature returns the key verbatim, and a description that
+/// reads `a11y.state.checked` would be worse than the plain word it replaces — so the
+/// fallback is chosen here instead of leaking the key.
+fn a11y_state_word(key: &str, fallback: &str) -> String {
+    #[cfg(feature = "i18n")]
+    {
+        let translated = crate::translate_key(key);
+        if translated != key {
+            return translated;
+        }
+    }
+    let _ = key;
+    String::from(fallback)
+}
+
 /// Common widget contract implemented by all widget models.
 pub trait Widget: EventHandler + Any {
     /// Returns shared base widget state for default trait delegation.
@@ -571,6 +588,20 @@ pub trait Widget: EventHandler + Any {
                 }
             }
         }
+        // 3. The catalogue's own label for this control, so an unlabelled control is
+        //    announced as "Check Box" / "复选框" rather than its Rust variant spelling.
+        //    The key is built from the canonical factory name (`widget.check_box.label`),
+        //    which is what makes the 148 translated labels a consumed mechanism rather
+        //    than a third parallel glossary (W7-04). A missing key returns the key
+        //    verbatim, which is the signal to keep going.
+        #[cfg(widgets_unstripped)]
+        if let Some(name) = crate::widget::capability::factory_name_for_kind(self.kind()) {
+            let key = crate::compat::format!("widget.{name}.label");
+            let translated = crate::translate_key(&key);
+            if translated != key {
+                return translated;
+            }
+        }
         format!("{:?}", self.kind())
     }
     /// Returns the semantic accessibility role for this widget.
@@ -609,12 +640,41 @@ pub trait Widget: EventHandler + Any {
     }
     /// Returns a short accessibility description with current visibility/enabled state.
     fn accessible_description(&self) -> String {
-        let mut state_flags: Vec<&str> = Vec::new();
+        let mut state_flags: Vec<String> = Vec::new();
         if !self.is_enabled() {
-            state_flags.push("disabled");
+            state_flags.push(String::from("disabled"));
         }
         if !self.is_visible() {
-            state_flags.push("hidden");
+            state_flags.push(String::from("hidden"));
+        }
+        // The catalogue's state words are the one consumer of `a11y.state.*` (W7-04).
+        // They are read from the property contract the same way the checked/selected
+        // logic in `A11yState::from_widget` does, so a control that publishes none of
+        // them contributes nothing rather than a fabricated "unchecked".
+        if let Some(props) = self.properties_dyn() {
+            if let Ok(crate::widget::capability::CapabilityValue::Bool(checked)) =
+                props.get("checked")
+            {
+                state_flags.push(a11y_state_word(
+                    if checked { "a11y.state.checked" } else { "a11y.state.unchecked" },
+                    if checked { "checked" } else { "unchecked" },
+                ));
+            }
+            if let Ok(crate::widget::capability::CapabilityValue::Bool(selected)) =
+                props.get("selected")
+            {
+                if selected {
+                    state_flags.push(a11y_state_word("a11y.state.selected", "selected"));
+                }
+            }
+            if let Ok(crate::widget::capability::CapabilityValue::Bool(expanded)) =
+                props.get("expanded")
+            {
+                state_flags.push(a11y_state_word(
+                    if expanded { "a11y.state.expanded" } else { "a11y.state.collapsed" },
+                    if expanded { "expanded" } else { "collapsed" },
+                ));
+            }
         }
         if state_flags.is_empty() {
             format!("{:?}", self.accessible_role())
@@ -1386,6 +1446,23 @@ mod tests {
         button.set_enabled(false);
         button.hide();
         assert_eq!(button.accessible_description(), "Button (disabled, hidden)");
+    }
+
+    /// The catalogue's `a11y.state.*` words are consumed here (W7-04), so the
+    /// announcement follows the active language instead of a hard-coded token.
+    #[test]
+    fn a_checkable_control_announces_its_state_from_the_catalogue() {
+        use crate::widget::base_widgets::checkbox::CheckBox;
+        let mut check = CheckBox::new(Rect::new(0, 0, 100, 24));
+        check.set_checked(false);
+        let unchecked = check.accessible_description();
+        check.set_checked(true);
+        let checked = check.accessible_description();
+        assert_ne!(checked, unchecked, "the checked state must reach the description");
+        assert!(
+            checked.contains('('),
+            "the state word is part of the parenthesised list: {checked}"
+        );
     }
 
     #[test]

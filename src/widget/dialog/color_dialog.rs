@@ -220,10 +220,10 @@ pub struct ColorDialog {
     hue: f32,
     /// The caller's custom colors.
     ///
-    /// Stored and published (`custom_colors`/`custom_color_count`) for the host, but **not**
-    /// painted: the strip the dialog draws is [`PRESET_COLORS`], and a custom entry is not
-    /// given a swatch. This field used to claim it was "drawn after the built-in presets", which
-    /// nothing implemented.
+    /// Stored and published (`custom_colors`/`custom_color_count`) for the host, and painted in
+    /// the preset row ahead of the built-ins, most recent first. Before W7-25 the eight slots were
+    /// all taken by [`PRESET_COLORS`], so a custom colour could never be seen or picked even
+    /// though the API accepted it.
     custom_colors: Vec<Color>,
     /// The typed hex text while the hex field is focused.
     hex_input: String,
@@ -816,10 +816,20 @@ impl ColorDialog {
 
     /// The preset color at a swatch index, including custom colors after the built-ins.
     fn palette_color(&self, index: usize) -> Option<Color> {
-        PRESET_COLORS
-            .get(index)
-            .copied()
-            .or_else(|| self.custom_colors.get(index.saturating_sub(PRESET_COLORS.len())).copied())
+        self.palette_entries().get(index).copied()
+    }
+
+    /// The palette the preset row paints, in slot order.
+    ///
+    /// Custom colours come first, most recent first, so a host's own colours are visible even
+    /// though the row has eight slots in total; the built-ins fill whatever is left. This is the
+    /// one list both the rect count and the colour lookup read, so the two cannot disagree about
+    /// how many swatches exist (W7-25).
+    fn palette_entries(&self) -> Vec<Color> {
+        let mut entries = Vec::with_capacity(PRESET_COLORS.len() + self.custom_colors.len());
+        entries.extend(self.custom_colors.iter().rev().copied());
+        entries.extend(PRESET_COLORS.iter().copied());
+        entries
     }
 
     /// The action labels this dialog paints, in row order.
@@ -1454,8 +1464,7 @@ impl Draw for ColorDialog {
             let swatches = self.preset_rects();
             for (index, swatch) in swatches.iter().enumerate() {
                 if let Some(color) = self.palette_color(index) {
-                    context.fill_rect(*swatch, color);
-                    context.draw_rect(*swatch, border);
+                    crate::widget::companions::Swatch::paint_cell(context, *swatch, color, border);
                 }
             }
             if let Some(field) = self.hex_field_rect() {
@@ -1574,6 +1583,25 @@ impl Draw for ColorDialog {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// W7-25: a custom colour is shown (and pickable) even though the row has eight slots.
+    ///
+    /// Before this, the eight built-in presets consumed every slot, so `set_custom_colors` was an
+    /// API that painted nothing.
+    #[test]
+    fn a_custom_preset_is_painted_ahead_of_the_built_ins() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 320, 300));
+        dialog.set_option(ColorDialogOption::ShowPresetPalette, true);
+        let custom = Color::rgb(12, 34, 56);
+        dialog.set_custom_colors(vec![custom]);
+        assert_eq!(dialog.palette_color(0), Some(custom), "the custom colour owns the first slot");
+        assert_eq!(
+            dialog.palette_color(1),
+            Some(PRESET_COLORS[0]),
+            "the built-ins fill the remaining slots in order"
+        );
+        assert_eq!(dialog.preset_rects().len(), 8, "the row still has eight slots");
+    }
 
     #[test]
     fn mouse_pick_updates_color() {

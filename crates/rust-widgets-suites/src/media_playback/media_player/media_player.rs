@@ -19,6 +19,7 @@ use rust_widgets::widget::capability::coercion::{
 use rust_widgets::widget::capability::properties_trait::{base_property_get, base_property_set};
 use rust_widgets::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use rust_widgets::widget::capability::WidgetProperties;
+use rust_widgets::widget::companions::PlaylistPanel;
 use rust_widgets::widget::metrics::{dimensions, effective_font};
 use rust_widgets::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use rust_widgets::{impl_widget_property_hooks, property_names_of};
@@ -200,6 +201,11 @@ pub struct MediaPlayer {
     playlist: Vec<String>,
     /// The playlist entry currently loaded, when the source came from the playlist.
     playlist_index: Option<usize>,
+    /// The chrome that lists [`Self::playlist`], when a host attached one (W7-08).
+    ///
+    /// The model is the player's; the panel mirrors it through [`Self::sync_playlist_panel`],
+    /// exactly as `VideoPlayer` does.
+    playlist_panel: Option<PlaylistPanel>,
     /// The chapter markers, as `(position_ms, title)`.
     chapters: Vec<(u64, String)>,
     /// How the player behaves when the media reaches its end.
@@ -276,6 +282,7 @@ impl MediaPlayer {
             adjusting_volume: false,
             playlist: Vec::new(),
             playlist_index: None,
+            playlist_panel: None,
             chapters: Vec::new(),
             repeat_mode: RepeatMode::Off,
             buffering: false,
@@ -509,6 +516,7 @@ impl MediaPlayer {
         self.source_changed.emit(source);
         self.playback_changed.emit(false);
         self.position_changed.emit(0);
+        self.sync_playlist_panel();
         self.base.request_redraw();
     }
 
@@ -527,6 +535,7 @@ impl MediaPlayer {
         self.clock.set_duration(0.0);
         self.playback_changed.emit(false);
         self.position_changed.emit(0);
+        self.sync_playlist_panel();
         self.base.request_redraw();
     }
 
@@ -743,6 +752,7 @@ impl MediaPlayer {
             .source
             .as_ref()
             .and_then(|source| self.playlist.iter().position(|item| item == source));
+        self.sync_playlist_panel();
         self.base.request_redraw();
     }
 
@@ -769,6 +779,7 @@ impl MediaPlayer {
         // `set_source` matched the source back to its first occurrence; a duplicate entry has to
         // take the position that was asked for.
         self.playlist_index = Some(index);
+        self.sync_playlist_panel();
         true
     }
 
@@ -793,6 +804,39 @@ impl MediaPlayer {
             return false;
         }
         self.select_track(index - 1)
+    }
+
+    /// Attaches a queue panel and fills it with the current model (W7-08).
+    ///
+    /// Returns whether a panel is attached afterwards; `false` detaches the current one. The four
+    /// accessors are `VideoPlayer`'s names and shape, so a host can treat the two players alike.
+    pub fn attach_playlist_panel(&mut self, panel: Option<PlaylistPanel>) -> bool {
+        self.playlist_panel = panel;
+        self.sync_playlist_panel();
+        self.playlist_panel.is_some()
+    }
+
+    /// The attached queue panel, if any.
+    pub fn playlist_panel(&self) -> Option<&PlaylistPanel> {
+        self.playlist_panel.as_ref()
+    }
+
+    /// The attached queue panel for editing, if any.
+    pub fn playlist_panel_mut(&mut self) -> Option<&mut PlaylistPanel> {
+        self.playlist_panel.as_mut()
+    }
+
+    /// Pushes the model into the attached panel.
+    ///
+    /// Called from every playlist write, so the panel cannot show a queue the player is not
+    /// playing from.
+    fn sync_playlist_panel(&mut self) {
+        let tracks = self.playlist.clone();
+        let current = self.playlist_index();
+        if let Some(panel) = self.playlist_panel.as_mut() {
+            panel.set_tracks(tracks);
+            panel.set_current_index(current);
+        }
     }
 
     /// Sets the chapter markers.
@@ -2341,6 +2385,25 @@ mod tests {
         assert!(player.play());
         assert_eq!(player.position_ms(), 0, "a finished clock restarts at zero");
         assert_eq!(*seen.lock().unwrap(), vec![0], "and the rewind is a position change");
+    }
+
+    /// W7-08: the attached queue panel mirrors the player's model on every write.
+    #[test]
+    fn an_attached_playlist_panel_follows_the_playlist_model() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_playlist(vec![String::from("a.mp3"), String::from("b.mp3")]);
+        let panel = PlaylistPanel::new(Rect::new(0, 0, 160, 120));
+        assert!(player.attach_playlist_panel(Some(panel)));
+        let attached = player.playlist_panel().expect("a panel is attached");
+        assert_eq!(attached.tracks(), &[String::from("a.mp3"), String::from("b.mp3")]);
+        assert_eq!(attached.current_index(), None);
+
+        assert!(player.select_track(1));
+        let attached = player.playlist_panel().expect("a panel is attached");
+        assert_eq!(attached.current_index(), Some(1), "the cursor follows the loaded track");
+
+        assert!(!player.attach_playlist_panel(None), "detaching reports that no panel is attached");
+        assert!(player.playlist_panel().is_none());
     }
 
     /// A narrow player keeps its volume rail inside the progress rule.

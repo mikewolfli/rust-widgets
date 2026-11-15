@@ -91,9 +91,6 @@
     "widget.action.label": {
       "message": "動作"
     },
-    "widget.activity_indicator.label": {
-      "message": "活動指示器"
-    },
     "widget.adaptive_scaffold.label": {
       "message": "自適應骨架"
     },
@@ -106,10 +103,7 @@
     "widget.arc.label": {
       "message": "弧形"
     },
-    "widget.audio_visualizer.label": {
-      "message": "音訊視覺化"
-    },
-    "widget.autocomplete_edit.label": {
+    "widget.auto_complete_edit.label": {
       "message": "自動完成"
     },
     "widget.avatar.label": {
@@ -142,9 +136,6 @@
     "widget.calendar.label": {
       "message": "日曆"
     },
-    "widget.camera_preview.label": {
-      "message": "相機預覽"
-    },
     "widget.canvas.label": {
       "message": "畫布"
     },
@@ -154,10 +145,7 @@
     "widget.chart.label": {
       "message": "圖表"
     },
-    "widget.check_list_box.label": {
-      "message": "核取清單方塊"
-    },
-    "widget.checkbox.label": {
+    "widget.check_box.label": {
       "message": "核取方塊"
     },
     "widget.chip.label": {
@@ -181,14 +169,8 @@
     "widget.color_well.label": {
       "message": "色彩區塊"
     },
-    "widget.column_view.label": {
-      "message": "欄檢視"
-    },
-    "widget.combobox.label": {
+    "widget.combo_box.label": {
       "message": "組合框"
-    },
-    "widget.command_entry.label": {
-      "message": "命令輸入框"
     },
     "widget.command_link.label": {
       "message": "命令連結"
@@ -226,29 +208,20 @@
     "widget.date_range_picker.label": {
       "message": "日期範圍選擇器"
     },
-    "widget.dateedit.label": {
+    "widget.date_edit.label": {
       "message": "日期編輯器"
     },
-    "widget.datetimeedit.label": {
+    "widget.date_time_edit.label": {
       "message": "日期/時間編輯器"
     },
     "widget.dial.label": {
       "message": "刻度盤"
     },
-    "widget.diff_viewer.label": {
-      "message": "差異檢視器"
-    },
     "widget.divider.label": {
       "message": "分隔線"
     },
-    "widget.dock_panel.label": {
-      "message": "停靠面板"
-    },
-    "widget.dockwidget.label": {
+    "widget.dock_widget.label": {
       "message": "停靠控制項"
-    },
-    "widget.double_spin_box.label": {
-      "message": "雙精度數字調節框"
     },
     "widget.dropdown.label": {
       "message": "下拉選單"
@@ -256,7 +229,7 @@
     "widget.dropdown_menu.label": {
       "message": "下拉選單"
     },
-    "widget.editable_combobox.label": {
+    "widget.editable_combo_box.label": {
       "message": "可編輯組合框"
     },
     "widget.empty_state.label": {
@@ -271,7 +244,7 @@
     "widget.floating_label.label": {
       "message": "浮動標籤"
     },
-    "widget.font_combobox.label": {
+    "widget.font_combo_box.label": {
       "message": "字型組合框"
     },
     "widget.font_dialog.label": {
@@ -283,16 +256,10 @@
     "widget.freeform_shape.label": {
       "message": "自由形狀"
     },
-    "widget.gantt_widget.label": {
-      "message": "甘特圖"
-    },
     "widget.grid.label": {
       "message": "格線"
     },
-    "widget.grid_widget.label": {
-      "message": "格線控制項"
-    },
-    "widget.groupbox.label": {
+    "widget.group_box.label": {
       "message": "群組方塊"
     },
     "widget.hero_animation.label": {
@@ -316,9 +283,6 @@
     "widget.input_dialog.label": {
       "message": "輸入對話方塊"
     },
-    "widget.key_sequence_edit.label": {
-      "message": "按鍵序列編輯器"
-    },
     "widget.keyboard.label": {
       "message": "鍵盤"
     },
@@ -334,20 +298,14 @@
     "widget.line_chart.label": {
       "message": "折線圖"
     },
-    "widget.lineedit.label": {
+    "widget.line_edit.label": {
       "message": "單行輸入框"
     },
-    "widget.listbox.label": {
+    "widget.list_box.label": {
       "message": "清單方塊"
     },
-    "widget.listview.label": {
+    "widget.list_view.label": {
       "message": "清單檢視"
-    },
-    "widget.lottie_widget.label": {
-      "message": "Lottie 動畫"
-    },
-    "widget.map_view.label": {
-      "message": "地圖檢視"
     },
     "widget.markdown_editor.label": {
       "message": "Markdown 編輯器"
@@ -364,11 +322,8 @@
     "widget.material_snackbar.label": {
       "message": "提示列"
     },
-    "widget.mdiarea.label": {
+    "widget.mdi_area.label": {
       "message": "MDI 區域"
-    },
-    "widget.media_player.label": {
-      "message": "媒體播放器"
     },
     "widget.menu.label": {
       "message": "選單"
@@ -376,11 +331,8 @@
     "widget.menu_button.label": {
       "message": "選單按鈕"
     },
-    "widget.menubar.label": {
+    "widget.menu_bar.label": {
       "message": "選單列"
-    },
-    "widget.menuitem.label": {
-      "message": "選單項目"
     },
     "widget.message_box.label": {
       "message": "訊息方塊"
@@ -400,7 +352,7 @@
     "widget.modal_bottom_sheet.label": {
       "message": "模態底部面板"
     },
-    "widget.multi_select_combobox.label": {
+    "widget.multi_select_combo_box.label": {
       "message": "多選組合框"
     },
     "widget.navigation_drawer.label": {
@@ -412,14 +364,8 @@
     "widget.notification_center.label": {
       "message": "通知中心"
     },
-    "widget.pager_page_view.label": {
-      "message": "分頁檢視"
-    },
     "widget.panel.label": {
       "message": "面板"
-    },
-    "widget.pi_menu.label": {
-      "message": "圓形選單"
     },
     "widget.pie_chart.label": {
       "message": "圓餅圖"
@@ -433,7 +379,7 @@
     "widget.progress_circle.label": {
       "message": "圓形進度"
     },
-    "widget.progressbar.label": {
+    "widget.progress_bar.label": {
       "message": "進度條"
     },
     "widget.progress_dialog.label": {
@@ -445,7 +391,7 @@
     "widget.properties_panel.label": {
       "message": "屬性面板"
     },
-    "widget.qrcode.label": {
+    "widget.qr_code.label": {
       "message": "QR 碼"
     },
     "widget.radio_button.label": {
@@ -463,17 +409,8 @@
     "widget.ribbon_bar.label": {
       "message": "功能區列"
     },
-    "widget.ribbon_group.label": {
-      "message": "功能區群組"
-    },
-    "widget.ribbon_item.label": {
-      "message": "功能區項目"
-    },
-    "widget.richedit.label": {
+    "widget.rich_edit.label": {
       "message": "富文字編輯器"
-    },
-    "widget.rive_widget.label": {
-      "message": "Rive 動畫"
     },
     "widget.roller.label": {
       "message": "滾輪選擇器"
@@ -481,16 +418,16 @@
     "widget.safe_area.label": {
       "message": "安全區域"
     },
-    "widget.scrollarea.label": {
+    "widget.scroll_area.label": {
       "message": "捲動區域"
     },
-    "widget.scrollbar.label": {
+    "widget.scroll_bar.label": {
       "message": "捲軸"
     },
-    "widget.searchbar.label": {
+    "widget.search_bar.label": {
       "message": "搜尋列"
     },
-    "widget.searchbox.label": {
+    "widget.search_box.label": {
       "message": "搜尋框"
     },
     "widget.segmented_button.label": {
@@ -511,7 +448,7 @@
     "widget.sparkline.label": {
       "message": "迷你趨勢圖"
     },
-    "widget.spinbox.label": {
+    "widget.spin_box.label": {
       "message": "數字調節框"
     },
     "widget.spinner.label": {
@@ -523,11 +460,14 @@
     "widget.splitter.label": {
       "message": "分割器"
     },
-    "widget.stackedwidget.label": {
+    "widget.stacked_widget.label": {
       "message": "堆疊控制項"
     },
-    "widget.statusbar.label": {
+    "widget.status_bar.label": {
       "message": "狀態列"
+    },
+    "widget.step_strip.label": {
+      "message": "步驟條"
     },
     "widget.stepper.label": {
       "message": "步驟器"
@@ -541,31 +481,25 @@
     "widget.tab_view.label": {
       "message": "分頁檢視"
     },
-    "widget.tabbar.label": {
+    "widget.tab_bar.label": {
       "message": "分頁列"
     },
     "widget.table.label": {
       "message": "表格"
     },
-    "widget.tabwidget.label": {
+    "widget.tab_widget.label": {
       "message": "分頁控制項"
     },
     "widget.tag_input.label": {
       "message": "標籤輸入"
     },
-    "widget.terminal_view.label": {
-      "message": "終端機檢視"
-    },
-    "widget.textarea.label": {
+    "widget.text_area.label": {
       "message": "文字區域"
     },
-    "widget.textedit.label": {
+    "widget.text_edit.label": {
       "message": "文字編輯器"
     },
-    "widget.tile_view.label": {
-      "message": "磁貼檢視"
-    },
-    "widget.timeedit.label": {
+    "widget.time_edit.label": {
       "message": "時間編輯器"
     },
     "widget.timeline_widget.label": {
@@ -577,13 +511,13 @@
     "widget.toggle_button.label": {
       "message": "切換按鈕"
     },
-    "widget.toolbar.label": {
+    "widget.tool_bar.label": {
       "message": "工具列"
     },
-    "widget.toolbox.label": {
+    "widget.tool_box.label": {
       "message": "工具箱"
     },
-    "widget.toolbutton.label": {
+    "widget.tool_button.label": {
       "message": "工具按鈕"
     },
     "widget.tooltip.label": {
@@ -592,32 +526,14 @@
     "widget.tree_table.label": {
       "message": "樹狀表格"
     },
-    "widget.treeview.label": {
+    "widget.tree_view.label": {
       "message": "樹狀檢視"
-    },
-    "widget.undo_view.label": {
-      "message": "復原檢視"
-    },
-    "widget.video_player.label": {
-      "message": "影片播放器"
     },
     "widget.virtual_list.label": {
       "message": "虛擬清單"
     },
     "widget.virtual_table.label": {
       "message": "虛擬表格"
-    },
-    "widget.web_engine_view.label": {
-      "message": "網頁檢視"
-    },
-    "widget.wizard.label": {
-      "message": "精靈"
-    },
-    "a11y.description.tab": {
-      "message": "第{index}個分頁，共{count}個"
-    },
-    "a11y.description.progress": {
-      "message": "{value}%"
     },
     "a11y.state.checked": {
       "message": "已選取"

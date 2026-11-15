@@ -550,6 +550,9 @@ impl Draw for MiniCanvas {
             && self.cache_height == rect.height;
         if cache_current {
             context.draw_image(rect.x, rect.y, self.cache_width, self.cache_height, &self.cache);
+            // The cached blit is the whole paint, so the disabled veil has to follow it here as
+            // well as on the replay path below (W7-16).
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
         for cmd in &self.commands {
@@ -561,6 +564,7 @@ impl Draw for MiniCanvas {
             // blit would freeze that backdrop. Keep the command list authoritative instead.
             self.capture_pending = false;
             self.cache.clear();
+            self.base.paint_disabled_veil(context, rect);
             return;
         }
         // The pixels of this frame become readable at the next `end_frame`; remember that they
@@ -570,6 +574,9 @@ impl Draw for MiniCanvas {
         if self.auto_flush {
             self.flush_pending = true;
         }
+        // A disabled canvas is gated at the event layer but painted unchanged; the veil is what
+        // makes "cannot be drawn on" visible (W7-16).
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

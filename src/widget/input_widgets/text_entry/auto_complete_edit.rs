@@ -794,6 +794,12 @@ impl AutoCompleteEdit {
         // box, so a press has to address the moved run.
         let origin = self.value_origin_x(self.cached_prefix_advance(&font, self.text.len()));
         let dx = x - origin;
+        // A right-to-left value paints in visual order, so the pointer's x names a different
+        // logical byte than the left-to-right prefix would (W7-18).
+        if let Some(byte) = crate::widget::text_utils::visual_byte_at(&self.text, &font, dx) {
+            return crate::widget::text_utils::floor_char_boundary(&self.text, byte)
+                .min(self.text.len());
+        }
         let mut cache = self.measure_cache.borrow_mut();
         if cache.0 != self.text_revision || cache.1.as_ref() != Some(&font) {
             let mut cuts = Vec::with_capacity(self.text.len() + 1);
@@ -1060,13 +1066,23 @@ impl AutoCompleteEdit {
             .unwrap_or_else(|| cache.2.last().map(|(_, advance)| *advance).unwrap_or(0))
     }
 
+    /// The caret's advance, routed through the visual order when the value reorders (W7-18).
+    ///
+    /// The renderer paints a right-to-left value in visual order, so the logical prefix would
+    /// place the caret at the opposite end of the run. An all-LTR value keeps the cached logical
+    /// advance, which is the steady state.
+    fn caret_advance(&self, font: &Font, byte: usize) -> i32 {
+        crate::widget::text_utils::visual_caret_advance(&self.text, font, byte)
+            .unwrap_or_else(|| self.cached_prefix_advance(font, byte))
+    }
+
     /// The caret's window rectangle and byte offset, as a native IME asks for them (X-001).
     fn caret_query(&self) -> crate::widget::widget_trait::InputMethodQuery {
         let rect = self.geometry();
         let font = effective_font(self.style());
         let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
         let padding = 6i32;
-        let x = rect.x + padding + self.cached_prefix_advance(font, caret);
+        let x = rect.x + padding + self.caret_advance(font, caret);
         let height = font.effective_line_height().max(1.0) as u32;
         let y = rect.y + ((rect.height.saturating_sub(height)) / 2) as i32;
         crate::widget::widget_trait::InputMethodQuery {
@@ -1422,7 +1438,7 @@ impl Draw for AutoCompleteEdit {
         // Inline completion: the completed remainder follows the caret, dimmed, so the
         // suggestion is readable at the insertion point rather than only in the list.
         let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
-        let caret_x = text_x + self.cached_prefix_advance(font, caret);
+        let caret_x = text_x + self.caret_advance(font, caret);
         if !self.text.is_empty() {
             let font_width = self.cached_prefix_advance(font, self.text.len());
             if !self.inline_suffix.is_empty() {

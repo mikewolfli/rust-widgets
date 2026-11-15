@@ -1491,3 +1491,44 @@ fn a_scroll_column_change_refetches_the_window() {
         "and the cached window begins where the paint begins"
     );
 }
+
+/// W7-07: an attached status bar receives this table's row and selection counts.
+#[test]
+fn a_bound_status_bar_receives_the_table_counts() {
+    let mut model = VecTableModel::new(vec![String::from("Name"), String::from("Type")]);
+    model.push_row(vec![String::from("A"), String::from("B")]);
+    model.push_row(vec![String::from("C"), String::from("D")]);
+    let mut table = TableWidget::new(Rect::new(0, 0, 240, 120));
+    table.set_model(Arc::new(model));
+    table.select_row(1);
+    let bar = crate::widget::companions::GridStatusBar::new(Rect::new(0, 0, 240, 24));
+    table.attach_grid_status_bar(&bar);
+    assert_eq!(bar.row_count(), 2, "the strip reports the table's rows");
+    assert_eq!(bar.selected_count(), 1, "and the rows it has selected");
+}
+
+/// W7-07: a header menu's sort request is resolved against the header and forwarded to the host.
+#[test]
+fn a_bound_header_menu_forwards_its_sort_request() {
+    let mut model = VecTableModel::new(vec![String::from("Name"), String::from("Type")]);
+    model.push_row(vec![String::from("A"), String::from("B")]);
+    let mut table = TableWidget::new(Rect::new(0, 0, 240, 120));
+    table.set_model(Arc::new(model));
+    table.set_header_labels(&["Name", "Type"]);
+    let menu = crate::widget::companions::HeaderMenu::new(Rect::new(0, 0, 180, 160));
+    table.attach_header_menu(&menu);
+    let seen = Arc::new(Mutex::new(Vec::<(usize, bool)>::new()));
+    table.sort_requested.connect({
+        let seen = Arc::clone(&seen);
+        move |request| {
+            seen.lock().expect("the sink is not poisoned").push(*request);
+        }
+    });
+    menu.sort_requested.emit((String::from("Name"), crate::widget::companions::SortState::Asc));
+    table.poll_header_menu();
+    assert_eq!(
+        *seen.lock().expect("the sink is not poisoned"),
+        vec![(0, false)],
+        "the menu's title token resolves to column 0 and ascending is `false`"
+    );
+}

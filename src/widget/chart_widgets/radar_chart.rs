@@ -182,10 +182,14 @@ pub struct RadarChart {
     reveal: PropertyDriver,
     /// Emitted when the pointer's nearest axis changes.
     pub axis_hovered: Signal1<usize>,
+    /// Emitted with the axis the pointer left, so a host can withdraw its read-out (W7-21).
+    pub axis_unhovered: Signal1<usize>,
     /// Emitted when a series polygon is clicked, carrying the series index.
     pub series_clicked: Signal1<usize>,
     /// Emitted when a `(series, axis)` vertex is hovered or clicked.
     pub vertex_hovered: Signal1<(usize, usize)>,
+    /// Emitted with the vertex the pointer left (W7-21).
+    pub vertex_unhovered: Signal1<(usize, usize)>,
     /// Emitted when a `(series, axis)` vertex is clicked.
     pub vertex_clicked: Signal1<(usize, usize)>,
     /// Emitted with `(series, visible)` after a series is shown or hidden.
@@ -219,8 +223,10 @@ impl RadarChart {
             animate_entry: false,
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             axis_hovered: Signal1::new(),
+            axis_unhovered: Signal1::new(),
             series_clicked: Signal1::new(),
             vertex_hovered: Signal1::new(),
+            vertex_unhovered: Signal1::new(),
             vertex_clicked: Signal1::new(),
             series_visibility_changed: Signal1::new(),
             data_revision: 0,
@@ -748,6 +754,11 @@ impl Widget for RadarChart {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "axis_unhovered" => {
+                Some(EventSignalRef::mapped("axis_unhovered", &self.axis_unhovered, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             "vertex_clicked" => {
                 Some(EventSignalRef::mapped("vertex_clicked", &self.vertex_clicked, |v| {
                     crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
@@ -758,6 +769,14 @@ impl Widget for RadarChart {
             }
             "vertex_hovered" => {
                 Some(EventSignalRef::mapped("vertex_hovered", &self.vertex_hovered, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Int(v.0 as i64),
+                        crate::widget::capability::CapabilityValue::Int(v.1 as i64),
+                    ]))
+                }))
+            }
+            "vertex_unhovered" => {
+                Some(EventSignalRef::mapped("vertex_unhovered", &self.vertex_unhovered, |v| {
                     crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
                         crate::widget::capability::CapabilityValue::Int(v.0 as i64),
                         crate::widget::capability::CapabilityValue::Int(v.1 as i64),
@@ -1405,7 +1424,15 @@ impl EventHandler for RadarChart {
                 }
             }
             Event::MouseLeave { .. } => {
-                if self.hovered_axis.take().is_some() || self.hovered_vertex.take().is_some() {
+                let left_axis = self.hovered_axis.take();
+                let left_vertex = self.hovered_vertex.take();
+                if let Some(axis) = left_axis {
+                    self.axis_unhovered.emit(axis);
+                }
+                if let Some(vertex) = left_vertex {
+                    self.vertex_unhovered.emit(vertex);
+                }
+                if left_axis.is_some() || left_vertex.is_some() {
                     self.base.request_redraw();
                 }
             }

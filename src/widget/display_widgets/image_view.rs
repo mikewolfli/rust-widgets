@@ -15,7 +15,7 @@ use crate::compat::{String, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::image::decoder::{decode_async, ImageDecodeJob};
-use crate::image::{Image, ImageFormat};
+use crate::image::Image;
 use crate::render::RenderContext;
 #[cfg(full_widgets)]
 use crate::signal::ConnectionScope;
@@ -1465,20 +1465,24 @@ impl Draw for ImageView {
             return;
         }
 
-        // One read of the decoded bytes: the decision below and the painting use the same
-        // reference, instead of walking the decoder's accessor twice per frame.
-        let data = if self.image.format() == ImageFormat::Rgba8 {
-            self.image.rgba8_data().filter(|data| !data.is_empty())
-        } else {
-            None
-        };
-        if data.is_some() {
+        // The decision and the painting both read the decoded RGBA8 bytes; this check is a
+        // cheap slice accessor and `paint_pixels` re-reads them for the resample.
+        //
+        // The decision is by **data variant**, not by format name. Decoders keep the source
+        // format in `DecodedImage::format` while storing RGBA8 pixels (see
+        // `image/decoder.rs`: `DecodedImage::new(ImageFormat::Jpeg, ImageData::Rgba8(..))`),
+        // so asking the format name here sent every `from_bytes`/`from_file` picture to the
+        // placeholder even though its pixels were in hand (W7-01). `image_gallery` and
+        // `avatar` already decide this way.
+        let has_pixels = self.image.rgba8_data().is_some_and(|data| !data.is_empty());
+        if has_pixels {
             // No room left for the image after its margin: nothing to paint.
             let Some((content, dest)) = self.image_layout() else {
                 return;
             };
             if self.aspect == ImageAspect::Tile {
                 self.paint_tiles(context, content);
+                self.base.paint_disabled_veil(context, rect);
                 return;
             }
             // A covering image, a zoomed one or a panned one is larger than its box, so the
@@ -1534,12 +1538,18 @@ impl Draw for ImageView {
             let text_y = line.y;
             context.draw_text(Point::new(text_x, text_y), "?", font, fg, HorizontalAlignment::Left);
         }
+        // A disabled picture is gated at the event layer but painted unchanged, which reads as
+        // "interactive" to anyone looking at it (W7-16). The veil is the crates's shared
+        // one, so the weight matches every other disabled control.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image::format::{DecodedImage, ImageData};
+    use crate::image::ImageFormat;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
     use crate::widget::svg::render_to_svg;
 
@@ -1619,6 +1629,27 @@ mod tests {
         assert_eq!(view.image().width(), 4);
         assert_eq!(view.image().height(), 4);
         assert_eq!(view.image().format(), ImageFormat::Rgba8);
+    }
+
+    /// A picture decoded from JPEG/PNG/BMP bytes keeps the *source* format name while its
+    /// pixels are RGBA8, so `draw` must not use the format name as the "has pixels" test.
+    ///
+    /// This is the W7-01 regression: every image loaded through `from_bytes`/`from_file`
+    /// painted the "?" placeholder because `format()` said `Jpeg` rather than `Rgba8`.
+    #[test]
+    fn a_decoded_picture_is_painted_rather_than_the_placeholder() {
+        let decoded =
+            DecodedImage::new(ImageFormat::Jpeg, ImageData::Rgba8(vec![200; 4 * 2 * 4]), 4, 2);
+        let image = Image::from_decoded(decoded);
+        assert_eq!(image.format(), ImageFormat::Jpeg, "the source format name is preserved");
+
+        let mut view = ImageView::new(image, Rect::new(0, 0, 100, 100));
+        view.set_scaled(true);
+        let svg = render_to_svg(&mut view);
+        assert!(
+            svg.contains("<image"),
+            "decoded pixels are painted even though the format name is not Rgba8: {svg}"
+        );
     }
 
     #[test]

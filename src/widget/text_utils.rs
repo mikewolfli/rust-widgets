@@ -25,10 +25,96 @@
 use core::ops::Range;
 
 use crate::compat::{Cow, String, Vec};
-use crate::core::Rect;
+use crate::core::{Font, Rect};
 
 /// The single-character ellipsis used by the shared elision helpers.
 const ELLIPSIS: &str = "\u{2026}";
+
+/// The inputs a wrapped line-range table is a pure function of.
+///
+/// Shared by the controls that wrap a static caption (`Banner`, `CheckBox`, `RadioButton`), so
+/// the key's completeness is stated once: the text enters as a revision (its setter is the only
+/// writer), and the width, the whole face and the device scale are the facts the measurement
+/// sees. A key that omitted the DPI kept line ranges from another monitor forever.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WrapCacheKey {
+    /// The text revision the ranges were computed for.
+    pub revision: u32,
+    /// The width the text is wrapped into, in pixels.
+    pub text_width: u32,
+    /// The face, compared whole (family, size, weight, italic, tracking).
+    pub font: Font,
+    /// The DPI the measurement ran at, as bits so the key compares exactly.
+    pub dpi_bits: u32,
+}
+
+/// The per-character byte ranges and measured advances of a line.
+///
+/// One character per cluster is the ruler every single-line field already uses for its
+/// logical prefix advance (`estimate_text_width` per `char`), so a control that adopts the
+/// visual helpers below keeps the same boundary the pointer hit test would pick.
+fn per_char_ranges_and_advances(text: &str, font: &Font) -> (Vec<(usize, usize)>, Vec<f32>) {
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(text.chars().count());
+    let mut advances: Vec<f32> = Vec::with_capacity(text.chars().count());
+    let mut buffer = [0u8; 4];
+    for (start, ch) in text.char_indices() {
+        let end = start + ch.len_utf8();
+        ranges.push((start, end));
+        advances.push(crate::widget::metrics::estimate_text_width(
+            ch.encode_utf8(&mut buffer),
+            font,
+            1.0,
+        ) as f32);
+    }
+    (ranges, advances)
+}
+
+/// The **visual** advance of the caret at `byte`, or `None` when the line is all-LTR.
+///
+/// A single-line field that places its caret at "the width of the logical prefix" is correct
+/// only while the renderer paints in logical order. In a right-to-left run the visual order is
+/// reversed, so logical offset 0 belongs at the right end (UX6-02, W7-18). Callers pass the same
+/// face the paint path draws with; the all-LTR answer is `None` so the cached logical prefix
+/// stays the steady state and costs nothing.
+pub fn visual_caret_advance(text: &str, font: &Font, byte: usize) -> Option<i32> {
+    if !crate::render::text::bidi::has_rtl_char(text) {
+        return None;
+    }
+    let (ranges, advances) = per_char_ranges_and_advances(text, font);
+    if ranges.is_empty() {
+        return None;
+    }
+    let levels = crate::render::text::line::line_bidi_levels(text, &ranges, font, 1.0);
+    crate::render::text::bidi::caret_visual_advance_from_levels(
+        levels.as_ref(),
+        &ranges,
+        &advances,
+        byte,
+    )
+    .map(|x| x.round() as i32)
+}
+
+/// The logical byte offset nearest the visual position `x`, or `None` for an all-LTR line.
+///
+/// The inverse of [`visual_caret_advance`], for a pointer hit test: clicking the right end of an
+/// RTL run names the logical start, which is what the caret must then be set to.
+pub fn visual_byte_at(text: &str, font: &Font, x: i32) -> Option<usize> {
+    if !crate::render::text::bidi::has_rtl_char(text) {
+        return None;
+    }
+    let (ranges, advances) = per_char_ranges_and_advances(text, font);
+    if ranges.is_empty() {
+        return None;
+    }
+    let levels = crate::render::text::line::line_bidi_levels(text, &ranges, font, 1.0);
+    let boundary = crate::render::text::bidi::caret_boundary_from_visual_advance(
+        levels.as_ref(),
+        &ranges,
+        &advances,
+        x as f32,
+    )?;
+    Some(ranges.get(boundary).map_or(text.len(), |&(start, _)| start))
+}
 
 /// Case-insensitive substring test, allocating nothing for an ASCII needle.
 ///

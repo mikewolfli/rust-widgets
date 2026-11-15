@@ -133,25 +133,6 @@ pub(crate) fn ribbon_bar_capability() -> WidgetCapability {
     }
 }
 
-// ── Web widget capabilities ──────────────────────────────────
-/// The web view's capability.
-///
-/// # Why the canonical name is `web_engine_view`
-///
-/// `web_view` is one of the two things `WidgetKind::WebEngineView` is called, and it
-/// was the canonical name until it became clear what that cost. Two capabilities
-/// declare this kind — this one and `media_player` — and
-/// [`WidgetFactory::capability_by_kind`] resolves a kind by matching the capability's
-/// `canonical_name` against **the kind's own name**. With the canonical name spelled
-/// `web_view`, that match failed for `WebEngineView`, the lookup fell through to
-/// `indices[0]`, and `create_web_view(..)` — and the C ABI function behind it — built
-/// a **`MediaPlayer`** while returning a valid id.
-///
-/// Naming the entry after the kind is the same fix as `table` / `panel` / `data_view`:
-/// the kind's own name is the only key that cannot be reordered out from under the
-/// lookup. `web_view` stays reachable as an alias, so `factory.create("web_view", ..)`
-/// and `WebView` (the `pub type` for this same control) are unaffected.
-#[cfg(not(alloc_frugal))]
 // ── Advanced widget capabilities ─────────────────────────────
 #[cfg(not(alloc_frugal))]
 pub(crate) fn pie_menu_capability() -> WidgetCapability {

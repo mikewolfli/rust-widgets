@@ -1938,6 +1938,22 @@ pub fn create_drawer_section_header(geometry: Rect, _text: &str) -> Box<dyn Widg
 }
 
 #[cfg(full_widgets)]
+/// Creates a step strip with three sample steps (`W7-06`).
+///
+/// The default sample is deliberately non-empty: an empty strip paints its band and nothing
+/// else, and a snapshot of that would say nothing about the control it is supposed to show.
+pub fn create_step_strip(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    let mut strip = crate::widget::companions::StepStrip::new(geometry);
+    strip.set_steps(Vec::from([
+        crate::widget::companions::StepEntry::new("Account").completed(true),
+        crate::widget::companions::StepEntry::new("Details"),
+        crate::widget::companions::StepEntry::new("Review"),
+    ]));
+    strip.set_current(1);
+    Box::new(strip)
+}
+
+#[cfg(full_widgets)]
 /// Creates an empty layer panel (`COMP-I01`).
 pub fn create_layer_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::companions::LayerPanel::new(geometry))

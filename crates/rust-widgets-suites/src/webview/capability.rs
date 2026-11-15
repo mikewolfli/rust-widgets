@@ -167,6 +167,10 @@ pub fn web_find_bar_capability() -> WidgetCapability {
 }
 
 /// The history panel's capability.
+/// `web_history_panel` capability.
+///
+/// Borrowed kind: it declares `WidgetKind::WebEngineView` but registers the canonical name
+/// `web_history_panel`; `capability_for_kind_instance` is what tells the two apart (W8-08).
 pub fn web_history_panel_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::WebEngineView,

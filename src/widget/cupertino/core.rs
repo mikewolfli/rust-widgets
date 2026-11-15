@@ -298,6 +298,11 @@ impl CupertinoAlertDialog {
         self.base.request_redraw();
     }
 
+    /// Returns the confirm button text (W7-24).
+    pub fn confirm_text(&self) -> &str {
+        &self.confirm_text
+    }
+
     /// Sets the cancel button text. Empty string hides the cancel button.
     pub fn set_cancel_text(&mut self, text: &str) {
         if self.cancel_text == text {
@@ -305,6 +310,11 @@ impl CupertinoAlertDialog {
         }
         self.cancel_text = text.to_string();
         self.base.request_redraw();
+    }
+
+    /// Returns the cancel button text; empty means the dialog shows no cancel button (W7-24).
+    pub fn cancel_text(&self) -> &str {
+        &self.cancel_text
     }
 }
 

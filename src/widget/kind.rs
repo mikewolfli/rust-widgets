@@ -292,9 +292,9 @@ pub enum WidgetKind {
     /// produced id `0` rather than a control.
     ///
     /// The wrappers themselves are real and stay: they are the render pipeline's
-    /// named symbols for one view, reachable as Rust types
-    /// (`crate::widget::WebEnginePage` and siblings) and through the one
-    /// registered name `web_view`.
+    /// named symbols for one view. They live in the `rust-widgets-suites` webview group
+    /// (`webview/web_engine.rs`), not in this package, and are `#[doc(hidden)]` there; the one
+    /// registered canonical name is `web_engine_view` (the `web_view` spelling is an alias).
     #[cfg(widgets_unstripped)]
     // kind-role: external: registered by the `rust-widgets-suites` package (or, for
     // `WebEngineView`, by the `rust-widgets-suites` webview group), so this package's factory does not carry a

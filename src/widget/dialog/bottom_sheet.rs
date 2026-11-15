@@ -100,6 +100,10 @@ pub struct BottomSheet {
     /// gesture *is* "slide up from the bottom edge" — teleported. Same split, same reason, as
     /// `Switch`'s `checked`/`travel`. It starts at `0.0` because a freshly built sheet is closed.
     rise: PropertyDriver,
+    /// Emitted when the sheet opens.
+    pub opened: GenericSignal,
+    /// Emitted when the sheet closes, whether by [`Self::dismiss`] or a property write.
+    pub closed: GenericSignal,
     /// Emitted when the sheet is dismissed by user interaction.
     pub dismissed: GenericSignal,
 }
@@ -121,6 +125,8 @@ impl BottomSheet {
             // At rest at the stowed end: a freshly built sheet is closed, so it must not animate
             // *down* on its first frame.
             rise: PropertyDriver::at(0.0, MotionSlot::Normal),
+            opened: GenericSignal::new(),
+            closed: GenericSignal::new(),
             dismissed: GenericSignal::new(),
         }
     }
@@ -137,10 +143,15 @@ impl BottomSheet {
             self.drag = None;
             self.drag_offset = 0.0;
             self.place_content();
+            self.opened.emit();
         }
     }
 
     /// Dismisses (closes) the bottom sheet without emitting the dismissed signal.
+    ///
+    /// The `closed` lifecycle signal is emitted, because "it is closed now" is a fact every
+    /// subscriber to the open/close pair needs. `dismissed` stays reserved for the user
+    /// interaction that closes it, matching `NavigationDrawer`'s split.
     pub fn dismiss(&mut self) {
         if self.open {
             self.open = false;
@@ -148,6 +159,10 @@ impl BottomSheet {
             self.drag = None;
             self.drag_offset = 0.0;
             self.set_content_visible(false);
+            // Base lifecycle signal (handle-layer `on_close` / JSON `closed`) alongside the
+            // widget's own `closed` for its direct listeners.
+            self.base.closed.emit();
+            self.closed.emit();
             self.base.request_redraw();
         }
     }
@@ -400,6 +415,8 @@ impl Widget for BottomSheet {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "opened" => Some(EventSignalRef::unit("opened", &self.opened)),
+            "closed" => Some(EventSignalRef::unit("closed", &self.closed)),
             "dismissed" => Some(EventSignalRef::unit("dismissed", &self.dismissed)),
             _ => None,
         }

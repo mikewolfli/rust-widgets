@@ -676,6 +676,7 @@ pub(crate) static PROGRAMMATIC_ONLY_SETTERS: &[ProgrammaticSetter] = &[
     ProgrammaticSetter { name: "set_spinner_style", reason: "D: theme/style channel, not a scalar property" },
     ProgrammaticSetter { name: "set_state", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_status_tip", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
+    ProgrammaticSetter { name: "set_step_state", reason: "C: composite write (index + two flags); the `steps` records property carries the same state in its declarative form" },
     ProgrammaticSetter { name: "set_step_type", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_sticky_header", reason: "B: scalar state with no property carrier yet (A-class backlog)" },
     ProgrammaticSetter { name: "set_stroke_color", reason: "B: scalar state with no property carrier yet (A-class backlog)" },

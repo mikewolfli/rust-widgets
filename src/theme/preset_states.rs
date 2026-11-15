@@ -257,6 +257,7 @@ pub(super) const DISABLED_STATE_KINDS: &[&str] = &[
     "splitter",
     "stacked_widget",
     "status_bar",
+    "step_strip",
     "stepper",
     "summary_row",
     "swatch",

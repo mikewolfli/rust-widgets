@@ -276,7 +276,7 @@ pub struct LineChart {
     ///
     /// The text is a pure function of the hovered data point, so a pointer that stays on one
     /// point reuses the previous frame's formatting and measurement.
-    readout_cache: Option<(usize, usize, u64, u32, String, u32, u32)>,
+    readout_cache: Option<(usize, usize, u64, crate::core::Font, u32, String, u32, u32)>,
     /// Cached y-axis label width; `None` until the first measured paint.
     #[cfg(feature = "chart")]
     y_label_cache: Option<YAxisLabelCache>,
@@ -2561,15 +2561,18 @@ impl LineChart {
     ) {
         use crate::core::HorizontalAlignment;
         let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
-        let font_size_bits = font.size().to_bits();
         let revision = self.data_revision;
+        let dpi_bits = context.dpi_scale().to_bits();
+        // The whole face and the device scale enter the key: `measure_text` scales by DPI, and a
+        // family/italic change moves the advance at the same size (W7-10).
         let fresh = matches!(
             &self.readout_cache,
-            Some((cached_series, cached_point, cached_revision, cached_font, _, _, _))
+            Some((cached_series, cached_point, cached_revision, cached_font, cached_dpi, _, _, _))
                 if *cached_series == series_index
                     && *cached_point == point_index
                     && *cached_revision == revision
-                    && *cached_font == font_size_bits
+                    && *cached_font == font
+                    && *cached_dpi == dpi_bits
         );
         if !fresh {
             let series_name = self
@@ -2586,13 +2589,14 @@ impl LineChart {
                 series_index,
                 point_index,
                 revision,
-                font_size_bits,
+                font.clone(),
+                dpi_bits,
                 text,
                 metrics.width,
                 metrics.height.max(1),
             ));
         }
-        let Some((_, _, _, _, text, cached_width, cached_height)) = &self.readout_cache else {
+        let Some((_, _, _, _, _, text, cached_width, cached_height)) = &self.readout_cache else {
             return;
         };
         let padding = 4i32;

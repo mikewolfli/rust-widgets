@@ -27,7 +27,7 @@ bar_chart: bar_clicked, bar_hovered, bar_unhovered, bar_clicked_with_series, bar
 barcode_scanner: barcode_detected
 bezier_curve_editor: curve_changed
 bottom_navigation_bar: current_changed
-bottom_sheet: dismissed
+bottom_sheet: opened, closed, dismissed
 breadcrumb: segment_activated, context_menu_requested, path_edited, overflow_clicked
 button: canceled, clicked, pressed, released, state_changed, item_triggered, context_menu_requested
 calendar: selection_changed, activated, current_page_changed
@@ -51,7 +51,7 @@ color_dialog: color_selected, accepted, rejected, current_color_changed, focus_c
 color_history: color_selected, color_hovered, color_removed, context_menu_requested, color_added
 color_picker: color_changed, hex_changed, canceled, color_committed, color_previewed
 color_well: clicked, picker_requested, color_changed
-combo_box: current_index_changed, current_text_changed, activated, popup_visibility_changed, highlighted, text_edited, undo_available, redo_available
+combo_box: current_index_changed, current_text_changed, activated, popup_visibility_changed, highlighted, text_edited, undo_available, redo_available, editing_finished
 command_link: clicked, hovered
 command_palette: command_activated, query_changed, dismissed
 command_palette_host: command_activated, filter_changed, cancelled
@@ -77,7 +77,7 @@ drag_ghost_layer: ghost_dropped, ghost_cancelled
 drawer_section_header: 
 drop_down_popup_host: item_clicked, highlighted_changed, cancelled
 drop_zone: browse_requested, drop_rejected, dropped, payload_dropped, zone_entered, zone_exited
-dropdown: changed, activated, highlighted
+dropdown: changed, activated, highlighted, popup_visibility_changed
 dropdown_menu: item_selected, submenu_requested, about_to_hide, about_to_show, item_toggled, action_triggered
 drum_column: selection_changed
 editable_combo_box: text_changed, item_selected, editing_finished, return_pressed, undo_available, redo_available
@@ -95,25 +95,25 @@ flex: item_clicked
 flexible: 
 floating_label: text_changed
 flow_layout: item_clicked
-font_combo_box: current_font_changed, current_index_changed, activated, text_edited, popup_shown, popup_hidden
+font_combo_box: current_font_changed, current_index_changed, activated, text_edited, popup_shown, popup_hidden, editing_finished, canceled
 font_dialog: font_selected, accepted, rejected
 font_preview: 
 frame: 
 freeform_shape: clicked, hover_changed, pressed_changed, geometry_changed, moved, vertex_changed, history_changed
 gauge: value_changed, band_clicked
-grid: cell_clicked, cell_hovered, context_menu_requested, page_changed, header_clicked, cell_edited, edit_requested
+grid: cell_clicked, cell_hovered, cell_unhovered, context_menu_requested, page_changed, header_clicked, cell_edited, edit_requested
 grid_status_bar: status_clicked
 grid_table: cell_selected, cell_double_clicked, sort_changed, header_clicked, context_menu_requested, edit_requested
 grid_view_header: section_clicked, section_resized, filter_clicked
 group_box: toggled, collapse_changed
 header_menu: sort_requested, filter_requested, hide_column_requested, column_chooser_requested, cancelled
-heatmap: cell_clicked, cell_hovered, region_selected, cell_double_clicked
+heatmap: cell_clicked, cell_hovered, cell_unhovered, region_selected, cell_double_clicked
 hero_animation: animation_completed
 icon: 
 image_gallery: image_changed, fullscreen_requested, selection_changed, strip_scrolled
 image_view: image_changed, load_failed, double_clicked, view_changed
 ime_preedit: 
-inplace_editor: edit_accepted, edit_canceled
+inplace_editor: edit_accepted, edit_canceled, undo_available, redo_available
 input_dialog: text_value_changed, int_value_changed, double_value_changed, accepted, rejected, focus_changed
 intrinsic_width: 
 key_sequence_editor: sequence_changed, key_sequence_changed, conflict_detected, editing_finished
@@ -141,7 +141,7 @@ masked_edit: text_changed, editing_finished, input_rejected, return_pressed, und
 masonry_layout: item_clicked
 material_navigation_rail: current_changed
 material_snackbar: action_pressed, dismissed
-mdi_area: subwindow_activated, subwindow_title_changed, subwindow_minimized_changed, subwindow_tab_moved, subwindow_close_requested
+mdi_area: subwindow_activated, subwindow_title_changed, subwindow_minimized_changed, subwindow_tab_moved, subwindow_close_requested, subwindow_removed
 mention: mention_inserted, popup_toggled, text_changed, undo_available, redo_available
 menu: triggered, triggered_index, about_to_show, submenu_requested, about_to_hide, tearoff_requested, action_triggered
 menu_bar: triggered, entry_hovered, triggered_entry, entry_action_triggered
@@ -152,8 +152,8 @@ meter: changed
 mini_canvas: clicked, mouse_pressed, mouse_released
 mini_chart: point_hover_changed
 mobile_date_picker: date_changed
-modal_bottom_sheet: dismissed
-multi_select_combo_box: selection_changed
+modal_bottom_sheet: opened, closed, dismissed
+multi_select_combo_box: selection_changed, popup_visibility_changed
 navigation_drawer: opened, closed, item_selected, header_clicked
 navigation_stack: navigation_changed, action_index_pressed
 notification_center: notification_selected, notification_activated, unread_count_changed, clear_all_requested, notification_dismissed, all_read_requested, items_changed
@@ -177,7 +177,7 @@ properties_panel: property_changed, editor_opened, file_picker_requested
 property_grid: cell_changed, color_picker_requested, context_menu_requested, file_picker_requested, category_toggled, selected, cell_change_rejected, property_committed
 qr_code: 
 query_builder: query_changed, rows_changed, query_committed, row_field_clicked, row_operator_clicked
-radar_chart: series_clicked, axis_hovered, vertex_clicked, vertex_hovered, series_visibility_changed
+radar_chart: series_clicked, axis_hovered, axis_unhovered, vertex_clicked, vertex_hovered, vertex_unhovered, series_visibility_changed
 radio_button: selected, checked_changed
 range_preset_bar: preset_selected
 range_slider: range_changed, slider_pressed, slider_released
@@ -189,19 +189,19 @@ roller: changed
 safe_area: 
 scroll_area: scroll_position_changed
 scroll_bar: value_changed, slider_moved, slider_pressed, slider_released
-search_bar: text_changed, search_submitted, canceled
+search_bar: text_changed, search_submitted, canceled, undo_available, redo_available
 search_box: text_changed, search_submitted, canceled, undo_available, redo_available
 segmented_button: current_changed
 segmented_control: selection_changed
 shape_canvas: shape_added, shape_removed, shape_selected, shape_modified
-shortcut_editor: shortcut_changed, conflict_detected
+shortcut_editor: shortcut_changed, conflict_detected, undo_available, redo_available
 signature_pad: changed, stroke_completed
 sized_box: 
 skeleton_loader: 
 slider: value_changed, slider_moved, slider_pressed, slider_released
-snackbar: action_triggered, dismissed
+snackbar: action_triggered, dismissed, queue_overflow
 spacer: 
-sparkline: value_hovered, last_value_clicked
+sparkline: value_hovered, value_unhovered, last_value_clicked
 speed_dial: action_activated, expanded_changed
 spin_box: value_changed, value_changed_f64, editing_finished, validation_failed
 spinner: active_changed
@@ -212,6 +212,7 @@ splitter: pane_layout_changed, orientation_changed, pane_layout_preview
 stacked_widget: current_changed
 status_bar: message_changed, size_grip_dragged
 stepper: value_changed
+step_strip: step_activated
 summary_row: summary_recalculated
 swatch: swatch_selected, swatch_activated
 swipe_actions: action_triggered
@@ -220,8 +221,8 @@ switch: toggled
 tab_bar: current_changed, tab_close_requested, tab_moved, tab_bar_clicked, new_tab_requested
 tab_view: tab_changed, tab_close_requested, tab_moved
 tab_widget: current_changed, tab_close_requested, tab_moved, context_menu_requested, drag_finished, tab_bar_clicked, tab_bar_double_clicked
-table: selection_changed, focused_row_changed, context_menu_requested, edit_requested, row_activated, column_changed
-table_widget: selection_changed, focused_row_changed, context_menu_requested, edit_requested, row_activated, column_changed
+table: selection_changed, focused_row_changed, context_menu_requested, edit_requested, row_activated, column_changed, sort_requested
+table_widget: selection_changed, focused_row_changed, context_menu_requested, edit_requested, row_activated, column_changed, sort_requested
 tag: closed, selected_changed
 tag_group: tag_closed, selection_changed
 tag_input: tags_changed, tag_overflow, tag_rejected, undo_available, redo_available
@@ -240,7 +241,7 @@ tool_button: clicked, toggled, triggered, action_triggered
 tooltip: 
 tooltip_manager: tooltip_shown, tooltip_hidden
 tree_table: projection_changed, selection_changed, context_menu_requested, expansion_changed, sort_changed, fetch_started, fetch_finished
-tree_find_bar: match_changed
+tree_find_bar: match_changed, closed
 tree_view: activated, collapsed, context_menu_requested, drag_finished, expanded, fetch_finished, fetch_started, focused_node_changed, node_double_clicked, header_clicked, row_move_requested, selection_changed, selection_set_changed, fetch_failure
 virtual_list: selection_changed, visible_window_changed, drag_finished, selected_rows_changed, context_menu_requested
 virtual_table: visible_window_changed, selection_changed, selection_set_changed, context_menu_requested, sort_changed

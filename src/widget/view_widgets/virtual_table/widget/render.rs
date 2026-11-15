@@ -10,6 +10,10 @@ impl Draw for VirtualTable {
         // The source change signal only raises a flag; the repair runs once here, before any row
         // or column state is read.
         self.drain_data_updates();
+        // Companion links (W7-07): fold a header menu's queued sort intents into the projection
+        // and refresh the attached status bar's counts before the paint reads either.
+        self.poll_header_menu();
+        self.poll_grid_status_bar();
         let rect = self.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for

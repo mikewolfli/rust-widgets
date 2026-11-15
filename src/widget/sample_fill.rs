@@ -96,7 +96,7 @@ use crate::widget::display_widgets::mini_canvas::MiniCanvas;
 // `Arc` is the gauge, not the reference-counted pointer imported from `compat`.
 use crate::widget::display_widgets::arc::Arc as ArcGauge;
 use crate::widget::display_widgets::emoji_picker::{EmojiGlyph, EmojiPicker};
-use crate::widget::display_widgets::image_view::ImageView;
+use crate::widget::display_widgets::image_view::{ImageAlignment, ImageAspect, ImageView};
 use crate::widget::display_widgets::lcd_number::LCDNumber;
 use crate::widget::display_widgets::meter::Meter;
 use crate::widget::display_widgets::mini_chart::{DataPoint, MiniChart};
@@ -116,7 +116,9 @@ use crate::widget::input_widgets::shortcut_editor::{ShortcutEditor, ShortcutEntr
 use crate::widget::macos::segmented_control::MacSegmentedControl;
 use crate::widget::macos::source_list::{MacSourceList, SourceListRow, SourceListSection};
 use crate::widget::macos::toolbar::{MacToolbar, MacToolbarItem};
-use crate::widget::media_widgets::animated_image::{AnimatedFrame, AnimatedImage};
+use crate::widget::media_widgets::animated_image::{
+    AnimatedFrame, AnimatedImage, AnimatedImageFit,
+};
 use crate::widget::media_widgets::hero_animation::HeroAnimation;
 use crate::widget::menu_toolbar::dropdown_menu::{DropdownItem as MenuEntryItem, DropdownMenu};
 use crate::widget::menu_toolbar::menu::Menu;
@@ -1292,6 +1294,21 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             }
             None => false,
         },
+        "avatar" => match widget_as_mut::<Avatar>(widget) {
+            Some(avatar) => {
+                // An avatar with empty initials paints only its disc, which is the empty frame
+                // `avatar.svg` used to be. The picture source is a runtime file path, so
+                // `include_bytes!` cannot feed it; initials are the honest sample state and
+                // `group_avatar` already proves they draw (W7-02).
+                //
+                // The disc colour is deliberately **not** set here: `Avatar::disc_fill` derives it
+                // from the theme, so an explicit colour would make the sample theme-blind and the
+                // census would (correctly) fail it as chrome that ignores the appearance.
+                avatar.set_text("RW");
+                true
+            }
+            None => false,
+        },
         "group_avatar" => match widget_as_mut::<GroupAvatar>(widget) {
             Some(group) => {
                 let mut first = Avatar::new(Rect::new(0, 0, 40, 40));
@@ -1472,24 +1489,32 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         // is the same small, fixed one the rest of this module uses.
         "animated_image" => match widget_as_mut::<AnimatedImage>(widget) {
             Some(image) => {
-                // Two 24×24 RGBA frames: a picture and a frame counter, a few kilobytes of data.
-                const SIDE: usize = 24;
+                // Two frames at a size the control can show. The default `Original` fit draws at
+                // the frame's own pixels, so the previous 24×24 frames were a speck in the middle
+                // of the box; a 120×80 two-colour gradient plus `Contain` makes the picture read
+                // as a picture (W7-02).
+                const WIDTH: u32 = 120;
+                const HEIGHT: u32 = 80;
                 let mut frames = Vec::new();
-                for color in [Color::rgb(33, 150, 243), Color::rgb(255, 152, 0)] {
-                    let mut data = Vec::with_capacity(SIDE * SIDE * 4);
-                    for _ in 0..(SIDE * SIDE) {
-                        data.push(color.r);
-                        data.push(color.g);
-                        data.push(color.b);
-                        data.push(color.a);
+                for phase in [0u32, 1] {
+                    let mut data = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+                    for y in 0..HEIGHT {
+                        for x in 0..WIDTH {
+                            let t = (x + phase * WIDTH / 2) % WIDTH;
+                            let r = (33 + (t * 180 / WIDTH)) as u8;
+                            let g = (150 - (y * 90 / HEIGHT)) as u8;
+                            let b = (243 - (t * 60 / WIDTH)) as u8;
+                            data.extend_from_slice(&[r, g, b, 255]);
+                        }
                     }
                     frames.push(AnimatedFrame {
                         data,
-                        width: SIDE as u32,
-                        height: SIDE as u32,
+                        width: WIDTH,
+                        height: HEIGHT,
                         delay_ms: 400,
                     });
                 }
+                image.set_fit(AnimatedImageFit::Contain);
                 image.load_frames(frames).is_ok()
             }
             None => false,
@@ -1811,22 +1836,42 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         }
         "image_view" => match widget_as_mut::<ImageView>(widget) {
             Some(view) => {
-                // A generated checkerboard: no asset, no decoder, visible at any size.
-                const SIDE: u32 = 32;
-                let mut pixels = Vec::with_capacity((SIDE * SIDE * 4) as usize);
-                for y in 0..SIDE {
-                    for x in 0..SIDE {
-                        let light = (x / 8 + y / 8) % 2 == 0;
-                        let (r, g, b) = if light { (33, 150, 243) } else { (236, 240, 245) };
-                        pixels.extend_from_slice(&[r, g, b, 255]);
-                    }
+                // A real photograph, decoded from the same asset set `image_gallery` consumes, so
+                // the snapshot exercises the decode-and-paint path instead of photographing a
+                // 32×32 checkerboard in the corner of the frame (W7-02). `Fit` plus centre
+                // alignment states how the picture should be seen: the default
+                // `Stretch`/unscaled pair paints only the source's own pixel count.
+                #[cfg(feature = "image")]
+                {
+                    let loaded = view
+                        .set_image_from_bytes(include_bytes!("sample_photos/coast.jpg"))
+                        .is_ok();
+                    view.set_aspect(ImageAspect::Fit);
+                    view.set_image_alignment(ImageAlignment::Center);
+                    loaded
                 }
-                view.set_image(crate::image::Image::from_raw(
-                    crate::image::ImageData::Rgba8(pixels),
-                    SIDE,
-                    SIDE,
-                ));
-                true
+                // Without the `image` feature there is no decoder to feed, so the arm keeps a
+                // generated checkerboard: no asset needed and visible at any size.
+                #[cfg(not(feature = "image"))]
+                {
+                    const SIDE: u32 = 32;
+                    let mut pixels = Vec::with_capacity((SIDE * SIDE * 4) as usize);
+                    for y in 0..SIDE {
+                        for x in 0..SIDE {
+                            let light = (x / 8 + y / 8) % 2 == 0;
+                            let (r, g, b) = if light { (33, 150, 243) } else { (236, 240, 245) };
+                            pixels.extend_from_slice(&[r, g, b, 255]);
+                        }
+                    }
+                    view.set_image(crate::image::Image::from_raw(
+                        crate::image::ImageData::Rgba8(pixels),
+                        SIDE,
+                        SIDE,
+                    ));
+                    view.set_aspect(ImageAspect::Fit);
+                    view.set_image_alignment(ImageAlignment::Center);
+                    true
+                }
             }
             None => false,
         },

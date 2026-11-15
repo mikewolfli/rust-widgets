@@ -215,6 +215,10 @@ const KANBAN_COLUMN_HEADER_EVENTS: &[EventSchema] = &[
     EventSchema { name: "column_renamed", payload: Some(K::String), shape: Some(S::Scalar) },
 ];
 
+/// `gantt_widget` capability.
+///
+/// Borrowed kind: it declares `WidgetKind::Chart` but registers the canonical name `gantt_widget`;
+/// `capability_for_kind_instance` is what tells the two apart (W8-08).
 pub fn gantt_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Chart,

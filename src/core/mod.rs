@@ -38,7 +38,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/lib.rs:1`; 372 files reference it (every module imports `Rect`, `Color` or `ObjectId` from here).
+//! **State:** Production callers: `src/lib.rs:72` declares the module and 372 files reference it (every module imports `Rect`, `Color` or `ObjectId` from here; e.g. `src/widget/base.rs:7`).
 mod alignment;
 mod color;
 /// Coordinate conversions and transforms between the screen, Cartesian, and

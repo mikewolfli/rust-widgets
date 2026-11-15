@@ -359,6 +359,74 @@ fn bench_code_editor_pointer_drag(c: &mut Criterion) {
 criterion_group!(pixel_benches, bench_fill_pixels, bench_blend_pixel);
 
 #[cfg(not(feature = "mini"))]
+/// Measures the draw frame of four families whose hot paths had no baseline (W7-29).
+///
+/// The existing runtime benches are all `Button`/`Label`. The caches the earlier rounds added
+/// (soft-wrap rows, an open combo list, image resampling, numeral/clock animation) had no
+/// periodic measurement, so a regression there could only be found by reading code. Each case
+/// here constructs its control once, outside the timed loop, and repaints the same widget —
+/// which is the frame an animation or a hover actually asks for.
+#[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_draw_hot_paths(c: &mut Criterion) {
+    use rust_widgets::image::{Image, ImageData};
+    use rust_widgets::widget::display_widgets::clock::Clock;
+    use rust_widgets::widget::input_widgets::textarea::TextArea;
+    use rust_widgets::widget::runtime;
+    use rust_widgets::widget::{ComboBox, ImageView, LCDNumber, Widget};
+
+    fn bench_frame(c: &mut Criterion, name: &str, widget: Box<dyn Widget>, size: Size) {
+        let clear = Color::rgba(0, 0, 0, 0);
+        let Some(id) = runtime::register(widget) else {
+            panic!("the runtime must accept a widget");
+        };
+        c.bench_function(name, |b| {
+            b.iter(|| {
+                let frame = runtime::render_frame(id, size, clear);
+                debug_assert!(frame.is_some(), "the control must paint a frame");
+                black_box(frame);
+            })
+        });
+        runtime::unregister(id);
+    }
+
+    // A long document with soft wrap: the paragraph wrap cache is the path under test.
+    let document: String = (0..120)
+        .map(|line| format!("line {line}: the quick brown fox jumps over the lazy dog\n"))
+        .collect();
+    let mut textarea = TextArea::new(document, Rect::new(0, 0, 480, 320));
+    textarea.set_soft_wrap(true);
+    bench_frame(c, "draw_frame TextArea 120-line soft wrap", Box::new(textarea), Size::new(480, 320));
+
+    // An open list: the suggestion-popup window and its row cache are the path under test.
+    let mut combo = ComboBox::new(Rect::new(0, 0, 240, 200));
+    combo.set_items((0..40).map(|index| format!("Item {index}")).collect());
+    combo.set_open(true);
+    bench_frame(c, "draw_frame ComboBox 40-item open list", Box::new(combo), Size::new(240, 200));
+
+    // A large source resampled into a small box: the resample cache is the path under test.
+    let (width, height) = (320u32, 240u32);
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            pixels.extend_from_slice(&[(x % 256) as u8, (y % 256) as u8, 128, 255]);
+        }
+    }
+    let image = Image::from_raw(ImageData::Rgba8(pixels), width, height);
+    let mut view = ImageView::new(image, Rect::new(0, 0, 240, 120));
+    view.set_aspect(rust_widgets::widget::display_widgets::image_view::ImageAspect::Fit);
+    bench_frame(c, "draw_frame ImageView 320x240 Fit", Box::new(view), Size::new(240, 120));
+
+    // The numeral/clock chrome: one animated family member, repainted as its digits change.
+    let mut clock = Clock::new(Rect::new(0, 0, 200, 80));
+    clock.set_time(12, 34, 56);
+    bench_frame(c, "draw_frame Clock 200x80", Box::new(clock), Size::new(200, 80));
+
+    let mut digits = LCDNumber::new(Rect::new(0, 0, 160, 64));
+    digits.set_value(1234.0);
+    bench_frame(c, "draw_frame LCDNumber 160x64", Box::new(digits), Size::new(160, 64));
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 criterion_group!(
     runtime_benches,
@@ -366,7 +434,8 @@ criterion_group!(
     bench_render_frame_tree,
     bench_render_frame_dirty,
     bench_render_frame_full,
-    bench_dispatch_pointer_event
+    bench_dispatch_pointer_event,
+    bench_draw_hot_paths
 );
 
 #[cfg(all(not(feature = "mini"), feature = "code-editor"))]

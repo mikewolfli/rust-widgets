@@ -163,6 +163,10 @@ const MAP_MARKER_DETAIL_EVENTS: &[EventSchema] = &[
     EventSchema { name: "action_triggered", payload: Some(K::String), shape: Some(S::Scalar) },
 ];
 
+/// `map_view` capability.
+///
+/// Borrowed kind: it declares `WidgetKind::Canvas` but registers the canonical name `map_view`;
+/// `capability_for_kind_instance` is what tells the two apart (W8-08).
 pub fn map_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Canvas,

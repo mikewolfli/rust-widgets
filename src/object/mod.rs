@@ -5,7 +5,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/base.rs:1` (every `BaseWidget` owns an `Object` identity).
+//! **State:** Production callers: `src/widget/base.rs:9` (`use crate::object::Object`; every `BaseWidget` owns an `Object` identity).
 mod object_base;
 mod properties;
 pub use crate::core::ObjectId;

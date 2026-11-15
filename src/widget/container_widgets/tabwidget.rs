@@ -3555,9 +3555,12 @@ mod tests {
     }
 
     #[test]
-    fn tabwidget_accessible_name_falls_back_to_kind() {
+    fn tabwidget_accessible_name_falls_back_to_the_catalogue_label() {
         let tw = TabWidget::new(Rect::new(0, 0, 100, 100));
-        assert_eq!(tw.accessible_name(), "TabWidget");
+        // An unlabelled control takes the catalogue's `widget.tab_widget.label`, which is
+        // the mechanism that makes the translated control names consumed rather than dead keys
+        // (W7-04). The kind spelling remains the fallback when no key exists.
+        assert_eq!(tw.accessible_name(), "Tab Widget");
     }
 
     #[test]

@@ -23,6 +23,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::{MenuPanel, MenuPanelItem};
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -39,8 +40,11 @@ const PAGE_SIZE_CELL_WIDTH: u32 = 84;
 /// Suggested width of the trailing jump-to-page cell, in pixels.
 const JUMP_CELL_WIDTH: u32 = 64;
 
-/// Height of one row in the page-size popup, in pixels.
-const PAGE_SIZE_ROW_HEIGHT: u32 = 24;
+/// Height of one page-size option row, in logical pixels.
+///
+/// It is `MenuPanel`'s row height, because that companion paints (and hit-tests) the popup
+/// (W7-26): the two must not disagree about where a row begins.
+const PAGE_SIZE_ROW_HEIGHT: u32 = 32;
 
 /// Vertical gap between the page-size cell and its popup, in pixels.
 const PAGE_SIZE_POPUP_GAP: i32 = 2;
@@ -90,6 +94,8 @@ pub struct Pagination {
     layout_cache: RefCell<Option<PaginationCache>>,
     /// When true, the page-size popup is visible.
     page_size_menu_open: bool,
+    /// The shared menu the page-size popup paints through (W7-26).
+    page_size_menu: MenuPanel,
     /// Index of the option under the pointer while the popup is open.
     page_size_hover: Option<usize>,
     /// The page cell the pointer is over, for the hover highlight and its signal.
@@ -176,6 +182,7 @@ impl Pagination {
             options_revision: 0,
             layout_cache: RefCell::new(None),
             page_size_menu_open: false,
+            page_size_menu: MenuPanel::new(Rect::new(0, 0, 1, 1)),
             page_size_hover: None,
             hovered_page: None,
             label_scratch: String::new(),
@@ -418,9 +425,11 @@ impl Pagination {
         }
         self.page_size_options = normalized;
         self.options_revision = self.options_revision.wrapping_add(1);
+        self.sync_page_size_menu_items();
         if self.page_size_options.is_empty() {
             self.page_size_menu_open = false;
             self.page_size_hover = None;
+            self.page_size_menu.close();
         } else if self.page_size_hover.is_some_and(|index| index >= self.page_size_options.len()) {
             self.page_size_hover = None;
         }
@@ -703,8 +712,10 @@ impl Pagination {
         if !popup.contains_point(pos) {
             return None;
         }
-        let row = ((pos.y - popup.y) as u32 / PAGE_SIZE_ROW_HEIGHT) as usize;
-        (row < self.page_size_options.len()).then_some(row)
+        // One derivation for the painted row and the hit test: the companion paints at
+        // `MenuPanel`'s pitch, and `page_size_option_rect` is the same arithmetic.
+        (0..self.page_size_options.len())
+            .find(|index| self.page_size_option_rect(popup, *index).contains_point(pos))
     }
 
     /// Opens or closes the page-size popup.
@@ -714,6 +725,12 @@ impl Pagination {
         }
         self.page_size_menu_open = !self.page_size_menu_open;
         self.page_size_hover = None;
+        if self.page_size_menu_open {
+            self.sync_page_size_menu_items();
+            self.page_size_menu.open();
+        } else {
+            self.page_size_menu.close();
+        }
         self.base.request_redraw();
     }
 
@@ -724,6 +741,7 @@ impl Pagination {
         }
         self.page_size_menu_open = false;
         self.page_size_hover = None;
+        self.page_size_menu.close();
         self.base.request_redraw();
     }
 
@@ -737,6 +755,7 @@ impl Pagination {
                 let option = self.page_size_options[index];
                 self.page_size_menu_open = false;
                 self.page_size_hover = None;
+                self.page_size_menu.close();
                 self.set_page_size(option);
                 self.base.request_redraw();
                 return;
@@ -924,29 +943,33 @@ impl Pagination {
         draw_centered_label(context, text_rect, scratch.as_str(), font, color);
     }
 
-    /// Draws the page-size popup and its option rows.
-    fn draw_page_size_popup(
-        &self,
-        context: &mut RenderContext,
-        popup: Rect,
-        font: &Font,
-        color: Color,
-        background: Color,
-        outline: Color,
-        scratch: &mut String,
-    ) {
-        use core::fmt::Write as _;
-        context.fill_rect(popup, background);
-        for (index, option) in self.page_size_options.iter().enumerate() {
-            let row = self.page_size_option_rect(popup, index);
-            if self.page_size_hover == Some(index) {
-                context.fill_rect(row, background.blend(&color, 0.12));
-            }
-            scratch.clear();
-            let _ = write!(scratch, "{option}");
-            draw_centered_label(context, row, scratch.as_str(), font, color);
+    /// Draws the page-size popup through the shared [`MenuPanel`] companion (W7-26).
+    ///
+    /// The popup used to be a second hand-drawn menu loop with its own row pitch and
+    /// highlight. The companion owns both now; the bar keeps the anchor arithmetic, the
+    /// open/close state and the option list, so `is_page_size_menu_open` and
+    /// `page_size_options` keep their meaning and no public API was added.
+    fn draw_page_size_popup(&mut self, context: &mut RenderContext, popup: Rect) {
+        self.page_size_menu.set_geometry(popup);
+        if !self.page_size_menu.is_open() {
+            self.page_size_menu.open();
         }
-        context.draw_rect(popup, outline);
+        self.page_size_menu.set_highlighted_index(self.page_size_hover);
+        self.page_size_menu.draw(context);
+    }
+
+    /// Rebuilds the companion's item list from the option list.
+    ///
+    /// Called only when the options change (or the popup opens), not per frame: `MenuPanelItem`
+    /// owns its text, and rebuilding it in `draw` would put a `String` per option on the paint
+    /// path — the allocation the revision cache (R4-03) removed.
+    fn sync_page_size_menu_items(&mut self) {
+        let items = self
+            .page_size_options
+            .iter()
+            .map(|size| MenuPanelItem::new(crate::compat::format!("{size}")))
+            .collect();
+        self.page_size_menu.set_items(items);
     }
 
     /// Applies a click on `cell`.
@@ -1392,17 +1415,7 @@ impl Draw for Pagination {
             self.label_scratch = size_label;
         }
         if let Some(popup) = self.page_size_popup_rect() {
-            let mut popup_label = core::mem::take(&mut self.label_scratch);
-            self.draw_page_size_popup(
-                context,
-                popup,
-                font,
-                text_color,
-                background,
-                outline,
-                &mut popup_label,
-            );
-            self.label_scratch = popup_label;
+            self.draw_page_size_popup(context, popup);
         }
 
         // The bar's own outline follows the face's radius, so the four corners close.

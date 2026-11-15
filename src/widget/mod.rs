@@ -446,8 +446,8 @@ pub use nav_widgets::tab_view::TabView;
 #[cfg(full_widgets)]
 pub use companions::{
     ChartTooltip, FilterRow, HostedToast, Legend, LegendEntry, LegendOrientation, LegendPosition,
-    Swatch, ToastAnchor, ToastHost, ToastOverflowPolicy, ToastStackingDirection, TooltipLine,
-    TooltipManager, ZoomMode, ZoomPanController,
+    StepEntry, StepStrip, StepStripStyle, Swatch, ToastAnchor, ToastHost, ToastOverflowPolicy,
+    ToastStackingDirection, TooltipLine, TooltipManager, ZoomMode, ZoomPanController,
 };
 // Re-export chart widgets
 #[cfg(full_widgets)]

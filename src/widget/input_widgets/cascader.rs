@@ -1545,6 +1545,18 @@ impl Cascader {
     fn draw_field(&self, context: &mut RenderContext, rect: Rect) {
         let style = self.style();
         let background = style.background_color.unwrap_or(Color::WHITE);
+        // The closed field's hover wash: the palette is used inside the open columns, so a shut
+        // field had no pointer feedback at all (W7-15). Same weight as `ComboBox`'s field.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let background = if overlay.is_empty() {
+            background
+        } else {
+            background.blend(&background.contrast_color(), overlay.fill_blend())
+        };
         let border = style.border_color.unwrap_or(Color::rgb(190, 192, 198));
         let text_color = style.text_color.unwrap_or(Color::rgb(40, 44, 52));
 

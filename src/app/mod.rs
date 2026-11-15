@@ -9,7 +9,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `examples/control_property_uniform.rs:46`, `examples/menu_shortcut_runtime.rs:12`, `examples/control_creation_is_single_mechanism.rs:42`, `examples/macos_window_state_async_probe.rs:36`. The documented primary entry point for applications, and it has real external consumers.
+//! **State:** Production callers: `examples/control_property_uniform.rs:46`, `examples/menu_shortcut_runtime.rs:12`, `examples/control_creation_is_single_mechanism.rs:42`, `examples/macos_window_state_async_probe.rs:27` (`use rust_widgets::app::App`). The documented primary entry point for applications, and it has real external consumers.
 
 mod app_core;
 pub(crate) mod handle;

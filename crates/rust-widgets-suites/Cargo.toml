@@ -1,6 +1,6 @@
 [package]
 name = "rust-widgets-suites"
-version = "4.3.0"
+version = "4.4.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -34,6 +34,10 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [features]
 default = ["form"]
 # The form group: validated forms and form sets.
+#
+# This is a real gate (W8-04): with `default-features = false` and without `form`, both the module
+# and its registration are absent. A host that previously relied on the group being compiled
+# unconditionally must list `form` (or keep default features).
 form = []
 # The web group: the browser model (history, privacy, plugins, JS engine) and its controls.
 webview = []
@@ -60,7 +64,7 @@ web-http = ["webview", "dep:ureq"]
 # The dependency runs one way only: the parent cannot depend on this crate (Cargo rejects a
 # package cycle). The suite extends the parent's widget layer, so it takes the parent's default
 # (device) profile.
-rust_widgets = { version = "4.3.0", path = "../.." }
+rust_widgets = { version = "4.4.0", path = "../.." }
 # The migrated controls warn through `log` exactly as they did in the parent; the host decides
 # which logger, if any, is installed.
 log = "0.4"

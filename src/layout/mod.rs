@@ -5,7 +5,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/capability/constructors.rs:1` and `src/json/loader/nodes.rs:1` (both resolve layout kinds through `layout::`).
+//! **State:** Production callers: `src/app/handle/window.rs:794` (`set_layout` stores a `crate::layout::Layout`), `src/app/handle/window.rs:874` (`LayoutContext::default()` for the per-frame pass) and `src/app/handle/window.rs:897` (the reused geometry scratch).
 /// Positions each child at explicit absolute coordinates, ignoring the parent
 /// rect apart from the origin it offsets from.
 ///

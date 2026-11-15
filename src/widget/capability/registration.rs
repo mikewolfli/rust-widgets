@@ -306,6 +306,7 @@ impl WidgetFactory {
             self.register(speed_dial_capability(), create_speed_dial);
             self.register(swipe_actions_capability(), create_swipe_actions);
             self.register(drawer_section_header_capability(), create_drawer_section_header);
+            self.register(step_strip_capability(), create_step_strip);
             self.register(layer_panel_capability(), create_layer_panel);
             self.register(playlist_panel_capability(), create_playlist_panel);
             self.register(shape_canvas_capability(), create_shape_canvas);

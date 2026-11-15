@@ -136,6 +136,11 @@ pub struct Heatmap {
     hovered_cell: Option<(usize, usize)>,
     /// Emitted when the pointer's cell changes, carrying `(row, column)`.
     pub cell_hovered: Signal1<(usize, usize)>,
+    /// Emitted with the cell the pointer left, so a reader can close its read-out.
+    ///
+    /// The `cell_hovered` half only says "entered"; a chart that never says "left" leaves a
+    /// host's tooltip on screen after the pointer is gone (W7-21).
+    pub cell_unhovered: Signal1<(usize, usize)>,
     /// Emitted when a cell is clicked, carrying `(row, column)`.
     pub cell_clicked: Signal1<(usize, usize)>,
     /// The selected cell, drawn with a heavier outline.
@@ -155,7 +160,7 @@ pub struct Heatmap {
     /// Data column to display column. Built with the order so a lookup is O(1).
     column_position: Vec<usize>,
     /// The legend's endpoint texts and label height, with the key they were built for.
-    legend_text: RefCell<Option<(u64, u64, u32, String, String, u32)>>,
+    legend_text: RefCell<Option<(u64, u64, crate::core::Font, u32, String, String, u32)>>,
     /// The hover read-out text and measured size, with the key they were built for.
     readout_text: ReadoutCache,
     /// Whether the host paints the hover read-out with a companion tooltip.
@@ -217,6 +222,7 @@ impl Heatmap {
             show_legend: true,
             hovered_cell: None,
             cell_hovered: Signal1::new(),
+            cell_unhovered: Signal1::new(),
             cell_clicked: Signal1::new(),
             selected_cell: None,
             show_tooltip: false,
@@ -1007,6 +1013,14 @@ impl Widget for Heatmap {
                     ])
                 }))
             }
+            "cell_unhovered" => {
+                Some(EventSignalRef::mapped("cell_unhovered", &self.cell_unhovered, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
+                }))
+            }
             "cell_double_clicked" => Some(EventSignalRef::mapped(
                 "cell_double_clicked",
                 &self.cell_double_clicked,
@@ -1636,10 +1650,15 @@ impl Heatmap {
         // The two endpoint captions and the label line's height are a function of the range and
         // the font, so they are built once per change rather than formatted and measured on every
         // frame.
-        let key = (low.to_bits(), high.to_bits(), font.size().to_bits());
+        // The key carries the whole face and the device scale, not just the size: `measure_text`
+        // scales by DPI, so a monitor change kept the old label height forever (W7-10).
+        let key = (low.to_bits(), high.to_bits(), font.clone(), context.dpi_scale().to_bits());
         let stale = !matches!(
             self.legend_text.borrow().as_ref(),
-            Some((a, b, c, _, _, _)) if (*a, *b, *c) == key
+            Some((a, b, cached_font, cached_dpi, _, _, _))
+                if (*a, *b) == (key.0, key.1)
+                    && *cached_font == key.2
+                    && *cached_dpi == key.3
         );
         if stale {
             let label_height = context.measure_text("0", font).height;
@@ -1647,13 +1666,14 @@ impl Heatmap {
                 key.0,
                 key.1,
                 key.2,
+                key.3,
                 format_endpoint(low),
                 format_endpoint(high),
                 label_height,
             ));
         }
         let legend_text = self.legend_text.borrow();
-        let Some((_, _, _, low_text, high_text, label_height)) = legend_text.as_ref() else {
+        let Some((_, _, _, _, low_text, high_text, label_height)) = legend_text.as_ref() else {
             return;
         };
         // The two endpoint numbers take the row below the ramp.
@@ -1792,7 +1812,11 @@ impl EventHandler for Heatmap {
                 let had_region = self.region_anchor.take().is_some();
                 self.region_current = None;
                 self.pan_drag = None;
-                if self.hovered_cell.take().is_some() || had_region {
+                let left_cell = self.hovered_cell.take();
+                if let Some(cell) = left_cell {
+                    self.cell_unhovered.emit(cell);
+                }
+                if left_cell.is_some() || had_region {
                     self.sync_chart_tooltip();
                     self.base.request_redraw();
                 }

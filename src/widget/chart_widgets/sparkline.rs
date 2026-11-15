@@ -96,6 +96,8 @@ pub struct Sparkline {
     hovered_index: Option<usize>,
     /// Emitted with `(index, value)` when the pointer enters a different sample.
     pub value_hovered: Signal1<(usize, f64)>,
+    /// Emitted with the sample the pointer left, so a host can withdraw its read-out (W7-21).
+    pub value_unhovered: Signal1<(usize, f64)>,
     /// Emitted with the final sample's value when the last-point marker is clicked.
     pub last_value_clicked: Signal1<f64>,
     /// Smallest and largest finite sample, maintained incrementally as the series grows.
@@ -129,6 +131,7 @@ impl Sparkline {
             capacity: 0,
             hovered_index: None,
             value_hovered: Signal1::new(),
+            value_unhovered: Signal1::new(),
             last_value_clicked: Signal1::new(),
             series_min: None,
             series_max: None,
@@ -505,6 +508,14 @@ impl Widget for Sparkline {
                     ]))
                 }))
             }
+            "value_unhovered" => {
+                Some(EventSignalRef::mapped("value_unhovered", &self.value_unhovered, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Float(v.1),
+                    ]))
+                }))
+            }
             "last_value_clicked" => {
                 Some(EventSignalRef::mapped("last_value_clicked", &self.last_value_clicked, |v| {
                     CapabilityValue::Float(*v)
@@ -784,7 +795,10 @@ impl EventHandler for Sparkline {
                 }
             }
             Event::MouseLeave { .. } => {
-                if self.hovered_index.take().is_some() {
+                if let Some(index) = self.hovered_index.take() {
+                    if let Some(value) = self.data.get(index) {
+                        self.value_unhovered.emit((index, *value));
+                    }
                     self.base.request_redraw();
                 }
             }

@@ -7,7 +7,7 @@
 //! a [`Signal1<(u32, u32)>`] with the key code and modifiers on press.
 //! Special keys (Enter, Backspace, Space) also emit dedicated signals.
 
-use crate::compat::{format, vec, String, ToString, Vec};
+use crate::compat::{format, vec, RefCell, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::keyboard_labels::KeyLabelCache;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -101,6 +102,14 @@ pub struct Keyboard {
     base: BaseWidget,
     layout: KeyboardLayout,
     keys: Vec<Vec<KeyDefinition>>,
+    /// Bumped whenever `keys` is replaced, so the label cache cannot outlive its table.
+    labels_revision: u32,
+    /// Painted key labels for the current case state (W7-28).
+    ///
+    /// Each label was rebuilt per key per frame while shift/Caps (or `lowercase = false`) was
+    /// active, which is the state a keyboard is in every time a user types a capital. The table
+    /// is rebuilt once per state change instead.
+    label_cache: RefCell<KeyLabelCache>,
     /// Current shift state (`true` = uppercase).
     shift: bool,
     /// Whether to show lowercase when shift is off.
@@ -191,6 +200,8 @@ impl Keyboard {
             base,
             layout: KeyboardLayout::Qwerty,
             keys: Vec::new(),
+            labels_revision: 0,
+            label_cache: RefCell::new(KeyLabelCache::new()),
             shift: false,
             lowercase: true,
             pressed_key: None,
@@ -260,6 +271,7 @@ impl Keyboard {
         self.repeat_elapsed = 0;
         self.accent_popup = None;
         self.pressed_key = None;
+        self.labels_revision = self.labels_revision.wrapping_add(1);
     }
 
     /// The repeat and long-press rhythm (I-21).
@@ -827,6 +839,21 @@ impl Keyboard {
             Cow::Borrowed(key.label.as_str())
         }
     }
+
+    /// Rebuilds the painted label table when the case state or the key grid changes (W7-28).
+    ///
+    /// The old code asked [`Self::key_display_label`] for every key on every frame, so the
+    /// uppercase state — the state a keyboard is in whenever a user types a capital — allocated
+    /// one `String` per letter key per frame. The table is rebuilt in one pass on a state change
+    /// and then borrowed for the whole paint.
+    fn synchronise_key_labels(&self) {
+        self.label_cache.borrow_mut().synchronise(
+            (self.shift ^ self.caps_lock, self.lowercase),
+            self.labels_revision,
+            &self.keys,
+            |key| self.key_display_label(key).into_owned(),
+        );
+    }
 }
 
 impl Widget for Keyboard {
@@ -1176,6 +1203,10 @@ impl Draw for Keyboard {
         let total_height = rect.height as f32;
         let row_height = total_height / row_count as f32;
         let row_width = rect.width as f32;
+        // One label table for the whole paint, rebuilt only when the case state or the key grid
+        // changed (W7-28).
+        self.synchronise_key_labels();
+        let key_labels = self.label_cache.borrow();
 
         // Key colours are raised from the board so the grid reads on either appearance: an
         // ordinary key is one step out of the board, a modifier a further step, and a latched
@@ -1254,8 +1285,13 @@ impl Draw for Keyboard {
                     context.draw_rect(ripple, key_border.blend(&ink, 0.35 * self.press_progress));
                 }
 
-                // Draw label centered in the key.
-                let label = self.key_display_label(key);
+                // Draw label centered in the key, from the table built once for this frame.
+                let label = key_labels
+                    .labels()
+                    .get(row_idx)
+                    .and_then(|row| row.get(col_idx))
+                    .map(String::as_str)
+                    .unwrap_or("");
                 if !label.is_empty() {
                     // The fit box is the key's own interior, not a synthetically enlarged one:
                     // `draw_text_fitted` insets by `TEXT_FIT_MARGIN` at each end, so a key
@@ -1290,7 +1326,7 @@ impl Draw for Keyboard {
                     };
                     context.draw_text_line_ellipsis(
                         inner,
-                        &label,
+                        label,
                         font,
                         key_text,
                         HorizontalAlignment::Center,

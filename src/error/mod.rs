@@ -22,9 +22,9 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/bindings/binding_impl/c_abi.rs:1308` and
-//! `:1319` (`rw_error_code` / `rw_error_message` read this module's
-//! `ffi` slot).
+//! **State:** Production callers: `src/bindings/binding_impl/c_abi.rs:1321` and
+//! `src/bindings/binding_impl/c_abi.rs:1333` (`rw_error_code` / `rw_error_message` read this
+//! module's `ffi` slot).
 
 // ---------------------------------------------------------------------------
 // ErrorId — stable integer error codes (for C/C++ FFI only)

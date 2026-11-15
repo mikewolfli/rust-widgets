@@ -1949,6 +1949,31 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        /// Numbered step indicator a multi-step page can own (`W7-06`).
+        ///
+        /// `steps` is the model: a flat record list (the `LayerPanel` precedent), because the
+        /// property vocabulary has no record-of-record kind. `step_count` is its read-only
+        /// count, and `current` is the active index the paint clamps into that list.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const STEP_STRIP_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::records(
+                "steps",
+                true,
+                true,
+                &crate::widget::companions::STEP_ENTRY_SCHEMA,
+            ),
+            PropertySchema::new("current", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("step_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("style", PropertyValueKind::Enum, true, true),
+            PropertySchema::new("clickable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("band_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("inset", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         /// Companion list for a canvas's layers (`COMP-I01`).
         #[cfg(not(alloc_frugal))]
         pub(crate) const LAYER_PANEL_PROPERTIES: &[PropertySchema] = &[

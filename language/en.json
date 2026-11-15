@@ -91,9 +91,6 @@
     "widget.action.label": {
       "message": "Action"
     },
-    "widget.activity_indicator.label": {
-      "message": "Activity Indicator"
-    },
     "widget.adaptive_scaffold.label": {
       "message": "Adaptive Scaffold"
     },
@@ -106,10 +103,7 @@
     "widget.arc.label": {
       "message": "Arc"
     },
-    "widget.audio_visualizer.label": {
-      "message": "Audio Visualizer"
-    },
-    "widget.autocomplete_edit.label": {
+    "widget.auto_complete_edit.label": {
       "message": "Auto Complete"
     },
     "widget.avatar.label": {
@@ -142,9 +136,6 @@
     "widget.calendar.label": {
       "message": "Calendar"
     },
-    "widget.camera_preview.label": {
-      "message": "Camera Preview"
-    },
     "widget.canvas.label": {
       "message": "Canvas"
     },
@@ -154,10 +145,7 @@
     "widget.chart.label": {
       "message": "Chart"
     },
-    "widget.check_list_box.label": {
-      "message": "Check List Box"
-    },
-    "widget.checkbox.label": {
+    "widget.check_box.label": {
       "message": "CheckBox"
     },
     "widget.chip.label": {
@@ -181,14 +169,8 @@
     "widget.color_well.label": {
       "message": "Color Well"
     },
-    "widget.column_view.label": {
-      "message": "Column View"
-    },
-    "widget.combobox.label": {
+    "widget.combo_box.label": {
       "message": "Combo Box"
-    },
-    "widget.command_entry.label": {
-      "message": "Command Entry"
     },
     "widget.command_link.label": {
       "message": "Command Link"
@@ -226,29 +208,20 @@
     "widget.date_range_picker.label": {
       "message": "Date Range Picker"
     },
-    "widget.dateedit.label": {
+    "widget.date_edit.label": {
       "message": "Date Edit"
     },
-    "widget.datetimeedit.label": {
+    "widget.date_time_edit.label": {
       "message": "Date/Time Edit"
     },
     "widget.dial.label": {
       "message": "Dial"
     },
-    "widget.diff_viewer.label": {
-      "message": "Diff Viewer"
-    },
     "widget.divider.label": {
       "message": "Divider"
     },
-    "widget.dock_panel.label": {
-      "message": "Dock Panel"
-    },
-    "widget.dockwidget.label": {
+    "widget.dock_widget.label": {
       "message": "Dock Widget"
-    },
-    "widget.double_spin_box.label": {
-      "message": "Double Spin Box"
     },
     "widget.dropdown.label": {
       "message": "Dropdown"
@@ -256,7 +229,7 @@
     "widget.dropdown_menu.label": {
       "message": "Dropdown Menu"
     },
-    "widget.editable_combobox.label": {
+    "widget.editable_combo_box.label": {
       "message": "Editable Combo Box"
     },
     "widget.empty_state.label": {
@@ -271,7 +244,7 @@
     "widget.floating_label.label": {
       "message": "Floating Label"
     },
-    "widget.font_combobox.label": {
+    "widget.font_combo_box.label": {
       "message": "Font Combo Box"
     },
     "widget.font_dialog.label": {
@@ -283,16 +256,10 @@
     "widget.freeform_shape.label": {
       "message": "Freeform Shape"
     },
-    "widget.gantt_widget.label": {
-      "message": "Gantt"
-    },
     "widget.grid.label": {
       "message": "Grid"
     },
-    "widget.grid_widget.label": {
-      "message": "Grid Widget"
-    },
-    "widget.groupbox.label": {
+    "widget.group_box.label": {
       "message": "Group Box"
     },
     "widget.hero_animation.label": {
@@ -316,9 +283,6 @@
     "widget.input_dialog.label": {
       "message": "Input Dialog"
     },
-    "widget.key_sequence_edit.label": {
-      "message": "Key Sequence Edit"
-    },
     "widget.keyboard.label": {
       "message": "Keyboard"
     },
@@ -334,20 +298,14 @@
     "widget.line_chart.label": {
       "message": "Line Chart"
     },
-    "widget.lineedit.label": {
+    "widget.line_edit.label": {
       "message": "Line Edit"
     },
-    "widget.listbox.label": {
+    "widget.list_box.label": {
       "message": "List Box"
     },
-    "widget.listview.label": {
+    "widget.list_view.label": {
       "message": "List View"
-    },
-    "widget.lottie_widget.label": {
-      "message": "Lottie Animation"
-    },
-    "widget.map_view.label": {
-      "message": "Map View"
     },
     "widget.markdown_editor.label": {
       "message": "Markdown Editor"
@@ -364,11 +322,8 @@
     "widget.material_snackbar.label": {
       "message": "Snackbar"
     },
-    "widget.mdiarea.label": {
+    "widget.mdi_area.label": {
       "message": "MDI Area"
-    },
-    "widget.media_player.label": {
-      "message": "Media Player"
     },
     "widget.menu.label": {
       "message": "Menu"
@@ -376,11 +331,8 @@
     "widget.menu_button.label": {
       "message": "Menu Button"
     },
-    "widget.menubar.label": {
+    "widget.menu_bar.label": {
       "message": "Menu Bar"
-    },
-    "widget.menuitem.label": {
-      "message": "Menu Item"
     },
     "widget.message_box.label": {
       "message": "Message Box"
@@ -400,7 +352,7 @@
     "widget.modal_bottom_sheet.label": {
       "message": "Modal Bottom Sheet"
     },
-    "widget.multi_select_combobox.label": {
+    "widget.multi_select_combo_box.label": {
       "message": "Multi-Select Combo Box"
     },
     "widget.navigation_drawer.label": {
@@ -412,14 +364,8 @@
     "widget.notification_center.label": {
       "message": "Notification Center"
     },
-    "widget.pager_page_view.label": {
-      "message": "Pager Page View"
-    },
     "widget.panel.label": {
       "message": "Panel"
-    },
-    "widget.pi_menu.label": {
-      "message": "Pie Menu"
     },
     "widget.pie_chart.label": {
       "message": "Pie Chart"
@@ -433,7 +379,7 @@
     "widget.progress_circle.label": {
       "message": "Progress Circle"
     },
-    "widget.progressbar.label": {
+    "widget.progress_bar.label": {
       "message": "Progress Bar"
     },
     "widget.progress_dialog.label": {
@@ -445,7 +391,7 @@
     "widget.properties_panel.label": {
       "message": "Properties Panel"
     },
-    "widget.qrcode.label": {
+    "widget.qr_code.label": {
       "message": "QR Code"
     },
     "widget.radio_button.label": {
@@ -463,17 +409,8 @@
     "widget.ribbon_bar.label": {
       "message": "Ribbon Bar"
     },
-    "widget.ribbon_group.label": {
-      "message": "Ribbon Group"
-    },
-    "widget.ribbon_item.label": {
-      "message": "Ribbon Item"
-    },
-    "widget.richedit.label": {
+    "widget.rich_edit.label": {
       "message": "Rich Edit"
-    },
-    "widget.rive_widget.label": {
-      "message": "Rive Animation"
     },
     "widget.roller.label": {
       "message": "Roller"
@@ -481,16 +418,16 @@
     "widget.safe_area.label": {
       "message": "Safe Area"
     },
-    "widget.scrollarea.label": {
+    "widget.scroll_area.label": {
       "message": "Scroll Area"
     },
-    "widget.scrollbar.label": {
+    "widget.scroll_bar.label": {
       "message": "Scroll Bar"
     },
-    "widget.searchbar.label": {
+    "widget.search_bar.label": {
       "message": "Search Bar"
     },
-    "widget.searchbox.label": {
+    "widget.search_box.label": {
       "message": "Search Box"
     },
     "widget.segmented_button.label": {
@@ -511,7 +448,7 @@
     "widget.sparkline.label": {
       "message": "Sparkline"
     },
-    "widget.spinbox.label": {
+    "widget.spin_box.label": {
       "message": "Spin Box"
     },
     "widget.spinner.label": {
@@ -523,11 +460,14 @@
     "widget.splitter.label": {
       "message": "Splitter"
     },
-    "widget.stackedwidget.label": {
+    "widget.stacked_widget.label": {
       "message": "Stacked Widget"
     },
-    "widget.statusbar.label": {
+    "widget.status_bar.label": {
       "message": "Status Bar"
+    },
+    "widget.step_strip.label": {
+      "message": "Step Strip"
     },
     "widget.stepper.label": {
       "message": "Stepper"
@@ -541,31 +481,25 @@
     "widget.tab_view.label": {
       "message": "Tab View"
     },
-    "widget.tabbar.label": {
+    "widget.tab_bar.label": {
       "message": "Tab Bar"
     },
     "widget.table.label": {
       "message": "Table"
     },
-    "widget.tabwidget.label": {
+    "widget.tab_widget.label": {
       "message": "Tab Widget"
     },
     "widget.tag_input.label": {
       "message": "Tag Input"
     },
-    "widget.terminal_view.label": {
-      "message": "Terminal View"
-    },
-    "widget.textarea.label": {
+    "widget.text_area.label": {
       "message": "Text Area"
     },
-    "widget.textedit.label": {
+    "widget.text_edit.label": {
       "message": "Text Edit"
     },
-    "widget.tile_view.label": {
-      "message": "Tile View"
-    },
-    "widget.timeedit.label": {
+    "widget.time_edit.label": {
       "message": "Time Edit"
     },
     "widget.timeline_widget.label": {
@@ -577,13 +511,13 @@
     "widget.toggle_button.label": {
       "message": "Toggle Button"
     },
-    "widget.toolbar.label": {
+    "widget.tool_bar.label": {
       "message": "Tool Bar"
     },
-    "widget.toolbox.label": {
+    "widget.tool_box.label": {
       "message": "ToolBox"
     },
-    "widget.toolbutton.label": {
+    "widget.tool_button.label": {
       "message": "Tool Button"
     },
     "widget.tooltip.label": {
@@ -592,32 +526,14 @@
     "widget.tree_table.label": {
       "message": "Tree Table"
     },
-    "widget.treeview.label": {
+    "widget.tree_view.label": {
       "message": "Tree View"
-    },
-    "widget.undo_view.label": {
-      "message": "Undo View"
-    },
-    "widget.video_player.label": {
-      "message": "Video Player"
     },
     "widget.virtual_list.label": {
       "message": "Virtual List"
     },
     "widget.virtual_table.label": {
       "message": "Virtual Table"
-    },
-    "widget.web_engine_view.label": {
-      "message": "Web View"
-    },
-    "widget.wizard.label": {
-      "message": "Wizard"
-    },
-    "a11y.description.tab": {
-      "message": "Tab {index} of {count}"
-    },
-    "a11y.description.progress": {
-      "message": "{value} percent"
     },
     "a11y.state.checked": {
       "message": "Checked"

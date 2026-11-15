@@ -1691,12 +1691,13 @@ impl WidgetFactory {
     ///
     /// # Why "first registered" was wrong
     ///
-    /// Ten `WidgetKind` values are shared by two or more controls, because a
-    /// specialised control reuses its base kind: `split_button` and `tool_button`
-    /// both declare `ToolButton`; `code_editor` and `rich_edit` both declare
-    /// `RichEdit`; `snackbar` and `status_bar` both declare `StatusBar`; and so on
-    /// for `Canvas`, `Chart`, `Table`, `TextEdit`, `ToggleButton`, `TreeView` and
-    /// `WebEngineView`.
+    /// Several `WidgetKind` values are shared by two or more controls, because a specialised
+    /// control reuses its base kind: `split_button` and `tool_button` both declare `ToolButton`,
+    /// `code_editor` and `rich_edit` both declare `RichEdit`, and so on for `Canvas`, `Chart`,
+    /// `Table`, `TextEdit`, `ToggleButton`, `TreeView` and `WebEngineView` — and the suites add
+    /// further shared kinds (`VideoPlayer`, `Canvas`, `Chart`, …). The live set and its count are
+    /// [`Self::shared_kinds_resolving_to_other_names`]'s answer; this comment deliberately states
+    /// no number, because a hand-written one drifted after the suites were extracted (W8-07).
     ///
     /// Returning `indices[0]` therefore resolved a `ToolButton` lookup to
     /// `split_button` — a different control — whenever the specialised entry
@@ -2403,6 +2404,12 @@ impl WidgetFactory {
             // `WidgetKind::Stepper`. Same arrangement for the desktop stepper.
             "stepper" => self::coercion::widget_as::<Stepper>(widget).is_some(),
             "mac_stepper" => self::coercion::widget_as::<MacStepper>(widget).is_some(),
+            // `step_strip` borrows `WidgetKind::Stepper` because a step indicator reports which
+            // step is active rather than owning a numeric value. Without this row it would inherit
+            // `stepper`'s schema (`value`/`minimum`/`maximum`) instead of its own `steps` model.
+            "step_strip" => {
+                self::coercion::widget_as::<crate::widget::companions::StepStrip>(widget).is_some()
+            }
             // `WidgetKind::Window`. The title bar reports the window kind so the theme and the
             // accessibility role classify it as window chrome.
             "window" => self::coercion::widget_as::<Window>(widget).is_some(),

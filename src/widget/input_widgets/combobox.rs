@@ -28,7 +28,7 @@ use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 #[cfg(full_widgets)]
 use crate::signal::ConnectionScope;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
     expect_bool, expect_horizontal_alignment, expect_string, expect_string_list,
@@ -596,6 +596,12 @@ pub struct ComboBox {
     pub undo_available: Signal1<bool>,
     /// Emitted with the new value whenever redo availability changes.
     pub redo_available: Signal1<bool>,
+    /// Emitted when editing ends — the editable field loses focus and its value is committed.
+    ///
+    /// Carries no payload because the committed value is read back through [`Self::current_text`];
+    /// this is the notification a form waits for before validating, and the counterpart of the
+    /// same signal on [`crate::widget::EditableComboBox`] and `SpinBox` (W7-11).
+    pub editing_finished: GenericSignal,
     /// Last undo/redo availability announced, so both signals are edge-triggered.
     undo_available_announced: bool,
     redo_available_announced: bool,
@@ -1015,6 +1021,7 @@ impl ComboBox {
             text_edited: Signal1::new(),
             undo_available: Signal1::new(),
             redo_available: Signal1::new(),
+            editing_finished: GenericSignal::new(),
             undo_available_announced: false,
             redo_available_announced: false,
             placeholder_text: String::new(),
@@ -1559,6 +1566,17 @@ impl ComboBox {
         width
     }
 
+    /// The caret's advance in the editable value, in visual order when the value reorders.
+    ///
+    /// The logical prefix is the caret's visual position only for an all-LTR value; a right-to-left
+    /// run paints reversed, so the prefix would put the caret at the opposite end (W7-18).
+    fn editor_caret_advance(&self, font: &Font, end: usize) -> i32 {
+        let text = self.editor.text();
+        let end = crate::widget::text_utils::floor_char_boundary(text, end.min(text.len()));
+        crate::widget::text_utils::visual_caret_advance(text, font, end)
+            .unwrap_or_else(|| self.editor_prefix_advance(font, end))
+    }
+
     /// The caret's window rectangle for an IME candidate window (X-001).
     fn caret_query(&self) -> crate::widget::widget_trait::InputMethodQuery {
         let band = self.field_band();
@@ -1569,7 +1587,7 @@ impl ComboBox {
         let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         let advance = self.editor_prefix_advance(font, text.len());
         let origin = crate::render::fitted_origin(geometry.text_box, advance, align);
-        let x = origin.x + self.editor_prefix_advance(font, caret);
+        let x = origin.x + self.editor_caret_advance(font, caret);
         crate::widget::widget_trait::InputMethodQuery {
             caret_rect: Rect::new(
                 x.min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
@@ -2381,6 +2399,9 @@ impl Widget for ComboBox {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
             _ => None,
         }
     }
@@ -2829,6 +2850,9 @@ impl EventHandler for ComboBox {
                 self.cursor_blink.stop();
                 self.set_open(false);
                 self.commit_editor();
+                // The committed value is the fact a form validates on; `text_edited` is the
+                // per-keystroke channel, so it cannot answer "editing ended" (W7-11).
+                self.editing_finished.emit();
             }
             Event::FocusLost => {
                 self.cursor_blink.stop();
@@ -2968,8 +2992,8 @@ impl Draw for ComboBox {
             if let Some((start, end)) = self.editor.selection() {
                 let start = start.min(current_text.len());
                 let end = end.min(current_text.len());
-                let start_x = value_origin.x + self.editor_prefix_advance(font, start);
-                let end_x = value_origin.x + self.editor_prefix_advance(font, end);
+                let start_x = value_origin.x + self.editor_caret_advance(font, start);
+                let end_x = value_origin.x + self.editor_caret_advance(font, end);
                 context.fill_rect(
                     Rect::new(
                         start_x.min(end_x),
@@ -2981,7 +3005,7 @@ impl Draw for ComboBox {
                 );
             }
             let caret = self.editor.cursor().min(current_text.len());
-            let caret_x = value_origin.x + self.editor_prefix_advance(font, caret);
+            let caret_x = value_origin.x + self.editor_caret_advance(font, caret);
             let caret_x = caret_x
                 .min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
                 .max(geometry.text_box.x);

@@ -6,7 +6,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/input_widgets/rich_edit.rs:1` (text edits push onto the undo stack); 18 files reference it.
+//! **State:** Production callers: `src/widget/input_widgets/rich_edit.rs:22` (text edits push onto the undo stack); 18 files reference it.
 
 mod command;
 mod stack;

@@ -37,7 +37,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/widget_trait.rs:1`; 181 files reference it (every control's `Draw` implementation).
+//! **State:** Production callers: `src/widget/view_widgets/tree/tree_view.rs:10` (`use crate::render::RenderContext`); 181 files reference it (every control's `Draw` implementation).
 
 // ─── Sub-module declarations ─────────────────────────────────────────────────
 

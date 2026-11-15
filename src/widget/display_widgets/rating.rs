@@ -137,6 +137,12 @@ impl Rating {
             let whole_after = self.rating();
             if whole_before != whole_after {
                 self.rating_changed.emit(whole_after);
+                // A visible state change is also one a screen reader should hear about; the
+                // framework's central submit does not cover `checked` (W7-17).
+                #[cfg(not(alloc_frugal))]
+                if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+                    crate::widget::a11y_submit::submit_state_changed(id);
+                }
             }
             self.base.request_redraw();
         }

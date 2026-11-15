@@ -359,6 +359,10 @@ pub fn chapter_list_panel_capability() -> WidgetCapability {
     }
 }
 
+/// `media_player` capability.
+///
+/// Borrowed kind: it declares `WidgetKind::VideoPlayer` but registers the canonical name
+/// `media_player`; `capability_for_kind_instance` is what tells the two apart (W8-08).
 pub fn media_player_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::VideoPlayer,

@@ -8,6 +8,16 @@
 //! *effect*: with the switch on, a `Multiply` rectangle over an opaque frame is composited on the
 //! GPU, so the pixel is the multiplied value; with it off, the same stream falls back and the pixel
 //! is still the multiplied value — the picture never depends on the path.
+//!
+//! # How it runs
+//!
+//! `gpu-wgpu` is not in the default or `full` feature list, so a plain `cargo test` compiles this
+//! file as an empty crate. `tools/check_profiles.sh` runs it explicitly, which is what makes the
+//! two contracts a gate instead of a manual run (W8-01):
+//!
+//! ```text
+//! cargo test --test wgpu_blend_modes_public_api_test --features gpu-wgpu
+//! ```
 #![cfg(all(
     feature = "gpu-wgpu",
     any(feature = "desktop", feature = "tablet", feature = "mobile")

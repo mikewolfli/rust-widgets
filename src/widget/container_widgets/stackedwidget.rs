@@ -999,7 +999,8 @@ mod tests {
     #[test]
     fn stacked_widget_class_name() {
         let sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
-        assert_eq!(sw.accessible_name(), "StackedWidget");
+        // The catalogue label is the first fallback for an unlabelled control (W7-04).
+        assert_eq!(sw.accessible_name(), "Stacked Widget");
     }
 
     // ── 12. SVG draw output ───────────────────────────────────────────────

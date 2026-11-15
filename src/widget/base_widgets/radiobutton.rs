@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Radio button widget.
-use crate::compat::{Rc, String, ToString};
+use crate::compat::{Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -109,6 +109,11 @@ pub struct RadioButton {
     /// Off by default, so an existing radio keeps its single-line picture. When on, the label
     /// goes through the shared [`wrap_to_width`] greedy splitter.
     word_wrap: bool,
+    /// Bumped by [`RadioButton::set_text`], the only writer of `text`.
+    text_revision: u32,
+    /// Wrapped line ranges of the label, keyed by every measurement input (W7-09).
+    wrap_cache:
+        RefCell<Option<(crate::widget::text_utils::WrapCacheKey, Vec<core::ops::Range<usize>>)>>,
     /// Emitted without a payload when this button becomes the selected member of
     /// its peer group. Only fires on a `false` -> `true` transition; deselection
     /// does not emit.
@@ -261,6 +266,8 @@ impl RadioButton {
             auto_repeat_armed: false,
             icon_source: None,
             word_wrap: false,
+            text_revision: 0,
+            wrap_cache: RefCell::new(None),
             selected: GenericSignal::new(),
             checked_changed: Signal1::new(),
         }
@@ -374,6 +381,7 @@ impl RadioButton {
             return;
         }
         self.text = text;
+        self.text_revision = self.text_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -1211,9 +1219,21 @@ impl Draw for RadioButton {
             };
             let label_width = rect.width.saturating_sub((label_x - rect.x) as u32);
             if self.word_wrap {
-                let ranges = {
+                let key = crate::widget::text_utils::WrapCacheKey {
+                    revision: self.text_revision,
+                    text_width: label_width,
+                    font: font.clone(),
+                    dpi_bits: context.dpi_scale().to_bits(),
+                };
+                let mut cache = self.wrap_cache.borrow_mut();
+                if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
                     let mut measure = |text: &str| context.measure_text(text, font).width;
-                    wrap_to_width(&self.text, label_width, &mut measure)
+                    let ranges = wrap_to_width(&self.text, label_width, &mut measure);
+                    *cache = Some((key, ranges));
+                }
+                let ranges = match cache.as_ref() {
+                    Some((_, ranges)) => ranges.as_slice(),
+                    None => &[],
                 };
                 let bottom = rect.y + rect.height as i32;
                 let mut y = line.y;
@@ -1223,7 +1243,7 @@ impl Draw for RadioButton {
                     }
                     context.draw_text_fitted_ellipsis(
                         Rect::new(label_x, y, label_width, line.height),
-                        &self.text[range],
+                        &self.text[range.clone()],
                         font,
                         label_ink,
                         HorizontalAlignment::Left,

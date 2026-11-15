@@ -92,6 +92,12 @@ pub struct MdiArea {
     /// "save before closing" connects this signal to observe the request and installs
     /// [`MdiArea::set_subwindow_close_handler`] to refuse it.
     pub subwindow_close_requested: Signal1<ObjectId>,
+    /// Emitted with the removed sub-window's id after [`Self::remove_sub_window`] takes it out.
+    ///
+    /// `subwindow_close_requested` only reports the intent (and is cancellable); this is the
+    /// fact. Sister container [`crate::widget::DockArea`] publishes `dock_removed` for the same
+    /// reason, and the family's vocabulary has no `added` counterpart (W7-20).
+    pub subwindow_removed: Signal1<ObjectId>,
     /// Host-installed veto for a sub-window close, consulted after the request is emitted.
     subwindow_close_handler: Option<Box<dyn Fn(ObjectId) -> bool>>,
     /// Cached z-order index and the key it was produced under (C-P08).
@@ -432,6 +438,7 @@ impl MdiArea {
             subwindow_minimized_changed: Signal1::new(),
             subwindow_tab_moved: Signal1::new(),
             subwindow_close_requested: Signal1::new(),
+            subwindow_removed: Signal1::new(),
             subwindow_close_handler: None,
             z_cache: RefCell::new(None),
         }
@@ -495,6 +502,7 @@ impl MdiArea {
                     self.active_subwindow = Some(active_index - 1);
                 }
             }
+            self.subwindow_removed.emit(widget);
             self.base.request_redraw();
         }
     }
@@ -1690,6 +1698,11 @@ impl Widget for MdiArea {
                 &self.subwindow_close_requested,
                 |v| CapabilityValue::UInt(*v),
             )),
+            "subwindow_removed" => {
+                Some(EventSignalRef::mapped("subwindow_removed", &self.subwindow_removed, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }

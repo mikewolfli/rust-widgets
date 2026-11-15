@@ -182,28 +182,9 @@ enum BannerPressTarget {
 
 /// The inputs a wrapped message's line ranges are a pure function of.
 ///
-/// The message itself enters as `revision`, not as bytes: `set_text` is its only writer, so a
-/// counter identifies it exactly and comparing it is free. The rest of the key is what the
-/// measurement sees — the width the lines wrap into and the face they wrap in — so a resize or a
-/// theme font change misses the cache while a still frame hits it.
-#[derive(Debug, Clone, PartialEq)]
-struct WrapKey {
-    /// The `text_revision` the ranges were computed for.
-    revision: u32,
-    /// The width the message is wrapped into, in pixels.
-    text_width: u32,
-    /// The message face, compared whole.
-    ///
-    /// It used to be size + weight only, which missed a family, italic or tracking change:
-    /// the measurement sees all of those (the face's advance is not a function of its size),
-    /// so a theme that changes the family at the same size kept the old line ranges.
-    font: crate::core::Font,
-    /// The DPI the measurement ran at, as bits so the key compares exactly.
-    ///
-    /// `measure_text` scales advances (and tracking) by the backend's DPI, so the same text at
-    /// the same logical width wraps differently on another screen scale.
-    dpi_bits: u32,
-}
+/// The definition lives in [`crate::widget::text_utils::WrapCacheKey`] because `CheckBox` and
+/// `RadioButton` wrap the same way; this alias keeps the banner's own call sites readable.
+type WrapKey = crate::widget::text_utils::WrapCacheKey;
 
 /// A persistent full-width notice with a severity, a message, an optional
 /// dismiss control, and optional actions.

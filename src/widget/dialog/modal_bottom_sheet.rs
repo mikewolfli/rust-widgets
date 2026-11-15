@@ -53,6 +53,10 @@ pub struct ModalBottomSheet {
     reveal: PropertyDriver,
     /// Emitted when the sheet is dismissed by user interaction.
     pub dismissed: GenericSignal,
+    /// Emitted when the sheet becomes visible.
+    pub opened: GenericSignal,
+    /// Emitted when the sheet stops being visible, including through [`Self::dismiss`].
+    pub closed: GenericSignal,
     /// The content well's control, addressed by id (issue-20261104 DM-11).
     ///
     /// A declared child is mounted by the runtime, which owns it, so it cannot be handed to
@@ -77,6 +81,8 @@ impl ModalBottomSheet {
             animated: false,
             reveal: PropertyDriver::at(0.0, MotionSlot::Normal),
             dismissed: GenericSignal::new(),
+            opened: GenericSignal::new(),
+            closed: GenericSignal::new(),
         }
     }
 
@@ -91,6 +97,7 @@ impl ModalBottomSheet {
             self.is_dragging = false;
             self.aim_reveal(1.0);
             self.base.request_redraw();
+            self.opened.emit();
         }
     }
 
@@ -98,12 +105,17 @@ impl ModalBottomSheet {
     ///
     /// With animation on, the panel slides back down and stops being painted once it has
     /// left the control; the logical state is already hidden, so it no longer takes input.
+    /// `closed` is emitted here because it reports the state change, not the user action.
     pub fn hide(&mut self) {
         if self.is_visible {
             self.is_visible = false;
             self.drag_offset = 0.0;
             self.is_dragging = false;
             self.aim_reveal(0.0);
+            // Base lifecycle signal (handle-layer `on_close` / JSON `closed`) alongside the
+            // widget's own `closed` for its direct listeners.
+            self.base.closed.emit();
+            self.closed.emit();
             self.base.request_redraw();
         }
     }
@@ -410,6 +422,8 @@ impl Widget for ModalBottomSheet {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "opened" => Some(EventSignalRef::unit("opened", &self.opened)),
+            "closed" => Some(EventSignalRef::unit("closed", &self.closed)),
             "dismissed" => Some(EventSignalRef::unit("dismissed", &self.dismissed)),
             _ => None,
         }

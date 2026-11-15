@@ -1332,7 +1332,12 @@ impl Widget for TagInput {
             &self.input_buffer,
             self.input_cursor.min(self.input_buffer.len()),
         );
-        let x = origin.x + self.input_prefix_advance(font, caret);
+        // A right-to-left buffer paints in visual order, so the logical prefix would place the
+        // IME candidate window at the other end of the run (W7-18).
+        let caret_advance =
+            crate::widget::text_utils::visual_caret_advance(&self.input_buffer, font, caret)
+                .unwrap_or_else(|| self.input_prefix_advance(font, caret));
+        let x = origin.x + caret_advance;
         Some(crate::widget::widget_trait::InputMethodQuery {
             caret_rect: Rect::new(
                 x.min(input_rect.x + input_rect.width as i32 - 1).max(input_rect.x),
@@ -1766,7 +1771,15 @@ impl Draw for TagInput {
                     &self.input_buffer,
                     self.input_cursor,
                 );
-                origin.x + self.input_prefix_advance(font, caret)
+                // Visual order for an RTL buffer; the logical prefix puts the caret at the
+                // opposite end (W7-18).
+                origin.x
+                    + crate::widget::text_utils::visual_caret_advance(
+                        &self.input_buffer,
+                        font,
+                        caret,
+                    )
+                    .unwrap_or_else(|| self.input_prefix_advance(font, caret))
             };
             let cursor_y1 = input_line.y;
             let cursor_y2 = input_line.y + input_line.height as i32;

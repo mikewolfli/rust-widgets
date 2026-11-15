@@ -237,6 +237,16 @@ impl EditableComboBox {
             .unwrap_or_else(|| cuts.last().map(|(_, advance)| *advance).unwrap_or(0))
     }
 
+    /// The advance of `offset` in **visual** order when the value reorders (W7-18).
+    ///
+    /// The renderer paints a right-to-left value in visual order, so a logical prefix puts the
+    /// caret and both selection edges at the wrong end of the run. The all-LTR answer falls back
+    /// to the cached logical table, which is the steady state.
+    fn visual_advance_at(&self, font: &Font, cuts: &[(usize, i32)], offset: usize) -> i32 {
+        crate::widget::text_utils::visual_caret_advance(&self.text, font, offset)
+            .unwrap_or_else(|| Self::advance_at(cuts, offset))
+    }
+
     /// The band the control actually paints: full width, one field tall, centred.
     ///
     /// # Why the control is not its own rectangle
@@ -1025,8 +1035,8 @@ impl Draw for EditableComboBox {
             crate::render::fitted_origin(geometry.text_box, value_advance, value_align);
         // Selection band behind the selected range.
         if let Some((start, end)) = self.selection_range() {
-            let start_x = value_origin.x + Self::advance_at(&cuts, start);
-            let end_x = value_origin.x + Self::advance_at(&cuts, end);
+            let start_x = value_origin.x + self.visual_advance_at(font, &cuts, start);
+            let end_x = value_origin.x + self.visual_advance_at(font, &cuts, end);
             context.fill_rect(
                 Rect::new(
                     start_x.min(end_x),
@@ -1052,7 +1062,7 @@ impl Draw for EditableComboBox {
 
         // Caret at the field's own insertion point, clipped to the value's box.
         let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
-        let caret_x = value_origin.x + Self::advance_at(&cuts, caret);
+        let caret_x = value_origin.x + self.visual_advance_at(font, &cuts, caret);
         let caret_x = caret_x
             .min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
             .max(geometry.text_box.x);

@@ -10,6 +10,10 @@ impl Draw for TableWidget {
         // A source change signal cannot borrow the control mutably, so it only marks the state
         // dirty; the repair runs here, once, before anything reads a row or a column index.
         self.drain_data_updates();
+        // Companion links: a header menu's queued sort request is forwarded to the host, and an
+        // attached status bar gets this frame's counts before the paint reads the table (W7-07).
+        self.poll_header_menu();
+        self.poll_grid_status_bar();
         let rect = self.base.geometry();
         // The table's content sits inside its own surface, not flush against it. Every row
         // used to start at the control's literal top edge, so the first row's text began at

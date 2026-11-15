@@ -1265,3 +1265,32 @@ fn an_overflowing_grid_derives_its_scroll_thumb() {
         "a grid whose rows all fit has nothing to report, so it must not paint a thumb"
     );
 }
+
+/// W7-07: an attached status bar receives this table's row and selection counts.
+#[test]
+fn a_bound_status_bar_receives_the_virtual_table_counts() {
+    let mut table = VirtualTable::new(Rect::new(0, 0, 240, 120));
+    table.set_data_source(Arc::new(StaticSource));
+    let bar = crate::widget::companions::GridStatusBar::new(Rect::new(0, 0, 240, 24));
+    table.attach_grid_status_bar(&bar);
+    assert_eq!(bar.row_count(), 100, "the strip reports the source's rows");
+    assert_eq!(bar.selected_count(), 0, "nothing is selected yet");
+}
+
+/// W7-07: a header menu's sort request reaches the table's own projection.
+#[test]
+fn a_bound_header_menu_drives_the_sort_specs() {
+    let mut table = VirtualTable::new(Rect::new(0, 0, 240, 120));
+    table.set_data_source(Arc::new(StaticSource));
+    table.set_header_labels(&["Name", "Type"]);
+    table.set_sorting_enabled(true);
+    let menu = crate::widget::companions::HeaderMenu::new(Rect::new(0, 0, 180, 160));
+    table.attach_header_menu(&menu);
+    menu.sort_requested.emit((String::from("Name"), crate::widget::companions::SortState::Desc));
+    table.poll_header_menu();
+    assert_eq!(
+        table.sort_specs(),
+        &[SortSpec { column: 0, descending: true }],
+        "the menu's title token resolves to column 0 and applies descending"
+    );
+}

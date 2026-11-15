@@ -125,6 +125,11 @@ pub struct MultiSelectComboBox {
     alignment: crate::core::Alignment,
     /// Emitted when the selection changes, with the list of selected item IDs.
     pub selection_changed: Signal1<Vec<u64>>,
+    /// Emitted with the new open state when the list is shown or hidden.
+    ///
+    /// Same name and payload as [`crate::widget::ComboBox`], so a host can close its own
+    /// popups when this one opens without polling (W7-14).
+    pub popup_visibility_changed: Signal1<bool>,
     /// The row keyboard input acts on while the list is open.
     active_index: usize,
     /// Maximum number of rows the open list shows at once. `None` shows them all.
@@ -168,6 +173,7 @@ impl MultiSelectComboBox {
             expanded: false,
             alignment: crate::core::Alignment::Left,
             selection_changed: Signal1::new(),
+            popup_visibility_changed: Signal1::new(),
             active_index: 0,
             max_visible: None,
             scroll_offset: 0,
@@ -511,6 +517,7 @@ impl MultiSelectComboBox {
             self.active_index = self.active_index.min(self.items.len().saturating_sub(1));
             self.ensure_active_visible();
         }
+        self.popup_visibility_changed.emit(expanded);
         self.base.request_redraw();
     }
 
@@ -709,6 +716,11 @@ impl Widget for MultiSelectComboBox {
                     CapabilityValue::Tuple(items)
                 }))
             }
+            "popup_visibility_changed" => Some(EventSignalRef::mapped(
+                "popup_visibility_changed",
+                &self.popup_visibility_changed,
+                |v| CapabilityValue::Bool(*v),
+            )),
             _ => None,
         }
     }

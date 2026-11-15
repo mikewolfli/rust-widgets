@@ -75,6 +75,11 @@ pub struct TreeFindBar {
     display_cache: crate::compat::RefCell<Option<(String, String)>>,
     /// Emitted with the matched row's index.
     pub match_changed: Signal1<usize>,
+    /// Emitted when the bar closes, so the host can return focus to the tree.
+    ///
+    /// The sister find bars (`GridFindBar`, `FindReplaceBar`) publish the same `closed` signal;
+    /// `match_changed` cannot answer "the bar went away" (W7-22).
+    pub closed: Signal1<()>,
 }
 
 impl TreeFindBar {
@@ -95,6 +100,7 @@ impl TreeFindBar {
             preedit: String::new(),
             display_cache: crate::compat::RefCell::new(None),
             match_changed: Signal1::new(),
+            closed: Signal1::new(),
         }
     }
 
@@ -127,6 +133,7 @@ impl TreeFindBar {
         self.current_match = None;
         self.base.hide();
         self.base.request_redraw();
+        self.closed.emit(());
     }
 
     /// Whether the bar is open.
@@ -297,6 +304,9 @@ impl Widget for TreeFindBar {
                 Some(EventSignalRef::mapped("match_changed", &self.match_changed, |row| {
                     CapabilityValue::UInt(*row as u64)
                 }))
+            }
+            "closed" => {
+                Some(EventSignalRef::mapped("closed", &self.closed, |_| CapabilityValue::Null))
             }
             _ => None,
         }

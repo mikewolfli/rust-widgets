@@ -2087,6 +2087,19 @@ pub fn default_widget_property_default_value(
             "wraps" => CapabilityValue::Bool(false),
             "repeat_delay_ms" => CapabilityValue::UInt(400),
             "repeat_interval_ms" => CapabilityValue::UInt(80),
+            // `step_strip` borrows this kind (W7-06). A fresh strip has no steps, so the active
+            // index and the derived count are both 0 and the model is the empty list — the same
+            // shape `layer_panel` answers for a fresh panel.
+            "steps" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::companions::STEP_ENTRY_SCHEMA,
+            )),
+            "current" => CapabilityValue::UInt(0),
+            "step_count" => CapabilityValue::UInt(0),
+            "style" => CapabilityValue::String("top_strip".to_string()),
+            "clickable" => CapabilityValue::Bool(false),
+            // No explicit band tint, so the fill follows the theme surface.
+            "band_color" => CapabilityValue::Null,
+            "inset" => CapabilityValue::UInt(12),
             _ => return None,
         },
         WidgetKind::Rating => match property_name {

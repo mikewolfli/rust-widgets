@@ -94,6 +94,7 @@ mod list_state_host;
 mod menu_panel;
 mod playlist_panel;
 mod speed_dial;
+mod step_strip;
 mod summary_row;
 mod swatch;
 mod swipe_actions;
@@ -146,6 +147,7 @@ pub use list_state_host::{ListState, ListStateHost};
 pub use menu_panel::{MenuPanel, MenuPanelItem, MENU_PANEL_ITEM_SCHEMA};
 pub use playlist_panel::{PlaylistPanel, PLAYLIST_TRACK_SCHEMA};
 pub use speed_dial::{SpeedDial, SpeedDialAction, SpeedDialDirection, SPEED_DIAL_ACTION_SCHEMA};
+pub use step_strip::{StepEntry, StepStrip, StepStripStyle, STEP_ENTRY_SCHEMA};
 /// The record schema for a summary row's per-column values.
 pub(crate) use summary_row::SUMMARY_VALUE_SCHEMA;
 pub use summary_row::{ColumnAggregate, ColumnAggregateKind, SummaryRow};

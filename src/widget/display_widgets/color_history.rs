@@ -583,13 +583,17 @@ impl Draw for ColorHistory {
                 }
             }
 
-            context.fill_rect(swatch_rect, *color);
-
             // Selected highlight border
             if Some(i) == self.selected_index {
+                context.fill_rect(swatch_rect, *color);
                 context.draw_rect_stroke(swatch_rect, accent, 2);
             } else {
-                context.draw_rect_stroke(swatch_rect, outline, 1);
+                crate::widget::companions::Swatch::paint_cell(
+                    context,
+                    swatch_rect,
+                    *color,
+                    outline,
+                );
             }
 
             // Hovered highlight: the same accent, weaker, so hover and selection are one
@@ -598,6 +602,10 @@ impl Draw for ColorHistory {
                 context.draw_rect_stroke(swatch_rect, accent.with_alpha(140), 2);
             }
         }
+        // Hover is painted but disabled was not, so a disabled history looked selectable while
+        // its handler gated every press (W7-16). `color_well` is the paired control and already
+        // paints this veil.
+        self.base.paint_disabled_veil(context, rect);
     }
 }
 

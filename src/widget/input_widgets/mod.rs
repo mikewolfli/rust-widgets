@@ -21,6 +21,11 @@ pub mod inplace_editor;
 /// The input grammars a single-line field can enforce.
 pub mod input_validator;
 pub mod keyboard;
+/// The keyboard's painted-label cache (`W7-28`).
+///
+/// A derived table, not control state: it records the `(case, keys generation)` its labels were
+/// built for so the paint can borrow them instead of re-casing every key every frame.
+pub(crate) mod keyboard_labels;
 /// The single-line value editor an editable drop-down field carries (I-06).
 pub(crate) mod line_editor;
 pub mod listbox;

@@ -175,6 +175,10 @@ pub struct ShortcutEditor {
     /// The payload is the entry id and the proposed sequence. The host answers through
     /// [`Self::resolve_conflict`]; until then the proposed binding is not written.
     pub conflict_detected: Signal1<(String, Vec<String>)>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<Vec<ShortcutEntry>>>,
     /// Generation of [`Self::shortcuts`], bumped by every path that can change it.
@@ -210,6 +214,9 @@ pub struct ShortcutEditor {
     /// allocated a fresh `String` (and `format_keys` a `Vec` plus one `String` per sequence)
     /// each time (W6-23).
     prompt_text: String,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
 }
 
 /// The cached per-row display text and conflict flag, keyed by table generation.
@@ -240,6 +247,8 @@ impl ShortcutEditor {
             filter_text: String::new(),
             shortcut_changed: Signal1::new(),
             conflict_detected: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(Vec::new())),
             table_generation: 0,
@@ -252,6 +261,8 @@ impl ShortcutEditor {
             blur_commit: false,
             pending_conflict: None,
             prompt_text: String::new(),
+            undo_available_announced: false,
+            redo_available_announced: false,
         }
     }
 
@@ -710,6 +721,7 @@ impl ShortcutEditor {
             return false;
         }
         self.restore_shortcut_state();
+        self.refresh_edit_capabilities();
         true
     }
 
@@ -721,6 +733,7 @@ impl ShortcutEditor {
             return false;
         }
         self.restore_shortcut_state();
+        self.refresh_edit_capabilities();
         true
     }
 
@@ -732,6 +745,24 @@ impl ShortcutEditor {
     /// Returns whether there is an undone shortcut-table change to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
+    }
+
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `SearchBox` uses
+    /// (W7-13): a host menu enables or disables its Undo/Redo items from the signal, and a
+    /// change that leaves the history unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
     }
 
     /// Returns how many shortcuts are in the table, before filtering.
@@ -787,6 +818,7 @@ impl ShortcutEditor {
             "Edit shortcut list",
             "shortcut_editor",
         )));
+        self.refresh_edit_capabilities();
     }
 
     fn restore_shortcut_state(&mut self) {
@@ -873,6 +905,16 @@ impl Widget for ShortcutEditor {
                             keys.iter().map(|key| CapabilityValue::String(key.clone())).collect(),
                         ),
                     ]))
+                }))
+            }
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             _ => None,

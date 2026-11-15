@@ -37,7 +37,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/theme/mod.rs:1` (the theme resolves into `WidgetStyle`); 27 files reference it.
+//! **State:** Production callers: `src/theme/mod.rs:57` (`pub use crate::style::HighContrastMode`) and 27 further files reference it.
 /// Time-varying style values: a styled property that is evaluated at a point in
 /// time rather than being a constant.
 pub mod animation;

@@ -13,7 +13,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/lib.rs:1`; 191 files reference it (the event loop, gesture engine and every control's `EventHandler`).
+//! **State:** Production callers: `src/widget/base.rs:8`; 191 files reference it (the event loop, gesture engine and every control's `EventHandler`).
 /// Pointer capture: routes pointer events to the widget that claimed the
 /// pointer, and releases it on explicit release or on widget destruction.
 pub mod capture;

@@ -369,6 +369,31 @@ pub(crate) fn drawer_section_header_capability() -> WidgetCapability {
 }
 
 #[cfg(not(alloc_frugal))]
+/// `step_strip` — the numbered step indicator a multi-step page owns (`W7-06`).
+///
+/// The kind is borrowed from `stepper`, the same way `zoom_strip` borrows `Slider` and
+/// `axis_picker` borrows `Panel`: a step *indicator* is a stepper that reports which step is
+/// active rather than owning a numeric value. `capability.rs` carries the concrete-type
+/// tie-break that keeps `stepper`, `mac_stepper` and this name apart.
+pub(crate) fn step_strip_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Stepper,
+        canonical_name: "step_strip",
+        aliases: &[],
+        properties: STEP_STRIP_PROPERTIES,
+        events: events_of!("step_strip"),
+        commands: &[
+            "set_steps",
+            "set_current",
+            "set_style",
+            "set_clickable",
+            "set_band_color",
+            "set_inset",
+        ],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
 /// `layer_panel` — the companion list for a canvas's layers (`COMP-I01`).
 pub(crate) fn layer_panel_capability() -> WidgetCapability {
     WidgetCapability {

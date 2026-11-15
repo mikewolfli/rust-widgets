@@ -152,6 +152,22 @@ impl Swatch {
         (0..self.colors.len()).find(|&index| self.cell_rect(index).contains(pos))
     }
 
+    /// Paints one colour cell with this companion's border rule (W7-25).
+    ///
+    /// The fill+border pair was hand-written in `ColorDialog`'s preset row and
+    /// `ColorHistory`'s grid as well as here. Sharing the two-line primitive keeps the three
+    /// cells looking like the same control without forcing their different layouts (a dialog
+    /// row, a history grid with an alpha checkerboard, and this strip) through one geometry.
+    pub fn paint_cell(
+        context: &mut crate::render::RenderContext,
+        cell: crate::core::Rect,
+        color: crate::core::Color,
+        border: crate::core::Color,
+    ) {
+        context.fill_rect(cell, color);
+        context.draw_rect(cell, border);
+    }
+
     /// Emits `swatch_activated` for the current cell.
     fn activate_selected(&mut self) {
         if let Some(color) = self.selected_color() {
@@ -249,8 +265,12 @@ impl Draw for Swatch {
             if !rect.intersects(&cell) {
                 continue;
             }
-            context.fill_rect(cell, self.colors[index]);
-            context.draw_rect(cell, self.colors[index].contrast_color().with_alpha(90));
+            Self::paint_cell(
+                context,
+                cell,
+                self.colors[index],
+                self.colors[index].contrast_color().with_alpha(90),
+            );
             if index == self.selected_index {
                 let ring = Rect::new(cell.x - 2, cell.y - 2, cell.width + 4, cell.height + 4);
                 context.draw_rect(ring, accent);

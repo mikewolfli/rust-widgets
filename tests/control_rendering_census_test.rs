@@ -25,16 +25,20 @@
 //!
 //! # Why the widget set is walked by name
 //!
-//! 13 `WidgetKind`s are shared by 2–5 controls each, so walking kinds would skip
-//! 19 controls. The set comes from `WidgetFactory::widget_names()`, which is
-//! derived from the same table the factory constructs from — it cannot under-count.
+//! Controls **share** `WidgetKind` values — `Panel`, `Table`, `TextEdit`, `Chart` and `Canvas`
+//! each stand for several controls — so walking the kind enum necessarily misses names. The
+//! exact count is whatever [`WidgetFactory::shared_kinds_resolving_to_other_names`] reports; at
+//! the time of writing it is 28 shared kinds covering 46 extra names. The census set comes from
+//! `WidgetFactory::widget_names()`, which is derived from the same table the factory constructs
+//! from — it cannot under-count.
 //!
 //! # Known-invisible set
 //!
-//! 23 controls currently paint nothing at the census geometry. They are listed
-//! explicitly in `KNOWN_INVISIBLE` so the count cannot quietly grow: a new
-//! invisible control fails the test, and removing one from the list is the only
-//! way to record a fix. The same shape is used for `KNOWN_THEME_BLIND`.
+//! `KNOWN_INVISIBLE` is currently **empty**: every control that used to paint nothing at the
+//! census geometry has been fixed. The constant and its bidirectional assertion are kept on
+//! purpose — they are the guard that makes a newly invisible control fail the test instead of
+//! quietly entering the green count. `KNOWN_THEME_BLIND` still has entries and uses the same
+//! shape.
 //!
 //! # Why P5 exists (and why P1–P4 could not see the defect it catches)
 //!

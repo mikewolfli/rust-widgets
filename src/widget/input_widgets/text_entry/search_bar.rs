@@ -147,6 +147,10 @@ pub struct SearchBar {
     pub search_submitted: Signal1<String>,
     /// Emitted when the user taps the cancel button.
     pub canceled: GenericSignal,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -179,6 +183,9 @@ pub struct SearchBar {
     text_revision: u64,
     /// Per-character advances of the query, keyed by the revision and font (IP-007).
     advance_cache: RefCell<Option<SearchAdvanceCache>>,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
 }
 
 /// Per-character cumulative advances for the search bar's value (IP-007).
@@ -216,6 +223,8 @@ impl SearchBar {
             text_changed: Signal1::new(),
             search_submitted: Signal1::new(),
             canceled: GenericSignal::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -233,6 +242,8 @@ impl SearchBar {
             search_options: SearchOptions::default(),
             text_revision: 0,
             advance_cache: RefCell::new(None),
+            undo_available_announced: false,
+            redo_available_announced: false,
         }
     }
 
@@ -309,6 +320,7 @@ impl SearchBar {
             self.cursor = self.text.len();
             self.selection_anchor = None;
             self.text_changed.emit_lazy(|| new_text);
+            self.refresh_edit_capabilities();
             self.base.request_redraw();
         }
     }
@@ -334,6 +346,7 @@ impl SearchBar {
             "search_bar_text",
         )));
         self.text_changed.emit_lazy(|| self.text.clone());
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -589,6 +602,7 @@ impl SearchBar {
             return false;
         }
         self.restore_history_text();
+        self.refresh_edit_capabilities();
         true
     }
 
@@ -601,6 +615,7 @@ impl SearchBar {
             return false;
         }
         self.restore_history_text();
+        self.refresh_edit_capabilities();
         true
     }
 
@@ -612,6 +627,24 @@ impl SearchBar {
     /// Returns whether there is an undone edit to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
+    }
+
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `SearchBox` uses: a
+    /// host menu enables or disables its Undo/Redo items from the signal, and an edit that
+    /// leaves the history unchanged stays quiet (W7-13).
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
     }
 
     fn restore_history_text(&mut self) {
@@ -782,6 +815,16 @@ impl Widget for SearchBar {
                 }))
             }
             "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }

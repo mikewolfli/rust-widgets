@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Checkbox widget implementation.
-use crate::compat::{format, String, ToString};
+use crate::compat::{format, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -114,6 +114,14 @@ pub struct CheckBox {
     /// Off by default so every existing checkbox keeps its single-line picture. When on, the
     /// label goes through the shared [`wrap_to_width`] greedy splitter.
     word_wrap: bool,
+    /// Bumped by [`CheckBox::set_text`], the only writer of `text`.
+    text_revision: u32,
+    /// Wrapped line ranges of the caption, keyed by every measurement input (W7-09).
+    ///
+    /// `wrap_to_width` re-walks the whole caption per frame otherwise, and its cumulative
+    /// prefixes differ on every repaint — so the text-metrics cache cannot absorb it either.
+    wrap_cache:
+        RefCell<Option<(crate::widget::text_utils::WrapCacheKey, Vec<core::ops::Range<usize>>)>>,
     /// Emitted with a boolean view of the state on every change: `true` for
     /// [`CheckState::Checked`], `false` for the other two.
     ///
@@ -287,6 +295,8 @@ impl CheckBox {
             auto_repeat_armed: false,
             icon_source: None,
             word_wrap: false,
+            text_revision: 0,
+            wrap_cache: RefCell::new(None),
             toggled: Signal1::new(),
             state_changed: Signal1::new(),
         }
@@ -498,6 +508,7 @@ impl CheckBox {
         let text = text.into();
         if self.text != text {
             self.text = text;
+            self.text_revision = self.text_revision.wrapping_add(1);
             self.base.request_redraw();
         }
     }
@@ -1160,9 +1171,21 @@ impl Draw for CheckBox {
                 (checkbox_rect.x - rect.x) as u32 + checkbox_rect.width + gap as u32,
             );
             if self.word_wrap {
-                let ranges = {
+                let key = crate::widget::text_utils::WrapCacheKey {
+                    revision: self.text_revision,
+                    text_width: label_width,
+                    font: font.clone(),
+                    dpi_bits: context.dpi_scale().to_bits(),
+                };
+                let mut cache = self.wrap_cache.borrow_mut();
+                if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
                     let mut measure = |text: &str| context.measure_text(text, font).width;
-                    wrap_to_width(&self.text, label_width, &mut measure)
+                    let ranges = wrap_to_width(&self.text, label_width, &mut measure);
+                    *cache = Some((key, ranges));
+                }
+                let ranges = match cache.as_ref() {
+                    Some((_, ranges)) => ranges.as_slice(),
+                    None => &[],
                 };
                 let bottom = rect.y + rect.height as i32;
                 let mut y = line.y;
@@ -1172,7 +1195,7 @@ impl Draw for CheckBox {
                     }
                     context.draw_text_fitted_ellipsis(
                         Rect::new(label_x, y, label_width, line.height),
-                        &self.text[range],
+                        &self.text[range.clone()],
                         font,
                         text_color,
                         HorizontalAlignment::Left,

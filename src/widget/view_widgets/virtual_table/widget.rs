@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
@@ -28,6 +28,21 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 use crate::widget::view_widgets::data_grid::SortSpec;
+
+/// Resolves a [`crate::widget::HeaderMenu`] column token to a header index (W7-07).
+///
+/// A token is the header title, a numeric index, or a `ColumnSpec::to_token()` spelling
+/// (`title|width|flags|…`). An unknown token is ignored rather than guessed at.
+fn resolve_column_token(token: &str, titles: &HashMap<String, usize>) -> Option<usize> {
+    if let Some(index) = titles.get(token) {
+        return Some(*index);
+    }
+    if let Ok(index) = token.parse::<usize>() {
+        return Some(index);
+    }
+    let title = token.split('|').next()?;
+    titles.get(title).copied()
+}
 use crate::widget::view_widgets::data_source::IncrementalTableDataSource;
 
 mod delegate;
@@ -175,6 +190,17 @@ pub struct VirtualTable {
     delegate: Option<Arc<dyn VirtualCellDelegate>>,
     /// Labels supplied through [`VirtualTable::set_header_labels`].
     header_labels: Vec<String>,
+    /// The status bar this table keeps its counts current in, when one is attached (W7-07).
+    status_bar: Option<(Arc<Mutex<(u64, u64)>>, crate::signal::GenericSignal)>,
+    /// The `(rows, selected)` pair last written to the status bar.
+    status_bar_pushed: (u64, u64),
+    /// Sort intents reported by an attached header menu, drained by [`Self::poll_header_menu`].
+    header_sort_requests: Arc<Mutex<Vec<(usize, crate::widget::companions::SortState)>>>,
+    /// The attached header menu's subscription, dropped with the attachment.
+    ///
+    /// Held for its `Drop` only: the connection lives as long as the scope, so no reader is
+    /// needed (the `_` prefix says so, matching `data_grid::bindings`' `_scope`).
+    _header_menu_scope: Option<ConnectionScope>,
     /// How one wheel notch scrolls.
     wheel_scroll_mode: WheelScrollMode,
     /// Per-column width overrides; absent columns use `column_width`.
@@ -242,6 +268,10 @@ impl VirtualTable {
             show_header: false,
             show_scrollbar: false,
             selection_changed: Signal1::new(),
+            status_bar: None,
+            status_bar_pushed: (u64::MAX, u64::MAX),
+            header_sort_requests: Arc::new(Mutex::new(Vec::new())),
+            _header_menu_scope: None,
             selection_set_changed: Signal1::new(),
             selection: crate::widget::view_widgets::list_view::SelectionModel::new(),
             selection_columns: 0,
@@ -1331,6 +1361,125 @@ impl VirtualTable {
         self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
         self.header_text_revision = self.header_text_revision.wrapping_add(1);
         self.base.request_redraw();
+    }
+
+    /// Keeps `bar`'s row and selection counts current for this table (W7-07).
+    ///
+    /// The `DataGrid` binding is the precedent: the strip consumes no table signal, so the table
+    /// writes the shared count cell and emits the strip's own repaint request.
+    pub fn attach_grid_status_bar(&mut self, bar: &crate::widget::companions::GridStatusBar) {
+        let handle = bar.counts_handle();
+        self.status_bar = Some(handle);
+        self.status_bar_pushed = (u64::MAX, u64::MAX);
+        self.poll_grid_status_bar();
+    }
+
+    /// Detaches the status bar, if one is attached.
+    pub fn detach_grid_status_bar(&mut self) {
+        self.status_bar = None;
+    }
+
+    /// Writes the current `(rows, selected)` counts to the attached strip.
+    pub fn poll_grid_status_bar(&mut self) {
+        let Some((counts, redraw)) = self.status_bar.as_ref() else {
+            return;
+        };
+        let rows = self.row_count() as u64;
+        let selected_rows =
+            self.selected_cells().into_iter().map(|(row, _)| row).collect::<BTreeSet<_>>();
+        let next = (rows, (selected_rows.len() as u64).min(rows));
+        if next == self.status_bar_pushed {
+            return;
+        }
+        self.status_bar_pushed = next;
+        let mut guard = counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = next;
+        drop(guard);
+        redraw.emit();
+    }
+
+    /// Attaches `menu` so its sort requests drive this table's sort specs (W7-07).
+    ///
+    /// A `VirtualTable` owns its projection, so unlike `TableWidget` it applies the request here
+    /// rather than forwarding it: [`Self::poll_header_menu`] folds the queued intents into
+    /// [`Self::sort_specs`] and emits `sort_changed` for a real direction.
+    pub fn attach_header_menu(&mut self, menu: &crate::widget::companions::HeaderMenu) {
+        let titles = self.column_title_lookup();
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&self.header_sort_requests);
+        let redraw = self.base.redraw_requested_signal().clone();
+        menu.sort_requested.connect_scoped(&scope, move |reported| {
+            let (token, state) = &*reported;
+            let Some(column) = resolve_column_token(token, &titles) else {
+                return;
+            };
+            sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((column, *state));
+            redraw.emit();
+        });
+        self._header_menu_scope = Some(scope);
+    }
+
+    /// Detaches the header menu, if one is attached.
+    pub fn detach_header_menu(&mut self) {
+        self._header_menu_scope = None;
+    }
+
+    /// Applies the sort intents an attached header menu reported since the last poll.
+    pub fn poll_header_menu(&mut self) {
+        let requests = {
+            let mut guard =
+                self.header_sort_requests.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guard.is_empty() {
+                return;
+            }
+            core::mem::take(&mut *guard)
+        };
+        let mut changed = false;
+        for (column, state) in requests {
+            if column >= self.column_count() {
+                continue;
+            }
+            let existing = self.sort_specs.iter().position(|spec| spec.column == column);
+            match state {
+                crate::widget::companions::SortState::None => {
+                    if let Some(index) = existing {
+                        self.sort_specs.remove(index);
+                        changed = true;
+                    }
+                }
+                crate::widget::companions::SortState::Asc
+                | crate::widget::companions::SortState::Desc => {
+                    let descending = matches!(state, crate::widget::companions::SortState::Desc);
+                    match existing {
+                        Some(index) => {
+                            if self.sort_specs[index].descending != descending {
+                                self.sort_specs[index].descending = descending;
+                                changed = true;
+                            }
+                        }
+                        None => {
+                            self.sort_specs.push(SortSpec { column, descending });
+                            changed = true;
+                        }
+                    }
+                    self.sort_changed.emit((column, descending));
+                }
+            }
+        }
+        if changed {
+            self.invalidate_sort_order();
+        }
+    }
+
+    /// Header titles keyed for a [`crate::widget::HeaderMenu`] column token.
+    fn column_title_lookup(&self) -> HashMap<String, usize> {
+        let mut titles = HashMap::new();
+        for column in 0..self.column_count() {
+            if let Some(title) = self.header_labels.get(column) {
+                titles.entry(title.clone()).or_insert(column);
+            }
+        }
+        titles
     }
 
     /// The alignment `column` paints its cells with (V-001).

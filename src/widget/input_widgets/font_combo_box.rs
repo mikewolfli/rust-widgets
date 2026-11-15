@@ -296,6 +296,15 @@ pub struct FontComboBox {
     pub popup_shown: GenericSignal,
     /// Emitted when the popup list is closed.
     pub popup_hidden: GenericSignal,
+    /// Emitted when an edit session ends — Enter commits it, or focus leaves the field.
+    /// Carries no payload because the committed family is read back through
+    /// [`Self::current_text`] (W7-12).
+    pub editing_finished: GenericSignal,
+    /// Emitted when Escape discards the edit instead of committing it.
+    ///
+    /// Escape and Enter are the two exit paths and differ only in whether the text is
+    /// kept, so a host that validates on submit must be able to tell the two apart.
+    pub canceled: GenericSignal,
     /// Whether recently chosen families move to the top of the list (I-119).
     mru_enabled: bool,
     /// The existing MRU store, reused rather than reimplemented (COMP-B03).
@@ -358,6 +367,8 @@ impl FontComboBox {
             text_edited: Signal1::new(),
             popup_shown: GenericSignal::new(),
             popup_hidden: GenericSignal::new(),
+            editing_finished: GenericSignal::new(),
+            canceled: GenericSignal::new(),
             mru_enabled: false,
             recent_fonts: super::recent_values_popup::RecentValuesPopup::new(Rect::new(0, 0, 0, 0)),
         }
@@ -516,6 +527,8 @@ impl FontComboBox {
         if let Some(index) = self.fonts.iter().position(|family| family == &text) {
             self.set_current_index(index as i32);
         }
+        // The commit is the "editing ended with a value" half; Escape emits `canceled`.
+        self.editing_finished.emit();
         true
     }
 
@@ -1193,6 +1206,10 @@ impl Widget for FontComboBox {
             })),
             "popup_shown" => Some(EventSignalRef::unit("popup_shown", &self.popup_shown)),
             "popup_hidden" => Some(EventSignalRef::unit("popup_hidden", &self.popup_hidden)),
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
+            "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
             _ => None,
         }
     }
@@ -1437,6 +1454,7 @@ impl EventHandler for FontComboBox {
                         self.edit_anchor = None;
                         self.cursor_blink.stop();
                         self.base.request_redraw();
+                        self.canceled.emit();
                     }
                     _ => {
                         // Printable content arrives as `Event::TextInput` (W4-01), which the
@@ -1527,6 +1545,9 @@ impl EventHandler for FontComboBox {
                     self.edit_cursor = 0;
                     self.edit_anchor = None;
                     self.base.request_redraw();
+                    // The edit session ended even though its text was discarded; a form waiting
+                    // on "editing is over" must not have to infer it from a blur.
+                    self.editing_finished.emit();
                 }
             }
             _ => { /* Other events are not relevant */ }

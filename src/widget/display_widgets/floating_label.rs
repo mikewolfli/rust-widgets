@@ -717,6 +717,18 @@ impl Draw for FloatingLabel {
         // literal it replaces made a dark-theme disabled field the brightest thing on screen — the
         // exact inversion the primitive's own documentation records.
         let bg_color = self.base.disabled_surface_near(field_background, window_fill);
+        // Hover wash: this field had no pointer feedback at all (W7-15), while every sister
+        // text field overrides its resting fill from `StateOverlay::from_base`.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let bg_color = if overlay.is_empty() {
+            bg_color
+        } else {
+            bg_color.blend(&bg_color.contrast_color(), overlay.fill_blend())
+        };
         context.fill_rounded_rect(rect, 4, bg_color);
 
         // Draw the underline/border. Focused is the resolved ink, undamped so it reads as

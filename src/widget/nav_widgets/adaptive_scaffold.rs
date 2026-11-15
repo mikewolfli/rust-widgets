@@ -289,6 +289,12 @@ pub struct AdaptiveScaffold {
     pub back_pressed: GenericSignal,
     /// Emitted when the AppBar's action affordance is pressed.
     pub action_pressed: GenericSignal,
+    /// Emitted when the AppBar's leading affordance is pressed (W7-19).
+    ///
+    /// The bar has published `leading_pressed` since the leading icon existed; the scaffold
+    /// mirrored only back/action/overflow, so an embedder that installed a leading icon could not
+    /// observe it.
+    pub leading_pressed: GenericSignal,
     /// Emitted with the index of a trailing AppBar action button (N-08).
     pub action_index_pressed: Signal1<usize>,
     /// Emitted when the AppBar's overflow affordance is activated (N-08).
@@ -351,6 +357,7 @@ impl AdaptiveScaffold {
             nav_selected: Signal1::new(),
             back_pressed: GenericSignal::new(),
             action_pressed: GenericSignal::new(),
+            leading_pressed: GenericSignal::new(),
             action_index_pressed: Signal1::new(),
             action_overflow_pressed: GenericSignal::new(),
             scrim_pressed: false,
@@ -363,6 +370,8 @@ impl AdaptiveScaffold {
         let _ = scaffold.app_bar.back_pressed.connect(move || back_out.emit());
         let action_out = scaffold.action_pressed.clone();
         let _ = scaffold.app_bar.action_pressed.connect(move || action_out.emit());
+        let leading_out = scaffold.leading_pressed.clone();
+        let _ = scaffold.app_bar.leading_pressed.connect(move || leading_out.emit());
         // The trailing action signals are mirrored too, so a scaffold embedder observes the bar's
         // full capability rather than only its legacy two affordances (N-08).
         let index_out = scaffold.action_index_pressed.clone();
@@ -396,6 +405,17 @@ impl AdaptiveScaffold {
     /// Returns whether the AppBar back button is shown.
     pub fn show_back(&self) -> bool {
         self.app_bar.show_back()
+    }
+
+    /// Sets the AppBar's leading icon (W7-19).
+    pub fn set_leading_icon(&mut self, icon: Option<IconSource>) {
+        self.app_bar.set_leading_icon(icon);
+        self.base.request_redraw();
+    }
+
+    /// Returns the AppBar's leading icon.
+    pub fn leading_icon(&self) -> Option<IconSource> {
+        self.app_bar.leading_icon()
     }
 
     /// Sets the action text displayed on the right side of the AppBar.

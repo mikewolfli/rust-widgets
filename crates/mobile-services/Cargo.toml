@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "rust-widgets-mobile-services"
-version = "4.3.0"
+version = "4.4.0"
 edition = "2021"
 license = "MIT"
 description = "Optional mobile application services for rust-widgets (BLUE28 B28.44): keep-awake, haptics, permissions, notifications, share, deep links"
 authors = ["Mike Li <mikewolfli@163.com>"]
 keywords = ["gui", "mobile", "haptics", "notifications", "android"]
-categories = ["gui", "mobile"]
+categories = ["gui"，]
 repository = "https://github.com/mikewolfli/rust-widgets"
 rust-version = "1.88"
 publish = true

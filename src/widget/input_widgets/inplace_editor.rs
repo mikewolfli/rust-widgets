@@ -105,6 +105,10 @@ pub struct InplaceEditor {
     pub edit_accepted: Signal1<String>,
     /// Emitted when the edit is cancelled (Escape).
     pub edit_canceled: GenericSignal,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
     /// Cumulative advances of the value, keyed by the value and the face it was measured with
     /// (IN2-10).
     ///
@@ -117,6 +121,9 @@ pub struct InplaceEditor {
     /// Held apart from `text` so the value does not change while the user is still building a word:
     /// `edit_accepted` carries the value, and it must be the text the user committed.
     composition: Option<String>,
+    /// Last undo/redo availability announced, so both signals are edge-triggered.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
 }
 
 /// Cumulative per-character advances of an in-place editor's value (IN2-10).
@@ -152,8 +159,12 @@ impl InplaceEditor {
             dragging_selection: false,
             edit_accepted: Signal1::new(),
             edit_canceled: GenericSignal::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
             advance_cache: RefCell::new(None),
             composition: None,
+            undo_available_announced: false,
+            redo_available_announced: false,
         }
     }
 
@@ -250,6 +261,7 @@ impl InplaceEditor {
                 "inplace_editor_text",
             )));
         }
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -275,6 +287,7 @@ impl InplaceEditor {
             "Edit text",
             "inplace_editor_text",
         )));
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -291,6 +304,7 @@ impl InplaceEditor {
             return false;
         }
         self.restore_history_text();
+        self.refresh_edit_capabilities();
         true
     }
 
@@ -301,6 +315,7 @@ impl InplaceEditor {
             return false;
         }
         self.restore_history_text();
+        self.refresh_edit_capabilities();
         true
     }
 
@@ -311,6 +326,23 @@ impl InplaceEditor {
     /// Returns `true` if [`InplaceEditor::redo`] would change the value.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
+    }
+
+    /// Emits the undo/redo availability signals when their answers have changed.
+    ///
+    /// Edge-triggered against the value last announced, the same pattern `SearchBox` uses
+    /// (W7-13): an edit that leaves the history unchanged stays quiet.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
     }
 
     fn restore_history_text(&mut self) {
@@ -614,6 +646,15 @@ impl InplaceEditor {
             }
         };
         let target = (x - self.text_rect().x).max(0) as f32;
+        // An RTL value paints in visual order, so a pointer's x names a different logical
+        // index than its left-to-right prefix would (W7-18).
+        if let Some(byte) =
+            crate::widget::text_utils::visual_byte_at(&self.text, font, target as i32)
+        {
+            let byte = crate::widget::text_utils::floor_char_boundary(&self.text, byte)
+                .min(self.text.len());
+            return self.text[..byte].chars().count();
+        }
         let mut advance = 0f32;
         let mut ordinal = 0usize;
         let mut buffer = [0u8; 4];
@@ -639,6 +680,15 @@ impl InplaceEditor {
     fn advance_of_prefix(&self, count: usize) -> i32 {
         let cuts = self.advance_cuts();
         cuts.get(count).copied().unwrap_or_else(|| cuts.last().copied().unwrap_or(0))
+    }
+
+    /// The advance of the caret after `count` characters, in **visual** order when the value
+    /// reorders, falling back to the logical prefix for an all-LTR value (W7-18).
+    fn visual_advance_of_prefix(&self, font: &Font, count: usize) -> i32 {
+        let byte =
+            self.text.char_indices().nth(count).map(|(index, _)| index).unwrap_or(self.text.len());
+        crate::widget::text_utils::visual_caret_advance(&self.text, font, byte)
+            .unwrap_or_else(|| self.advance_of_prefix(count))
     }
 
     /// The cumulative advance of every character boundary of the value (IN2-10).
@@ -764,6 +814,16 @@ impl Widget for InplaceEditor {
                 }))
             }
             "edit_canceled" => Some(EventSignalRef::unit("edit_canceled", &self.edit_canceled)),
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -969,14 +1029,14 @@ impl Draw for InplaceEditor {
             // The visible window follows the caret: a value wider than the box is scrolled by the
             // caret's overflow instead of painting past the field (I-19). A value that fits keeps
             // `scroll == 0`, i.e. exactly the previous pixels but now elided to the box.
-            let caret_advance = self.advance_of_prefix(self.cursor_position);
+            let caret_advance = self.visual_advance_of_prefix(&font, self.cursor_position);
             let scroll = (caret_advance - text_box.width as i32).max(0);
             // The selection band is painted under the glyphs, with both edges measured by the same
             // ruler the caret uses. It used to be invisible: the control had no selection state at
             // all, so a drag or a shift-extension only moved an invisible anchor.
             if let Some((start, end)) = self.selection_range() {
-                let left = text_x + self.advance_of_prefix(start) - scroll;
-                let right = text_x + self.advance_of_prefix(end) - scroll;
+                let left = text_x + self.visual_advance_of_prefix(&font, start) - scroll;
+                let right = text_x + self.visual_advance_of_prefix(&font, end) - scroll;
                 if right > left {
                     let highlight = ink.blend(&surface, 0.3).blend(&surface, 0.25);
                     context.fill_rect(

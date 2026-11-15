@@ -46,7 +46,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/widget/base.rs:1`; 147 files reference it (every control's public signals).
+//! **State:** Production callers: `src/widget/base.rs:10`; 147 files reference it (every control's public signals).
 mod core_signal;
 #[cfg(not(alloc_frugal))]
 mod debounce;
