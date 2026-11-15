@@ -765,6 +765,12 @@ impl FrameWidget {
 
 早期版本用 `SimpleRegistry` 这张闭包转发表完成上述工作，已于 4.1.0 移除：它在第二条路径上重复了绘制、派发与几何，且没有生产调用方。
 
+> **哪个家族适合哪种设备？** 仓库从注册表本身生成 `docs/plans/widget_classification.md`：
+> 每个家族的成员与控件数、kind 总数、以及决定「该家族在精简 profile 里是否编译」的 `cfg` 门控
+> 全部是**派生值**，页面另外提供人工策展的逐家族建议（桌面 / 平板移动、设备形态、OS 与输入注意点）。
+> 选家族之前先读它。`python3 tools/gen_widget_classification.py` 负责重新生成，
+> `tools/check_widget_classification.sh` 在它过期时失败——所以它不会悄悄描述一套已经不存在的控件集合。
+
 ---
 
 ## WidgetFactory 与能力系统

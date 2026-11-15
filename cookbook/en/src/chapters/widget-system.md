@@ -779,6 +779,16 @@ Three container obligations keep the tree path correct:
 was removed in 4.1.0: it duplicated painting, dispatch and geometry on a second path
 with no production caller.
 
+> **Which family belongs on which device?** The repository generates
+> `docs/plans/widget_classification.md` from the registry itself: each family's
+> membership and control count, the kind total, and the `cfg` gate that decides
+> whether the family compiles in a stripped profile are all **derived**, and the
+> page adds curated per-family guidance (desktop vs tablet/mobile, device shape,
+> OS and input notes). Read it before choosing a family.
+> `python3 tools/gen_widget_classification.py` regenerates it and
+> `tools/check_widget_classification.sh` fails when it goes stale, so it cannot
+> quietly describe a control set that no longer exists.
+
 ---
 
 ## WidgetFactory and Capability System

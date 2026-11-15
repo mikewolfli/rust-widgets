@@ -78,6 +78,9 @@ The round is recorded in `docs/log/log-20261115-1.md` and closes the 50 items of
   against a ±5-line window and prints the nearest real mention; the i18n catalogue is reconciled
   against the registered control names; `docs/plans/README.md` counts and the codemap family
   table are derived and gated.
+- **The control classification page is reachable from the cookbook** — all three languages'
+  widget-system chapter points at `docs/plans/widget_classification.md` instead of repeating its
+  numbers.
 - **61 stale language keys are gone** (34 spelling variants renamed to canonical names, 27 dead
   or suite-only names removed); three languages remain key-for-key identical.
 - **Draw hot paths**: `CheckBox`/`RadioButton` cache wrapped lines with the shared
