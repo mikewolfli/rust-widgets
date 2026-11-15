@@ -7,6 +7,7 @@
 - [控制項系統](chapters/widget-system.md)
 - [控件家族詳解](chapters/widgets-detail.md)
 - [伴生控件綁定](chapters/companion-bindings.md)
+- [控制項慣例](chapters/widget-conventions.md)
 - [佈局系統](chapters/layout-system.md)
 - [事件系統](chapters/event-system.md)
 - [渲染系統](chapters/rendering-system.md)

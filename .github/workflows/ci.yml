@@ -441,9 +441,13 @@ jobs:
           chmod +x tools/check_readable_flag_is_true_when_get_answers.sh
           chmod +x tools/check_mechanism_has_a_consumer.sh
           chmod +x tools/check_control_feature_visible_in_own_snapshot.sh
+          chmod +x tools/check_snapshot_rasters.sh
           ./tools/check_readable_flag_is_true_when_get_answers.sh
           ./tools/check_mechanism_has_a_consumer.sh
           ./tools/check_control_feature_visible_in_own_snapshot.sh
+          # A snapshot's embedded raster must be a picture, not a placeholder: the byte
+          # comparison cannot see a sample arm shrinking back to a 1x1 swatch.
+          ./tools/check_snapshot_rasters.sh
 
       # BLUE22 §6.7's new gates, landed with the fixes they guard (§E.3: "this round lands at
       # least two"). Both read the widget sources only and need no build, so they sit with the

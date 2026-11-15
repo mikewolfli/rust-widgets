@@ -633,7 +633,7 @@ impl RibbonBar {
 
     // ── Item management ────────────────────────────────────────────────────
 
-    /// Adds a small item to the specified group.
+    /// Adds an item to the specified group.
     pub fn add_item(
         &mut self,
         tab_index: usize,
@@ -641,6 +641,25 @@ impl RibbonBar {
         text: impl Into<String>,
     ) -> usize {
         let item = RibbonItem::new(text);
+        self.insert_item(tab_index, group_index, item)
+    }
+
+    /// Adds an item whose icon is a **typed** source, and returns its index in the group.
+    ///
+    /// An item is text-only until something supplies an icon (`RibbonItem` documents why its
+    /// `icon_text` no longer defaults to the label's first letter), and the only other way to set
+    /// one is on a `RibbonItem` the caller builds and inserts — which `insert_item` does not
+    /// expose. This is the one-call form for the normal case, and it takes an [`IconSource`]
+    /// rather than a stand-in string because a ribbon's items are the icons a user aims at.
+    pub fn add_item_with_icon(
+        &mut self,
+        tab_index: usize,
+        group_index: usize,
+        text: impl Into<String>,
+        icon: IconSource,
+    ) -> usize {
+        let mut item = RibbonItem::new(text);
+        item.set_icon_source(Some(icon));
         self.insert_item(tab_index, group_index, item)
     }
 
@@ -653,6 +672,20 @@ impl RibbonBar {
     ) -> usize {
         let mut item = RibbonItem::new(text);
         item.set_large(true);
+        self.insert_item(tab_index, group_index, item)
+    }
+
+    /// Adds a large item whose icon is a typed source — the icon-led form of [`Self::add_large_item`].
+    pub fn add_large_item_with_icon(
+        &mut self,
+        tab_index: usize,
+        group_index: usize,
+        text: impl Into<String>,
+        icon: IconSource,
+    ) -> usize {
+        let mut item = RibbonItem::new(text);
+        item.set_large(true);
+        item.set_icon_source(Some(icon));
         self.insert_item(tab_index, group_index, item)
     }
 
@@ -3169,4 +3202,44 @@ mod tests {
         assert_eq!(ribbon.item_checked(tab, group, item), Some(true));
         assert!(fired.load(Ordering::SeqCst), "the tick change repaints");
     }
+    /// The one-call icon forms attach a **typed** source, and the large one keeps its size.
+    ///
+    /// A ribbon item starts icon-less by design (`RibbonItem` documents why), so an item added
+    /// without an icon paints a bare label. `add_item_with_icon` / `add_large_item_with_icon` are
+    /// the forms a host uses instead of building an item it cannot insert.
+    #[test]
+    fn the_icon_forms_attach_a_typed_source_and_keep_the_large_flag() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let tab = ribbon.add_tab("Home");
+        let group = ribbon.add_group(tab, "Clipboard");
+
+        let small = ribbon.add_item_with_icon(
+            tab,
+            group,
+            "Bold",
+            IconSource::Builtin(crate::widget::IconName::FormatBold),
+        );
+        let large = ribbon.add_large_item_with_icon(
+            tab,
+            group,
+            "Paste",
+            IconSource::Builtin(crate::widget::IconName::ContentPaste),
+        );
+
+        let small_ref = ribbon.item_ref(tab, group, small).expect("small item");
+        assert_eq!(
+            small_ref.icon_source(),
+            Some(IconSource::Builtin(crate::widget::IconName::FormatBold)),
+            "the icon is the typed source the caller named"
+        );
+        assert!(!small_ref.is_large());
+
+        let large_ref = ribbon.item_ref(tab, group, large).expect("large item");
+        assert_eq!(
+            large_ref.icon_source(),
+            Some(IconSource::Builtin(crate::widget::IconName::ContentPaste))
+        );
+        assert!(large_ref.is_large(), "the large form keeps the flag");
+    }
+
 }

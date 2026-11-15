@@ -671,16 +671,36 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             Some(ribbon) => {
                 // The constructor seeds no tab, so `clear` is a no-op that keeps the arm
                 // idempotent; the ids returned by `add_tab` are the indices used below.
+                //
+                // Icons are typed rather than omitted: a ribbon *is* the icons a user aims at, and
+                // `RibbonItem` deliberately starts icon-less (its `icon_text` no longer defaults to
+                // the label's first letter), so a text-only sample would photograph the one state
+                // the control documents as wrong.
                 ribbon.clear();
                 let home = ribbon.add_tab("Home");
                 let insert = ribbon.add_tab("Insert");
                 let clipboard = ribbon.add_group(home, "Clipboard");
-                ribbon.add_large_item(home, clipboard, "Paste");
+                ribbon.add_large_item_with_icon(
+                    home,
+                    clipboard,
+                    "Paste",
+                    builtin_icon(crate::widget::IconName::ContentPaste),
+                );
                 let font = ribbon.add_group(home, "Font");
-                ribbon.add_item(home, font, "Bold");
-                ribbon.add_item(home, font, "Italic");
+                ribbon.add_item_with_icon(home, font, "Bold", builtin_icon(crate::widget::IconName::FormatBold));
+                ribbon.add_item_with_icon(
+                    home,
+                    font,
+                    "Italic",
+                    builtin_icon(crate::widget::IconName::FormatItalic),
+                );
                 let shapes = ribbon.add_group(insert, "Shapes");
-                ribbon.add_large_item(insert, shapes, "Chart");
+                ribbon.add_large_item_with_icon(
+                    insert,
+                    shapes,
+                    "Chart",
+                    builtin_icon(crate::widget::IconName::InsertChart),
+                );
                 true
             }
             None => false,
@@ -692,8 +712,18 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         // frame the snapshot happened to land on.
         "pie_menu" => match widget_as_mut::<PieMenu>(widget) {
             Some(menu) => {
-                for label in ["Copy", "Move", "Rename", "Delete"] {
-                    menu.add_item(label);
+                // A slice is icon-led: the icon is what the wedge shows, and the item's *name* only
+                // reads out in the centre hub while it is hovered (pie_menu.rs:9-13). Text-only
+                // slices therefore photographed as empty wedges, which is the one state the
+                // control documents as not-a-menu — so the sample supplies the icons.
+                for (label, icon) in [
+                    ("Copy", crate::widget::IconName::ContentCopy),
+                    ("Move", crate::widget::IconName::OpenWith),
+                    ("Rename", crate::widget::IconName::Edit),
+                    ("Delete", crate::widget::IconName::Delete),
+                ] {
+                    let id = menu.add_item(label);
+                    let _ = menu.set_item_icon_source(id, Some(builtin_icon(icon)));
                 }
                 menu.set_animation_progress(1.0);
                 true
@@ -1893,6 +1923,14 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
 
         _ => false,
     }
+}
+
+/// The typed source every sample icon travels as.
+///
+/// One spelling for the `IconSource::Builtin` wrapper: the arms above differ in *which* glyph a
+/// control shows, never in how an icon is addressed.
+fn builtin_icon(name: crate::widget::IconName) -> crate::widget::IconSource {
+    crate::widget::IconSource::Builtin(name)
 }
 
 mod helpers;

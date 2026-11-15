@@ -51,6 +51,8 @@
 
 36. **🌍 操作系统相关的实现必须封装在 platform backend 底层** — 一切 OS 相关逻辑（原生控件创建、系统信息探测、剪贴板、IME、打印、文件系统路径约定、外部命令调用）都必须落在 `src/platform/` 各后端内，并通过 `Platform` trait（`src/platform/types.rs`）暴露统一的**语义化**方法。禁止在 `src/platform/` 之外出现：`#[cfg(target_os = ...)]`、读 `/proc` / `/sys`、`std::process::Command::new("ps" | "lpr" | "powershell")`、路径分隔符假设等。
 
+   **审计口径（W6-12 的教训）**：审计这类 cfg 必须用**宽网** `target_os = "` 检索，不能只查 `cfg(target_os`——`cfg(all(target_os = "macos", ...))` 与 `cfg(any(target_os = ...))` 两种形态都不以字面 `cfg(target_os` 开头，窄网会把它们漏掉，于是同一个盲区在连续三轮扫描里重复出现。
+
 37. **🌍 中间层禁止自嗅探 OS，必须有 trait 兜底** — 上层模块需要平台事实（如总内存、是否电池供电、打印能力）时，**必须**定义 `Platform` trait 方法并在各后端实现；缺省实现应给出诚实的能力缺失（返回 `Option::None` 或 `false`），**禁止**硬编码假装的值（如 `4096`、`false`）来掩盖未实现。新增平台能力时，`src/platform/` 下每个已存在的后端都要么实现、要么显式继承默认值，不得留 OS 条件编译在调用点。
 
 38. **🌍 探测结果的判据必须经实测验证** — 用外部命令探测能力时（如是否存在打印客户端），判据是**能否 spawn**（`output().is_ok()`），而非退出码是否为 0。CUPS `lp --version` 以状态 1 退出但仍然打印用法，用 `status.success()` 判断会漏报已安装的打印系统。任何探测逻辑都要在目标主机上实跑验证，不得凭 API 名称推测行为。

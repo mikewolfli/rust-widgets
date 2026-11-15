@@ -769,3 +769,14 @@ change the local regeneration would have brought along.
 Two unit tests cover the same contract at the source: `embedded_rasters_use_a_format_every_svg_renderer_understands`
 (PNG signature, one encoder) and `detect_svg_format_after_a_prolog_comment` (a snapshot that starts with a
 `<!-- … -->` prolog is still an SVG to this crate's own detector).
+
+## Snapshot raster floor (issue-20261115 §10.3, 2026-11-16)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_snapshot_rasters.sh` | pointed it at a directory holding one SVG whose `<image>` embeds a 1×1 PNG (`--dir /tmp/rasterprobe`) | `FAIL these snapshots embed a placeholder instead of a picture:` / `placeholder.svg: embedded raster is 1x1 (1 px), smaller than the 8px / 128px placeholder floor`, exit 1. On the real tree: `20 embedded raster(s) across 546 snapshot(s), smallest 192 px`, exit 0 |
+
+The `--dir` form is what makes this injectable: the real gate reads `snapshots/svg`, and a
+hand-edited snapshot would be caught by `check_svg_snapshots`' byte comparison first, so the
+placeholder case is only reachable by pointing the scan at a directory where the bytes *are* what
+the producer would write.

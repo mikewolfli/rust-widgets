@@ -45,6 +45,10 @@ The round is recorded in `docs/log/log-20261115-1.md` and closes the 50 items of
 - **Accessibility state follows the catalogue** — unlabelled controls announce the translated
   `widget.<canonical>.label`, and `checked`/`selected`/`expanded` contribute the localized
   `a11y.state.*` word.
+- **Pie and ribbon samples show icons** — a pie slice is icon-led (the label reads out in the
+  centre hub only while hovered) and a `RibbonItem` starts icon-less by design, so text-only
+  samples photographed both controls in their documented "not a menu / not a ribbon" state. Both
+  sample arms now supply typed `IconSource`s.
 
 ### Added
 
@@ -65,6 +69,16 @@ The round is recorded in `docs/log/log-20261115-1.md` and closes the 50 items of
   whether it was non-empty), `Dropdown`/`MultiSelectComboBox` popup visibility, `MdiArea`
   `subwindow_removed`, chart-family `*_unhovered` events, `TreeFindBar.closed`, and
   `Snackbar.queue_overflow`.
+- **`RibbonBar::add_item_with_icon` / `add_large_item_with_icon`** — the icon-led forms of the two
+  add methods. A `RibbonItem` starts icon-less by design and `insert_item` is private, so a host
+  had no one-call way to give an item the typed icon a ribbon is made of.
+- **`cookbook/*/src/chapters/widget-conventions.md`** — the sister-alignment checklist (hover,
+  disabled veil, focus ring, enabled, undo availability, bidi caret, a11y state, published events,
+  size hint, repaint) naming the sibling to copy and the gate that proves each, plus the undo
+  decision table for programmatic writes. Three rows honestly say "no gate".
+- **`tools/check_snapshot_rasters.sh`** — reads each embedded raster's header out of a snapshot and
+  rejects a placeholder-sized one: the byte comparison cannot see a sample arm shrinking back to a
+  1×1 swatch while the committed file still equals its producer.
 - **`docs/plans/widget_classification.md`** — the issue §6 classification map (plan A): the family
   membership, the kind/control totals and every family's module gate are generated from the
   registry and `src/widget/mod.rs`, and `check_widget_classification.sh` fails when the page goes
