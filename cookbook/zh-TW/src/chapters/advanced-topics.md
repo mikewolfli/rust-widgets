@@ -756,7 +756,7 @@ cargo run --manifest-path crates/rust-widgets-cli/Cargo.toml -- fmt path/to/ui.j
 ```toml
 # Cargo.toml
 [dependencies]
-rust_widgets = { version = "4.4.0", default-features = false, features = [
+rust_widgets = { version = "4.4.1", default-features = false, features = [
     "mini",
 ] }
 

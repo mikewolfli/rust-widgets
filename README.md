@@ -32,7 +32,7 @@ services at all.
 
 ## Install
 
-> **4.4.0** is the current release: the input-delivery and code-health round on top of **4.2.0**
+> **4.4.1** is the current release: the input-delivery and code-health round on top of **4.2.0**
 > (the completeness round), which followed **4.1.0** (the closed-loop round). It makes typed
 > characters travel through one platform path (`TextInput`/`ImeCommit`) on every backend, names
 > every key code the widget layer branches on, normalises Windows function keys to the framework
@@ -42,7 +42,7 @@ services at all.
 
 ```toml
 [dependencies]
-rust_widgets = "4.4.0"
+rust_widgets = "4.4.1"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -50,12 +50,12 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = "4.4.0"                                                             # default set
-rust_widgets = { version = "4.4.0", features = ["desktop"] }                       # desktop profile only
-rust_widgets = { version = "4.4.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "4.4.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "4.4.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "4.4.0", default-features = false, features = ["mini"] }
+rust_widgets = "4.4.1"                                                             # default set
+rust_widgets = { version = "4.4.1", features = ["desktop"] }                       # desktop profile only
+rust_widgets = { version = "4.4.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "4.4.1", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "4.4.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "4.4.1", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |

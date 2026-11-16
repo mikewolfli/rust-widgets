@@ -110,7 +110,7 @@ pub struct FramePresenter {
     /// A reconfigure the driver asked for while a surface texture was still alive.
     ///
     /// `Surface::configure` panics if a `SurfaceTexture` acquired from that surface is alive
-    /// (wgpu 30.0.1), so a `Suboptimal` acquisition can only record the intent; the next
+    /// (wgpu 30.0.2), so a `Suboptimal` acquisition can only record the intent; the next
     /// acquisition consumes it before asking for a new texture (W6-04).
     pending_reconfigure: bool,
 }

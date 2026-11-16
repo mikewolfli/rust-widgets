@@ -5,6 +5,21 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 4.4.1 (2026-11-16) — lockfile drift sweep
+
+A consistency round: every lockfile in the repository now resolves the `rust_widgets` path
+dependency to the version this release actually ships, and the two doc references that had
+fallen behind the train follow.
+
+### Fixed
+
+- **Lockfile drift swept** — `demo/wasm_gallery/Cargo.lock` had stayed at 4.3.0 (W6-02), and
+  the same sweep found `crates/rust-widgets-cli/Cargo.lock` and `demo/preview_common/Cargo.lock`
+  at 4.2.0 plus `tools/_audit_probe/Cargo.lock` at 4.3.0; all four now pin the shipped crate.
+- **`FramePresenter`'s configure-panic comment names the right wgpu** — the contract note still
+  cited wgpu 30.0.1 after the tree had moved to 30.0.2; the clause itself is unchanged upstream,
+  so the fix is the citation.
+
 ## 4.4.0 (2026-11-16) — image display, declaration truth, sister-contract closure
 
 The round is recorded in `docs/log/log-20261115-1.md` and closes the 50 items of

@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "4.4.0"
+version = "4.4.1"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 231 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -907,11 +907,11 @@ all-desktop-features = [
 # crate would fail its own verification build with `couldn't read …ttf`. Moving them out and
 # excluding `crates/` (see the negated pattern in `include`) is the form of "exclude" that still
 # leaves a package that compiles.
-rust-widgets-font = { version = "^4.4.0", path = "crates/rust-widgets-font", optional = true }
+rust-widgets-font = { version = "^4.4.1", path = "crates/rust-widgets-font", optional = true }
 # The icon resources (name table, SVG paths, fallback polygons) live in this nested package so
 # the third-party geometry is not part of this crate's source. It is always a dependency: the
 # fallback table is what a build without `icons` draws. `icons` turns on its `data` feature.
-rust-widgets-icons = { version = "^4.4.0", path = "crates/rust-widgets-icons", default-features = false }
+rust-widgets-icons = { version = "^4.4.1", path = "crates/rust-widgets-icons", default-features = false }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 # BLUE28 B28.40: the standard host/GPU interop handle type. Optional because it is a
@@ -960,7 +960,7 @@ image-codecs = { package = "image", version = "0.25.10", optional = true, defaul
     "avif",
     "ico",
 ] }
-resvg = { version = "0.49.0", optional = true }
+resvg = { version = "0.50.0", optional = true }
 jpeg-decoder = { version = "0.3", optional = true }
 symphonia = { version = "0.6", default-features = false, features = [
     "flac",
@@ -1025,7 +1025,7 @@ web-sys = { version = "0.3", features = [
     "Performance",
 ], optional = true }
 
-jni = { version = "0.21", features = ["invocation"], optional = true }
+jni = { version = "0.22", features = ["invocation"], optional = true }
 
 heapless = { version = "0.9", optional = true }
 hashbrown = { version = "0.17", optional = true, default-features = false, features = [
@@ -1108,7 +1108,7 @@ libc = "0.2"
 # `cfg(unix_desktop)` and has to spell the same predicate out. The two are locked together by
 # `tools/check_bsd_cross.sh` (which type-checks the GTK/Wayland path on FreeBSD and NetBSD).
 [target.'cfg(all(target_family = "unix", not(target_arch = "wasm32"), not(target_env = "ohos"), not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "visionos", target_os = "watchos", target_os = "android", target_os = "redox"))))'.dependencies]
-gtk = { version = "0.19", optional = true }
+gtk = { version = "0.18", optional = true }
 # Used by the Wayland backend to poll() the compositor socket in the native
 # event loop (the crate is already in the dependency graph transitively).
 libc = { version = "0.2", optional = true }
@@ -1119,7 +1119,7 @@ wayland-protocols = { version = "0.32", features = [
     "client",
 ], optional = true }
 wayland-cursor = { version = "0.31", optional = true }
-zbus = { version = "6", optional = true }
+zbus = { version = "5", optional = true }
 
 # `webkit2gtk` was a dependency here, gated by the `webkit-engine` feature. Both were
 # removed by BLUE20 layer 5 (ruling W1, 2026-09-21): the wrapper never displayed a page,
