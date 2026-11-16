@@ -64,7 +64,7 @@ GATE_TIMEOUT="${GATE_TIMEOUT:-900}"
 
 BOOKS="cookbook/en cookbook/zh-CN cookbook/zh-TW"
 
-echo "[1/2] every cookbook-declared API name exists in src/"
+echo "[1/3] every cookbook-declared API name exists in src/"
 
 # The scan is in Python because it needs to read the same identifier out of prose, a
 # fenced code block and a table cell, then look it up across every `.rs` file. The
@@ -87,7 +87,7 @@ case "$OUT" in
         ;;
 esac
 
-echo "[2/2] all three books build with no warnings"
+echo "[2/3] all three books build with no warnings"
 
 for book in $BOOKS; do
     if [ ! -f "$book/book.toml" ]; then
@@ -103,15 +103,61 @@ for book in $BOOKS; do
         rm -f "$log"
         exit 1
     fi
-    if grep -qiE "warning|error" "$log"; then
+    # `WARN` is counted too: mdBook prints some diagnostics as ` WARN <message>` without the
+    # word "warning", so the earlier `warning|error` pattern let an unclosed-HTML tag through
+    # (measured while adding the control snapshots to the chapter).
+    if grep -qiE "warning|warn|error" "$log"; then
         echo "  FAIL  $book built with a warning or error:"
-        grep -iE "warning|error" "$log" | sed 's/^/        /' | head -20
+        grep -iE "warning|warn|error" "$log" | sed 's/^/        /' | head -20
         rm -f "$log"
         exit 1
     fi
     rm -f "$log"
     echo "        $book: built clean"
 done
+
+echo "[3/3] cookbook control images are the committed dark snapshots"
+
+# The chapter embeds a copy of each dark snapshot, because mdBook only publishes files
+# under `src/`. A copy can drift, and a stale picture is worse than none: it shows a
+# control the reader will not get. So every copy must be byte-identical to its source,
+# and every reference must resolve.
+for book in $BOOKS; do
+    imgdir="$book/src/images"
+    if [ -d "$imgdir" ]; then
+        for image in "$imgdir"/*.svg; do
+            [ -e "$image" ] || continue
+            name="$(basename "$image")"
+            source="snapshots/svg/$name"
+            # Suite controls (finance/maps/project/devtools/media/webview) are exported by
+            # their own producer into a separate set, because they need optional features the
+            # parent's "plain build" set must not depend on.
+            if [ ! -f "$source" ]; then
+                source="snapshots/suite-svg/$name"
+            fi
+            if [ ! -f "$source" ]; then
+                echo "  FAIL  $book/src/images/$name has no snapshot source"
+                exit 1
+            fi
+            if ! cmp -s "$source" "$image"; then
+                echo "  FAIL  $book/src/images/$name drifted from $source"
+                echo "        copy the dark snapshot again; do not hand-edit the copy"
+                exit 1
+            fi
+        done
+    fi
+    chapter="$book/src/chapters/widgets-detail.md"
+    if [ -f "$chapter" ]; then
+        for name in $(grep -o '](\.\./images/[a-z0-9_]*\.svg)' "$chapter" \
+            | sed 's/^](\.\.\/images\///; s/\.svg)$//' | sort -u); do
+            if [ ! -f "$book/src/images/$name.svg" ]; then
+                echo "  FAIL  $book/src/chapters/widgets-detail.md references $name.svg, which is absent"
+                exit 1
+            fi
+        done
+    fi
+done
+echo "        every cookbook control image matches its dark snapshot and every reference resolves"
 
 # The rendered HTML is a build artifact and is deliberately not committed (see
 # `.gitignore`); leaving it behind would make the next `git status` noisy.

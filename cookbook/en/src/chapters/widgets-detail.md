@@ -10,6 +10,8 @@ Each control entry has the same shape:
 
 * **Heading** — the `WidgetKind` variant, followed in parentheses by the canonical factory name. A kind can have several registered names (`line_edit`, `password_edit`, `phone_input` and `email_input` all report `WidgetKind::LineEdit`); each name gets its own entry because each has its own constructor and role.
 
+* **Appearance** — a dark-appearance snapshot of the control. Parent-crate controls come from the file named after this entry in snapshots/svg/; suite controls (finance, maps, project, devtools, media, webview) come from snapshots/suite-svg/. Both sets are produced by their own exporter. One image per canonical factory name; a kind with several names shows the same control in each entry.
+
 * **Properties** — the property names, their `PropertyValueKind` and, for enumerated properties, the accepted tokens. Read-only properties are marked. Every schema also carries the five shared properties documented in the next section. The constant named in the entry (`BUTTON_PROPERTIES`, …) is the schema the control publishes, so a name can be checked against `src/widget/capability/`.
 
 * **Events** — the names `WidgetFactory::connect_event` accepts, with the payload kind and shape (`Scalar`, `Tuple2`, `List`, optional, mixed). An event with no payload is a plain notification. The names and payloads come from the generated `event_payloads.rs` table, which `tools/check_event_payload_types.py` keeps aligned with the real signals.
@@ -99,6 +101,8 @@ Choose a `Button` for a single committed action, `CheckBox` or `ToggleButton` fo
 
 ### Window (`window`)
 
+![window (dark)](../images/window.svg)
+
 The top-level window: a title, a title bar with a close affordance, and the surface every other control is placed on. Use it once per top-level surface; use a `Dialog` or `PopupWindow` for a secondary or transient window, because those carry their own modality and lifecycle.
 
 **Properties.** 4 published beyond the shared set: `title`: String · `title_bar_height`: UInt · `close_button_size`: UInt · `button_spacing`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -113,6 +117,8 @@ The top-level window: a title, a title bar with a close affordance, and the surf
 
 ### GroupBox (`panel`)
 
+![panel (dark)](../images/panel.svg)
+
 `Panel` is the `GroupBox` shell under its second factory name: a titled frame that groups related controls. In a full build `create_panel` mounts the `panel` name and the control reports `WidgetKind::GroupBox`; use it exactly like a `GroupBox`, and do not look for a `Panel`-only capability row — there is none.
 
 **Properties.** 4 published beyond the shared set: `title`: String · `alignment`: Enum (`left` | `centre` | `right` | `top` | `bottom`) · `checkable`: Bool · `checked`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -124,6 +130,8 @@ The top-level window: a title, a title bar with a close affordance, and the surf
 **Rust API.** `create_panel(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("panel", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Frame (`frame`)
+
+![frame (dark)](../images/frame.svg)
 
 A frame draws a border, a 3D shadow or a separator line around one child. Use it for visual structure around content the layout already places; do not use it to arrange children or to clip them — it paints a shell and nothing else.
 
@@ -139,6 +147,8 @@ A frame draws a border, a 3D shadow or a separator line around one child. Use it
 
 ### Button (`button`)
 
+![button (dark)](../images/button.svg)
+
 A push button fires `clicked` when activated and reports press, release and cancel separately. Use it for one committed action per button; put a menu behind a button with `menu_open` and a `MenuPanel` companion rather than building your own popup, and do not use it as a navigation container.
 
 **Properties.** 17 published beyond the shared set: `text`: String · `pressed`: Bool · `default`: Bool · `icon_source`: IconSpec · `icon_size`: UInt · `shortcut`: String · `auto_default`: Bool · `auto_exclusive`: Bool · `flat`: Bool · `elide`: Enum (`none` | `left` | `middle` | `right`) · `drag_enabled`: Bool · `accepts_drops`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt · `menu_open`: Bool · `menu_item_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -152,6 +162,8 @@ A push button fires `clicked` when activated and reports press, release and canc
 **Aliases.** `pushbutton`, `btn`
 
 ### Label (`label`)
+
+![label (dark)](../images/label.svg)
 
 A non-editable text surface with alignment, wrapping, eliding, indentation and optional rich text with links. Use it for captions, help text and inline links; use a `LineEdit`, `TextArea` or `RichEdit` when the user must change the text.
 
@@ -167,6 +179,8 @@ A non-editable text surface with alignment, wrapping, eliding, indentation and o
 
 ### CheckBox (`check_box`)
 
+![check_box (dark)](../images/check_box.svg)
+
 A labelled box with an independent checked state and an optional third `partially_checked` state. Use it for settings that stand alone; use `RadioButton` when exactly one of several must be selected, and remember that `auto_exclusive` makes siblings exclusive without a radio group.
 
 **Properties.** 8 published beyond the shared set: `text`: String · `state`: Enum (`unchecked` | `partially_checked` | `checked`) · `checked`: Bool · `tristate_enabled`: Bool · `auto_exclusive`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -179,6 +193,8 @@ A labelled box with an independent checked state and an optional third `partiall
 
 ### RadioButton (`radio_button`)
 
+![radio_button (dark)](../images/radio_button.svg)
+
 A round choice control that is mutually exclusive with the other radio buttons sharing its `group_id`. Use it for a small, visible set of alternatives; use a `ComboBox` when the list is long, and a `CheckBox` when the choices are independent.
 
 **Properties.** 7 published beyond the shared set: `text`: String · `checked`: Bool · `group_id`: String · `auto_exclusive`: Bool · `auto_repeat`: Bool · `auto_repeat_delay`: UInt · `auto_repeat_interval`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -190,6 +206,8 @@ A round choice control that is mutually exclusive with the other radio buttons s
 **Rust API.** `create_radio_button(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("radio_button", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### ToggleButton (`toggle_button`)
+
+![toggle_button (dark)](../images/toggle_button.svg)
 
 A button that latches between checked and unchecked, optionally with a popup arrow (`arrow_type`/`popup_mode`) and a menu. Use it for a mode that stays on, or for a tool button that owns a menu; use a plain `Button` for a one-shot action and a `Switch` for a settings-style on/off row.
 
@@ -215,6 +233,8 @@ Choose `FAB` for the one primary action of a page, `Banner` for a notice the use
 
 ### Banner (`banner`)
 
+![banner (dark)](../images/banner.svg)
+
 A full-width, persistent notice with a severity, up to several actions and a user-dismissed state. Use it for a condition the user must see and acknowledge; use a `Snackbar` or `Toast` for something transient, and a `MessageBox` when the user must answer before continuing.
 
 **Properties.** 5 published beyond the shared set: `text`: String · `severity`: Enum (`info` | `success` | `warning` | `error`) · `dismissible`: Bool · `dismissed`: Bool (read-only) · `action_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -228,6 +248,8 @@ A full-width, persistent notice with a severity, up to several actions and a use
 **Aliases.** `notice`
 
 ### FAB (`fab`)
+
+![fab (dark)](../images/fab.svg)
 
 A round, elevated primary-action button that floats over content. Use one per page for the main action; if the action expands into several, pair it with the `SpeedDial` companion rather than stacking FABs, and do not use it for destructive or rarely used commands.
 
@@ -243,6 +265,8 @@ A round, elevated primary-action button that floats over content. Use one per pa
 
 ### RefreshControl (`refresh_control`)
 
+![refresh_control (dark)](../images/refresh_control.svg)
+
 A pull-to-refresh surface: the user pulls the content down past a threshold and the control emits `refresh_triggered`; the host sets `refreshing` while the work runs. Use it around a scrollable body on touch devices; on desktop prefer an explicit refresh command.
 
 **Properties.** 1 published beyond the shared set: `refreshing`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -257,6 +281,8 @@ A pull-to-refresh surface: the user pulls the content down past a threshold and 
 
 ### SplashScreen (`splash_screen`)
 
+![splash_screen (dark)](../images/splash_screen.svg)
+
 The startup screen: a logo/title, an optional subtitle and progress, dismissed by the program when initialisation finishes and not by the user. Use it only while the application is starting; use a `ProgressDialog` for work started by the user after the window is already visible.
 
 **Properties.** 4 published beyond the shared set: `title`: String · `subtitle`: String · `progress`: Float · `skippable`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -270,6 +296,8 @@ The startup screen: a logo/title, an optional subtitle and progress, dismissed b
 **Aliases.** `splash`
 
 ### SwipeToDismiss (`swipe_to_dismiss`)
+
+![swipe_to_dismiss (dark)](../images/swipe_to_dismiss.svg)
 
 A gesture container that reveals an action background as its child is swiped and emits `dismissed` once the swipe passes the threshold. Use it for list rows whose primary removal gesture is a swipe; provide a visible alternative action for keyboard and desktop users, and pair it with `SwipeActions` when the background carries more than one action.
 
@@ -294,6 +322,8 @@ Choose `AppBar` for a title plus leading/trailing actions, `BottomNavigationBar`
 | `nav` | `src/widget/nav_widgets/` | 7 |
 
 ### AdaptiveScaffold (`adaptive_scaffold`)
+
+![adaptive_scaffold (dark)](../images/adaptive_scaffold.svg)
 
 A scaffold that composes an `AppBar`, a content area and an optional bottom navigation bar into one adaptive frame. Use it as the top-level page shell on tablet and mobile; on desktop, place the navigation chrome explicitly so the window's own menu bar remains the primary command surface.
 
@@ -339,6 +369,8 @@ share one window as panes; use the workbench when each document is its own top-l
 
 ### AppBar (`app_bar`)
 
+![app_bar (dark)](../images/app_bar.svg)
+
 A top bar with a title, a leading back affordance and trailing actions; the two text affordances follow reading direction (`direction`), not fixed sides. Use it for a page title and one or two actions; move a longer action set into an overflow menu, and use a `ToolBar` on desktop.
 
 **Properties.** 2 published beyond the shared set: `title`: String · `direction`: Enum (`ltr` | `rtl`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -352,6 +384,8 @@ A top bar with a title, a leading back affordance and trailing actions; the two 
 **Aliases.** `top_app_bar`
 
 ### BottomNavigationBar (`bottom_navigation_bar`)
+
+![bottom_navigation_bar (dark)](../images/bottom_navigation_bar.svg)
 
 A bottom row of three to five top-level destinations with selection state. Use it for phone-width top-level navigation; use a `NavigationDrawer` when there are more destinations, and a `TabView` when the pages are peers inside one screen rather than app-level destinations.
 
@@ -367,6 +401,8 @@ A bottom row of three to five top-level destinations with selection state. Use i
 
 ### NavigationDrawer (`navigation_drawer`)
 
+![navigation_drawer (dark)](../images/navigation_drawer.svg)
+
 A slide-in side panel with sections, headers and a selected item, plus a scrim that closes it. Use it for a long destination list or account/settings entries; add `DrawerSectionHeader` companions to group rows, and do not leave it permanently open on a wide layout where a sidebar belongs in the layout instead.
 
 **Properties.** 3 published beyond the shared set: `open`: Bool · `width`: Float · `section_separator_visible`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -380,6 +416,8 @@ A slide-in side panel with sections, headers and a selected item, plus a scrim t
 **Aliases.** `nav_drawer`, `drawer`
 
 ### NavigationStack (`navigation_stack`)
+
+![navigation_stack (dark)](../images/navigation_stack.svg)
 
 A push/pop page stack: `push`, `pop` and `set_current_page`, with `navigation_changed` reporting the new top page. Use it for a drill-down flow where back must return to the previous page; use a `StackedWidget` when the program, not the user, chooses the page and no history is implied.
 
@@ -395,6 +433,8 @@ A push/pop page stack: `push`, `pop` and `set_current_page`, with `navigation_ch
 
 ### Pagination (`pagination`)
 
+![pagination (dark)](../images/pagination.svg)
+
 A numbered page index with page size, sibling count, optional nav buttons and wheel paging. It holds no content: the `Carousel`, table or list owns the pages, and `Pagination` reports which page the user asked for. Do not use it as the page container itself.
 
 **Properties.** 8 published beyond the shared set: `total`: UInt · `page_size`: UInt · `page`: UInt · `page_count`: UInt (read-only) · `last_page`: UInt (read-only) · `sibling_count`: UInt · `show_nav_buttons`: Bool · `wheel_paging_enabled`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -408,6 +448,8 @@ A numbered page index with page size, sibling count, optional nav buttons and wh
 **Aliases.** `pager`, `page_numbers`
 
 ### TabView (`tab_view`)
+
+![tab_view (dark)](../images/tab_view.svg)
 
 A tab strip plus a content slot, with optional keyboard navigation and close/move requests reported as events. Use it for peer pages inside one screen; use a `TabWidget` when each page is an arbitrary child container with its own layout, and a `BottomNavigationBar` for app-level destinations.
 
@@ -433,6 +475,8 @@ Choose by the *shape of the value*: `LineEdit` for one line of free text, `TextA
 
 ### LineEdit (`line_edit`)
 
+![line_edit (dark)](../images/line_edit.svg)
+
 A single-line text field with selection, undo/redo availability, echo modes and validation decoration (`helper`, `error`, `counter`, `validation_state`). Use it for one line of free text; use `TextArea` for paragraphs, `MaskedEdit` for a fixed format and `SpinBox` for a numeric value.
 
 **Properties.** 21 published beyond the shared set: `text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (read-only) · `over_limit`: Bool (read-only) · `valid`: Bool (read-only) · `validation_message`: String (read-only) · `validation_state`: String (read-only) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -446,6 +490,8 @@ A single-line text field with selection, undo/redo availability, echo modes and 
 **Aliases.** `text_input`, `input`
 
 ### LineEdit (`password_edit`)
+
+![password_edit (dark)](../images/password_edit.svg)
 
 The password role of `LineEdit`: `echo_mode` is `password` and `password_echo_on_edit` controls the brief reveal while typing. Use it for secrets; never log the value, and use `phone_input` or `email_input` only for their own value shapes.
 
@@ -461,6 +507,8 @@ The password role of `LineEdit`: `echo_mode` is `password` and `password_echo_on
 
 ### LineEdit (`phone_input`)
 
+![phone_input (dark)](../images/phone_input.svg)
+
 The telephone role of `LineEdit`: the constructor installs the phone validator, whitespace and non-phone characters are refused, and `valid` reports whether the value holds 7 to 15 digits. Use it for a phone number; it validates but does not format the number for display.
 
 **Properties.** 21 published beyond the shared set: `text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `drag_enabled`: Bool · `echo_mode`: Enum (`normal` | `password` | `no_echo`) · `cursor_position`: UInt · `prefix`: String · `suffix`: String · `helper`: String · `error`: String · `counter`: String (read-only) · `over_limit`: Bool (read-only) · `valid`: Bool (read-only) · `validation_message`: String (read-only) · `validation_state`: String (read-only) · `alignment`: Enum (`left` | `centre` | `right`) · `modified`: Bool · `clear_button_enabled`: Bool · `password_echo_on_edit`: Bool · `scroll_x`: Int — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -474,6 +522,8 @@ The telephone role of `LineEdit`: the constructor installs the phone validator, 
 **Aliases.** `phone_edit`, `telephone_input`
 
 ### LineEdit (`email_input`)
+
+![email_input (dark)](../images/email_input.svg)
 
 The e-mail role of `LineEdit`: the constructor installs the e-mail validator, whitespace is refused, and `valid` reports whether the value is `local@domain.tld`. Use it for an address; it validates the shape, but you still decide what to do with an invalid value.
 
@@ -489,6 +539,8 @@ The e-mail role of `LineEdit`: the constructor installs the e-mail validator, wh
 
 ### ListBox (`list_box`)
 
+![list_box (dark)](../images/list_box.svg)
+
 A scrollable list of items with single, multi or extended selection and a current row. Use it for a modest, fully materialized list where each row is plain text; use `ListView` or `VirtualList` once rows carry models, delegates or need virtualization.
 
 **Properties.** 9 published beyond the shared set: `item_count`: UInt (read-only) · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `current_row`: UInt · `item_height`: Float · `selected_count`: UInt (read-only) · `selected_indices`: String (read-only) · `hovered_row`: UInt (read-only) · `font_size`: Float (read-only) · `alignment`: Enum (`left` | `centre` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -500,6 +552,8 @@ A scrollable list of items with single, multi or extended selection and a curren
 **Rust API.** `create_list_box(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("list_box", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### SpinBox (`spin_box`)
+
+![spin_box (dark)](../images/spin_box.svg)
 
 A numeric field with step buttons, a range, decimals and optional prefix/suffix and special value text. Use it for bounded numbers; use `NumberPicker` for a wheel-style picker, `Dial` for an angular control, and `LineEdit` when the value is not numeric.
 
@@ -513,6 +567,8 @@ A numeric field with step buttons, a range, decimals and optional prefix/suffix 
 
 ### ComboBox (`combo_box`)
 
+![combo_box (dark)](../images/combo_box.svg)
+
 An item field with a drop-down list, an optional editable text and a visible popup state. Use it for a fixed set of choices with one current value; use `EditableComboBox` when the user may type a value that is not in the list, and `DropdownMenu` when the choices form a menu of commands rather than a value.
 
 **Properties.** 13 published beyond the shared set: `item_count`: UInt (read-only) · `insert_policy`: Enum (`no_insert` | `insert_at_top` | `insert_at_current` | `insert_at_bottom` | `insert_alphabetically`) · `size_adjust_policy`: Enum (`adjust_to_minimum_contents_length` | `adjust_to_contents` | `adjust_to_contents_on_first_show`) · `items`: StringList · `current_index`: UInt · `current_text`: String · `placeholder_text`: String · `minimum_contents_length`: UInt · `editable`: Bool · `max_visible_items`: UInt · `open`: Bool · `direction`: String · `alignment`: Enum (`left` | `centre` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -524,6 +580,8 @@ An item field with a drop-down list, an optional editable text and a visible pop
 **Rust API.** `create_combo_box(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("combo_box", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Dropdown (`dropdown`)
+
+![dropdown (dark)](../images/dropdown.svg)
 
 A standalone drop-down selector with a placeholder, an expanded state and a visible item count. Use it when the field is only a chooser and carries no editable text; use `ComboBox` when the widget also owns a text value, and `MenuButton` when the popup is a command menu.
 
@@ -539,6 +597,8 @@ A standalone drop-down selector with a placeholder, an expanded state and a visi
 
 ### TextArea (`text_area`)
 
+![text_area (dark)](../images/text_area.svg)
+
 A multi-line plain-text input with soft wrap, a content margin, a block limit and horizontal scrolling. Use it for paragraphs and free-form notes; use `TextEdit` when you want the framed editor control with line wrap, and `CodeEditor` for structured source.
 
 **Properties.** 8 published beyond the shared set: `text`: String · `placeholder`: String · `read_only`: Bool · `max_length`: UInt · `soft_wrap`: Bool · `content_margin`: UInt · `max_block_count`: UInt · `scroll_x`: Int (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -553,6 +613,8 @@ A multi-line plain-text input with soft wrap, a content margin, a block limit an
 
 ### TextEdit (`text_edit`)
 
+![text_edit (dark)](../images/text_edit.svg)
+
 A framed multi-line editor with selectable text, a cursor position and a line-wrap switch. Use it for a general-purpose multi-line field that needs the editor chrome; use `RichEdit` when formatting attributes are required, and `TerminalView` for append-only output with a prompt.
 
 **Properties.** 6 published beyond the shared set: `text`: String · `placeholder_text`: String · `max_length`: UInt · `read_only`: Bool · `line_wrap`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -564,6 +626,8 @@ A framed multi-line editor with selectable text, a cursor position and a line-wr
 **Rust API.** `create_text_edit(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("text_edit", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### CommandLink (`command_link`)
+
+![command_link (dark)](../images/command_link.svg)
 
 A button with a caption, an explanatory description and an optional shield marker — the Windows-style command link. Use it for a small set of consequential choices in a dialog; use a plain `Button` when a one-line caption is enough.
 
@@ -577,6 +641,8 @@ A button with a caption, an explanatory description and an optional shield marke
 
 ### FontComboBox (`font_combo_box`)
 
+![font_combo_box (dark)](../images/font_combo_box.svg)
+
 A combo box populated with installed typefaces, rendered in each font, with filters and a sample text. Use it as the font chooser inside a `FontDialog` or a settings form; use `FontPreview` to show a larger specimen of the current choice.
 
 **Properties.** 9 published beyond the shared set: `current_font_family`: String (read-only) · `item_count`: Int (read-only) · `current_index`: Int · `editable`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `max_visible_items`: Int · `font_filters`: String · `writing_system_filter`: String · `sample_text`: String — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -588,6 +654,8 @@ A combo box populated with installed typefaces, rendered in each font, with filt
 **Rust API.** `create_font_combo_box(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("font_combo_box", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Keyboard (`keyboard`)
+
+![keyboard (dark)](../images/keyboard.svg)
 
 An on-screen virtual keyboard with a qwerty or numeric layout, a shift state and key events; `text_committed` carries the characters to insert. Use it on touch devices without a hardware keyboard; keep a hardware path working, and do not present it on desktop where it steals screen space.
 
@@ -603,6 +671,8 @@ An on-screen virtual keyboard with a qwerty or numeric layout, a shift state and
 
 ### Mention (`mention`)
 
+![mention (dark)](../images/mention.svg)
+
 A text field that completes the token before the caret from a candidate list, allowing several mentions in one field. Use it for `@`-style mentions in a message or comment; use `AutoCompleteEdit` when the whole field is completed against one suggestion.
 
 **Properties.** 9 published beyond the shared set: `text`: String · `trigger`: String · `candidate_count`: UInt (read-only) · `visible_candidate_count`: UInt (read-only) · `mention_count`: UInt (read-only) · `popup_open`: Bool (read-only) · `caret`: UInt (read-only) · `max_visible`: UInt · `row_height`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -616,6 +686,8 @@ A text field that completes the token before the caret from a candidate list, al
 **Aliases.** `mention_edit`, `at_mention`
 
 ### Cascader (`cascader`)
+
+![cascader (dark)](../images/cascader.svg)
 
 A multi-level chooser that walks a path down a tree of options and reports the selected path. Use it for a hierarchical taxonomy where every level matters; use a `ComboBox` for a flat list and a `TreeView` when the hierarchy itself must stay visible and browsable.
 
@@ -631,6 +703,8 @@ A multi-level chooser that walks a path down a tree of options and reports the s
 
 ### SearchBox (`search_box`)
 
+![search_box (dark)](../images/search_box.svg)
+
 A single-line search field with a leading search affordance and a trailing clear button; `search_submitted` carries the query. Use it above a list or table for a quick filter; use `SearchBar` when you also need a cancel action and platform search styling.
 
 **Properties.** 3 published beyond the shared set: `text`: String · `placeholder`: String · `alignment`: Enum (`left` | `centre` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -644,6 +718,8 @@ A single-line search field with a leading search affordance and a trailing clear
 **Aliases.** `search`
 
 ### TagInput (`tag_input`)
+
+![tag_input (dark)](../images/tag_input.svg)
 
 A text field that turns Enter or a comma into a removable tag, with a multi-line mode. Use it for a free-form set of short labels; use the `Chip` row control when the set is fixed and only selection changes, and `Mention` when the tokens refer to people rather than arbitrary labels.
 
@@ -659,6 +735,8 @@ A text field that turns Enter or a comma into a removable tag, with a multi-line
 
 ### ImePreedit (`ime_preedit`)
 
+![ime_preedit (dark)](../images/ime_preedit.svg)
+
 An overlay that draws the input method's pre-edit text and caret at a position supplied by the host. Use it only when implementing IME composition over a custom text surface; controls that already accept IME input (`LineEdit`, `TextArea`, …) place their pre-edit themselves.
 
 **Properties.** 2 published beyond the shared set: `text`: String · `cursor_position`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -672,6 +750,8 @@ An overlay that draws the input method's pre-edit text and caret at a position s
 **Aliases.** `preedit`
 
 ### InplaceEditor (`inplace_editor`)
+
+![inplace_editor (dark)](../images/inplace_editor.svg)
 
 A small editor that starts and finishes editing in place, used by table and tree cells. Use it for cell editing where the value must be committed with Enter and abandoned with Escape; use `LineEdit` when the field is a permanent part of the form.
 
@@ -687,6 +767,8 @@ A small editor that starts and finishes editing in place, used by table and tree
 
 ### MaskedEdit (`masked_edit`)
 
+![masked_edit (dark)](../images/masked_edit.svg)
+
 A formatted text field driven by a mask, rejecting input that does not fit and reporting `input_rejected` with the offending position. Use it for phone numbers, dates, postal codes and identifiers with a fixed shape; use `LineEdit` plus validation when the format is advisory rather than mandatory.
 
 **Properties.** 3 published beyond the shared set: `text`: String · `mask`: String · `alignment`: Enum (`left` | `centre` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -700,6 +782,8 @@ A formatted text field driven by a mask, rejecting input that does not fit and r
 **Aliases.** `masked_input`
 
 ### AutoCompleteEdit (`auto_complete_edit`)
+
+![auto_complete_edit (dark)](../images/auto_complete_edit.svg)
 
 A text field that matches its whole value against a candidate list and offers a drop-down, with match mode, case sensitivity, inline completion and a close policy. Use it for a single value chosen from suggestions; use `Mention` for token completion and `ComboBox` when the list is closed.
 
@@ -715,6 +799,8 @@ A text field that matches its whole value against a candidate list and offers a 
 
 ### MultiSelectComboBox (`multi_select_combo_box`)
 
+![multi_select_combo_box (dark)](../images/multi_select_combo_box.svg)
+
 A combo box whose list keeps several selections and reports them as a selected set. Use it for a compact multi-choice field; use `CheckListBox` when the choices need their own always-visible rows, and `TagInput` when the user may also enter values that are not offered.
 
 **Properties.** 5 published beyond the shared set: `selected_count`: UInt (read-only) · `selected_items`: String (read-only) · `placeholder`: String · `expanded`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -728,6 +814,8 @@ A combo box whose list keeps several selections and reports them as a selected s
 **Aliases.** `multi_combo`
 
 ### RangeSlider (`range_slider`)
+
+![range_slider (dark)](../images/range_slider.svg)
 
 A dual-handle slider that selects a lower and an upper bound on one track and reports both as `range_changed`. Use it for a coarse range where both ends move together visually; use two `SpinBox` fields when the bounds must be typed exactly, and a `DateRangePicker` for dates.
 
@@ -743,6 +831,8 @@ A dual-handle slider that selects a lower and an upper bound on one track and re
 
 ### EditableComboBox (`editable_combo_box`)
 
+![editable_combo_box (dark)](../images/editable_combo_box.svg)
+
 A combo box whose field can hold text that is not in the list; `item_selected` reports a pick and `text_changed` reports typing. Use it for a value that is usually chosen but may be entered; use `ComboBox` for a closed set and `AutoCompleteEdit` when suggestions must be matched as the user types.
 
 **Properties.** 6 published beyond the shared set: `text`: String · `item_count`: UInt (read-only) · `cursor_position`: UInt · `max_visible_items`: UInt · `scroll_offset`: UInt · `alignment`: Enum (`left` | `centre` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -756,6 +846,8 @@ A combo box whose field can hold text that is not in the list; `item_selected` r
 **Aliases.** `editable_combo`
 
 ### SearchBar (`search_bar`)
+
+![search_bar (dark)](../images/search_bar.svg)
 
 A platform-styled search field with a cancel action, `search_submitted` and `text_changed`. Use it for a search-and-cancel flow on iOS-style screens; use `SearchBox` for the compact desktop field without a cancel affordance.
 
@@ -771,6 +863,8 @@ A platform-styled search field with a cancel action, `search_submitted` and `tex
 
 ### ShortcutEditor (`shortcut_editor`)
 
+![shortcut_editor (dark)](../images/shortcut_editor.svg)
+
 A searchable list of keyboard shortcuts grouped by category, with filtering, an empty state and undo/redo availability. Use it for the shortcut reference/editor panel; use `KeySequenceEdit` when the task is recording one new shortcut.
 
 **Properties.** 8 published beyond the shared set: `filter_text`: String · `shortcut_count`: UInt (read-only) · `visible_count`: UInt (read-only) · `category_count`: UInt (read-only) · `categories`: String (read-only) · `empty`: Bool (read-only) · `can_undo`: Bool (read-only) · `can_redo`: Bool (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -784,6 +878,8 @@ A searchable list of keyboard shortcuts grouped by category, with filtering, an 
 **Aliases.** `keyboard_shortcut_editor`
 
 ### OtpInput (`otp_input`)
+
+![otp_input (dark)](../images/otp_input.svg)
 
 A segmented code field: one box per character, automatically advancing, with paste, backspace and a completion signal. Use it for one-time codes and short PINs; use `MaskedEdit` for a longer formatted identifier and `LineEdit` for an ordinary password.
 
@@ -799,6 +895,8 @@ A segmented code field: one box per character, automatically advancing, with pas
 
 ### NumberPicker (`number_picker`)
 
+![number_picker (dark)](../images/number_picker.svg)
+
 A vertically scrolling digit wheel that shows neighbouring values and changes by a drag or flick rather than per-step clicks. Use it for a bounded number chosen from a short range; use `SpinBox` when the value is typed or stepped exactly.
 
 **Properties.** 12 published beyond the shared set: `value`: Int · `minimum`: Int · `maximum`: Int · `step`: Int · `wrap`: Bool · `suffix`: String · `prefix`: String · `decimals`: UInt · `special_value_text`: String · `row_count`: UInt (read-only) · `selected_row`: UInt (read-only) · `row_height`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -812,6 +910,8 @@ A vertically scrolling digit wheel that shows neighbouring values and changes by
 **Aliases.** `picker`
 
 ### RichEdit (`rich_edit`)
+
+![rich_edit (dark)](../images/rich_edit.svg)
 
 A multi-line editor with character and paragraph formatting attributes, read-only and wrap switches and cursor/selection events. Use it for formatted prose; use `MarkdownEditor` when the source is markdown, and `TextArea` when the text is plain.
 
@@ -837,6 +937,8 @@ Choose a display control when the user reads rather than edits: `ProgressBar` an
 
 ### Slider (`slider`)
 
+![slider (dark)](../images/slider.svg)
+
 A handle dragged along a groove to pick an integer within a range, with ticks, page steps and tracking. Use it for a coarse, directly manipulated value; use a `SpinBox` for exact entry, a `Dial` for an angular instrument, and `RangeSlider` for two bounds.
 
 **Properties.** 10 published beyond the shared set: `minimum`: Int · `maximum`: Int · `value`: Int · `single_step`: Int · `page_step`: Int · `orientation`: Enum (`horizontal` | `vertical`) · `tick_position`: Enum (`none` | `above` | `below` | `both`) · `tick_interval`: Int · `tracking`: Bool · `slider_position`: Int — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -848,6 +950,8 @@ A handle dragged along a groove to pick an integer within a range, with ticks, p
 **Rust API.** `create_slider(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("slider", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### ProgressBar (`progress_bar`)
+
+![progress_bar (dark)](../images/progress_bar.svg)
 
 A bounded fill indicator with an optional text label, orientation and an indeterminate mode. Use it for a known fraction of a known total; use `ProgressCircle` for a compact circular rendition and `Spinner` when duration is unknown and only activity matters.
 
@@ -861,6 +965,8 @@ A bounded fill indicator with an optional text label, orientation and an indeter
 
 ### ScrollBar (`scroll_bar`)
 
+![scroll_bar (dark)](../images/scroll_bar.svg)
+
 A thumb on a rail that scrolls a viewport, with idle fading, page steps and a slider-size ratio. Use it beside a custom scrollable surface; use `ScrollArea` when the crate should own the viewport and place the bar for you.
 
 **Properties.** 11 published beyond the shared set: `idle_delay_ms`: UInt · `idle_opacity`: Float · `minimum`: Int · `maximum`: Int · `value`: Int · `single_step`: Int · `page_step`: Int · `orientation`: Enum (`horizontal` | `vertical`) · `direction`: Enum (`ltr` | `rtl`) · `slider_size`: Float (read-only) · `slider_position`: Float (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -873,6 +979,8 @@ A thumb on a rail that scrolls a viewport, with idle fading, page steps and a sl
 
 ### LCDNumber (`lcd_number`)
 
+![lcd_number (dark)](../images/lcd_number.svg)
+
 A seven-segment numeric readout with a configurable digit count, number base and segment style. Use it for instrument-style numbers (counters, clocks, measurements); use a `Label` for ordinary text and a `Meter` when the value also has a range context.
 
 **Properties.** 7 published beyond the shared set: `value`: Float · `min_value`: Float · `max_value`: Float · `num_digits`: Int · `small_decimal_point`: Bool · `mode`: Enum (`hex` | `dec` | `oct` | `bin`) · `segment_style`: Enum (`outline` | `filled` | `flat`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -884,6 +992,8 @@ A seven-segment numeric readout with a configurable digit count, number base and
 **Rust API.** `create_lcd_number(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("lcd_number", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Arc (`arc`)
+
+![arc (dark)](../images/arc.svg)
 
 A circular progress or indicator ring with a sweep angle, thickness, optional rounded ends and a centred value. Use it for a compact single-value dial; use `ProgressCircle` for a Material-style progress ring and `Gauge` when a scale and needle are needed.
 
@@ -899,6 +1009,8 @@ A circular progress or indicator ring with a sweep angle, thickness, optional ro
 
 ### Spinner (`spinner`)
 
+![spinner (dark)](../images/spinner.svg)
+
 A rotating activity indicator with an arc or spokes style, speed, thickness and size ratio. Use it when a request is in flight and duration is unknown; use `ProgressBar` when a fraction is known, and stop the spinner when the operation ends so it never animates forever.
 
 **Properties.** 7 published beyond the shared set: `active`: Bool · `track_color`: Color · `arc_color`: Color · `thickness`: UInt · `speed`: Float · `size_ratio`: Float · `style`: Enum (`arc` | `spokes`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -912,6 +1024,8 @@ A rotating activity indicator with an arc or spokes style, speed, thickness and 
 **Aliases.** `spinner_widget`, `loading_spinner`
 
 ### Roller (`roller`)
+
+![roller (dark)](../images/roller.svg)
 
 A scroll-wheel style selector that shows the current option with its neighbours above and below; a drag or flick moves the selection. Use it for a short, ordered set of options on a touch screen; use `ComboBox` on desktop and `NumberPicker` when the values are numeric.
 
@@ -927,6 +1041,8 @@ A scroll-wheel style selector that shows the current option with its neighbours 
 
 ### Switch (`switch`)
 
+![switch (dark)](../images/switch.svg)
+
 An on/off track-and-thumb control with Material, Cupertino or macOS geometry. Use it for a setting that applies immediately; use `CheckBox` when the choice is part of a form submitted later, and `CupertinoSwitch` when the iOS rendition is required by the design.
 
 **Properties.** 4 published beyond the shared set: `checked`: Bool · `thumb_color`: Color · `on_track_color`: Color · `switch_geometry`: Enum (`material` | `cupertino` | `macos`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -940,6 +1056,8 @@ An on/off track-and-thumb control with Material, Cupertino or macOS geometry. Us
 **Aliases.** `switch_widget`, `toggle_switch`
 
 ### Line (`line`)
+
+![line (dark)](../images/line.svg)
 
 A horizontal or vertical rule with a thickness and colour, used as a lightweight separator. Use it inside a custom layout that needs one rule; use `Divider` when you want the platform separator style and orientation property.
 
@@ -955,6 +1073,8 @@ A horizontal or vertical rule with a thickness and colour, used as a lightweight
 
 ### Meter (`meter`)
 
+![meter (dark)](../images/meter.svg)
+
 A gauge-like meter with a value against a range, ticks, an optional unit and threshold bands. Use it for a measurement with a meaningful scale; use `Gauge` for a full radial dial, `Arc` for a compact ring, and `ProgressBar` for plain completion.
 
 **Properties.** 8 published beyond the shared set: `value`: UInt · `minimum`: UInt · `maximum`: UInt · `tick_count`: UInt · `show_tick_labels`: Bool · `unit`: String · `value_text`: String (read-only) · `threshold_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -968,6 +1088,8 @@ A gauge-like meter with a value against a range, ticks, an optional unit and thr
 **Aliases.** `meter_widget`
 
 ### EmojiPicker (`emoji_picker`)
+
+![emoji_picker (dark)](../images/emoji_picker.svg)
 
 A glyph chooser shell with categories, search, recents and a grid; the glyph table itself is supplied by the caller through `set_glyphs`, because the crate bundles no emoji data. Use it in a composer or reaction picker, and handle `glyph_chosen` to insert the character.
 
@@ -983,6 +1105,8 @@ A glyph chooser shell with categories, search, recents and a grid; the glyph tab
 
 ### MiniChart (`mini_chart`)
 
+![mini_chart (dark)](../images/mini_chart.svg)
+
 A compact line or bar chart with no axes, intended to sit inside a row, tile or card. Use it for a glanceable trend; use `Sparkline` for a line-only inline trend with a capacity and end marker, and the chart family when axes and interaction matter.
 
 **Properties.** 1 published beyond the shared set: `chart_type`: Enum (`line` | `bar`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -996,6 +1120,8 @@ A compact line or bar chart with no axes, intended to sit inside a row, tile or 
 **Aliases.** `mini_chart_widget`
 
 ### ImageView (`image_view`)
+
+![image_view (dark)](../images/image_view.svg)
 
 A widget that displays an `Image` with scaling, rotation, flips, alignment, margin and a zoom/pan offset. Use it for a single still image; use `ImageGallery` for a set with thumbnails, `AnimatedImage` for frame sequences, and pair it with `ZoomPanController` when zoom and region-of-interest state must be shared.
 
@@ -1011,6 +1137,8 @@ A widget that displays an `Image` with scaling, rotation, flips, alignment, marg
 
 ### MiniCanvas (`mini_canvas`)
 
+![mini_canvas (dark)](../images/mini_canvas.svg)
+
 A small immediate-mode drawing surface with fill/draw primitives and clear. Use it for a decorative drawing or a sparkline-like custom mark; use the full `Canvas` when layers, zoom and pointer routing are needed, and keep drawing out of `paint`-only controls.
 
 **Properties.** The schema publishes no property of its own; every control carries the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1022,6 +1150,8 @@ A small immediate-mode drawing surface with fill/draw primitives and clear. Use 
 **Rust API.** `create_mini_canvas(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("mini_canvas", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Badge (`badge`)
+
+![badge (dark)](../images/badge.svg)
 
 A small overlay marker carrying a count, a dot or a short label, anchored to another control. Use it for unread counts and status dots; it is an annotation, not a button, so put the clickable behaviour on the anchored control.
 
@@ -1037,6 +1167,8 @@ A small overlay marker carrying a count, a dot or a short label, anchored to ano
 
 ### SkeletonLoader (`skeleton_loader`)
 
+![skeleton_loader (dark)](../images/skeleton_loader.svg)
+
 A grey placeholder block shown while real content loads, with rectangle, circle and text-line shapes. Use it to preserve layout and signal progress; do not leave it visible after content arrives, and use a `Spinner` when there is no shape to preview.
 
 **Properties.** 3 published beyond the shared set: `active`: Bool · `text_line_rows`: UInt · `shape`: Enum (`rect` | `circle` | `text_line`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1050,6 +1182,8 @@ A grey placeholder block shown while real content loads, with rectangle, circle 
 **Aliases.** `skeleton`, `shimmer`
 
 ### Divider (`divider`)
+
+![divider (dark)](../images/divider.svg)
 
 A thin rule that separates adjacent sections, with a line style, orientation, thickness and colour. Use it between groups in a form or list; use `Line` when you need a free-standing rule in a custom drawing.
 
@@ -1065,6 +1199,8 @@ A thin rule that separates adjacent sections, with a line style, orientation, th
 
 ### Rating (`rating`)
 
+![rating (dark)](../images/rating.svg)
+
 A row of selectable stars or icons with an optional half step and a numeric value. Use it for a subjective score; use a `Slider` for a continuous quantity and a `SpinBox` when the score must also be typed.
 
 **Properties.** 6 published beyond the shared set: `value`: Float · `allow_half_step`: Bool · `max`: UInt · `star_size`: UInt · `fill`: Float (read-only) · `display_text`: String (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1078,6 +1214,8 @@ A row of selectable stars or icons with an optional half step and a numeric valu
 **Aliases.** `rating_widget`, `star_rating`
 
 ### EmptyState (`empty_state`)
+
+![empty_state (dark)](../images/empty_state.svg)
 
 A placeholder shown when a view has no content: a message, a description and an optional secondary action. Use it inside a list, table or page whose content can be empty; do not use it as a loading indicator — that is `SkeletonLoader` or `Spinner`.
 
@@ -1093,6 +1231,8 @@ A placeholder shown when a view has no content: a message, a description and an 
 
 ### ColorHistory (`color_history`)
 
+![color_history (dark)](../images/color_history.svg)
+
 A history of recently used colours rendered as a swatch grid, with add/remove/select and hover signals. Use it beside a colour picker so a user can return to a recent choice; use `Swatch` for a fixed palette and `ColorWell` for one current colour.
 
 **Properties.** 1 published beyond the shared set: `color_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1105,6 +1245,8 @@ A history of recently used colours rendered as a swatch grid, with add/remove/se
 
 ### ColorWell (`color_well`)
 
+![color_well (dark)](../images/color_well.svg)
+
 A compact swatch that shows one current colour and emits `clicked` and `picker_requested`. Use it as the collapsed form of a colour field; open a `ColorPicker` or `ColorDialog` when `picker_requested` arrives, and let the well own only the current value.
 
 **Properties.** 2 published beyond the shared set: `color`: Color · `show_border`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1116,6 +1258,8 @@ A compact swatch that shows one current colour and emits `clicked` and `picker_r
 **Rust API.** `create_color_well(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("color_well", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### FloatingLabel (`floating_label`)
+
+![floating_label (dark)](../images/floating_label.svg)
 
 A text field with a label that floats above the input once the field has content or focus. Use it for a compact Material-style form field; use `LineEdit` when a static label above the field fits the form better, and do not use it for multi-line text.
 
@@ -1131,6 +1275,8 @@ A text field with a label that floats above the input once the field has content
 
 ### FontPreview (`font_preview`)
 
+![font_preview (dark)](../images/font_preview.svg)
+
 A specimen panel that renders a sample string in a chosen family and size. Use it beside a `FontComboBox` or inside a `FontDialog` so the user sees the choice at a readable size; it is a preview only and owns no font selection state.
 
 **Properties.** 3 published beyond the shared set: `font_family`: String · `font_size`: Float · `preview_text`: String — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1144,6 +1290,8 @@ A specimen panel that renders a sample string in a chosen family and size. Use i
 **Aliases.** `font_viewer`
 
 ### ProgressCircle (`progress_circle`)
+
+![progress_circle (dark)](../images/progress_circle.svg)
 
 A circular progress indicator with thickness, colour, diameter, an indeterminate mode and optional centre text. Use it for a compact completion indicator; use `Arc` for a gauge-like sweep and `Spinner` when duration is unknown.
 
@@ -1159,6 +1307,8 @@ A circular progress indicator with thickness, colour, diameter, an indeterminate
 
 ### Icon (`icon`)
 
+![icon (dark)](../images/icon.svg)
+
 A widget that renders a named or source-described icon at a chosen size and colour. Use it for standalone glyphs in toolbars and empty states; when the glyph is part of a label or button, set that control's `icon_source` instead of stacking a separate `Icon`.
 
 **Properties.** 4 published beyond the shared set: `icon_name`: String · `icon_source`: IconSpec · `size`: Float · `color`: String — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1173,6 +1323,8 @@ A widget that renders a named or source-described icon at a chosen size and colo
 
 ### Tag (`tag`)
 
+![tag (dark)](../images/tag.svg)
+
 A compact pill label that categorises or filters content, with a tone, an optional icon and a close affordance. Use it for a single read-only category mark; use `Chip` for the multi-item selectable/reorderable row, and `TagInput` when the user creates tags.
 
 **Properties.** 5 published beyond the shared set: `text`: String · `icon`: String · `tone`: Enum (`neutral` | `primary` | `success` | `warning` | `error`) · `selected`: Bool · `closable`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1186,6 +1338,8 @@ A compact pill label that categorises or filters content, with a tone, an option
 **Aliases.** `label_tag`
 
 ### Clock (`clock`)
+
+![clock (dark)](../images/clock.svg)
 
 An analog clock face showing a time of day, with an optional seconds hand and either a manual time or the system clock as its source. Use it for a clock display; use `Calendar` to pick a date and `TimePicker` to edit a time.
 
@@ -1211,6 +1365,8 @@ Choose a container for *placement*, not for decoration alone: `ScrollArea` when 
 
 ### GroupBox (`group_box`)
 
+![group_box (dark)](../images/group_box.svg)
+
 A titled frame that groups related controls, optionally checkable so the whole group can be enabled or disabled with one state. Use it for a labelled section of a form; use a plain `Frame` when there is no title, and `Accordion` when the group must collapse.
 
 **Properties.** 4 published beyond the shared set: `title`: String · `alignment`: Enum (`left` | `centre` | `right` | `top` | `bottom`) · `checkable`: Bool · `checked`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1222,6 +1378,8 @@ A titled frame that groups related controls, optionally checkable so the whole g
 **Rust API.** `create_group_box(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("group_box", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Splitter (`splitter`)
+
+![splitter (dark)](../images/splitter.svg)
 
 A draggable divider that splits a container into resizable panes, reporting layout changes and a live preview while dragging. Use it where the user must trade space between two areas; use `split_layout` for the same behaviour under the layout-family name, and a fixed `Flex` when proportions never change.
 
@@ -1237,6 +1395,8 @@ A draggable divider that splits a container into resizable panes, reporting layo
 
 ### Toolbox (`tool_box`)
 
+![tool_box (dark)](../images/tool_box.svg)
+
 A vertical or horizontal stack of labelled sections that expand one at a time, in exclusive, non-exclusive or popup mode. Use it for a compact tool palette; use `Accordion` for page content sections and `TabWidget` when each section is a full page.
 
 **Properties.** 4 published beyond the shared set: `item_count`: UInt (read-only) · `current_index`: UInt · `orientation`: Enum (`horizontal` | `vertical`) · `mode`: Enum (`exclusive` | `non_exclusive` | `popup`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1248,6 +1408,8 @@ A vertical or horizontal stack of labelled sections that expand one at a time, i
 **Rust API.** `create_tool_box(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("tool_box", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### ScrollArea (`scroll_area`)
+
+![scroll_area (dark)](../images/scroll_area.svg)
 
 A scrollable viewport that clips and offsets one larger child, with independent horizontal and vertical scroll-bar policies and optional sticky regions. Use it when a whole subtree can exceed the visible area; attach a `StickyHeader` companion to keep a band visible, and do not nest scroll areas in the same direction.
 
@@ -1261,6 +1423,8 @@ A scrollable viewport that clips and offsets one larger child, with independent 
 
 ### TabWidget (`tab_widget`)
 
+![tab_widget (dark)](../images/tab_widget.svg)
+
 A container of tabbed pages where only the selected page is visible, with closable and movable tabs and a configurable tab position and shape. Use it when each page is a container with its own layout; use `TabView` for lightweight peer pages and `StackedWidget` when the program switches pages without a tab strip.
 
 **Properties.** 9 published beyond the shared set: `tab_count`: UInt (read-only) · `current_index`: UInt · `text`: String · `title`: String · `closable`: Bool · `movable`: Bool · `tab_position`: Enum (`north` | `south` | `west` | `east`) · `tab_shape`: Enum (`rounded` | `triangular` | `rectangular`) · `document_mode`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1272,6 +1436,8 @@ A container of tabbed pages where only the selected page is visible, with closab
 **Rust API.** `create_tab_widget(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("tab_widget", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### StackedWidget (`stacked_widget`)
+
+![stacked_widget (dark)](../images/stacked_widget.svg)
 
 A container that shows one child page at a time, selected programmatically by index. Use it for wizard-like or mode-based content where the host decides the page; use `TabWidget` when the user picks pages, and `NavigationStack` when there is a back history.
 
@@ -1287,6 +1453,8 @@ A container that shows one child page at a time, selected programmatically by in
 
 ### CollapsiblePane (`collapsible_pane`)
 
+![collapsible_pane (dark)](../images/collapsible_pane.svg)
+
 A section with a clickable header that expands or hides one content child. Use it for a single optional detail block; use `Accordion` when several such sections should coordinate, and `GroupBox` when the section is always open.
 
 **Properties.** 2 published beyond the shared set: `title`: String · `collapsed`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1300,6 +1468,8 @@ A section with a clickable header that expands or hides one content child. Use i
 **Aliases.** `collapsible`
 
 ### DockWidget (`dock_widget`)
+
+![dock_widget (dark)](../images/dock_widget.svg)
 
 One dockable panel with a title that can be floated or docked at an edge. Use it for a single tool panel the user can rearrange; a multi-region dock system is not this control, and `MdiArea` is the container for independent child windows rather than dock edges.
 
@@ -1315,6 +1485,8 @@ One dockable panel with a title that can be floated or docked at an edge. Use it
 
 ### MdiArea (`mdi_area`)
 
+![mdi_area (dark)](../images/mdi_area.svg)
+
 A workspace that hosts multiple independent child windows in sub-window or tabbed view, tracking the active sub-window. Use it for a document-centric desktop app; use `TabWidget` for simple pages and `NavigationStack` for a single linear history.
 
 **Properties.** 3 published beyond the shared set: `subwindow_count`: UInt (read-only) · `active_subwindow`: UInt (read-only) · `view_mode`: Enum (`sub_window_view` | `tabbed`) (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1328,6 +1500,8 @@ A workspace that hosts multiple independent child windows in sub-window or tabbe
 **Aliases.** `mdi`
 
 ### Stepper (`stepper`)
+
+![stepper (dark)](../images/stepper.svg)
 
 A numeric field flanked by plus and minus buttons that nudge the value by fixed steps. Use it for a small integer quantity (counts, quantities in a cart); use `SpinBox` when the user may also type the value, and `NumberPicker` for a wheel.
 
@@ -1343,6 +1517,8 @@ A numeric field flanked by plus and minus buttons that nudge the value by fixed 
 
 ### MasonryLayout (`masonry_layout`)
 
+![masonry_layout (dark)](../images/masonry_layout.svg)
+
 A Pinterest-style waterfall grid that places items in the shortest column, with a column count and spacing. Use it for variable-height cards (photos, notes); use `FlowLayout`/`WrapLayout` when rows must align, and `Grid` when every cell has the same size.
 
 **Properties.** 3 published beyond the shared set: `column_count`: UInt · `item_count`: UInt (read-only) · `item_spacing`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1356,6 +1532,8 @@ A Pinterest-style waterfall grid that places items in the shortest column, with 
 **Aliases.** `waterfall_layout`
 
 ### SafeArea (`safe_area`)
+
+![safe_area (dark)](../images/safe_area.svg)
 
 A container that insets its content by top, bottom, left and right amounts so notches, status bars and home indicators do not overlap it. Use it at the root of a mobile screen; set the insets from the platform query rather than hard-coding device metrics.
 
@@ -1371,6 +1549,8 @@ A container that insets its content by top, bottom, left and right amounts so no
 
 ### Carousel (`carousel`)
 
+![carousel (dark)](../images/carousel.svg)
+
 A horizontal swipeable page carousel with dot, bar or numeric indicators, optional looping and autoplay. Use it for a small set of full-width pages; pair it with `Pagination` when the page index must live outside the carousel, and use `TabView` when pages are selected by tabs rather than swipes.
 
 **Properties.** 7 published beyond the shared set: `current_index`: UInt · `item_count`: UInt (read-only) · `current_page_title`: String (read-only) · `loop`: Bool · `autoplay_interval`: UInt · `indicator_style`: Enum (`dots` | `bars` | `numeric` | `hidden`) · `indicator_position`: Enum (`bottom` | `top` | `left` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1384,6 +1564,8 @@ A horizontal swipeable page carousel with dot, bar or numeric indicators, option
 **Aliases.** `carousel_widget`, `swipe_view`
 
 ### Spacer (`spacer`)
+
+![spacer (dark)](../images/spacer.svg)
 
 An empty, invisible area that consumes free space in a linear layout, with a flex weight, a base size and an optional paint hint. Use it to push siblings apart; its painting nothing is the contract, so do not expect a background or border from it.
 
@@ -1399,6 +1581,8 @@ An empty, invisible area that consumes free space in a linear layout, with a fle
 
 ### Center (`center`)
 
+![center (dark)](../images/center.svg)
+
 A single-child box that centres its content, optionally at a fraction of the parent's width and height. Use it to centre a form or a message; use `Align` for one of nine anchors other than the centre.
 
 **Properties.** 6 published beyond the shared set: `content`: String · `content_width`: UInt · `content_height`: UInt · `width_factor`: Float · `height_factor`: Float · `widget`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1412,6 +1596,8 @@ A single-child box that centres its content, optionally at a fraction of the par
 **Aliases.** `centre`, `center_widget`
 
 ### Align (`align`)
+
+![align (dark)](../images/align.svg)
 
 A single-child box that places its content at one of nine anchor positions. Use it to pin a child to a corner or edge; use `Center` for the centre case and `Padding` when the offset is a fixed inset rather than an anchor.
 
@@ -1427,6 +1613,8 @@ A single-child box that places its content at one of nine anchor positions. Use 
 
 ### SizedBox (`sized_box`)
 
+![sized_box (dark)](../images/sized_box.svg)
+
 A box with a fixed width and height that contains one child. Use it to reserve an exact slot (`box_width`, `box_height`); use `AspectRatio` when one extent should follow the other, and `IntrinsicWidth` when the size should follow the content.
 
 **Properties.** 6 published beyond the shared set: `content`: String · `content_width`: UInt · `content_height`: UInt · `box_width`: UInt · `box_height`: UInt · `widget`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1440,6 +1628,8 @@ A box with a fixed width and height that contains one child. Use it to reserve a
 **Aliases.** `size_box`
 
 ### Padding (`padding`)
+
+![padding (dark)](../images/padding.svg)
 
 A single-child box that insets its content by four independent edge paddings. Use it for spacing that belongs to the content rather than to the parent; use the parent's `spacing`/`gap` when the gap is between siblings.
 
@@ -1455,6 +1645,8 @@ A single-child box that insets its content by four independent edge paddings. Us
 
 ### Expanded (`expanded`)
 
+![expanded (dark)](../images/expanded.svg)
+
 A child that takes the leftover room along the main axis, weighted by `flex`, and must be placed inside a linear layout. Use it to make one child absorb slack; use `Flexible` when the child may also stop at its preferred size instead of filling.
 
 **Properties.** 5 published beyond the shared set: `content`: String · `content_width`: UInt · `content_height`: UInt · `flex`: UInt · `widget`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1468,6 +1660,8 @@ A child that takes the leftover room along the main axis, weighted by `flex`, an
 **Aliases.** `expand`
 
 ### Flexible (`flexible`)
+
+![flexible (dark)](../images/flexible.svg)
 
 A child that may shrink to its floor but only grows up to its preferred size, with `fit` choosing loose or tight constraints. Use it when a sibling should yield space but not necessarily fill it; use `Expanded` when it must fill.
 
@@ -1483,6 +1677,8 @@ A child that may shrink to its floor but only grows up to its preferred size, wi
 
 ### IntrinsicWidth (`intrinsic_width`)
 
+![intrinsic_width (dark)](../images/intrinsic_width.svg)
+
 A box whose width is its content's own preferred width, so a field or label does not stretch. Use it for shrink-to-fit columns; use `SizedBox` for an exact width and `AspectRatio` when height must follow width.
 
 **Properties.** 4 published beyond the shared set: `content`: String · `content_width`: UInt · `content_height`: UInt · `widget`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1496,6 +1692,8 @@ A box whose width is its content's own preferred width, so a field or label does
 **Aliases.** `shrink_wrap`
 
 ### AspectRatio (`aspect_ratio`)
+
+![aspect_ratio (dark)](../images/aspect_ratio.svg)
 
 A box that derives one extent from the other through a fixed ratio, optionally deferring to the parent's constraint. Use it for media tiles and thumbnails; use `SizedBox` when both extents are known and `IntrinsicWidth` when content should drive width.
 
@@ -1511,6 +1709,8 @@ A box that derives one extent from the other through a fixed ratio, optionally d
 
 ### Flex (`flex`)
 
+![flex (dark)](../images/flex.svg)
+
 A linear layout that distributes children along a row or column by weight, with wrap, justify-content, align-items and gap. Use it for most one-dimensional layouts; use `Grid` for two dimensions and `FlowLayout`/`WrapLayout` when runs must wrap by measured size.
 
 **Properties.** 6 published beyond the shared set: `item_count`: UInt (read-only) · `direction`: Enum (`row` | `row_reverse` | `column` | `column_reverse`) · `wrap`: Enum (`no_wrap` | `wrap` | `wrap_reverse`) · `justify_content`: Enum (`flex_start` | `flex_end` | `center` | `space_between` | `space_around` | `space_evenly`) · `align_items`: Enum (`stretch` | `flex_start` | `flex_end` | `center` | `baseline`) · `gap`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1524,6 +1724,8 @@ A linear layout that distributes children along a row or column by weight, with 
 **Aliases.** `flex_box`
 
 ### FlowLayout (`flow_layout`)
+
+![flow_layout (dark)](../images/flow_layout.svg)
 
 A layout that places children in reading order and starts a new run when the line is full, sizing each run by its children's own hints and following the writing mode. Use it for chips, tags and tool buttons that should flow; use `WrapLayout` when runs are a fixed-size grid of cells.
 
@@ -1539,6 +1741,8 @@ A layout that places children in reading order and starts a new run when the lin
 
 ### WrapLayout (`wrap_layout`)
 
+![wrap_layout (dark)](../images/wrap_layout.svg)
+
 A layout that places fixed-size children and wraps them onto the next run when full, with independent spacing and run spacing. Use it for a gallery of equal cells; use `FlowLayout` when children should keep their own measured size and follow the writing mode.
 
 **Properties.** 6 published beyond the shared set: `item_count`: UInt (read-only) · `direction`: Enum (`horizontal` | `vertical`) · `alignment`: Enum (`start` | `center` | `end` | `space_between` | `space_around`) · `spacing`: UInt · `run_spacing`: UInt · `padding`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1553,6 +1757,8 @@ A layout that places fixed-size children and wraps them onto the next run when f
 
 ### Accordion (`accordion`)
 
+![accordion (dark)](../images/accordion.svg)
+
 A vertical stack of collapsible sections, in single-expand or multiple-expand mode. Use it for FAQ-style or settings groups; use `CollapsiblePane` for one independent section, and `ToolBox` when the sections are a tool palette rather than page content.
 
 **Properties.** 3 published beyond the shared set: `section_count`: UInt (read-only) · `single_expand`: Bool · `expanded_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1566,6 +1772,8 @@ A vertical stack of collapsible sections, in single-expand or multiple-expand mo
 **Aliases.** `collapsible_list`
 
 ### Splitter (`split_layout`)
+
+![split_layout (dark)](../images/split_layout.svg)
 
 The layout-family spelling of `Splitter`: a draggable divider between panes, with orientation and pane count. Use it when the split belongs to the layout description rather than to a widget subtree; it reports the same three layout signals as `Splitter`.
 
@@ -1591,6 +1799,8 @@ Choose the view that matches the model's *shape*: a flat list is `ListView` or `
 
 ### ListView (`list_view`)
 
+![list_view (dark)](../images/list_view.svg)
+
 A model-backed list with a view mode (list, icon, details, thumbnails), a focused row and a selection. Use it for rows that carry a model or a delegate; use `ListBox` for a small plain-text list and `VirtualList` when the model is large enough to need windowed projection.
 
 **Properties.** 7 published beyond the shared set: `has_model`: Bool (read-only) · `row_count`: UInt (read-only) · `focused_row`: UInt · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `view_mode`: Enum (`list` | `icon` | `details` | `thumbnails`) · `alignment`: Enum (`left` | `centre` | `right`) · `icon_visible_in_list_mode`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1602,6 +1812,8 @@ A model-backed list with a view mode (list, icon, details, thumbnails), a focuse
 **Rust API.** `create_list_view(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("list_view", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### TreeView (`tree_view`)
+
+![tree_view (dark)](../images/tree_view.svg)
 
 A hierarchical view that expands and collapses nodes, with a focused node, a selected node, lazy loading and an animated expansion. Use it for a tree model; use `TreeTable` when each row also needs columns, and `ColumnView` is the alias role for the same tree family rather than a second control.
 
@@ -1615,6 +1827,8 @@ A hierarchical view that expands and collapses nodes, with a focused node, a sel
 
 ### Table (`table_widget`)
 
+![table_widget (dark)](../images/table_widget.svg)
+
 A table of cells with a header, a current row, selection modes and an edit-request signal. Use it for a flat grid of modest size; use `DataGrid` when sorting, filtering and frozen columns are required, and `VirtualTable` for large models.
 
 **Properties.** 8 published beyond the shared set: `has_model`: Bool (read-only) · `has_delegate`: Bool (read-only) · `row_count`: UInt (read-only) · `column_count`: UInt (read-only) · `selection_mode`: Enum (`none` | `single` | `multi` | `extended`) · `header_visible`: Bool · `editable`: Bool · `edit_triggers`: String — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1626,6 +1840,8 @@ A table of cells with a header, a current row, selection modes and an edit-reque
 **Rust API.** `create_table_widget(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("table_widget", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Table (`table`)
+
+![table (dark)](../images/table.svg)
 
 The `table` factory name for the same table control registered as `table_widget`; both names accept the same property and event contract. Use whichever spelling the rest of your host already uses, and do not register both for one widget.
 
@@ -1639,6 +1855,8 @@ The `table` factory name for the same table control registered as `table_widget`
 
 ### Table (`data_grid`)
 
+![data_grid (dark)](../images/data_grid.svg)
+
 A data grid with a data source, sorting, filtering, frozen columns, row height and column width, selection behaviour and a summary. Use it when sorting/filtering are part of the feature; use `GridTable` for a lighter grid and `TreeTable` when rows are hierarchical.
 
 **Properties.** 18 published beyond the shared set: `has_data_source`: Bool (read-only) · `row_count`: UInt (read-only) · `column_count`: UInt (read-only) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `column_width`: UInt · `frozen_columns`: UInt · `sort_spec_count`: UInt (read-only) · `filter_count`: UInt (read-only) · `sort_specs`: String · `filters`: String · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) · `selection_behavior`: Enum (`cells` | `rows` | `columns`) · `sort_indicator_visible`: Bool · `section_resize_mode`: Enum (`fixed` | `stretch` | `interactive`) · `current_cell`: String (read-only) · `summary_text`: String (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1650,6 +1868,8 @@ A data grid with a data source, sorting, filtering, frozen columns, row height a
 **Rust API.** `create_data_grid(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("data_grid", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### TreeTable (`tree_table`)
+
+![tree_table (dark)](../images/tree_table.svg)
 
 A hierarchical table: rows form a tree with expand/collapse, and each row carries column cells, with sort role, case sensitivity and a windowed or eager projection. Use it for a tree whose nodes also have tabular attributes; use `TreeView` for a pure tree and `Table` for flat rows.
 
@@ -1663,6 +1883,8 @@ A hierarchical table: rows form a tree with expand/collapse, and each row carrie
 
 ### Table (`virtual_table`)
 
+![virtual_table (dark)](../images/virtual_table.svg)
+
 A table over a data source that projects only a visible window, with overscan rows and columns and a wheel scroll mode. Use it for large, remotely backed tables; use `DataGrid` when sorting/filtering are needed and the model is local.
 
 **Properties.** 12 published beyond the shared set: `has_data_source`: Bool (read-only) · `row_count`: UInt (read-only) · `column_count`: UInt (read-only) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `column_width`: UInt · `overscan_rows`: UInt · `overscan_columns`: UInt · `visible_window`: String (read-only) · `wheel_scroll_mode`: Enum (`per_row` | `per_page`) · `header_visible`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1674,6 +1896,8 @@ A table over a data source that projects only a visible window, with overscan ro
 **Rust API.** `create_virtual_table(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("virtual_table", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### DataView (`virtual_list`)
+
+![virtual_list (dark)](../images/virtual_list.svg)
 
 A single-column virtual list over a data source, with a visible window, overscan and multi-selection. Use it for long lists of uniform rows; use `ListView` when rows need view modes or delegates, and `ListBox` for a short materialized list.
 
@@ -1687,6 +1911,8 @@ A single-column virtual list over a data source, with a visible window, overscan
 
 ### DataView (`data_view`)
 
+![data_view (dark)](../images/data_view.svg)
+
 The `data_view` spelling of `VirtualList`; it presents one column of model rows and has no display-mode switching. Use it when a host wants the virtual-list contract under the generic data-view name, and do not expect a second implementation.
 
 **Properties.** 8 published beyond the shared set: `has_data_source`: Bool (read-only) · `row_count`: UInt (read-only) · `scroll_row`: UInt · `row_height`: UInt · `overscan`: UInt · `selected_row`: UInt (read-only) · `selected_rows`: NumberList (read-only) · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1699,6 +1925,8 @@ The `data_view` spelling of `VirtualList`; it presents one column of model rows 
 
 ### GridTable (`grid_table`)
 
+![grid_table (dark)](../images/grid_table.svg)
+
 A feature-rich virtualized table with grid lines, headers, sorting, selection and a data source. Use it for a spreadsheet-like surface inside a form; use `DataGrid` for filter/frozen-column features and pair it with `GridViewHeader` when the header must be shared outside the grid.
 
 **Properties.** 12 published beyond the shared set: `has_data_source`: Bool (read-only) · `row_count`: UInt (read-only) · `column_count`: UInt (read-only) · `scroll_row`: UInt · `scroll_column`: UInt · `row_height`: UInt · `selection_mode`: Enum (`none` | `cell` | `row` | `column`) · `sort_spec_count`: UInt (read-only) · `selected_cell`: String (read-only) · `sorting_enabled`: Bool · `sort_role`: String · `auto_refresh`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1710,6 +1938,8 @@ A feature-rich virtualized table with grid lines, headers, sorting, selection an
 **Rust API.** `create_grid_table(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("grid_table", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### QueryBuilder (`query_builder`)
+
+![query_builder (dark)](../images/query_builder.svg)
 
 A builder that edits a recursive filter as rows of field, operator and operand, with a conjunction, live update and commit delay. Use it for a structured filter whose text must be exportable; use `FilterRow` beside a table for a quick one-line filter, and a `SearchBox` for free-text search.
 
@@ -1725,6 +1955,8 @@ A builder that edits a recursive filter as rows of field, operator and operand, 
 
 ### PropertiesPanel (`properties_panel`)
 
+![properties_panel (dark)](../images/properties_panel.svg)
+
 A categorized property editor that lays out rows in a grid and reports edits, file-picker requests and editor opens. Use it for an inspector beside a canvas; use `PropertyGrid` for the flatter two-column form and `PropertiesPanel` when categories matter.
 
 **Properties.** 3 published beyond the shared set: `property_count`: UInt (read-only) · `description_mode`: Enum (`tooltip` | `status_bar` | `hidden`) · `edit_trigger`: Enum (`single_click` | `double_click`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1738,6 +1970,8 @@ A categorized property editor that lays out rows in a grid and reports edits, fi
 **Aliases.** `property_panel`
 
 ### PropertyGrid (`property_grid`)
+
+![property_grid (dark)](../images/property_grid.svg)
 
 A two-column editor listing named properties with an editable value cell, a selected row and per-cell change signals. Use it for a compact key/value inspector; use `PropertiesPanel` when rows must be grouped into categories.
 
@@ -1753,6 +1987,8 @@ A two-column editor listing named properties with an editable value cell, a sele
 
 ### ImageGallery (`image_gallery`)
 
+![image_gallery (dark)](../images/image_gallery.svg)
+
 An image browser with a main image, a thumbnail strip, wheel modes and fullscreen requests. Use it for a set of photos with the current index visible; use `ImageView` for one image and pair it with `ThumbnailCache` when the thumbnail strip is large.
 
 **Properties.** 7 published beyond the shared set: `current_index`: UInt · `thumbnail_size`: UInt · `show_thumbnails`: Bool · `strip_offset`: UInt · `strip_scroll_enabled`: Bool · `wheel_mode`: Enum (`strip` | `navigate` | `zoom`) · `arrow_key_navigation_enabled`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1766,6 +2002,8 @@ An image browser with a main image, a thumbnail strip, wheel modes and fullscree
 **Aliases.** `gallery`
 
 ### GridViewHeader (`grid_view_header`)
+
+![grid_view_header (dark)](../images/grid_view_header.svg)
 
 A shared header strip for a grid or table: sortable and resizable sections plus a filter affordance. Use it when the header must live outside the scrolling body, and report `section_clicked`, `section_resized` and `filter_clicked` to the grid that owns the model.
 
@@ -1791,6 +2029,8 @@ Choose `LineChart` for an ordered series, `BarChart` for categorical comparison,
 
 ### LineChart (`line_chart`)
 
+![line_chart (dark)](../images/line_chart.svg)
+
 A cartesian line chart for one or more ordered series, drawn through the shared chart engine. Use it for trends over an ordered axis; use `Sparkline` when the trend is inline and no axes are needed, and `IndicatorChart` for technical indicators.
 
 **Properties.** 1 published beyond the shared set: `stroke_width`: Float — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1804,6 +2044,8 @@ A cartesian line chart for one or more ordered series, drawn through the shared 
 **Aliases.** `line_graph`
 
 ### Sparkline (`sparkline`)
+
+![sparkline (dark)](../images/sparkline.svg)
 
 A compact inline trend with no axes, no grid and no margins, built from a value list with an end marker and hover reporting. Use it in a table cell or a KPI tile; use `LineChart` when axes or zoom matter. It deliberately does not share the chart engine, because it has none of the axes, grid, ticks or margins the engine exists to unify.
 
@@ -1819,6 +2061,8 @@ A compact inline trend with no axes, no grid and no margins, built from a value 
 
 ### BarChart (`bar_chart`)
 
+![bar_chart (dark)](../images/bar_chart.svg)
+
 A vertical bar chart for categorical comparison, with bar spacing and per-bar hover/click signals. Use it for a small number of categories; use `LineChart` for an ordered series, `PieChart` for part-to-whole and `RadarChart` for multi-axis profiles.
 
 **Properties.** 1 published beyond the shared set: `bar_spacing`: Float — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1833,6 +2077,8 @@ A vertical bar chart for categorical comparison, with bar spacing and per-bar ho
 
 ### PieChart (`pie_chart`)
 
+![pie_chart (dark)](../images/pie_chart.svg)
+
 A circular chart with coloured sectors, optionally as a donut, reporting the slice under the pointer and the clicked slice. Use it for a part-to-whole snapshot with few slices; use `BarChart` when the categories are many or close in value.
 
 **Properties.** 1 published beyond the shared set: `donut`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1846,6 +2092,8 @@ A circular chart with coloured sectors, optionally as a donut, reporting the sli
 **Aliases.** `pie_graph`
 
 ### Gauge (`gauge`)
+
+![gauge (dark)](../images/gauge.svg)
 
 A radial dial showing one value against a range, with bands, ticks, a needle style and an optional unit label. Use it for a single measurement with a meaningful scale; use `Meter` for a linear gauge and `Arc`/`ProgressCircle` for completion.
 
@@ -1871,6 +2119,8 @@ Choose `MenuBar` for the application's top-level command groups, `Menu` or `Cont
 
 ### Action (`action`)
 
+![action (dark)](../images/action.svg)
+
 A command descriptor that can be rendered by menus and toolbars: text, icon, shortcut, checkable/checked state, a separator flag and a command id. Use it when one command must appear in several surfaces; do not use it as a visible button by itself — the surfaces instantiate the concrete control.
 
 **Properties.** 8 published beyond the shared set: `text`: String · `icon_text`: String · `shortcut`: String · `checkable`: Bool · `checked`: Bool · `icon_source`: IconSpec · `separator`: Bool (read-only) · `command_id`: String — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1885,6 +2135,8 @@ A command descriptor that can be rendered by menus and toolbars: text, icon, sho
 
 ### Menu (`menu`)
 
+![menu (dark)](../images/menu.svg)
+
 A drop-down list of commands and submenus, with hover, action-triggered, submenu-requested and about-to-show/hide signals. Use it for commands opened from a menu bar, button or context click; use `DropdownMenu` when the popup selects a value and `MenuButton` when a button owns the menu.
 
 **Properties.** 6 published beyond the shared set: `title`: String · `item_count`: UInt (read-only) · `hovered_index`: UInt (read-only) · `direction`: Enum (`ltr` | `rtl`) · `show_heading`: Bool · `column_count`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1896,6 +2148,8 @@ A drop-down list of commands and submenus, with hover, action-triggered, submenu
 **Rust API.** `create_menu(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("menu", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Menu (`context_menu`)
+
+![context_menu (dark)](../images/context_menu.svg)
 
 `ContextMenu` is the role spelling of `Menu` (`pub type ContextMenu = Menu`), registered under its own name for a menu opened at the pointer. Use it for a secondary-click menu; it is not a second menu implementation, so properties and events are exactly the `Menu` set.
 
@@ -1911,6 +2165,8 @@ A drop-down list of commands and submenus, with hover, action-triggered, submenu
 
 ### MenuBar (`menu_bar`)
 
+![menu_bar (dark)](../images/menu_bar.svg)
+
 A horizontal strip of top-level menu titles that tracks the active and hovered entry. Use it for the application's command groups at the top of a window; use `ToolBar` for frequently used commands and `MenuButton` for a single drop-down in a page.
 
 **Properties.** 3 published beyond the shared set: `entry_count`: UInt (read-only) · `active_index`: UInt (read-only) · `hovered_index`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1923,6 +2179,8 @@ A horizontal strip of top-level menu titles that tracks the active and hovered e
 
 ### ToolBar (`tool_bar`)
 
+![tool_bar (dark)](../images/tool_bar.svg)
+
 A strip of icon buttons and separators, horizontal or vertical, movable, floatable and reporting orientation and visibility changes. Use it for frequently used commands; use `RibbonBar` when commands need labelled groups and tabs, and `ToolButton` for the individual items.
 
 **Properties.** 5 published beyond the shared set: `orientation`: Enum (`horizontal` | `vertical`) · `icon_size`: Float · `movable`: Bool · `floatable`: Bool · `item_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1934,6 +2192,8 @@ A strip of icon buttons and separators, horizontal or vertical, movable, floatab
 **Rust API.** `create_tool_bar(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("tool_bar", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### StatusBar (`status_bar`)
+
+![status_bar (dark)](../images/status_bar.svg)
 
 A short status line at the bottom of a window, with a message and a size grip. Use it for transient status text; `Snackbar` is also registered with this kind but is a floating notice, so do not confuse the two — set `message` here and let the host update it.
 
@@ -1949,6 +2209,8 @@ A short status line at the bottom of a window, with a message and a size grip. U
 
 ### ToolButton (`tool_button`)
 
+![tool_button (dark)](../images/tool_button.svg)
+
 A compact icon-and-caption button for toolbars, with a checked state and click/toggle signals. Use it inside a `ToolBar` or a `SplitButton` group; use a full `Button` when the caption is the primary target and `ToggleButton` when the button owns a popup.
 
 **Properties.** 3 published beyond the shared set: `text`: String · `checked`: Bool · `icon_source`: IconSpec — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1963,6 +2225,8 @@ A compact icon-and-caption button for toolbars, with a checked state and click/t
 
 ### ToolButton (`split_button`)
 
+![split_button (dark)](../images/split_button.svg)
+
 A tool button split into a primary action and a menu of alternatives, with a popup direction, a row height and a scroll position. Use it when one action is default and several variants share space; use `MenuButton` when every click opens the menu.
 
 **Properties.** 7 published beyond the shared set: `text`: String · `action_count`: UInt (read-only) · `menu_open`: Bool · `row_height`: UInt · `popup_direction`: Enum (`down` | `up` | `auto`) · `max_menu_height`: UInt · `menu_scroll`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1975,6 +2239,8 @@ A tool button split into a primary action and a menu of alternatives, with a pop
 
 ### DropdownMenu (`dropdown_menu`)
 
+![dropdown_menu (dark)](../images/dropdown_menu.svg)
+
 A drop-down selector with an item list, a selected index, an expanded state and submenu requests. Use it when the popup chooses a value from a list; use `ComboBox` when the field also displays the current value in a text box, and `Menu` when the items are commands.
 
 **Properties.** 4 published beyond the shared set: `item_count`: UInt (read-only) · `selected_index`: UInt · `expanded`: Bool · `alignment`: Enum (`left` | `centre` | `right`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -1986,6 +2252,8 @@ A drop-down selector with an item list, a selected index, an expanded state and 
 **Rust API.** `create_dropdown_menu(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("dropdown_menu", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### MenuButton (`menu_button`)
+
+![menu_button (dark)](../images/menu_button.svg)
 
 A button that opens a menu on click, with an icon, an item count and about-to-show/hide plus item-triggered signals. Use it for a single drop-down command surface in a page; use `SplitButton` when the primary action must also be clickable.
 
@@ -2011,6 +2279,8 @@ Choose `MessageBox` or the alert/confirm dialogs for a decision, `Dialog` when y
 
 ### Dialog (`dialog`)
 
+![dialog (dark)](../images/dialog.svg)
+
 A titled dialog shell that hosts one content widget, with modal, accepted/rejected/result and help signals. Use it when you need your own content inside a dialog frame; use `MessageBox` and the alert/confirm dialogs for standard decisions, and `PopupWindow` for chrome-only floating content.
 
 **Properties.** 7 published beyond the shared set: `title`: String · `modal`: Bool · `has_content`: Bool (read-only) · `result`: Int (read-only) · `accepted`: Bool (read-only) · `rejected`: Bool (read-only) · `closable`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2022,6 +2292,8 @@ A titled dialog shell that hosts one content widget, with modal, accepted/reject
 **Rust API.** `create_dialog(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("dialog", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### MessageBox (`message_box`)
+
+![message_box (dark)](../images/message_box.svg)
 
 A modal message with an icon, informative and detailed text, an optional check box and a fixed set of response buttons. Use it for a short decision or acknowledgement; use `AlertDialog`/`ConfirmDialog` for a more styled notice and `Dialog` when the content is custom.
 
@@ -2037,6 +2309,8 @@ A modal message with an icon, informative and detailed text, an optional check b
 
 ### FileDialog (`file_dialog`)
 
+![file_dialog (dark)](../images/file_dialog.svg)
+
 A modal file-system browser with open, multi-open, save and select-directory modes, navigation history and a sidebar. Use it for any file path the user must choose; `DirectoryDialog` is the directory-mode role of this control, not a separate implementation.
 
 **Properties.** 12 published beyond the shared set: `title`: String · `modal`: Bool · `directory`: String · `selected_file`: String · `mode`: Enum (`open_file` | `open_files` | `save_file` | `select_directory`) · `label_text`: String · `default_suffix`: String · `file_count`: UInt (read-only) · `can_go_back`: Bool (read-only) · `can_go_forward`: Bool (read-only) · `view_mode`: Enum (`list` | `details`) · `sidebar_urls`: StringList — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2048,6 +2322,8 @@ A modal file-system browser with open, multi-open, save and select-directory mod
 **Rust API.** `create_file_dialog(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("file_dialog", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### ColorDialog (`color_dialog`)
+
+![color_dialog (dark)](../images/color_dialog.svg)
 
 A modal colour chooser with a wheel or rail, presets, hex entry and an optional screen picker. Use it for a full colour decision; use the inline `ColorPicker` when the picker sits inside a form, and `ColorWell` for a one-swatch collapsed field.
 
@@ -2063,6 +2339,8 @@ A modal colour chooser with a wheel or rail, presets, hex entry and an optional 
 
 ### FontDialog (`font_dialog`)
 
+![font_dialog (dark)](../images/font_dialog.svg)
+
 A modal font chooser with family, style and size selection, a preview and accept/reject. Use it when the user must pick a font and see a specimen; use `FontComboBox` for an inline family field and `FontPreview` for a specimen beside it.
 
 **Properties.** 5 published beyond the shared set: `modal`: Bool · `underline`: Bool · `strikethrough`: Bool · `no_buttons`: Bool · `show_preview`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2074,6 +2352,8 @@ A modal font chooser with family, style and size selection, a preview and accept
 **Rust API.** `create_font_dialog(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("font_dialog", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### InputDialog (`input_dialog`)
+
+![input_dialog (dark)](../images/input_dialog.svg)
 
 A modal single-value prompt in text, integer, double or item mode, with the matching value property and change signals. Use it for one quick value without building a form; use a `Dialog` with real fields when several values or validation are involved.
 
@@ -2087,6 +2367,8 @@ A modal single-value prompt in text, integer, double or item mode, with the matc
 
 ### ProgressDialog (`progress_dialog`)
 
+![progress_dialog (dark)](../images/progress_dialog.svg)
+
 A modal progress surface with a label, a bar, a range, an optional cancel button and an auto-reset. Use it for cancellable work the user started; use `SplashScreen` for startup work the program owns, and a plain `ProgressBar` when the work is inline and non-blocking.
 
 **Properties.** 11 published beyond the shared set: `title`: String · `label_text`: String · `value`: Int · `minimum`: Int · `maximum`: Int · `auto_reset`: Bool · `show_cancel_button`: Bool · `show_bar`: Bool · `minimum_duration`: UInt · `animated`: Bool · `accent_fill`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2098,6 +2380,8 @@ A modal progress surface with a label, a bar, a range, an optional cancel button
 **Rust API.** `create_progress_dialog(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("progress_dialog", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### PopupWindow (`popup_window`)
+
+![popup_window (dark)](../images/popup_window.svg)
 
 A borderless, optionally transient floating window with its own chrome flag, title, content and resize signal. Use it for chrome-only floating content that is not a full dialog; prefer `Popover` for anchored bubbles and `Dialog` when modal semantics are required.
 
@@ -2113,6 +2397,8 @@ A borderless, optionally transient floating window with its own chrome flag, tit
 
 ### BottomSheet (`bottom_sheet`)
 
+![bottom_sheet (dark)](../images/bottom_sheet.svg)
+
 A panel that slides up from the bottom edge and can be dragged back down, with a peek height and an expanded state. Use it for secondary content on touch layouts; use `ModalBottomSheet` when the sheet must block the page, and `Popover` for a small anchored bubble.
 
 **Properties.** 2 published beyond the shared set: `expanded`: Bool · `peek_height`: Float — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2126,6 +2412,8 @@ A panel that slides up from the bottom edge and can be dragged back down, with a
 **Aliases.** `sheet`
 
 ### ModalBottomSheet (`modal_bottom_sheet`)
+
+![modal_bottom_sheet (dark)](../images/modal_bottom_sheet.svg)
 
 A Material-style modal bottom sheet with a configurable height, an animated presentation and a drag-to-dismiss `dismissed` signal. Use it for a blocking set of choices or details on a phone; use `BottomSheet` for non-blocking peek content and `Dialog` when the decision is a short message.
 
@@ -2141,6 +2429,8 @@ A Material-style modal bottom sheet with a configurable height, an animated pres
 
 ### Tooltip (`tooltip`)
 
+![tooltip (dark)](../images/tooltip.svg)
+
 A small popup label shown on hover for context information, with wrap and shown state. Use it for a hint about a control that already has a visible label; do not hide essential instructions in a tooltip, and use the `TooltipManager` companion when the delay and placement must be shared by many controls.
 
 **Properties.** 3 published beyond the shared set: `text`: String · `shown`: Bool · `wrap`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2154,6 +2444,8 @@ A small popup label shown on hover for context information, with wrap and shown 
 **Aliases.** `tooltip_widget`, `hover_tip`
 
 ### Popover (`popover`)
+
+![popover (dark)](../images/popover.svg)
 
 A floating bubble card with an anchor arrow, a transient/semi-transient/permanent behaviour and a shown state. Use it for a small piece of contextual content near a control; use `Tooltip` for text-only hints and `PopupWindow` when the content needs window chrome.
 
@@ -2169,6 +2461,8 @@ A floating bubble card with an anchor arrow, a transient/semi-transient/permanen
 
 ### FindReplaceDialog (`find_replace_dialog`)
 
+![find_replace_dialog (dark)](../images/find_replace_dialog.svg)
+
 A find/replace dialog with query and replacement fields, case, whole-word and regex toggles, highlight-all and wrap-around, and next/previous/replace/replace-all signals. Use it for a document-wide search that needs its own modal; use `FindBar` for an inline bar inside an editor.
 
 **Properties.** 7 published beyond the shared set: `find_text`: String · `replace_text`: String · `match_case`: Bool · `whole_word`: Bool · `use_regex`: Bool · `highlight_all`: Bool · `wrap_around`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2182,6 +2476,8 @@ A find/replace dialog with query and replacement fields, case, whole-word and re
 **Aliases.** `find_replace`
 
 ### WizardDialog (`wizard_dialog`)
+
+![wizard_dialog (dark)](../images/wizard_dialog.svg)
 
 A multi-page dialog that walks the user through ordered steps, with back/next/finish, per-step validity and sidebar pages. Use it for a setup flow where order matters; use a `StackedWidget` plus your own buttons when the steps are not a modal flow, and `Dialog` for a single page.
 
@@ -2197,6 +2493,8 @@ A multi-page dialog that walks the user through ordered steps, with back/next/fi
 
 ### AlertDialog (`alert_dialog`)
 
+![alert_dialog (dark)](../images/alert_dialog.svg)
+
 A modal notice with a message, an icon and one acknowledging action, plus optional informative/detailed text and a check box. Use it for information the user must acknowledge; use `ConfirmDialog` when there is a real accept/cancel choice and `MessageBox` for the classic fixed-button form.
 
 **Properties.** 10 published beyond the shared set: `title`: String · `message`: String · `button_text`: String · `informative_text`: String · `detailed_text`: String · `modal`: Bool · `default_button`: UInt · `check_box`: String · `check_box_checked`: Bool · `icon`: String — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2211,6 +2509,8 @@ A modal notice with a message, an icon and one acknowledging action, plus option
 
 ### ConfirmDialog (`confirm_dialog`)
 
+![confirm_dialog (dark)](../images/confirm_dialog.svg)
+
 A modal question with an accept action, a cancel action, optional informative/detailed text and a check box. Use it before a destructive or irreversible operation; use `AlertDialog` for information only and `MessageBox` when the buttons must be the classic set.
 
 **Properties.** 11 published beyond the shared set: `title`: String · `message`: String · `accept_text`: String · `reject_text`: String · `informative_text`: String · `detailed_text`: String · `modal`: Bool · `default_button`: UInt · `check_box`: String · `check_box_checked`: Bool · `icon`: String — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2224,6 +2524,8 @@ A modal question with an accept action, a cancel action, optional informative/de
 **Aliases.** `confirmation_dialog`
 
 ### AboutDialog (`about_dialog`)
+
+![about_dialog (dark)](../images/about_dialog.svg)
 
 The standard application-information dialog: application name, version, message, informative and detailed text, plus an optional check box. Use it for Help/About; do not use it as a general-purpose dialog — those fields are the whole contract.
 
@@ -2249,6 +2551,8 @@ Choose a special control when the feature *is* the surface — a canvas for free
 
 ### Canvas (`canvas`)
 
+![canvas (dark)](../images/canvas.svg)
+
 A free-form drawing surface with layers, zoom, pan, grid snapping and pointer events carrying positions. Use it for a scene the host draws itself; use `ShapeCanvas` when the scene is a set of selectable shapes with an editor, and `MiniCanvas` for a small immediate-mode decoration.
 
 **Properties.** 8 published beyond the shared set: `command_count`: UInt (read-only) · `layer_count`: UInt (read-only) · `anti_alias`: Bool · `show_grid`: Bool · `grid_step`: UInt · `snap_to_grid`: Bool · `zoom_range`: NumberList · `zoom_step`: Float — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2263,6 +2567,8 @@ A free-form drawing surface with layers, zoom, pan, grid snapping and pointer ev
 
 ### Canvas (`map_view`)
 
+![map_view (dark)](../images/map_view.svg)
+
 A tiled map view with a centre, zoom, projection and markers, owning its `TileLoader`, `ZoomControl`, `ScaleBar` and `Compass` companions. The host fetches tiles and calls `deliver_tile`/`reject_tile`; the view requests them through `tile_requested`, so no I/O happens in the widget.
 
 **Properties.** 6 published beyond the shared set: `center_x`: Float · `center_y`: Float · `zoom`: Float · `marker_count`: UInt (read-only) · `selected_marker_id`: String (read-only) · `projection`: Enum (`linear` | `mercator`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2274,6 +2580,8 @@ A tiled map view with a centre, zoom, projection and markers, owning its `TileLo
 **Rust API.** `create_map_view(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("map_view", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Chart (`chart`)
+
+![chart (dark)](../images/chart.svg)
 
 The general chart widget: a chart type (bar, line, area, pie, scatter, waterfall, funnel, candlestick, box plot), a data series list, labels, zoom and hover readout. Use it when the type is chosen at runtime; use the dedicated `LineChart`/`BarChart`/`PieChart` controls for a fixed type, and the finance family for market data.
 
@@ -2289,6 +2597,8 @@ The general chart widget: a chart type (bar, line, area, pie, scatter, waterfall
 
 ### Chart (`gantt_widget`)
 
+![gantt_widget (dark)](../images/gantt_widget.svg)
+
 A Gantt chart of tasks against a viewport, with milestones, dependencies, critical path, progress resizing and a today marker; it owns a `TimelineAxis` and `DependencyEditor`. Use it for project scheduling; use `TimelineWidget` for a non-scheduling event lane view.
 
 **Properties.** 7 published beyond the shared set: `task_count`: UInt (read-only) · `selected_id`: String (read-only) · `viewport_start`: Int · `viewport_end`: Int · `row_height`: UInt · `show_critical_path`: Bool · `show_today`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2302,6 +2612,8 @@ A Gantt chart of tasks against a viewport, with milestones, dependencies, critic
 **Aliases.** `gantt`
 
 ### Chart (`timeline_widget`)
+
+![timeline_widget (dark)](../images/timeline_widget.svg)
 
 A timeline of items placed on a time axis, with row or lane-packed layout and a selectable item. Use it for event histories and activity feeds; use `GanttWidget` when tasks have duration, dependencies and progress.
 
@@ -2317,6 +2629,8 @@ A timeline of items placed on a time axis, with row or lane-packed layout and a 
 
 ### ColorPicker (`color_picker`)
 
+![color_picker (dark)](../images/color_picker.svg)
+
 An inline HSVA colour picker with hex entry, alpha, presets and a hue value; it is embedded in a form rather than hosted in a window. Use it when the colour field is always visible; use `ColorDialog` for a modal picker and `ColorWell` for the collapsed single-swatch field.
 
 **Properties.** 5 published beyond the shared set: `hex_rgba`: String · `show_alpha`: Bool · `preset_count`: UInt (read-only) · `presets`: StringList · `hue_degrees`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2328,6 +2642,8 @@ An inline HSVA colour picker with hex entry, alpha, presets and a hue value; it 
 **Rust API.** `create_color_picker(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("color_picker", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Grid (`grid`)
+
+![grid (dark)](../images/grid.svg)
 
 A rectangular container that arranges children into rows and columns of cells, with spacing, cell size, headers and paging. Use it for a fixed matrix of controls or values; use `Table` when cells come from a model and `Flex`/`Grid` layout names for pure placement.
 
@@ -2343,6 +2659,8 @@ A rectangular container that arranges children into rows and columns of cells, w
 
 ### FreeformShape (`freeform_shape`)
 
+![freeform_shape (dark)](../images/freeform_shape.svg)
+
 A path-based, non-rectangular clickable shape with fill, stroke, vertices, history and move/vertex signals. Use it for a diagram node or a custom hit region; use `ShapeCanvas` when several shapes form an editable scene, and `MiniCanvas` for non-interactive drawing.
 
 **Properties.** 5 published beyond the shared set: `path_kind`: Enum (`bubble` | `rounded_rect` | `polygon` | `star` | `heart` | `custom`) (read-only) · `fill_rgba`: String · `stroke_rgba`: String · `stroke_width`: UInt · `movable`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2354,6 +2672,8 @@ A path-based, non-rectangular clickable shape with fill, stroke, vertices, histo
 **Rust API.** `create_freeform_shape(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("freeform_shape", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### RadarChart (`radar_chart`)
+
+![radar_chart (dark)](../images/radar_chart.svg)
 
 A radar (spider) chart with shared dimension axes, several series drawn as closed polygons, grid, axis labels and legend. Use it for multi-axis profiles (skills, KPIs) where the dimensions are comparable; use `LineChart` for one ordered axis and `Heatmap` when a matrix is the data.
 
@@ -2369,6 +2689,8 @@ A radar (spider) chart with shared dimension axes, several series drawn as close
 
 ### Heatmap (`heatmap`)
 
+![heatmap (dark)](../images/heatmap.svg)
+
 A matrix of values rendered as coloured cells, with a scale range, labels, legend and a viewport window. Use it for a density or correlation matrix where both axes are categorical; use `Grid` for plain cells and `Chart` for a value-per-index series.
 
 **Properties.** 10 published beyond the shared set: `row_count`: UInt (read-only) · `column_count`: UInt (read-only) · `scale_minimum`: Float · `scale_maximum`: Float · `resolved_minimum`: Float (read-only) · `resolved_maximum`: Float (read-only) · `show_labels`: Bool · `show_legend`: Bool · `viewport_rows`: UInt · `viewport_columns`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2382,6 +2704,8 @@ A matrix of values rendered as coloured cells, with a scale range, labels, legen
 **Aliases.** `heatmap_chart`
 
 ### KanbanBoard (`kanban_board`)
+
+![kanban_board (dark)](../images/kanban_board.svg)
 
 A board of columns holding draggable cards, with lanes, column width, horizontal offset and card-moved/activated signals. Pair it with `KanbanColumnHeader` for rename/count/WIP chrome and `KanbanCardView` when a card needs a real editable control; the board owns the model and the drop rules.
 
@@ -2397,6 +2721,8 @@ A board of columns holding draggable cards, with lanes, column width, horizontal
 
 ### SignaturePad (`signature_pad`)
 
+![signature_pad (dark)](../images/signature_pad.svg)
+
 A touch-friendly freehand drawing surface for signatures: strokes with width, colour, smoothing thresholds and pressure, plus undo and a stroke-completed signal. Use it for a signature or a scribble input; do not use it as a general paint program — it stores polylines, not a bitmap.
 
 **Properties.** 9 published beyond the shared set: `stroke_count`: UInt (read-only) · `stroke_width`: UInt · `stroke_color`: Color · `min_point_distance`: Float · `min_point_interval_ms`: UInt · `pressure_affects_width`: Bool · `last_pressure`: Float (read-only) · `last_tilt_x`: Float (read-only) · `last_tilt_y`: Float (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2410,6 +2736,8 @@ A touch-friendly freehand drawing surface for signatures: strokes with width, co
 **Aliases.** `signature`
 
 ### Breadcrumb (`breadcrumb`)
+
+![breadcrumb (dark)](../images/breadcrumb.svg)
 
 A horizontal navigation trail of segments, with collapse, overflow, inline path editing and per-segment activation. Use it for a hierarchy the user can jump back up; use `Pagination` for numbered pages and `MenuBar` for top-level commands.
 
@@ -2425,6 +2753,8 @@ A horizontal navigation trail of segments, with collapse, overflow, inline path 
 
 ### Chip (`chip`)
 
+![chip (dark)](../images/chip.svg)
+
 A multi-item pill row: chips can be selected, removed, reordered and overflowed, with a focus index. Use it for a token/tag set that is edited as a group; use a single `Tag` for one read-only label and `TagInput` when the user types new values.
 
 **Properties.** 4 published beyond the shared set: `item_count`: UInt (read-only) · `multi_select`: Bool · `focused_index`: UInt (read-only) · `selected_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2438,6 +2768,8 @@ A multi-item pill row: chips can be selected, removed, reordered and overflowed,
 **Aliases.** `chips`
 
 ### Toast (`toast`)
+
+![toast (dark)](../images/toast.svg)
 
 One transient notification message with a level, a time-to-live and a dismiss signal. Create it through the toast surface or the `ToastHost` queue rather than managing many standalone toasts; use `Banner` when the notice must persist and `Snackbar` when it belongs to a window edge.
 
@@ -2453,6 +2785,8 @@ One transient notification message with a level, a time-to-live and a dismiss si
 
 ### PopupWindow (`toast_stack`)
 
+![toast_stack (dark)](../images/toast_stack.svg)
+
 The container that queues and lays out toasts, with a visible count, max visible, anchor and stacking direction. Use it as the single owner of toast placement; pair it with `ToastHost` when the queue must expire and cap entries before they reach the stack.
 
 **Properties.** 6 published beyond the shared set: `toast_count`: UInt (read-only) · `selected_id`: String (read-only) · `row_height`: UInt · `max_visible`: UInt · `anchor`: Enum (`top_left` | `top_right` | `bottom_left` | `bottom_right`) · `stacking_direction`: Enum (`newest_at_bottom` | `newest_at_top`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2466,6 +2800,8 @@ The container that queues and lays out toasts, with a visible count, max visible
 **Aliases.** `toasts`
 
 ### ListView (`command_palette`)
+
+![command_palette (dark)](../images/command_palette.svg)
 
 A searchable command list overlay: query, filtered count, highlighted index and `command_activated`. Use it for a keyboard-first launcher; use `Menu` for a mouse-driven command list and `ShortcutEditor` to edit bindings.
 
@@ -2481,6 +2817,8 @@ A searchable command list overlay: query, filtered count, highlighted index and 
 
 ### ListView (`notification_center`)
 
+![notification_center (dark)](../images/notification_center.svg)
+
 A list of notifications with unread count, level filter, max items and activate/dismiss/clear-all signals. Use it for a persistent inbox of events; use `Toast`/`ToastStack` for transient interruptions and `Banner` for one persistent notice.
 
 **Properties.** 6 published beyond the shared set: `item_count`: UInt (read-only) · `unread_count`: UInt (read-only) · `selected_index`: UInt (read-only) · `row_height`: UInt · `level_filter`: Enum (`all` | `info` | `warning` | `error`) · `max_items`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2494,6 +2832,8 @@ A list of notifications with unread count, level filter, max items and activate/
 **Aliases.** `notifications`
 
 ### Table (`diff_viewer`)
+
+![diff_viewer (dark)](../images/diff_viewer.svg)
 
 A side-by-side or unified diff view over two texts, with change count, fold thresholds, whitespace modes, word granularity and hunk expansion. Use it to show a comparison; pair it with `DiffFileList` to choose among several files, and do not use it as an editor — it is read-only.
 
@@ -2509,6 +2849,8 @@ A side-by-side or unified diff view over two texts, with change count, fold thre
 
 ### SegmentedControl (`segmented_control`)
 
+![segmented_control (dark)](../images/segmented_control.svg)
+
 A single-select segmented bar whose indicator slides between segments, with an id per segment. Use it for two to five mutually exclusive views; use `SegmentedButton` for multi-select or icon segments and `TabBar` when the segments are page tabs.
 
 **Properties.** 6 published beyond the shared set: `item_count`: UInt (read-only) · `selected_index`: UInt (read-only) · `selected_id`: String (read-only) · `size_to_fit`: Bool · `min_segment_width`: UInt · `multi_select`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2520,6 +2862,8 @@ A single-select segmented bar whose indicator slides between segments, with an i
 **Rust API.** `create_segmented_control(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("segmented_control", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### StatusBar (`snackbar`)
+
+![snackbar (dark)](../images/snackbar.svg)
 
 A transient message anchored to a window edge, with an action label, a queue length and a max queue. Use it to confirm a completed action without blocking; use `Banner` when the message must persist and `ToastStack` when several messages must stack.
 
@@ -2535,6 +2879,8 @@ A transient message anchored to a window edge, with an action label, a queue len
 
 ### WebEngineView (`media_player`)
 
+![media_player (dark)](../images/media_player.svg)
+
 A media surface with a source, play/pause, position, duration, volume and fullscreen, reporting playback and position changes. Use it when the host supplies the media pipeline; pair it with the `MediaTransportBar`, `MediaScrubber` and `SubtitleBar` companions rather than re-implementing controls.
 
 **Properties.** 9 published beyond the shared set: `source`: String · `playing`: Bool · `duration_ms`: UInt (read-only) · `position_ms`: UInt · `volume`: UInt · `muted`: Bool · `fullscreen`: Bool · `playlist_index`: UInt · `track_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2546,6 +2892,8 @@ A media surface with a source, play/pause, position, duration, volume and fullsc
 **Rust API.** `create_media_player(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("media_player", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### ShapeCanvas (`shape_canvas`)
+
+![shape_canvas (dark)](../images/shape_canvas.svg)
 
 A scene that hosts, selects and orders shapes, with add/modify/remove/select signals, snapping and a grid step. Use it for a diagram editor; use `FreeformShape` for one shape and `Canvas` for arbitrary drawing not built from shape objects.
 
@@ -2561,6 +2909,8 @@ A scene that hosts, selects and orders shapes, with add/modify/remove/select sig
 
 ### KanbanCardView (`kanban_card_view`)
 
+![kanban_card_view (dark)](../images/kanban_card_view.svg)
+
 A real card control for a kanban column: title, description, tags, assignee, done state and in-place editing. Use it when a card must be an actual editable control; the `KanbanBoard` owns placement and drag state, and this control owns one card's content and edit lifecycle.
 
 **Properties.** 7 published beyond the shared set: `title`: String · `description`: String · `done`: Bool · `tags`: StringList · `assignee`: String · `draggable`: Bool · `editing`: Bool (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2574,6 +2924,8 @@ A real card control for a kanban column: title, description, tags, assignee, don
 **Aliases.** `kanban_card_control`
 
 ### KanbanColumnHeader (`kanban_column_header`)
+
+![kanban_column_header (dark)](../images/kanban_column_header.svg)
 
 A real column header for a kanban board: title, card count, WIP limit, collapse and inline rename. Use it above a `KanbanBoard` column; the header owns its own rename and collapse state and reports `column_renamed`, `column_collapsed_changed` and `add_card_requested`.
 
@@ -2589,6 +2941,8 @@ A real column header for a kanban board: title, card count, WIP limit, collapse 
 
 ### DiffFileList (`diff_file_list`)
 
+![diff_file_list (dark)](../images/diff_file_list.svg)
+
 The multi-file selector beside a diff viewer: a list of paths with a selection mode and activate/select signals. The view owns the comparison; this control only chooses which path the view should show.
 
 **Properties.** 4 published beyond the shared set: `files`: StringList · `file_count`: UInt (read-only) · `selected_path`: String (read-only) · `selection_mode`: Enum (`single` | `multi` | `extended` | `none`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2602,6 +2956,8 @@ The multi-file selector beside a diff viewer: a list of paths with a selection m
 **Aliases.** `diff_files`
 
 ### Swatch (`swatch`)
+
+![swatch (dark)](../images/swatch.svg)
 
 A selectable grid of colour cells shared by the colour controls, with a selected index and activated/selected signals. The dialog or picker owns the current colour; the swatch owns the palette and the selection, so wire `swatch_selected` into the owner's colour property.
 
@@ -2617,6 +2973,8 @@ A selectable grid of colour cells shared by the colour controls, with a selected
 
 ### FilterRow (`filter_row`)
 
+![filter_row (dark)](../images/filter_row.svg)
+
 One editor per column that publishes the row's filter conditions and a live flag. Use it beside a table for a compact multi-column filter; the table or grid owns the model, and the row only produces conditions.
 
 **Properties.** 4 published beyond the shared set: `columns`: StringList · `conditions`: StringList · `operator`: Enum (`contains` | `equals` | `starts_with` | `ends_with` | `not_contains` | `equals_number` | `greater_than` | `greater_or_equal` | `less_than` | `less_or_equal`) · `live`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2630,6 +2988,8 @@ One editor per column that publishes the row's filter conditions and a live flag
 **Aliases.** `filter_bar`
 
 ### Legend (`legend`)
+
+![legend (dark)](../images/legend.svg)
 
 A checkable series key for charts and canvas hosts: entries, orientation, position and click/toggle signals. The chart owns the series data; the legend owns which series are visible, so forward `series_toggled` to the chart's visibility state.
 
@@ -2645,6 +3005,8 @@ A checkable series key for charts and canvas hosts: entries, orientation, positi
 
 ### ChartTooltip (`chart_tooltip`)
 
+![chart_tooltip (dark)](../images/chart_tooltip.svg)
+
 A follow-pointer bubble carrying chart series values, with an anchor, an offset, a follow flag and content lines. The chart positions it through `show_at`; the tooltip owns only its text and visibility.
 
 **Properties.** 4 published beyond the shared set: `anchor`: NumberList · `offset`: NumberList · `follow_pointer`: Bool · `content`: StringList — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2658,6 +3020,8 @@ A follow-pointer bubble carrying chart series values, with an anchor, an offset,
 **Aliases.** `tooltip_bubble`
 
 ### TooltipManager (`tooltip_manager`)
+
+![tooltip_manager (dark)](../images/tooltip_manager.svg)
 
 The host pipeline that turns hover into a delayed tooltip: delay, duration, follow-pointer and max width, with tooltip-shown/hidden indices. Use one manager for a subtree when many controls share tooltip timing; individual controls can still use their own `tooltip` property.
 
@@ -2673,6 +3037,8 @@ The host pipeline that turns hover into a delayed tooltip: delay, duration, foll
 
 ### ZoomPanController (`zoom_pan_controller`)
 
+![zoom_pan_controller (dark)](../images/zoom_pan_controller.svg)
+
 Zoom, pan and region-of-interest state for an image view, with a zoom mode, limits and change signals. Use it when several controls must share the same view transform; the image view paints, and the controller owns the transform.
 
 **Properties.** 6 published beyond the shared set: `zoom_level`: Float · `pan_offset`: NumberList · `zoom_mode`: Enum (`free` | `fit_width` | `fit_height` | `original`) · `min_zoom`: Float · `max_zoom`: Float · `roi`: Rect — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2686,6 +3052,8 @@ Zoom, pan and region-of-interest state for an image view, with a zoom mode, limi
 **Aliases.** `zoom_pan`
 
 ### ToastHost (`toast_host`)
+
+![toast_host (dark)](../images/toast_host.svg)
 
 The bounded, expiring queue in front of a toast stack: max visible, max queued, default duration, anchor, stacking direction and an overflow policy. Use it when toast volume must be capped; the stack paints, and the host decides which toasts live long enough to reach it.
 
@@ -2701,6 +3069,8 @@ The bounded, expiring queue in front of a toast stack: max visible, max queued, 
 
 ### TileLoader (`tile_loader`)
 
+![tile_loader (dark)](../images/tile_loader.svg)
+
 Tile addressing, caching and load results for a map view: a URL template, zoom range, tile size, cache limit and tile-loaded/failed signals. The map view owns one and asks it for URLs; the host performs the request and calls `deliver_tile`.
 
 **Properties.** 6 published beyond the shared set: `url_template`: String · `min_zoom`: UInt · `max_zoom`: UInt · `tile_size`: UInt · `cache_limit`: UInt · `cache_size`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2714,6 +3084,8 @@ Tile addressing, caching and load results for a map view: a URL template, zoom r
 **Aliases.** `map_tile_loader`
 
 ### ZoomControl (`zoom_control`)
+
+![zoom_control (dark)](../images/zoom_control.svg)
 
 The three-button zoom strip beside a map: zoom level, min/max and a `zoom_requested` signal. The map owns the strip and applies the request; do not let the strip mutate the map's zoom directly if the map also reports zoom changes.
 
@@ -2729,6 +3101,8 @@ The three-button zoom strip beside a map: zoom level, min/max and a `zoom_reques
 
 ### ScaleBar (`scale_bar`)
 
+![scale_bar (dark)](../images/scale_bar.svg)
+
 The metric or imperial distance legend for a map, computed from metres per pixel. The map owns it and updates the conversion; the bar only paints the legend.
 
 **Properties.** 3 published beyond the shared set: `meters_per_pixel`: Float · `units`: Enum (`metric` | `imperial`) · `style`: Enum (`plain` | `boxed`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2742,6 +3116,8 @@ The metric or imperial distance legend for a map, computed from metres per pixel
 **Aliases.** `map_scale_bar`
 
 ### Compass (`compass`)
+
+![compass (dark)](../images/compass.svg)
 
 A clickable bearing dial that requests north-up when clicked, reporting its bearing. Use it over a rotatable map; the map owns the bearing and answers `reset_north_requested`.
 
@@ -2757,6 +3133,8 @@ A clickable bearing dial that requests north-up when clicked, reporting its bear
 
 ### TimelineAxis (`timeline_axis`)
 
+![timeline_axis (dark)](../images/timeline_axis.svg)
+
 A date/value axis with pixel conversion, tick density, zoom and scale-change reporting. The Gantt chart owns one and uses `pixel_to_date`/`date_to_pixel`; a host may place another beside a chart to share the same mapping.
 
 **Properties.** 6 published beyond the shared set: `tick_density`: UInt · `date_format`: Enum (`numeric` | `iso`) · `zoom_level`: Float · `range`: NumberList (read-only) · `range_start`: Int · `range_end`: Int — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2770,6 +3148,8 @@ A date/value axis with pixel conversion, tick density, zoom and scale-change rep
 **Aliases.** `gantt_timeline_axis`
 
 ### DependencyEditor (`dependency_editor`)
+
+![dependency_editor (dark)](../images/dependency_editor.svg)
 
 Editable predecessor/successor edges for a Gantt chart, with add/remove/select signals, hit testing and link geometry. The Gantt owns one and can sync dependencies from its tasks; the editor owns the edge list and validation.
 
@@ -2809,6 +3189,8 @@ working. See [Getting Started § Axis 4](getting-started.md#axis-4-editor-contro
 
 ### RichEdit (`code_editor`)
 
+![code_editor (dark)](../images/code_editor.svg)
+
 A source editor with its own buffer: line count, cursor line and column, markers, folds, a goto bar and a breakpoint gutter, reporting cursor, fold, marker and search events. Use it for source text; use `MarkdownEditor` for prose, `RichEdit` for formatting and `TerminalView` for append-only output.
 
 **Properties.** 9 published beyond the shared set: `text`: String · `line_count`: UInt (read-only) · `cursor_line`: UInt (read-only) · `cursor_column`: UInt (read-only) · `marker_count`: UInt (read-only) · `undo_stack_limit`: UInt · `undo_depth`: UInt (read-only) · `goto_bar_visible`: Bool · `breakpoint_gutter`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2820,6 +3202,8 @@ A source editor with its own buffer: line count, cursor line and column, markers
 **Rust API.** `create_code_editor(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("code_editor", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### RichEdit (`markdown_editor`)
+
+![markdown_editor (dark)](../images/markdown_editor.svg)
 
 A markdown editor with source and preview modes, heading count, cursor tracking and an outline that a `MarkdownOutlinePanel` can display. Use it for markdown documents; pair it with `FindBar` for inline search and use `RichEdit` for non-markdown formatting.
 
@@ -2835,6 +3219,8 @@ A markdown editor with source and preview modes, heading count, cursor tracking 
 
 ### FindBar (`find_bar`)
 
+![find_bar (dark)](../images/find_bar.svg)
+
 An inline search bar for an editor: query, case, whole-word, replacement text, match count and the current range, reporting search and replace requests. Use it inside an editor surface; use `FindReplaceDialog` when the search must be modal.
 
 **Properties.** 7 published beyond the shared set: `query`: String · `case_sensitive`: Bool · `whole_word`: Bool · `replace_text`: String · `replace_visible`: Bool · `match_count`: UInt (read-only) · `current_range`: String (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2849,6 +3235,8 @@ An inline search bar for an editor: query, case, whole-word, replacement text, m
 
 ### MarkdownOutlinePanel (`markdown_outline_panel`)
 
+![markdown_outline_panel (dark)](../images/markdown_outline_panel.svg)
+
 A heading outline that navigates a markdown editor: entries, active index and width, emitting `entry_selected`. The editor owns the document and `outline()`; the panel only lists headings and reports the chosen index back through `goto_outline`.
 
 **Properties.** 4 published beyond the shared set: `entries`: StringList · `active_index`: UInt · `width`: UInt · `entry_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2862,6 +3250,8 @@ A heading outline that navigates a markdown editor: entries, active index and wi
 **Aliases.** `markdown_outline`
 
 ### TextEdit (`terminal_view`)
+
+![terminal_view (dark)](../images/terminal_view.svg)
 
 An append-only terminal surface: scrollback output, an input line, a prompt, caret style, ANSI palette and a `command_submitted` signal. Use it to show a process or a command console; use `TextArea` for editable text and `CodeEditor` for source.
 
@@ -2887,6 +3277,8 @@ Choose a finance control only for market or trading data: `CandlestickChart` for
 
 ### CandlestickChart (`candlestick_chart`)
 
+![candlestick_chart (dark)](../images/candlestick_chart.svg)
+
 An OHLC candlestick chart with overlay series, a price axis, hover/click per bar and a view change. Use it as the main price pane of a market view; align `VolumeChart` beneath it and `IndicatorChart` for technical panes. Do not use it for non-OHLC business data.
 
 **Properties.** 4 published beyond the shared set: `series`: String · `overlay_count`: UInt · `show_price_levels`: Bool · `show_overlay_legend`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2900,6 +3292,8 @@ An OHLC candlestick chart with overlay series, a price axis, hover/click per bar
 **Aliases.** `candlestick`, `kline`, `k_line`, `k_line_chart`, `ohlc_chart`
 
 ### VolumeChart (`volume_chart`)
+
+![volume_chart (dark)](../images/volume_chart.svg)
 
 A volume histogram aligned to a candlestick chart's bars, with a direction or uniform colour mode and headroom. The price chart owns the time axis; this pane reads the same series and renders volume, so keep the two viewports in sync from the host.
 
@@ -2915,6 +3309,8 @@ A volume histogram aligned to a candlestick chart's bars, with a direction or un
 
 ### DepthChart (`depth_chart`)
 
+![depth_chart (dark)](../images/depth_chart.svg)
+
 A cumulative bid/ask depth curve with configurable depth and separate bid/ask colours, reporting the price level under the pointer. Use it for liquidity; use `OrderBook` for the discrete ladder with sizes.
 
 **Properties.** 3 published beyond the shared set: `depth`: UInt · `bid_color`: Color · `ask_color`: Color — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2928,6 +3324,8 @@ A cumulative bid/ask depth curve with configurable depth and separate bid/ask co
 **Aliases.** `market_depth`, `depth_graph`, `liquidity_chart`
 
 ### OrderBook (`order_book`)
+
+![order_book (dark)](../images/order_book.svg)
 
 A live bid/ask ladder with sizes at each level, a spread row and per-level hover/click. Use it beside a candlestick chart for microstructure; use `DepthChart` for the smooth cumulative curve and `QuoteBoard` for a multi-instrument watchlist.
 
@@ -2943,6 +3341,8 @@ A live bid/ask ladder with sizes at each level, a spread row and per-level hover
 
 ### QuoteBoard (`quote_board`)
 
+![quote_board (dark)](../images/quote_board.svg)
+
 A table of instruments with last price, change, volume and sort modes, reporting quote click/hover/selection. Use it as a watchlist; use `OrderBook` for one instrument's ladder and `Table` for non-market data.
 
 **Properties.** 4 published beyond the shared set: `sort`: Enum (`none` | `symbol` | `last_descending` | `change_magnitude`) · `selected_index`: UInt · `row_height`: UInt (read-only) · `scroll_offset`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2956,6 +3356,8 @@ A table of instruments with last price, change, volume and sort modes, reporting
 **Aliases.** `quotes`, `watchlist`, `quote_table`, `market_watch`
 
 ### IndicatorChart (`indicator_chart`)
+
+![indicator_chart (dark)](../images/indicator_chart.svg)
 
 A technical-indicator pane for MACD, RSI, stochastic, money flow index, ATR or on-balance volume, with a period and reference levels. Use it beneath a price chart; it consumes the same series rather than owning market data, so the host feeds both panes.
 
@@ -2981,6 +3383,8 @@ Choose `Calendar` when a month grid is the primary surface, `DatePicker`/`TimePi
 
 ### Calendar (`calendar`)
 
+![calendar (dark)](../images/calendar.svg)
+
 A month grid for browsing and selecting dates, with single, multi or range selection, week numbers, configurable first day and date limits. Use it as the primary date surface; use `DatePicker` for a field with a popup and `DateRangePicker` for a start/end pair with presets.
 
 **Properties.** 12 published beyond the shared set: `selected_date`: String · `minimum_date`: String · `maximum_date`: String · `first_day_of_week`: Enum (`mon` | `tue` | `wed` | `thu` | `fri` | `sat` | `sun`) · `grid_visible`: Bool · `navigation_bar_visible`: Bool · `horizontal_header_visible`: Bool · `vertical_header_visible`: Bool · `date_format`: String · `show_week_numbers`: Bool · `selection_mode`: Enum (`single` | `multi` | `range`) · `selected_dates`: StringList — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -2994,6 +3398,8 @@ A month grid for browsing and selecting dates, with single, multi or range selec
 **Aliases.** `date_calendar`
 
 ### DatePicker (`date_edit`)
+
+![date_edit (dark)](../images/date_edit.svg)
 
 A one-line date field that opens a calendar popup, with a display format, date limits and popup/date-change signals. Use it for one date in a form; use `Calendar` when the grid is always visible and `DateTimePicker` when time is part of the value.
 
@@ -3009,6 +3415,8 @@ A one-line date field that opens a calendar popup, with a display format, date l
 
 ### TimePicker (`time_edit`)
 
+![time_edit (dark)](../images/time_edit.svg)
+
 A one-line time field with a clock popup, 12/24-hour format, time limits and a `time_changed` signal. Use it for a time of day; use `TimePicker` for the picker-flavoured spelling and `DateTimePicker` when a date is also required.
 
 **Properties.** 7 published beyond the shared set: `time`: String · `minimum_time`: String · `maximum_time`: String · `display_format`: String · `clock_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `time_format`: Enum (`12h` | `24h`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3022,6 +3430,8 @@ A one-line time field with a clock popup, 12/24-hour format, time limits and a `
 **Aliases.** `time_input`
 
 ### TimePicker (`time_picker`)
+
+![time_picker (dark)](../images/time_picker.svg)
 
 The `time_picker` factory name for a time field with a clock popup; it shares the `TimePicker` kind and the `TIME_EDIT_PROPERTIES` schema with `time_edit`. Use whichever spelling the host already uses, and do not mount both for one value.
 
@@ -3037,6 +3447,8 @@ The `time_picker` factory name for a time field with a clock popup; it shares th
 
 ### DateTimePicker (`date_time_edit`)
 
+![date_time_edit (dark)](../images/date_time_edit.svg)
+
 A combined date-and-time field with a calendar popup, a display format, date limits and both date and datetime change signals. Use it when one value carries both parts; use `DatePicker` plus `TimePicker` when the two are edited separately.
 
 **Properties.** 7 published beyond the shared set: `datetime`: String · `display_format`: String · `calendar_popup`: Bool · `alignment`: Enum (`left` | `centre` | `right`) · `minimum`: String · `maximum`: String · `calendar_first_day`: Enum (`mon` | `tue` | `wed` | `thu` | `fri` | `sat` | `sun`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3050,6 +3462,8 @@ A combined date-and-time field with a calendar popup, a display format, date lim
 **Aliases.** `datetimepicker`, `date_time_picker`
 
 ### Dial (`dial`)
+
+![dial (dark)](../images/dial.svg)
 
 A rotary knob that maps its angle to a bounded integer, with notches, a notch target and wrapping. Use it for an instrument-like control where angle is natural (volume, pan, a dial gauge); use `Slider` for a linear range and `SpinBox` for exact entry.
 
@@ -3065,6 +3479,8 @@ A rotary knob that maps its angle to a bounded integer, with notches, a notch ta
 
 ### TabBar (`tab_bar`)
 
+![tab_bar (dark)](../images/tab_bar.svg)
+
 A standalone tab strip decoupled from its pages: tab count, current index, closable, movable, min/max width and tab events. Use it when the strip and the page container are separate; use `TabWidget` when the control should own both.
 
 **Properties.** 7 published beyond the shared set: `tab_count`: UInt (read-only) · `current_index`: UInt · `closable`: Bool · `movable`: Bool · `tab_min_width`: UInt · `tab_max_width`: UInt · `direction`: Enum (`ltr` | `rtl`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3076,6 +3492,8 @@ A standalone tab strip decoupled from its pages: tab count, current index, closa
 **Rust API.** `create_tab_bar(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("tab_bar", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### RibbonBar (`ribbon_bar`)
+
+![ribbon_bar (dark)](../images/ribbon_bar.svg)
 
 An Office-style ribbon: tabs, groups of commands, large and small items, a quick-access strip and collapse/minimise. Use it for a command-dense desktop app; use `ToolBar` for a single row of actions and `MenuBar` for classic menus.
 
@@ -3091,6 +3509,8 @@ An Office-style ribbon: tabs, groups of commands, large and small items, a quick
 
 ### PieMenu (`pie_menu`)
 
+![pie_menu (dark)](../images/pie_menu.svg)
+
 A radial menu whose items sit on a ring around the pointer, with a radius, inner radius and a current index. Use it for a handful of secondary actions invoked at a point; use `Menu`/`ContextMenu` for a longer or keyboard-navigable list.
 
 **Properties.** 4 published beyond the shared set: `item_count`: UInt (read-only) · `radius`: Float · `inner_radius`: Float · `current_index`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3104,6 +3524,8 @@ A radial menu whose items sit on a ring around the pointer, with a radius, inner
 **Aliases.** `radial_menu`
 
 ### LineEdit (`key_sequence_editor`)
+
+![key_sequence_editor (dark)](../images/key_sequence_editor.svg)
 
 A field that records a keyboard shortcut as a key sequence, reporting conflicts and the new sequence. The schema publishes no property row for it, so drive it through the widget API and its signals rather than through `WidgetFactory` property names.
 
@@ -3129,6 +3551,8 @@ Choose `Avatar` for a user image with initials fallback, `QRCode` to render a de
 
 ### DropZone (`drop_zone`)
 
+![drop_zone (dark)](../images/drop_zone.svg)
+
 A named drop target filtered by MIME type, with a hover state, a multi-file flag and enter/exit/drop/reject signals. Use it where a host accepts files or a drag payload; use a `DropTarget` implementation directly when the target is an existing control rather than its own region.
 
 **Properties.** 8 published beyond the shared set: `accepted_type`: String · `state`: Enum (`idle` | `hovering` | `accepted` | `rejected` | `dropped`) · `hovered`: Bool (read-only) · `accepted_types`: StringList · `multi_file`: Bool · `hover_style`: String · `show_count_badge`: Bool · `dropped_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3143,6 +3567,8 @@ A named drop target filtered by MIME type, with a hover state, a multi-file flag
 
 ### MobileDatePicker (`mobile_date_picker`)
 
+![mobile_date_picker (dark)](../images/mobile_date_picker.svg)
+
 A date picker laid out for touch rather than a desktop calendar grid, with a year span and a date-changed signal. Use it on phone layouts; use `Calendar` or `DatePicker` on desktop, and `CupertinoDatePicker` when the iOS wheel is required.
 
 **Properties.** 2 published beyond the shared set: `selected_date`: String · `year_span`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3154,6 +3580,8 @@ A date picker laid out for touch rather than a desktop calendar grid, with a yea
 **Rust API.** `create_mobile_date_picker(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("mobile_date_picker", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### QRCode (`qr_code`)
+
+![qr_code (dark)](../images/qr_code.svg)
 
 A widget that renders a deterministic QR pattern from a data string, with size, quiet zone, error-correction level, version bounds and colours. Use it to display a code the user scans; it renders only and does not decode, so use `BarcodeScanner` for reading.
 
@@ -3169,6 +3597,8 @@ A widget that renders a deterministic QR pattern from a data string, with size, 
 
 ### Avatar (`avatar`)
 
+![avatar (dark)](../images/avatar.svg)
+
 A circular or square user image placeholder with initials fallback, a size, an optional badge, an image source and a ring. Use it for a person or account identity; pair it with a `Badge` only when the count belongs elsewhere — the avatar already carries its own `badge` text.
 
 **Properties.** 7 published beyond the shared set: `initials`: String · `square`: Bool · `size`: UInt · `image_source`: String · `badge`: String · `ring_color`: Color · `ring_width`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3182,6 +3612,8 @@ A circular or square user image placeholder with initials fallback, a size, an o
 **Aliases.** `avatar_widget`, `user_avatar`
 
 ### SegmentedButton (`segmented_button`)
+
+![segmented_button (dark)](../images/segmented_button.svg)
 
 A horizontal group of selectable segments carrying ids and icons, with single or multi selection and a group id. Use it for Material 3 style icon segments or multi-choice; use `SegmentedControl` for single-select labelled segments with a sliding indicator and `CupertinoSegmentedControl` for the iOS pill look.
 
@@ -3197,6 +3629,8 @@ A horizontal group of selectable segments carrying ids and icons, with single or
 
 ### DateRangePicker (`date_range_picker`)
 
+![date_range_picker (dark)](../images/date_range_picker.svg)
+
 A calendar-based start/end range picker with presets, a double-month view and min/max nights. Use it for booking or reporting ranges; pair it with `RangePresetBar` when the presets must live outside the picker, and use `Calendar` for a single date.
 
 **Properties.** 6 published beyond the shared set: `start_date`: String · `end_date`: String · `presets`: StringList · `double_month`: Bool · `min_nights`: UInt · `max_nights`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3210,6 +3644,8 @@ A calendar-based start/end range picker with presets, a double-month view and mi
 **Aliases.** `range_picker`
 
 ### BarcodeScanner (`barcode_scanner`)
+
+![barcode_scanner (dark)](../images/barcode_scanner.svg)
 
 A scanner viewfinder with a scanning flag and a `barcode_detected` payload. The host owns the camera and decoding; this control owns the scan state and reports the decoded text. Use `QRCode` to render a code, not to read one.
 
@@ -3225,6 +3661,8 @@ A scanner viewfinder with a scanning flag and a `barcode_detected` payload. The 
 
 ### BezierCurveEditor (`bezier_curve_editor`)
 
+![bezier_curve_editor (dark)](../images/bezier_curve_editor.svg)
+
 An interactive cubic Bézier editor for custom easing curves: control points, segment count, snapping and a curve-changed payload. Use it in a motion or animation settings panel; store the emitted curve text and feed it to the animation engine rather than recomputing it.
 
 **Properties.** 3 published beyond the shared set: `snap_to_grid`: Bool · `segments`: UInt (read-only) · `curve_points`: String — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3238,6 +3676,8 @@ An interactive cubic Bézier editor for custom easing curves: control points, se
 **Aliases.** `curve_editor`
 
 ### RangePresetBar (`range_preset_bar`)
+
+![range_preset_bar (dark)](../images/range_preset_bar.svg)
 
 A row of quick date-range chips beside a range picker, with orientation, compact mode and a selected label. The picker owns the dates; the bar only reports the chosen preset, so wire `preset_selected` into `DateRangePicker::apply_preset` or your own mapping.
 
@@ -3263,6 +3703,8 @@ Choose `AnimatedImage` for a frame sequence, `LottieWidget` or `RiveWidget` for 
 
 ### AnimatedImage (`animated_image`)
 
+![animated_image (dark)](../images/animated_image.svg)
+
 Plays an animated image (GIF, APNG or a WebP frame sequence) with play/pause, direction, a frame cache limit and frame/animation-finished signals. Use it for a frame sequence asset; use `LottieWidget` or `RiveWidget` for vector animation and `VideoPlayer` for timed media.
 
 **Properties.** 3 published beyond the shared set: `playing`: Bool · `direction`: Enum (`forward` | `reverse`) · `frame_cache_limit`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3276,6 +3718,8 @@ Plays an animated image (GIF, APNG or a WebP frame sequence) with play/pause, di
 **Aliases.** `anim_image`
 
 ### HeroAnimation (`hero_animation`)
+
+![hero_animation (dark)](../images/hero_animation.svg)
 
 A shared-element transition that interpolates position, size and opacity between two layouts, with a progress value and a completion signal. Use it when the same object appears on two screens; the host drives `animation_progress` and swaps the real content at the end.
 
@@ -3291,6 +3735,8 @@ A shared-element transition that interpolates position, size and opacity between
 
 ### LottieWidget (`lottie_widget`)
 
+![lottie_widget (dark)](../images/lottie_widget.svg)
+
 A Lottie JSON animation player with play/pause, loop count, direction and speed. Use it for vector motion assets exported from a design tool; use `RiveWidget` when the animation needs interactive state machines and inputs.
 
 **Properties.** 5 published beyond the shared set: `playing`: Bool · `loop_count`: Int · `loops_completed`: Int (read-only) · `direction`: Enum (`forward` | `reverse`) · `speed`: Float — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3304,6 +3750,8 @@ A Lottie JSON animation player with play/pause, loop count, direction and speed.
 **Aliases.** `lottie`
 
 ### RiveWidget (`rive_widget`)
+
+![rive_widget (dark)](../images/rive_widget.svg)
 
 A Rive runtime surface with play state, loops, a state string and fired-input/state-changed signals. Use it for interactive animation with state machines; use `LottieWidget` for a linear exported animation and `AnimatedImage` for a frame sequence.
 
@@ -3319,6 +3767,8 @@ A Rive runtime surface with play state, loops, a state string and fired-input/st
 
 ### VideoPlayer (`video_player`)
 
+![video_player (dark)](../images/video_player.svg)
+
 A video surface with play state, volume, mute, playback rate, controls, looping and a frame/metadata/error signal set. Use it when the host provides the media pipeline; pair it with the transport companions and stop/seek only through the control's own methods so its clock stays authoritative.
 
 **Properties.** 7 published beyond the shared set: `is_playing`: Bool · `volume`: Float · `muted`: Bool · `playback_rate`: Float · `controls_visible`: Bool · `looping`: Bool · `pipeline`: String (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3333,6 +3783,8 @@ A video surface with play state, volume, mute, playback rate, controls, looping 
 
 ### AudioVisualizer (`audio_visualizer`)
 
+![audio_visualizer (dark)](../images/audio_visualizer.svg)
+
 A real-time audio level or spectrum view with bar count, a peak threshold, a mode and periodic level reports. Use it for feedback while audio plays; keep the analysis in the host and feed levels in, and do not use it as an audio editor.
 
 **Properties.** 4 published beyond the shared set: `bar_count`: UInt · `peak_threshold`: Float · `mode`: Enum (`waveform` | `spectrum`) · `level_report_interval`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3346,6 +3798,8 @@ A real-time audio level or spectrum view with bar count, a peak threshold, a mod
 **Aliases.** `audio_viz`
 
 ### CameraPreview (`camera_preview`)
+
+![camera_preview (dark)](../images/camera_preview.svg)
 
 A camera viewfinder with an active flag, pixel format, target frame rate and camera id, reporting frames, format negotiation, permission denial and errors. Use it for capture or scanning; the host owns the device session, and the control surfaces only what the session reports.
 
@@ -3371,6 +3825,8 @@ Choose `WebEngineView` when the host must render HTML it does not own — a help
 
 ### WebEngineView (`web_engine_view`)
 
+![web_engine_view (dark)](../images/web_engine_view.svg)
+
 The embedded web view: URL, load state, title, back/forward, user agent, transparent background and cookie persistence, with navigation, load, console, download, certificate and crash signals. Use it only for HTML the host does not own; treat each signal as something the host must decide about.
 
 **Properties.** 8 published beyond the shared set: `url`: String · `loading`: Bool (read-only) · `title`: String · `can_go_back`: Bool · `can_go_forward`: Bool · `user_agent`: String · `background_transparent`: Bool · `cookie_persistence_enabled`: Bool — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3395,6 +3851,8 @@ Choose a Cupertino control when the screen must look native on Apple platforms a
 
 ### CupertinoSwitch (`cupertino_switch`)
 
+![cupertino_switch (dark)](../images/cupertino_switch.svg)
+
 An iOS-style on/off switch with its own kind, capability row and constructor; it is not an alias of `Switch`. Use it when the iOS thumb-and-track rendition is required, and use `Switch` with `switch_geometry` when only the geometry differs.
 
 **Properties.** 4 published beyond the shared set: `checked`: Bool · `thumb_color`: Color · `on_track_color`: Color · `switch_geometry`: Enum (`material` | `cupertino` | `macos`) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3408,6 +3866,8 @@ An iOS-style on/off switch with its own kind, capability row and constructor; it
 **Aliases.** `ios_switch`
 
 ### CupertinoAlertDialog (`cupertino_alert_dialog`)
+
+![cupertino_alert_dialog (dark)](../images/cupertino_alert_dialog.svg)
 
 An iOS-style modal alert with a title, a message and confirm/cancel outcomes. Use it for a two-choice iOS alert; use `AlertDialog`/`ConfirmDialog` for the desktop alert family and `MessageBox` for the classic fixed-button form.
 
@@ -3423,6 +3883,8 @@ An iOS-style modal alert with a title, a message and confirm/cancel outcomes. Us
 
 ### CupertinoSlider (`cupertino_slider`)
 
+![cupertino_slider (dark)](../images/cupertino_slider.svg)
+
 An iOS-style slider with a rounded track and circular knob, a value and min/max floats. Use it for a continuous value on an iOS-styled screen; use `Slider` for integer steps and `RangeSlider` for two bounds.
 
 **Properties.** 3 published beyond the shared set: `value`: Float · `min`: Float · `max`: Float — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3436,6 +3898,8 @@ An iOS-style slider with a rounded track and circular knob, a value and min/max 
 **Aliases.** `ios_slider`
 
 ### CupertinoNavigationBar (`cupertino_navigation_bar`)
+
+![cupertino_navigation_bar (dark)](../images/cupertino_navigation_bar.svg)
 
 An iOS-style navigation bar with a title, an optional large title, a prompt, leading/trailing items and a collapse offset. Use it at the top of an iOS screen; pair it with the `CupertinoNavigationStack` companion when the title must follow a page stack.
 
@@ -3451,6 +3915,8 @@ An iOS-style navigation bar with a title, an optional large title, a prompt, lea
 
 ### CupertinoSegmentedControl (`cupertino_segmented_control`)
 
+![cupertino_segmented_control (dark)](../images/cupertino_segmented_control.svg)
+
 An iOS-style pill segmented control with a selected index and a value-changed signal. Use it for two to five mutually exclusive choices on an iOS screen; use `SegmentedControl` for the desktop rendition and `SegmentedButton` for multi-select.
 
 **Properties.** 2 published beyond the shared set: `selected_index`: UInt · `segment_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3464,6 +3930,8 @@ An iOS-style pill segmented control with a selected index and a value-changed si
 **Aliases.** `cupertinosegmented`, `ios_segmented`
 
 ### CupertinoDatePicker (`cupertino_date_picker`)
+
+![cupertino_date_picker (dark)](../images/cupertino_date_picker.svg)
 
 An iOS UIPickerView-style scrolling wheel date picker, with date, time, datetime or countdown mode, 24-hour format and a minute interval. Use it inside an iOS-styled sheet; use `MobileDatePicker` on Material touch layouts and `DatePicker` on desktop.
 
@@ -3479,6 +3947,8 @@ An iOS UIPickerView-style scrolling wheel date picker, with date, time, datetime
 
 ### MaterialSnackbar (`material_snackbar`)
 
+![material_snackbar (dark)](../images/material_snackbar.svg)
+
 A Material snackbar with a message, an action label, a duration and a slide progress. Use it for a brief confirmation with one action; use `Banner` for a persistent notice and `ToastStack`/`ToastHost` when several messages must queue.
 
 **Properties.** 4 published beyond the shared set: `message`: String · `action_text`: String · `duration_ms`: UInt · `slide_progress`: Float (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3490,6 +3960,8 @@ A Material snackbar with a message, an action label, a duration and a slide prog
 **Rust API.** `create_material_snackbar(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("material_snackbar", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### MaterialNavigationRail (`material_navigation_rail`)
+
+![material_navigation_rail (dark)](../images/material_navigation_rail.svg)
 
 A Material side navigation rail for tablet-width layouts, with a selected index and a current-changed signal. Use it when the window is too narrow for a drawer and too wide for a bottom bar; use `NavigationDrawer` for a long destination list and `BottomNavigationBar` on phones.
 
@@ -3515,6 +3987,8 @@ Choose these when a macOS screen must match the platform's metrics and affordanc
 
 ### SegmentedControl (`mac_segmented_control`)
 
+![mac_segmented_control (dark)](../images/mac_segmented_control.svg)
+
 The macOS rendition of a segmented control: a selected index, a segment count and a value-changed signal, with platform metrics. Use it in macOS-native chrome; use `SegmentedControl` for the generic control and `CupertinoSegmentedControl` for iOS.
 
 **Properties.** 2 published beyond the shared set: `selected_index`: UInt · `segment_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3526,6 +4000,8 @@ The macOS rendition of a segmented control: a selected index, a segment count an
 **Rust API.** `create_mac_segmented_control(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("mac_segmented_control", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Stepper (`mac_stepper`)
+
+![mac_stepper (dark)](../images/mac_stepper.svg)
 
 The macOS rendition of a stepper, adding `wraps`, `repeat_delay_ms` and `repeat_interval_ms` to the generic value/range/step model. Use it for macOS-native numeric chrome; use `Stepper` for the portable control and `SpinBox` when typing is required.
 
@@ -3539,6 +4015,8 @@ The macOS rendition of a stepper, adding `wraps`, `repeat_delay_ms` and `repeat_
 
 ### ToolBar (`mac_toolbar`)
 
+![mac_toolbar (dark)](../images/mac_toolbar.svg)
+
 The macOS unified toolbar rendition: items, icon size, orientation, a selectable/selected item and an overflow count. Use it at the top of a macOS window; use `ToolBar` for the portable strip and `RibbonBar` when commands need labelled groups.
 
 **Properties.** 6 published beyond the shared set: `item_count`: UInt (read-only) · `icon_size`: Float · `orientation`: String (read-only) · `selectable`: Bool · `selected_index`: UInt · `overflow_count`: UInt (read-only) — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3551,6 +4029,8 @@ The macOS unified toolbar rendition: items, icon size, orientation, a selectable
 
 ### ListView (`mac_source_list`)
 
+![mac_source_list (dark)](../images/mac_source_list.svg)
+
 The macOS source-list rendition of a list: sections, rows, a selected row, row height and badge/selection signals. Use it in a macOS sidebar; use `ListView` for the portable list and pair it with `DrawerSectionHeader` when using the drawer instead.
 
 **Properties.** 4 published beyond the shared set: `section_count`: UInt (read-only) · `row_count`: UInt (read-only) · `row_height`: UInt (read-only) · `selected_row`: UInt — plus the five shared properties `enabled`, `visible`, `tooltip`, `geometry` and `a11y_role`.
@@ -3562,6 +4042,8 @@ The macOS source-list rendition of a list: sections, rows, a selected row, row h
 **Rust API.** `create_mac_source_list(geometry, text)` — the registered constructor. Through the factory: `WidgetFactory::create("mac_source_list", geometry, text)` and `WidgetFactory::shared()` for the registry.
 
 ### Window (`mac_window_chrome`)
+
+![mac_window_chrome (dark)](../images/mac_window_chrome.svg)
 
 The macOS window chrome: title, chrome height, traffic-light buttons, drag/fullscreen/document-edited flags and window lifecycle requests. Use it when a macOS window must match the platform's title bar; for a portable window use `Window`.
 

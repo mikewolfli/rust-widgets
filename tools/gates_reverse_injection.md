@@ -86,7 +86,8 @@
 |---|---|---|
 | `check_cjk_shards_cover_the_face.sh` | narrowed the `han` shard's range in `tools/cjk_vector_shards.txt` from `4E00..511F` to `4E00..4FFF`, dropping 288 codepoints the face still declares | `[2/4] the shards partition the fonts-cjk coverage` / `  288 codepoint(s) in the face but in no shard: U+5000, U+5001, U+5002, U+5003, U+5004, U+5005, U+5006, U+5007, U+5008, U+5009` / `  FAIL  the shards do not partition the face` |
 | `check_runtime_fonts_is_opt_in.sh` | emptied the feature's implication in `Cargo.toml`: `runtime-fonts = ["text-shaping"]` → `runtime-fonts = []` | `[1/3] \`runtime-fonts\` is declared and implies \`text-shaping\`` / `  FAIL  Cargo.toml does not declare \`runtime-fonts = ["text-shaping"]\`` |
-| `check_cookbook.sh` | renamed a real method in one chapter to one the crate does not define: `` `BaseWidget::request_redraw` `` → `` `BaseWidget::request_redraw_renamed_probe` `` in `cookbook/en/src/chapters/performance-quality.md` | `[1/2] every cookbook-declared API name exists in src/` / `finding: cookbook/en/src/chapters/performance-quality.md:623: \`BaseWidget::request_redraw_renamed_probe\` — \`request_redraw_renamed_probe\` is not defined as a method, constant, type, field or variant anywhere in src/ or examples/` / `checked=196 failed=1` |
+| `check_cookbook.sh` | renamed a real method in one chapter to one the crate does not define: `` `BaseWidget::request_redraw` `` → `` `BaseWidget::request_redraw_renamed_probe` `` in `cookbook/en/src/chapters/performance-quality.md` | `[1/3] every cookbook-declared API name exists in src/` / `finding: cookbook/en/src/chapters/performance-quality.md:623: \`BaseWidget::request_redraw_renamed_probe\` — \`request_redraw_renamed_probe\` is not defined as a method, constant, type, field or variant anywhere in src/ or examples/` / `checked=196 failed=1` |
+| `check_cookbook.sh` (step 3, control images) | appended one byte to `cookbook/en/src/images/button.svg`, the copy the chapter embeds | `[3/3] cookbook control images are the committed dark snapshots` / `FAIL  cookbook/en/src/images/button.svg drifted from snapshots/svg/button.svg`, exit 1. Restored from `snapshots/svg/button.svg`; re-run `every cookbook control image matches its dark snapshot and every reference resolves`, exit 0 |
 
 ## BLUE25 C-wave 1 — gates injected (2026-09-28)
 
@@ -780,3 +781,12 @@ The `--dir` form is what makes this injectable: the real gate reads `snapshots/s
 hand-edited snapshot would be caught by `check_svg_snapshots`' byte comparison first, so the
 placeholder case is only reachable by pointing the scan at a directory where the bytes *are* what
 the producer would write.
+
+## Suite snapshot set (2026-11-13)
+
+The optional suites register controls the parent's exporter cannot see, so their pictures live
+in `snapshots/suite-svg/` and need their own gate.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_suite_snapshots.sh` | appended one byte to `snapshots/suite-svg/map_view.svg` | `[2/3] regenerate with the suite exporter and compare byte for byte` / `FAIL  the committed suite snapshots differ from a fresh export:` (the SHA-256 line for `map_view.svg` changes), exit 1. Restored from the saved copy; re-run `PASS  regeneration reproduces every committed byte` / `checked=38`, exit 0 |
