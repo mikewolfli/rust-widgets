@@ -15,7 +15,7 @@
     {
       "name": "dsh-skill-rust-widgets",
       "title": "rust-widgets maintainer",
-      "description": "DSH skill: maintain, extend and audit the rust-widgets Rust GUI library.",
+      "description": "DSH skill: maintain, extend and audit the rust-widgets Rust GUI library and its companion crates.",
       "icon": "./icon.svg",
       "author": "Mike Li",
       "homepage": "https://github.com/mikewolfli/rust-widgets#readme",
@@ -38,12 +38,12 @@
       },
       "versions": [
         {
-          "version": "0.1.0",
-          "publishTimestamp": 1794199358,
+          "version": "4.4.1",
+          "publishTimestamp": 1794808262,
           "source": {
             "type": "git",
             "url": "https://github.com/mikewolfli/rust-widgets",
-            "commit": "2ca5ee583c65ba955df96b561344998f81b970d0",
+            "commit": "c95d0c7b48f36eea42729ad42e1beb2ab5bf8d31",
             "path": "dsh-plugin"
           },
           "engines": {
