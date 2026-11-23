@@ -20,10 +20,8 @@ ignore = [
     # slice-ring-buffer via minimp3_fixed (MP3 decoding). No fix available.
     "RUSTSEC-2025-0044",
     # boa_engine/rustyline via js-engine feature. No fix available.
-    "RUSTSEC-2026-0204",
     "RUSTSEC-2025-0003",
     # Unmaintained advisories for transitive deps (not directly usable).
-    "RUSTSEC-2024-0384",
     "RUSTSEC-2024-0436",
 ]
 
